@@ -45,12 +45,13 @@ function Sql([string]$text) {
   if ($LASTEXITCODE -ne 0) { throw "SQL 실패: $out" }
   return $out
 }
-$schema = 'DROP TABLE IF EXISTS match_totals, login_keys, ratings, match_players, matches, accounts, schema_version;' + "`n" +
+$schema = 'DROP TABLE IF EXISTS account_bans, match_totals, login_keys, ratings, match_players, matches, accounts, schema_version;' + "`n" +
   [IO.File]::ReadAllText((Join-Path $repo 'tools\db\001_init.sql')) + "`n" + [IO.File]::ReadAllText((Join-Path $repo 'tools\db\002_auth.sql')) + "`n" +
   [IO.File]::ReadAllText((Join-Path $repo 'tools\db\003_rating.sql')) + "`n" +   # ★ 레이팅 조각 3 — 표 버전 3(로그인 서버도 본다)
   [IO.File]::ReadAllText((Join-Path $repo 'tools\db\004_launcher_keys.sql')) + "`n" +   # ★ 런처 P3 — 열쇠 표 · 표 버전 4
   [IO.File]::ReadAllText((Join-Path $repo 'tools\db\005_match_kills.sql')) + "`n" +   # ★ 11-04 플랜2 — 표 버전 5
   [IO.File]::ReadAllText((Join-Path $repo 'tools\db\006_match_totals.sql'))   # ★ 11-04 전적 검색 — 합계 표가 accounts 를 가리켜 맨 앞에서 지움 · 표 버전 6
+$schema += "`n" + [IO.File]::ReadAllText((Join-Path $repo 'tools\db\007_account_bans.sql'))   # ★ 11-05 플랜1 — 정지 테이블이 accounts 를 가리켜 맨 앞에서 지움 · 표 버전 7
 try { Sql $schema | Out-Null } catch { Skip "시험 DB $testDb 표 깔기 못 함 — $_" }
 Sql "INSERT INTO accounts (name, created_unix, last_login_unix) VALUES ('legacy1', 1, 1);" | Out-Null
 $legacyId = [int](Sql "SELECT id FROM accounts WHERE name = 'legacy1';")
@@ -176,6 +177,41 @@ try {
   Check ($r.status -eq 400 -and ($r.body -split "`n")[0] -ceq 'NXL!bad_input') "규칙 밖 새 암호 400 ($($r.status))"
   Req 'POST' '/logout' "key=$k3" | Out-Null
   Req 'POST' '/logout' "key=$k4" | Out-Null
+
+  Write-Host '②-정지(★ 11-05 플랜1 — 운영 명령을 따로 실행 · 도는 서버가 다음 요청부터 막음)'
+  $why = '욕설 반복'
+  $whyHex = [BitConverter]::ToString([Text.Encoding]::UTF8.GetBytes($why)).Replace('-', '')
+  $banBase = @('--config', $Config, '--test-db')
+  function BanTool { & $Exe @banBase @args 2>&1 | Out-Null; return $LASTEXITCODE }
+  $pwBan = 'B4nnedPw'
+  Req 'POST' '/signup' "name=banned1&password=$pwBan&password2=$pwBan" | Out-Null
+  $banKey = (Req 'POST' '/launcher/login' "name=banned1&password=$pwBan&device=BAN-PC&remember=1").body
+  Check ((BanTool '--ban' 'banned1' '--days' '14' '--reason' $why) -eq 0) '운영 명령 --ban 한글 사유 — 종료 코드 0'
+  $row = (Sql "SELECT HEX(b.reason), b.source, b.until_unix - b.created_unix, b.lifted_unix FROM account_bans b JOIN accounts a ON a.id = b.account_id WHERE a.name = 'banned1';") -split "`t"
+  Check ($row[0] -ceq $whyHex -and $row[1] -ceq 'admin' -and $row[2] -eq '1209600' -and $row[3] -eq '0') "행 — 사유 UTF-8 바이트 · admin · 14일 · 안 풀림 ($($row[0]) $($row[1]) $($row[2]) $($row[3]))"
+  $r = Req 'POST' '/launcher/login' "name=banned1&password=$pwBan&device=NEW-PC&remember=1"
+  $lines = $r.body -split "`n"
+  Check ($r.status -eq 403 -and $lines[0] -ceq 'NXL!banned' -and $lines[1] -match '^\d+ ') "정지 — 로그인 403 첫 줄 까닭 · 둘째 줄 끝 시각 ($($r.status) $($lines[0]))"
+  $r = Req 'POST' '/launcher/login' "name=banned1&password=wrong999"
+  Check ($r.status -eq 401 -and $r.body -ceq 'NXL!wrong_password') "정지 + 틀린 암호 = 암호 틀림 ($($r.status) $($r.body))"
+  $r = Req 'POST' '/token' "name=banned1&key=$banKey"
+  Check ($r.status -eq 403 -and ($r.body -split "`n")[0] -ceq 'NXL!banned') "정지 — 토큰 403 ($($r.status))"
+  $r = Req 'POST' '/launcher/password' "name=banned1&password=$pwBan&new_password=N3wBanPw"
+  Check ($r.status -eq 403 -and ($r.body -split "`n")[0] -ceq 'NXL!banned') "정지 — 암호 바꾸기 403 ($($r.status))"
+  $n = Sql "SELECT COUNT(*) FROM login_keys k JOIN accounts a ON a.id = k.account_id WHERE a.name = 'banned1';"
+  Check ($n -eq '1') "정지 중 열쇠 — 그대로 하나 ($n)"
+  Check ((BanTool '--bans') -eq 0) '운영 명령 --bans — 종료 코드 0'
+  Check ((BanTool '--unban' 'banned1') -eq 0) '운영 명령 --unban — 종료 코드 0'
+  $r = Req 'POST' '/token' "name=banned1&key=$banKey"
+  Check ($r.status -eq 200 -and $r.body.StartsWith('NXL1')) "푼 뒤 — 같은 열쇠로 토큰 200 ($($r.status))"
+  Check ((BanTool '--ban-forever' 'banned1' '--reason' $why) -eq 0) '운영 명령 --ban-forever — 종료 코드 0'
+  $r = Req 'POST' '/token' "name=banned1&key=$banKey"
+  Check ($r.status -eq 403 -and ($r.body -split "`n")[1].StartsWith('4294967295 ')) "영구 — 끝 시각 최댓값 ($($r.status))"
+  Check ((BanTool '--unban' 'banned1') -eq 0) '운영 명령 --unban — 영구도 풀림'
+  Check ((BanTool '--ban' 'nobody99' '--days' '1' '--reason' 'x') -eq 1) '없는 계정 — 종료 코드 1'
+  Check ((BanTool '--ban' 'banned1' '--days' '0' '--reason' 'x') -eq 2) '0일 — 종료 코드 2'
+  Check ((BanTool '--ban' 'banned1' '--days' '1') -eq 2) '사유 없음 — 종료 코드 2'
+  Sql "DELETE FROM account_bans; DELETE k FROM login_keys k JOIN accounts a ON a.id = k.account_id WHERE a.name = 'banned1'; DELETE FROM accounts WHERE name = 'banned1';" | Out-Null
 
   Write-Host '③ DB 행'
   $row = (Sql "SELECT LENGTH(pass_salt), LENGTH(pass_hash), pass_iter, last_login_unix > 1 FROM accounts WHERE name = 'smoke1';") -split "`t"

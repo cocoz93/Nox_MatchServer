@@ -135,4 +135,64 @@ bool CMemoryAccountStore::HasDevice(const std::string& device) const {
     return false;
 }
 
+FindResult CMemoryAccountStore::FindActiveBan(uint64_t id, uint32_t nowUnix, BanRow& out) {
+    if (fail_ || failBan_) return FindResult::Failed;
+    const BanEntry* best = nullptr;
+    for (const BanEntry& b : bans_) {
+        if (b.accountId != id || b.liftedUnix != 0 || b.untilUnix <= nowUnix) continue;
+        if (!best || b.untilUnix > best->untilUnix) best = &b;
+    }
+    if (!best) return FindResult::NotFound;
+    out = BanRow{};
+    out.untilUnix = best->untilUnix;
+    out.reason = best->reason;
+    return FindResult::Found;
+}
+
+bool CMemoryAccountStore::InsertBan(uint64_t id, uint32_t untilUnix, const std::string& reason, const std::string& source, uint32_t nowUnix) {
+    if (fail_ || failBan_) return false;
+    bool known = false;
+    for (const auto& kv : rows_)
+        known = known || kv.second.row.id == id;
+    if (!known) return false;   // 표의 외래 키가 막는 꼴
+    BanEntry b;
+    b.accountId = id;
+    b.untilUnix = untilUnix;
+    b.reason = reason;
+    b.source = source;
+    b.createdUnix = nowUnix;
+    bans_.push_back(std::move(b));
+    return true;
+}
+
+bool CMemoryAccountStore::LiftBans(uint64_t id, uint32_t nowUnix, unsigned& lifted) {
+    lifted = 0;
+    if (fail_ || failBan_) return false;
+    for (BanEntry& b : bans_) {
+        if (b.accountId != id || b.liftedUnix != 0 || b.untilUnix <= nowUnix) continue;
+        b.liftedUnix = nowUnix;
+        ++lifted;
+    }
+    return true;
+}
+
+bool CMemoryAccountStore::ListActiveBans(uint32_t nowUnix, std::vector<BanListRow>& out) {
+    out.clear();
+    if (fail_ || failBan_) return false;
+    for (const BanEntry& b : bans_) {
+        if (b.liftedUnix != 0 || b.untilUnix <= nowUnix) continue;
+        for (const auto& kv : rows_) {
+            if (kv.second.row.id != b.accountId) continue;
+            BanListRow r;
+            r.name = kv.first;
+            r.untilUnix = b.untilUnix;
+            r.reason = b.reason;
+            r.source = b.source;
+            r.createdUnix = b.createdUnix;
+            out.push_back(std::move(r));
+        }
+    }
+    return true;
+}
+
 }  // namespace nox::auth

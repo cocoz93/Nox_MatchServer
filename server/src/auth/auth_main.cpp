@@ -1,6 +1,12 @@
 ﻿// auth_main.cpp — 로그인 서버 `nox_auth`(Docs/LOGIN_AUTH_DESIGN.md · 로그인 암호 조각 2).
 //
 //   nox_auth.exe --config <설정 파일> [--port 8443] [--workers 4] [--test-db] [--seconds N] [--quiet]
+//   ★ 11-05 플랜1 — 운영 명령(도는 서버와 따로 · 포트 안 잡음 · 결과를 찍고 끝 · 종료 코드 0 됨 · 1 안 됨 · 2 인자 · `BanCommand.h`)
+//   nox_auth.exe --config <설정 파일> [--test-db] --ban <이름> --days 14 --reason "…"
+//   nox_auth.exe --config <설정 파일> [--test-db] --ban-forever <이름> --reason "…"
+//   nox_auth.exe --config <설정 파일> [--test-db] --unban <이름>
+//   nox_auth.exe --config <설정 파일> [--test-db] --bans
+//   인자는 넓은 글자로 받는다 — `main(argc, argv)` 는 CP949 라 한글 사유 · 이름이 utf8mb4 연결과 어긋난다
 //
 // 왜 따로 된 프로세스인가 — 암호를 지키는 일을 TLS(윈도 http.sys)에 맡기고, 로비 · 게임 서버는 평문 암호를 한 번도 만지지 않게(서명 토큰만 봄).
 //   가입 · 로그인 같은 계정 일이 웹 쪽에 모인다(플랜 머리말)
@@ -16,6 +22,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <shellapi.h>
 
 #include <atomic>
 #include <chrono>
@@ -29,10 +36,13 @@
 #include <vector>
 
 #include "AuthService.h"
+#include "BanCommand.h"
 #include "HttpSysServer.h"
 #include "MySqlAccountStore.h"
 #include "nox/AccountRules.h"
 #include "nox/IniFile.h"
+
+#pragma comment(lib, "shell32.lib")
 
 namespace {
 
@@ -69,9 +79,37 @@ std::string Ip(uint32_t ip) {
     return b;
 }
 
+std::string WideTo(UINT codePage, const wchar_t* w) {
+    const int n = WideCharToMultiByte(codePage, 0, w, -1, nullptr, 0, nullptr, nullptr);
+    if (n <= 1) return {};
+    std::string s(static_cast<size_t>(n), '\0');
+    WideCharToMultiByte(codePage, 0, w, -1, s.data(), n, nullptr, nullptr);
+    s.resize(static_cast<size_t>(n - 1));
+    return s;
+}
+
+// ★ 11-05 플랜1 — 운영 명령 하나. 표 버전 · 권한을 서버와 같은 길(`Open`)로 본다
+int RunBanTool(const nox::auth::BanCommand& cmd, const nox::db::DbConfig& dc) {
+    bool ok = false;
+    {
+        nox::auth::CMySqlAccountStore store(dc);
+        std::string e;
+        if (!store.Open(e)) {
+            Log("[실패] DB — %s\n", e.c_str());
+            return 1;
+        }
+        std::vector<std::string> lines;
+        ok = nox::auth::RunBanCommand(cmd, store, nox::UnixNow(), lines);
+        for (const std::string& l : lines) Log("%s\n", l.c_str());
+        if (!ok && !store.LastError().empty()) Log("  DB 까닭 — %s\n", store.LastError().c_str());
+    }
+    nox::auth::CMySqlAccountStore::ThreadDone();
+    return ok ? 0 : 1;
+}
+
 }  // namespace
 
-int main(int argc, char** argv) {
+int main() {
     SetConsoleOutputCP(CP_UTF8);
     g_shutdownDone = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     SetConsoleCtrlHandler(OnConsoleCtrl, TRUE);
@@ -80,16 +118,32 @@ int main(int argc, char** argv) {
     std::string configPath;
     int port = 0, workers = 0, seconds = 0;
     bool testDb = false;
+    BanCommand banCmd;
+    int argc = 0;
+    wchar_t** wargv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (!wargv) { Log("[실패] 명령 줄을 못 읽음\n"); return 2; }
     for (int i = 1; i < argc; ++i) {
-        const std::string a = argv[i];
+        const std::string a = WideTo(CP_UTF8, wargv[i]);
         const bool hasNext = i + 1 < argc;
+        const auto next = [&] { return WideTo(CP_UTF8, wargv[++i]); };
         if (a == "--quiet") g_quiet = true;
-        else if (a == "--config" && hasNext) configPath = argv[++i];
-        else if (a == "--port" && hasNext) port = std::atoi(argv[++i]);
-        else if (a == "--workers" && hasNext) workers = std::atoi(argv[++i]);
-        else if (a == "--seconds" && hasNext) seconds = std::atoi(argv[++i]);
+        else if (a == "--config" && hasNext) configPath = WideTo(CP_ACP, wargv[++i]);   // 파일 열기는 이 PC 코드 페이지 그대로(`CIniFile::LoadFile`)
+        else if (a == "--port" && hasNext) port = std::atoi(next().c_str());
+        else if (a == "--workers" && hasNext) workers = std::atoi(next().c_str());
+        else if (a == "--seconds" && hasNext) seconds = std::atoi(next().c_str());
         else if (a == "--test-db") testDb = true;
-        else { Log("[실패] 모르는 인자: %s\n", a.c_str()); return 2; }
+        else if (a == "--ban" && hasNext) { banCmd.action = BanAction::Ban; banCmd.name = next(); }
+        else if (a == "--ban-forever" && hasNext) { banCmd.action = BanAction::BanForever; banCmd.name = next(); }
+        else if (a == "--unban" && hasNext) { banCmd.action = BanAction::Unban; banCmd.name = next(); }
+        else if (a == "--bans") banCmd.action = BanAction::List;
+        else if (a == "--days" && hasNext) banCmd.days = static_cast<uint32_t>(std::strtoul(next().c_str(), nullptr, 10));
+        else if (a == "--reason" && hasNext) banCmd.reason = next();
+        else { Log("[실패] 모르는 인자: %s\n", a.c_str()); LocalFree(wargv); return 2; }
+    }
+    LocalFree(wargv);
+    if (banCmd.action != BanAction::None || banCmd.days != 0 || !banCmd.reason.empty()) {
+        std::string banErr;
+        if (!CheckBanCommand(banCmd, banErr)) { Log("[실패] %s\n", banErr.c_str()); return 2; }
     }
     nox::CIniFile ini;
     if (configPath.empty() || !ini.LoadFile(configPath)) { Log("[멈춤] --config <설정 파일> 을 못 읽음(%s)\n", configPath.c_str()); return 2; }
@@ -107,6 +161,7 @@ int main(int argc, char** argv) {
     dc.user = ini.Get("auth_db", "user");
     dc.password = ini.Get("auth_db", "password");   // 찍지 않는다
     if (dc.user.empty()) { Log("[멈춤] [auth_db] user 가 없음(config/auth_setup.sql — 사람 1회)\n"); return 2; }
+    if (banCmd.action != BanAction::None) return RunBanTool(banCmd, dc);
 
     {   // 정할 것 f — 이 PC 에서 PBKDF2 한 번(설정만 맞으면 찍는다 — 인증서 · DB 가 없어도 시간은 보이게)
         nox::PasswordRecord rec;

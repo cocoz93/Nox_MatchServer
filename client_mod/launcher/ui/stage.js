@@ -254,6 +254,22 @@ const stage = (() => {
 
   const msgColor = (el) => (el.dataset.info === '1' ? DIM : BAD);
 
+  // ★ 11-05 플랜1 — 판 폭을 넘는 문구는 낱말 사이에서 나눈다(정지 사유처럼 값이 붙는 문구 — 사유 30자면 두 줄 · `BanCommand.h`)
+  function msgLines(msg) {
+    const max = PANEL.w - 16, lines = [];
+    let line = '';
+    for (const word of msg.split(' ')) {
+      const next = line ? line + ' ' + word : word;
+      if (line && textWidth(next) > max) {
+        lines.push(line);
+        line = word;
+      } else line = next;
+    }
+    if (line) lines.push(line);
+    return lines;
+  }
+  const extraLines = (lines) => Math.max(0, lines.length - 1) * (font.height + 5);
+
   // 안쪽을 먼저 재서(메시지가 있으면 판이 한 줄 길어짐) 판 → 내용 차례로
   function panelBack(bottom) {
     ctx.fillStyle = 'rgba(0,0,0,0.6667)';
@@ -262,8 +278,8 @@ const stage = (() => {
   }
 
   function drawLogin() {
-    const h = font.height, msg = $('loginMsg').textContent;
-    panelBack(msg ? 410 : 394);
+    const h = font.height, msg = $('loginMsg').textContent, lines = msgLines(msg);
+    panelBack((msg ? 410 : 394) + extraLines(lines));
     let y = PANEL.y + 18;
     text('아이디', FIELD_X, y, GOLD);
     y += h + 4;
@@ -278,8 +294,8 @@ const stage = (() => {
     y += h + 14;
     drawButton($('loginBtn'), y, '로그인');
     y += BTN_H + 14;
-    if (msg) {
-      centered(msg, y, msgColor($('loginMsg')));
+    for (const line of lines) {
+      centered(line, y, msgColor($('loginMsg')));
       y += h + 5;
     }
     const a = '계정이 없나요?', gap = textWidth('  '), b = '가입하기';
@@ -289,8 +305,8 @@ const stage = (() => {
   }
 
   function drawSigned() {
-    const h = font.height, msg = $('startMsg').textContent;
-    panelBack(msg ? 346 : 328);
+    const h = font.height, msg = $('startMsg').textContent, lines = msgLines(msg);
+    panelBack((msg ? 346 : 328) + extraLines(lines));
     let y = PANEL.y + 22;
     centered($('whoName').textContent + ' 님', y, BRIGHT);
     y += h + 7;
@@ -298,8 +314,8 @@ const stage = (() => {
     y += h + 16;
     drawButton($('startBtn'), y, '게임 시작');
     y += BTN_H + 14;
-    if (msg) {
-      centered(msg, y, msgColor($('startMsg')));
+    for (const line of lines) {
+      centered(line, y, msgColor($('startMsg')));
       y += h + 5;
     }
     const a = '암호 바꾸기', gap = textWidth('    '), b = '로그아웃';

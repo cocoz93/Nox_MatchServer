@@ -54,16 +54,19 @@ const char* AuthOutcomeName(AuthOutcome o) {
     case AuthOutcome::LoginBadInput: return "로그인 — 규칙 밖";
     case AuthOutcome::LoginFailed: return "로그인 — 실패";
     case AuthOutcome::LoginThrottled: return "로그인 — 시도 제한";
+    case AuthOutcome::LoginBanned: return "로그인 — 정지";
     case AuthOutcome::PasswordChanged: return "암호 바꾸기 — 됨";
     case AuthOutcome::PasswordWrong: return "암호 바꾸기 — 현재 암호 틀림";
     case AuthOutcome::PasswordBadInput: return "암호 바꾸기 — 규칙 밖";
     case AuthOutcome::PasswordFailed: return "암호 바꾸기 — 실패";
+    case AuthOutcome::PasswordBanned: return "암호 바꾸기 — 정지";
     case AuthOutcome::LoginClosed: return "옛 로그인 — 닫힘";
     case AuthOutcome::TokenOk: return "토큰 — 됨";
     case AuthOutcome::TokenBadKey: return "토큰 — 열쇠 없음";
     case AuthOutcome::TokenExpired: return "토큰 — 열쇠 만료";
     case AuthOutcome::TokenBadInput: return "토큰 — 규칙 밖";
     case AuthOutcome::TokenFailed: return "토큰 — 실패";
+    case AuthOutcome::TokenBanned: return "토큰 — 정지";
     case AuthOutcome::LogoutOk: return "로그아웃 — 됨";
     case AuthOutcome::LogoutFailed: return "로그아웃 — 실패";
     case AuthOutcome::BadForm: return "폼 틀림";
@@ -219,6 +222,25 @@ static HttpResponse ThrottledReply(uint32_t sec, ThrottleScope scope) {
     return r;
 }
 
+// ★ 11-05 플랜1 — 정지 확인(플랜 5절). 답 = 403 + `NXL!banned` + 둘째 줄 끝 시각 · 사유(`LoginLine.h`). true = 막힘 · reply 에 답.
+//   암호 · 열쇠를 확인한 뒤에만 부른다 — 암호를 모르는 사람에겐 정지 여부를 안 밝힌다
+static bool BlockedByBan(IAccountStore& db, uint64_t id, uint32_t now, AuthOutcome banned, AuthOutcome failed, AuthOutcome& o, HttpResponse& reply) {
+    BanRow ban;
+    switch (db.FindActiveBan(id, now, ban)) {
+    case FindResult::NotFound: return false;
+    case FindResult::Found:
+        o = banned;
+        reply = LoginFailReply(403, LoginFail::Banned);
+        reply.body += "\n" + MakeBanDetail(ban.untilUnix, ban.reason);
+        return true;
+    case FindResult::Failed:
+    case FindResult::kCount: break;
+    }
+    o = failed;
+    reply = LoginFailReply(503, LoginFail::ServerError);
+    return true;
+}
+
 HttpResponse CAuthService::Login(const HttpRequest& req, IAccountStore& db, AuthOutcome& o) {
     std::map<std::string, std::string> form;
     const auto name = [&]() -> const std::string& { return form["name"]; };
@@ -255,6 +277,8 @@ HttpResponse CAuthService::Login(const HttpRequest& req, IAccountStore& db, Auth
         return LoginFailReply(401, LoginFail::WrongPassword);
     }
     throttle_.OnSuccess(name(), now);
+    HttpResponse banned;
+    if (BlockedByBan(db, row.id, now, AuthOutcome::LoginBanned, AuthOutcome::LoginFailed, o, banned)) return banned;
     // ★ 런처 P1 — 토큰 대신 열쇠를 준다(토큰은 게임이 로비에 갈 때 DLL 이 `/token` 으로 받음 — 토큰의 IP 가 게임 PC 가 되게)
     uint8_t key[kLoginKeyBytes];
     LoginKeyHash h{};
@@ -272,7 +296,7 @@ HttpResponse CAuthService::Login(const HttpRequest& req, IAccountStore& db, Auth
     return r;
 }
 
-// ★ 11-05 플랜1 — 암호 바꾸기(플랜 4절). 순서: 폼 → 시도 제한 → 현재 암호 → 새 암호 규칙 → 해시 · 새 열쇠 짓기(트랜잭션 밖 — 해시 동안 DB 를 안 잡음)
+// ★ 11-05 플랜1 — 암호 바꾸기(플랜 4절). 순서: 폼 → 시도 제한 → 현재 암호 → 정지 확인 → 새 암호 규칙 → 해시 · 새 열쇠 짓기(트랜잭션 밖 — 해시 동안 DB 를 안 잡음)
 //   → 저장 + 열쇠 전부 삭제 + 새 열쇠를 한 트랜잭션으로(`IAccountStore::ChangePassword`). 새 열쇠까지 한 트랜잭션에 넣는 까닭 — 중간에 실패해도 암호도 열쇠도 그대로 남게.
 //   판 중 접속은 안 끊는다(사용자 결정 — 토큰 · 열쇠만 없앰)
 static HttpResponse BadNewPassword(const std::string& message) {
@@ -317,6 +341,8 @@ HttpResponse CAuthService::ChangePassword(const HttpRequest& req, IAccountStore&
         return LoginFailReply(401, LoginFail::WrongPassword);
     }
     throttle_.OnSuccess(name(), now);
+    HttpResponse banned;
+    if (BlockedByBan(db, row.id, now, AuthOutcome::PasswordBanned, AuthOutcome::PasswordFailed, o, banned)) return banned;
     const std::string& next = form["new_password"];
     const PasswordCheck pc = CheckPassword(next);
     if (pc != PasswordCheck::Ok) {
@@ -398,6 +424,8 @@ HttpResponse CAuthService::Token(const HttpRequest& req, IAccountStore& db, Auth
         o = AuthOutcome::TokenExpired;
         return LoginFailReply(401, LoginFail::KeyInvalid);
     }
+    HttpResponse banned;
+    if (BlockedByBan(db, k.accountId, now, AuthOutcome::TokenBanned, AuthOutcome::TokenFailed, o, banned)) return banned;   // 토큰 짓기 전 · 열쇠는 안 지운다
     std::string line;
     if (!db.TouchKey(h, now, now + k.ttlSec) || !IssueLoginToken(req, db, k.accountId, k.accountName, now, line)) {
         o = AuthOutcome::TokenFailed;

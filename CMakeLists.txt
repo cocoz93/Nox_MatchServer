@@ -104,7 +104,7 @@ add_executable(lobby_test server/tests/lobby_test.cpp)
 target_link_libraries(lobby_test PRIVATE nox_lobby_core)
 
 # ★ 로그인 암호 조각 2 — 로그인 서버의 판단(가입 · 로그인 · Docs/LOGIN_AUTH_DESIGN.md). 소켓 · DB 없이 시험된다(auth_test — 메모리 저장소)
-add_library(nox_auth_core STATIC server/src/auth/AuthService.cpp server/src/auth/AccountStore.cpp server/src/auth/LoginThrottle.cpp)
+add_library(nox_auth_core STATIC server/src/auth/AuthService.cpp server/src/auth/AccountStore.cpp server/src/auth/LoginThrottle.cpp server/src/auth/BanCommand.cpp)
 target_link_libraries(nox_auth_core PUBLIC nox_common)
 add_executable(auth_test server/tests/auth_test.cpp)
 target_link_libraries(auth_test PRIVATE nox_auth_core)
@@ -152,7 +152,7 @@ add_test(NAME common_unit COMMAND common_test)
 add_test(NAME auth_unit COMMAND auth_test)   # ★ 로그인 암호 조각 2
 # ★ 7단계 조각 7 — 진짜 MySQL 의 시험 DB(nox_mo_test). 설정 [db] 가 없거나 못 붙으면 77 = 「건너뜀」(통과로 안 보이게)
 if (NOX_HAVE_MYSQL)
-  add_test(NAME db_test COMMAND db_test "${CMAKE_SOURCE_DIR}/config/nox_mo.ini" "${CMAKE_SOURCE_DIR}/tools/db/001_init.sql" "${CMAKE_SOURCE_DIR}/tools/db/002_auth.sql" "${CMAKE_SOURCE_DIR}/tools/db/003_rating.sql" "${CMAKE_SOURCE_DIR}/tools/db/004_launcher_keys.sql" "${CMAKE_SOURCE_DIR}/tools/db/005_match_kills.sql" "${CMAKE_SOURCE_DIR}/tools/db/006_match_totals.sql")
+  add_test(NAME db_test COMMAND db_test "${CMAKE_SOURCE_DIR}/config/nox_mo.ini" "${CMAKE_SOURCE_DIR}/tools/db/001_init.sql" "${CMAKE_SOURCE_DIR}/tools/db/002_auth.sql" "${CMAKE_SOURCE_DIR}/tools/db/003_rating.sql" "${CMAKE_SOURCE_DIR}/tools/db/004_launcher_keys.sql" "${CMAKE_SOURCE_DIR}/tools/db/005_match_kills.sql" "${CMAKE_SOURCE_DIR}/tools/db/006_match_totals.sql" "${CMAKE_SOURCE_DIR}/tools/db/007_account_bans.sql")
   set_tests_properties(db_test PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 

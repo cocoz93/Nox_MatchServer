@@ -10,6 +10,7 @@
 //   ⑤ 표 버전이 다르면 Start 실패 ⑥ 끝낼 때 남은 일을 다 함(Stop 직전에 넣은 판 셋이 다 들어감) ⑦ 셈
 //   ⑧ ★ 레이팅 조각 3(⑤ 와 ⑥ 사이) — 랭크 판 점수 · 겹친 판 안 셈 · 일반 판 NULL · 점수 · 순위 읽기 · 읽기 실패
 //   ⑨ ★ 런처 P1(⑤ 와 ⑧ 사이) — 로그인 서버의 MySQL 열쇠 저장소(넣기 · 찾기 · 쓰임 · 만료 지움 · 같은 지문 · 지우기)
+//   ⑩ ★ 11-05 플랜1(⑨ 뒤) — 계정 정지 저장소(`account_bans` — 가장 늦은 끝 시각 · 푼 행 · 이력 · 영구 · 한글 사유)
 #ifdef _WIN32
 #include <winsock2.h>
 #endif
@@ -29,6 +30,7 @@
 #include "nox/DbLobbyStore.h"   // ★ 11-04 전적 검색 — 쓰기 · 읽기 워커를 나누는 저장소(`CDbWorker` 는 그 안에)
 #include "MatchHistoryScenario.h"
 #include "nox/IniFile.h"
+#include "nox/LoginLine.h"
 #include "nox/MatchTotalsRebuild.h"   // ★ 11-04 전적 검색 — ⑫ 다시 계산
 #include "../src/auth/MySqlAccountStore.h"   // ★ 런처 P1 — ⑨ 열쇠 저장소
 
@@ -194,7 +196,7 @@ int main(int argc, char** argv) {
         std::printf("[건너뜀] 시험 DB %s 에 못 붙음 — %s(사람 1회 config/db_setup.sql 전이면 이 꼴)\n", cfg.database.c_str(), err.c_str());
         return 77;
     }
-    bool laid = ad.Run("DROP TABLE IF EXISTS match_totals, login_keys, ratings, match_players, matches, accounts, schema_version");   // ★ 레이팅 조각 3 — ratings 가 accounts 를 가리켜 먼저 · ★ 런처 P1 — login_keys 도 · ★ 11-04 전적 검색 — match_totals 도
+    bool laid = ad.Run("DROP TABLE IF EXISTS account_bans, match_totals, login_keys, ratings, match_players, matches, accounts, schema_version");   // ★ 레이팅 조각 3 — ratings 가 accounts 를 가리켜 먼저 · ★ 런처 P1 — login_keys 도 · ★ 11-04 전적 검색 — match_totals 도
     for (int i = 2; i < argc; ++i) {
         std::ifstream f(argv[i], std::ios::binary);
         std::stringstream ss;
@@ -299,7 +301,7 @@ int main(int argc, char** argv) {
         nox::auth::CMySqlAccountStore st(cfg);
         std::string e9;
         const bool opened = st.Open(e9);
-        Check(opened, "⑨ 열쇠 저장소 Open(준비된 문장 열하나) " + e9);
+        Check(opened, "⑨ 열쇠 저장소 Open(준비된 문장 열다섯) " + e9);
         const uint64_t wnId = std::strtoull(ad.One("SELECT id FROM accounts WHERE name = 'wn'").c_str(), nullptr, 10);
         nox::auth::LoginKeyHash h1{}, h2{}, h3{};
         h1.fill(1);
@@ -367,6 +369,43 @@ int main(int argc, char** argv) {
             Check(ad.Run("UPDATE accounts SET pass_salt = NULL, pass_hash = NULL, pass_iter = NULL WHERE id = " + std::to_string(wnId)), "⑨ 암호 칸 치움");
         }
         Check(ad.Run("DELETE FROM login_keys"), "⑨ 열쇠 행 치움");
+
+        // ⑩ ★ 11-05 플랜1 — 정지(가장 늦은 끝 시각 · 경계 · 푼 행 · 지난 행은 이력 그대로 · 영구 · 한글 사유 · 넣은 쪽 · 목록 · 없는 계정)
+        {
+            const std::string why = "\xEC\x9A\x95\xEC\x84\xA4 \xEB\xB0\x98\xEB\xB3\xB5";   // 「욕설 반복」 UTF-8 다섯 글자
+            const uint64_t otherId = std::strtoull(ad.One("SELECT id FROM accounts WHERE name = 'Wn'").c_str(), nullptr, 10);
+            nox::auth::BanRow b;
+            const bool none = st.FindActiveBan(wnId, 1000, b) == FindResult::NotFound;
+            const bool ins3 = st.InsertBan(wnId, 2000, "first", std::string(nox::kBanSourceAdmin), 1000) && st.InsertBan(wnId, 3000, why, std::string(nox::kBanSourceAuto), 1001) &&
+                              st.InsertBan(wnId, 1500, "third", std::string(nox::kBanSourceAdmin), 1002);
+            const bool latest = st.FindActiveBan(wnId, 1000, b) == FindResult::Found && b.untilUnix == 3000 && b.reason == why;
+            const bool stored = ad.One("SELECT CHAR_LENGTH(reason) FROM account_bans WHERE until_unix = 3000") == "5" &&
+                                ad.One("SELECT LENGTH(reason) FROM account_bans WHERE until_unix = 3000") == std::to_string(why.size()) &&
+                                ad.One("SELECT source FROM account_bans WHERE until_unix = 3000") == "auto" &&
+                                ad.One("SELECT created_unix FROM account_bans WHERE until_unix = 3000") == "1001" &&
+                                ad.One("SELECT lifted_unix FROM account_bans WHERE until_unix = 3000") == "0";
+            const bool edge = st.FindActiveBan(wnId, 2999, b) == FindResult::Found && st.FindActiveBan(wnId, 3000, b) == FindResult::NotFound;
+            const bool others = st.FindActiveBan(otherId, 1000, b) == FindResult::NotFound;
+            std::vector<nox::auth::BanListRow> list;
+            const bool listAll = st.ListActiveBans(1000, list) && list.size() == 3 && list[0].name == "wn" && list[0].untilUnix == 2000 && list[0].source == "admin" &&
+                                 list[0].createdUnix == 1000 && list[1].reason == why && list[1].source == "auto";
+            const bool listCut = st.ListActiveBans(1600, list) && list.size() == 2 && st.ListActiveBans(3000, list) && list.empty();
+            // 1700 에 풀기 — 1500 행은 이미 지나 이력 그대로(lifted 0) · 나머지 둘만 풀림
+            unsigned lifted = 99;
+            const bool lift = st.LiftBans(wnId, 1700, lifted) && lifted == 2 && st.FindActiveBan(wnId, 1800, b) == FindResult::NotFound &&
+                              ad.One("SELECT COUNT(*) FROM account_bans WHERE lifted_unix = 1700") == "2" && ad.One("SELECT lifted_unix FROM account_bans WHERE until_unix = 1500") == "0" &&
+                              ad.One("SELECT COUNT(*) FROM account_bans") == "3";
+            const bool liftAgain = st.LiftBans(wnId, 1700, lifted) && lifted == 0 && st.ListActiveBans(1000, list) && list.size() == 1 && list[0].untilUnix == 1500;
+            const bool forever = st.InsertBan(otherId, nox::kBanForever, "", std::string(nox::kBanSourceAdmin), 1000) && st.FindActiveBan(otherId, 4294967294u, b) == FindResult::Found &&
+                                 b.untilUnix == nox::kBanForever && b.reason.empty();
+            const bool noRow = !st.InsertBan(987654321ull, 2000, "x", std::string(nox::kBanSourceAdmin), 1000);
+            const bool afterFail = st.LiftBans(otherId, 1000, lifted) && lifted == 1 && st.FindActiveBan(otherId, 1000, b) == FindResult::NotFound;
+            Check(none && ins3 && latest && stored && edge && others && listAll && listCut && lift && liftAgain && forever && noRow && afterFail,
+                  "⑩ 정지 — 가장 늦은 끝 시각 · 경계 · 다른 계정 · 한글 사유 · 넣은 쪽 · 목록 · 지난 행은 이력 그대로 · 영구 · 없는 계정 · 실패 뒤 연결 (" + std::to_string(none) + std::to_string(ins3) +
+                      std::to_string(latest) + std::to_string(stored) + std::to_string(edge) + std::to_string(others) + std::to_string(listAll) + std::to_string(listCut) + std::to_string(lift) +
+                      std::to_string(liftAgain) + std::to_string(forever) + std::to_string(noRow) + std::to_string(afterFail) + ") " + st.LastError());
+            Check(ad.Run("DELETE FROM account_bans"), "⑩ 정지 행 치움");
+        }
     }
 
     // ⑧ ★ 레이팅 조각 3 — 랭크 판이 같은 트랜잭션에서 점수를 고치나 · 겹친 판은 안 고치나 · 일반 판은 NULL · 점수 · 순위 읽기

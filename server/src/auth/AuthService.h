@@ -70,16 +70,19 @@ enum class AuthOutcome : uint8_t {
     LoginBadInput,       // 이름 · 암호 규칙 밖 · 폼이 틀림
     LoginFailed,         // DB · 서명 · 열쇠 넣기 실패
     LoginThrottled,      // ★ 11-05 플랜1 — 시도 제한(DB · 해시 안 돎)
+    LoginBanned,         // ★ 11-05 플랜1 — 암호는 맞음 · 계정 정지(열쇠 안 줌)
     PasswordChanged,     // ★ 11-05 플랜1 — 암호 바꿈(암호 저장 + 열쇠 전부 삭제 + 새 열쇠)
     PasswordWrong,       // 현재 암호 틀림 · 없는 이름 · 암호 없는 옛 행
     PasswordBadInput,    // 폼 틀림 · 새 암호 규칙 밖 · 새 암호가 현재와 같음
     PasswordFailed,      // 해시 · DB 실패 — 암호도 열쇠도 그대로
+    PasswordBanned,      // ★ 11-05 플랜1 — 현재 암호는 맞음 · 계정 정지(아무것도 안 바뀜)
     LoginClosed,         // ★ 런처 P1 — 옛 `/login`(410)
     TokenOk,             // ★ 런처 P1 — `/token`
     TokenBadKey,         //   열쇠 없음 · 남의 이름
     TokenExpired,        //   만료
     TokenBadInput,       //   이름 규칙 밖 · 열쇠 꼴 틀림 · 폼 틀림
     TokenFailed,         //   DB · 서명 실패
+    TokenBanned,         //   ★ 11-05 플랜1 — 열쇠는 맞음 · 계정 정지(열쇠는 안 지움 — 기간이 지나면 그대로 씀)
     LogoutOk,            // ★ 런처 P1 — `/logout`(없는 열쇠 포함)
     LogoutFailed,        //   DB 실패
     BadForm,             // 가입 폼이 틀림(`%` 꼴 · 칸 없음) · ★ 로그아웃 폼이 틀림

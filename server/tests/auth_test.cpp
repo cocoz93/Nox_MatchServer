@@ -10,6 +10,7 @@
 //   ⑥ ★ 조각 3 화면 — 양식(GET / · /signup · 칸 한도 · 스크립트 없음) · 결과 화면 · 되돌린 이름 걸러 냄 · 암호 안 실림 ·
 //     규칙 갈래마다 안내 글 · 화면 답 머리(HTML · 콘텐츠 보안 정책 · nosniff)
 //   ⑧ ★ 11-05 플랜1 암호 바꾸기 — 바뀜 · 옛 암호 거절 · 다른 기기 열쇠 전부 삭제 · 현재 암호 틀림 · 새 암호 규칙 밖 · 같은 암호 · 저장 실패면 그대로 · 시도 제한
+//   ⑨ ★ 11-05 플랜1 계정 정지 — 로그인 · 토큰 · 암호 바꾸기 거절 · 답 꼴 · 기간 경계 · 영구 · 풀기 · 정지 + 틀린 암호 = 암호 틀림 · 열쇠 유지 · 여러 행 · 저장소 실패 · 운영 명령 갈래 전수
 //   ⑦ ★ 11-05 플랜1 시도 제한 — 단계 표 전수 · 횟수별 잠금 시간 · 막힌 동안 DB · 해시 안 감 · 성공 · 1시간 초기화 · 다른 계정 · 주소 안 막힘 ·
 //     주소별 합산(로그인 실패 + 가입) · 없는 이름은 계정 칸 안 만듦 · 잠긴 동안 돌아온 요청은 안 셈 · 지난 칸 지움
 #include <cctype>
@@ -20,6 +21,7 @@
 #include <string>
 
 #include "../src/auth/AuthService.h"
+#include "../src/auth/BanCommand.h"
 #include "nox/LoginLine.h"
 #include "nox/LoginToken.h"
 
@@ -302,6 +304,18 @@ void TestSignupLogin() {
     g.Do(Post("/launcher/password", "name=alice9&password=ef34gh&new_password=ij56kl"), O::PasswordFailed, "셈 — 저장 실패");
     g.db.SetFailChange(false);
     g.Do(Post("/launcher/password", "name=alice9&password=ef34gh&new_password=ab12cd"), O::PasswordChanged, "셈 — 되돌림");
+
+    // ⑨ 정지 세 갈래가 이 셈에도 나오게(자세한 값은 TestBans)
+    {
+        const std::string cntKey = g.Do(Post("/launcher/login", "name=alice9&password=ab12cd&device=CNT&remember=1"), O::LoginOk, "셈 — 정지 전 열쇠").body;
+        AccountRow row;
+        Check(g.db.Find("alice9", row) == FindResult::Found && g.db.InsertBan(row.id, g.clock + 100, "x", "admin", g.clock), "셈 — 정지 넣기");
+        g.Do(Post("/launcher/login", "name=alice9&password=ab12cd"), O::LoginBanned, "셈 — 정지 로그인");
+        g.Do(Post("/token", "name=alice9&key=" + cntKey), O::TokenBanned, "셈 — 정지 토큰");
+        g.Do(Post("/launcher/password", "name=alice9&password=ab12cd&new_password=ef34gh"), O::PasswordBanned, "셈 — 정지 암호 바꾸기");
+        unsigned lifted = 0;
+        Check(g.db.LiftBans(row.id, g.clock, lifted) && lifted == 1, "셈 — 풀기");
+    }
 
     // ⑦ 시도 제한 두 갈래가 이 셈에도 나오게(자세한 값은 TestThrottle)
     constexpr uint32_t kThrottledIp = 0x0a000009u;
@@ -631,12 +645,176 @@ int DumpPages(const std::string& dir) {
     return 0;
 }
 
+// ⑨ 정지 답 꼴 — 403 · 첫 줄 까닭 · 둘째 줄 `<끝 시각> <사유>`
+bool BannedBody(const HttpResponse& r, uint32_t until, const std::string& reason) {
+    return r.status == 403 && r.body == std::string("NXL!banned\n") + std::to_string(until) + (reason.empty() ? "" : " " + reason);
+}
+
+void TestBans() {
+    std::printf("⑨ 계정 정지\n");
+    using O = AuthOutcome;
+    const std::string why = "\xEC\x82\xAC\xEC\x9C\xA0 x";   // 「사유 x」 UTF-8
+    Rig g;
+    g.Do(Post("/signup", "name=alice9&password=ab12cd&password2=ab12cd"), O::SignupCreated, "alice9 가입");
+    g.Do(Post("/signup", "name=bob&password=pw1234&password2=pw1234"), O::SignupCreated, "bob 가입");
+    const std::string key = g.Do(Post("/launcher/login", "name=alice9&password=ab12cd&device=PC1&remember=1"), O::LoginOk, "정지 전 열쇠").body;
+    const std::string bobKey = g.Do(Post("/launcher/login", "name=bob&password=pw1234&device=BOB&remember=1"), O::LoginOk, "bob 열쇠").body;
+    const auto tokenReq = [&] { return Post("/token", "name=alice9&key=" + key); };
+    const auto loginReq = [] { return Post("/launcher/login", "name=alice9&password=ab12cd&device=PC2&remember=1"); };
+    const auto changeReq = [] { return Post("/launcher/password", "name=alice9&password=ab12cd&new_password=ef34gh"); };
+    AccountRow row;
+    Check(g.db.Find("alice9", row) == FindResult::Found, "alice9 행");
+    const uint32_t t0 = g.clock, until = t0 + 1000;
+    Check(g.db.InsertBan(row.id, until, why, "admin", t0), "정지 넣기");
+
+    // 정지 중 — 셋 다 막힘 · 답 꼴 · 열쇠 안 생김 · 안 지움 · 토큰 안 만듦 · 암호 그대로
+    const size_t keysBefore = g.db.KeyCount();
+    const uint32_t lastBefore = g.db.LastLogin(row.id);
+    Check(BannedBody(g.Do(loginReq(), O::LoginBanned, "정지 — 로그인"), until, why), "로그인 403 · 끝 시각 · 사유");
+    Check(BannedBody(g.Do(tokenReq(), O::TokenBanned, "정지 — 토큰"), until, why), "토큰 403 · 끝 시각 · 사유");
+    Check(BannedBody(g.Do(changeReq(), O::PasswordBanned, "정지 — 암호 바꾸기"), until, why), "암호 바꾸기 403 · 끝 시각 · 사유");
+    Check(g.db.KeyCount() == keysBefore && !g.db.HasDevice("PC2") && g.db.HasDevice("PC1"), "정지 중 열쇠 — 새로 안 생김 · 있던 것 그대로");
+    Check(g.db.LastLogin(row.id) == lastBefore, "정지 중 마지막 로그인 안 적음(토큰 안 지음)");
+    // 암호를 모르는 사람에겐 안 밝힌다 · 없는 열쇠도 그대로 · 규칙 밖 새 암호보다 정지가 먼저
+    Check(FailBody(g.Do(Post("/launcher/login", "name=alice9&password=zz99zz"), O::LoginWrongPassword, "정지 + 틀린 암호"), 401, nox::LoginFail::WrongPassword), "정지 + 틀린 암호 = 암호 틀림");
+    Check(FailBody(g.Do(Post("/launcher/password", "name=alice9&password=zz99zz&new_password=ef34gh"), O::PasswordWrong, "정지 + 틀린 현재 암호"), 401, nox::LoginFail::WrongPassword), "정지 + 틀린 현재 암호 = 암호 틀림");
+    Check(FailBody(g.Do(Post("/token", "name=alice9&key=NXK1" + std::string(64, 'a')), O::TokenBadKey, "정지 + 없는 열쇠"), 401, nox::LoginFail::KeyInvalid), "정지 + 없는 열쇠 = 열쇠 거절");
+    Check(BannedBody(g.Do(Post("/launcher/password", "name=alice9&password=ab12cd&new_password=ab1"), O::PasswordBanned, "정지 + 규칙 밖 새 암호"), until, why), "정지 + 규칙 밖 새 암호 = 정지 먼저");
+    // 남은 안 막힘
+    g.Do(Post("/token", "name=bob&key=" + bobKey), O::TokenOk, "다른 계정 토큰");
+    g.Do(Post("/launcher/login", "name=bob&password=pw1234&device=BOB2&remember=1"), O::LoginOk, "다른 계정 로그인");
+
+    // 기간 경계 — 끝 1초 전 막힘 · 끝 == 지금이면 풀림 · 열쇠 그대로 씀
+    g.clock = until - 1;
+    g.Do(tokenReq(), O::TokenBanned, "끝 1초 전 토큰");
+    g.clock = until;
+    g.Do(tokenReq(), O::TokenOk, "끝난 때 토큰 — 저절로 풀림 · 열쇠 그대로");
+    g.Do(loginReq(), O::LoginOk, "끝난 때 로그인");
+
+    // 여러 행 — 가장 늦은 끝 시각이 이긴다(먼저 넣은 쪽이 늦어도 · 나중에 넣은 쪽이 늦어도)
+    const uint32_t t1 = g.clock;
+    Check(g.db.InsertBan(row.id, t1 + 500, "short", "admin", t1) && g.db.InsertBan(row.id, t1 + 900, "long", "auto", t1) && g.db.InsertBan(row.id, t1 + 100, "shorter", "admin", t1), "여러 행 넣기");
+    Check(BannedBody(g.Do(tokenReq(), O::TokenBanned, "여러 행"), t1 + 900, "long"), "여러 행 — 가장 늦은 끝 시각 · 그 사유");
+    g.clock = t1 + 899;
+    Check(BannedBody(g.Do(tokenReq(), O::TokenBanned, "여러 행 끝 직전"), t1 + 900, "long"), "짧은 행이 지나도 긴 행으로 막힘");
+    g.clock = t1 + 900;
+    g.Do(tokenReq(), O::TokenOk, "여러 행 다 지남");
+
+    // 영구 · 사유 없음 · 시계가 멀리 가도 안 풀림
+    const uint32_t t2 = g.clock;
+    Check(g.db.InsertBan(row.id, nox::kBanForever, "", "admin", t2), "영구 넣기");
+    Check(BannedBody(g.Do(tokenReq(), O::TokenBanned, "영구"), nox::kBanForever, ""), "영구 — 최댓값 · 사유 없으면 끝 시각만");
+    g.clock = 4000000000u;
+    g.Do(loginReq(), O::LoginBanned, "먼 뒤에도 영구");   // 열쇠는 이때 만료라 암호 길로 본다
+    g.clock = t2;
+
+    // 풀기 — 유효한 행만 세고 푼 뒤엔 통과 · 다시 풀면 0
+    unsigned lifted = 99;
+    Check(g.db.LiftBans(row.id, g.clock, lifted) && lifted == 1, "풀기 — 영구 한 행");
+    g.Do(tokenReq(), O::TokenOk, "푼 뒤 토큰");
+    g.Do(loginReq(), O::LoginOk, "푼 뒤 로그인");
+    Check(g.db.LiftBans(row.id, g.clock, lifted) && lifted == 0, "다시 풀기 — 0");
+
+    // 저장소 실패 — 막히되 정지라고 안 함 · 정지 칸만 실패
+    g.db.SetFailBan(true);
+    Check(FailBody(g.Do(loginReq(), O::LoginFailed, "정지 칸 실패 — 로그인"), 503, nox::LoginFail::ServerError), "로그인 503");
+    Check(FailBody(g.Do(tokenReq(), O::TokenFailed, "정지 칸 실패 — 토큰"), 503, nox::LoginFail::ServerError), "토큰 503");
+    Check(FailBody(g.Do(changeReq(), O::PasswordFailed, "정지 칸 실패 — 암호"), 503, nox::LoginFail::ServerError), "암호 바꾸기 503");
+    g.db.SetFailBan(false);
+
+    // 운영 명령 — 인자 짝 전수
+    {
+        const std::string fine(30, 'a'), tooLong(31, 'a');
+        std::string hangul30, hangul31;
+        for (int i = 0; i < 30; ++i) hangul30 += "\xEC\x82\xAC";
+        hangul31 = hangul30 + "\xEC\x82\xAC";
+        const struct {
+            BanAction action;
+            const char* name;
+            uint32_t days;
+            std::string reason;
+            bool ok;
+            const char* what;
+        } cases[] = {
+            {BanAction::Ban, "a", 14, "x", true, "--ban 맞음"},
+            {BanAction::Ban, "a", 1, fine, true, "--ban 1일 · 사유 30자"},
+            {BanAction::Ban, "a", kBanDaysMax, hangul30, true, "--ban 최대 일 · 한글 30자"},
+            {BanAction::Ban, "a", 0, "x", false, "--ban 0일"},
+            {BanAction::Ban, "a", kBanDaysMax + 1, "x", false, "--ban 최대 일 넘음"},
+            {BanAction::Ban, "a", 14, "", false, "--ban 사유 없음"},
+            {BanAction::Ban, "a", 14, tooLong, false, "--ban 사유 31자"},
+            {BanAction::Ban, "a", 14, hangul31, false, "--ban 한글 31자"},
+            {BanAction::Ban, "a", 14, "x\ny", false, "--ban 사유 줄 바꿈"},
+            {BanAction::Ban, "", 14, "x", false, "--ban 이름 없음"},
+            {BanAction::BanForever, "a", 0, "x", true, "--ban-forever 맞음"},
+            {BanAction::BanForever, "a", 5, "x", false, "--ban-forever + --days"},
+            {BanAction::BanForever, "a", 0, "", false, "--ban-forever 사유 없음"},
+            {BanAction::Unban, "a", 0, "", true, "--unban 맞음"},
+            {BanAction::Unban, "a", 0, "x", false, "--unban + --reason"},
+            {BanAction::Unban, "a", 3, "", false, "--unban + --days"},
+            {BanAction::List, "", 0, "", true, "--bans 맞음"},
+            {BanAction::List, "a", 0, "", false, "--bans + 이름"},
+            {BanAction::List, "", 3, "", false, "--bans + --days"},
+            {BanAction::None, "", 3, "", false, "--days 만"},
+            {BanAction::None, "", 0, "x", false, "--reason 만"},
+        };
+        for (const auto& c : cases) {
+            BanCommand cmd;
+            cmd.action = c.action;
+            cmd.name = c.name;
+            cmd.days = c.days;
+            cmd.reason = c.reason;
+            std::string err;
+            const bool got = CheckBanCommand(cmd, err);
+            Check(got == c.ok && (got || !err.empty()), std::string("인자 — ") + c.what + " · " + err);
+        }
+    }
+    // 운영 명령 — 실행 갈래 전수(저장소로 확인 · 줄 꼴)
+    {
+        Rig h;
+        h.Do(Post("/signup", "name=carol&password=ab12cd&password2=ab12cd"), O::SignupCreated, "carol 가입");
+        AccountRow cr;
+        Check(h.db.Find("carol", cr) == FindResult::Found, "carol 행");
+        const auto run = [&](BanAction a, const std::string& name, uint32_t days, const std::string& reason, std::vector<std::string>& lines) {
+            BanCommand c;
+            c.action = a;
+            c.name = name;
+            c.days = days;
+            c.reason = reason;
+            lines.clear();
+            return RunBanCommand(c, h.db, h.clock, lines);
+        };
+        std::vector<std::string> l;
+        BanRow b;
+        Check(run(BanAction::Ban, "carol", 14, why, l) && l.size() == 1 && Has(l[0], "carol") && Has(l[0], why), "실행 --ban · 결과 한 줄");
+        Check(h.db.FindActiveBan(cr.id, h.clock, b) == FindResult::Found && b.untilUnix == h.clock + 14 * 86400u && b.reason == why, "--ban 끝 시각 = 지금 + 14일 · 사유");
+        Check(run(BanAction::Ban, "carol", 1, "x", l) && h.db.FindActiveBan(cr.id, h.clock, b) == FindResult::Found && b.untilUnix == h.clock + 14 * 86400u, "더 짧은 --ban 을 더해도 늦은 끝 시각 그대로");
+        Check(run(BanAction::List, "", 0, "", l) && l.size() == 3 && Has(l[0], "2") && Has(l[1], "carol") && Has(l[1], "admin") && Has(l[1], why), "실행 --bans · 머리 + 두 줄");
+        Check(run(BanAction::Unban, "carol", 0, "", l) && l.size() == 1 && Has(l[0], "2") && h.db.FindActiveBan(cr.id, h.clock, b) == FindResult::NotFound, "실행 --unban · 행 둘 풀림");
+        Check(run(BanAction::Unban, "carol", 0, "", l) && Has(l[0], "풀 정지 없음"), "다시 --unban — 됨 · 없음 안내");
+        Check(run(BanAction::BanForever, "carol", 0, "y", l) && Has(l[0], "영구") && h.db.FindActiveBan(cr.id, h.clock, b) == FindResult::Found && b.untilUnix == nox::kBanForever, "실행 --ban-forever");
+        Check(!run(BanAction::Ban, "nobody", 14, "x", l) && Has(l[0], "없는 계정"), "없는 계정 --ban → 안 됨");
+        Check(!run(BanAction::Unban, "nobody", 0, "", l) && Has(l[0], "없는 계정"), "없는 계정 --unban → 안 됨");
+        Check(!run(BanAction::None, "", 0, "", l) && Has(l[0], "[실패]"), "명령 없음 → 안 됨");
+        Check(BanUntilText(nox::kBanForever) == "영구" && BanUntilText(1800000000u).size() == 16, "끝 시각 글 — 영구 · 16자 꼴");
+        h.db.SetFailBan(true);
+        Check(!run(BanAction::Ban, "carol", 14, "x", l) && Has(l[0], "넣기"), "저장소 실패 --ban");
+        Check(!run(BanAction::Unban, "carol", 0, "", l) && Has(l[0], "풀기"), "저장소 실패 --unban");
+        Check(!run(BanAction::List, "", 0, "", l) && Has(l[0], "목록"), "저장소 실패 --bans");
+        h.db.SetFailBan(false);
+        h.db.SetFail(true);
+        Check(!run(BanAction::Ban, "carol", 14, "x", l) && Has(l[0], "찾기"), "찾기 실패 --ban");
+        h.db.SetFail(false);
+    }
+}
+
 int main(int argc, char** argv) {
     if (argc == 3 && std::strcmp(argv[1], "--dump-pages") == 0) return DumpPages(argv[2]);
     TestForm();
     TestSignupLogin();
     TestThrottle();
     TestChangePassword();
+    TestBans();
     std::printf("%s — 확인 %d건 · 실패 %d건\n", g_fails ? "[실패]" : "[통과]", g_checks, g_fails);
     return g_fails ? 1 : 0;
 }

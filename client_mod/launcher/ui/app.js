@@ -11,6 +11,7 @@ const REASON = {
   unreachable: '로그인 서버에 닿지 못했습니다. 잠시 뒤 다시 해 주세요.',
   server_error: '로그인 서버 오류입니다. 잠시 뒤 다시 해 주세요.',
   key_invalid: '로그인이 만료되었습니다. 다시 로그인해 주세요.',
+  banned: '계정이 정지되었습니다.',
   key_store: '이 PC 에 로그인 정보를 저장하지 못했습니다.',
   launch_failed: '게임을 실행하지 못했습니다. 게임 폴더를 확인해 주세요.',
 };
@@ -20,6 +21,14 @@ function reasonText(r, detail) {
     const parts = String(detail || '').split(' ');
     const minutes = Math.max(1, Math.ceil((Number(parts[0]) || 60) / 60));
     return (parts[1] === 'address' ? '시도가 너무 많습니다. ' : '암호를 여러 번 틀렸습니다. ') + minutes + '분 뒤 다시 해 주세요.';
+  }
+  if (r === 'banned') {   // 둘째 줄 = <끝 시각> <사유> · 끝 시각 최댓값 = 영구(LoginLine.h)
+    const s = String(detail || ''), sp = s.indexOf(' ');
+    const until = Number(sp < 0 ? s : s.slice(0, sp)), why = sp < 0 ? '' : s.slice(sp + 1);
+    if (!(until > 0)) return REASON.banned;
+    const d = new Date(until * 1000);
+    const head = until >= 4294967295 ? '영구 정지되었습니다.' : (d.getMonth() + 1) + '월 ' + d.getDate() + '일까지 정지되었습니다.';
+    return head + (why ? ' 사유: ' + why : '');
   }
   if (r === 'bad_input' && detail) return detail;   // 암호 바꾸기 — 서버가 어떤 규칙에 걸렸는지 글로 보냄
   return REASON[r] || '알 수 없는 오류입니다(' + (r || '?') + ').';
@@ -116,6 +125,7 @@ if (host) {
       case 'password':
         if (m.get('ok') === '1') { showSigned(); setMsg('startMsg', '암호를 바꿨습니다. 다른 PC는 다시 로그인해야 합니다.', true); }
         else if (m.get('reason') === 'key_store_changed') showLogin('암호는 바뀌었습니다. 다시 로그인해 주세요.', true);
+        else if (m.get('reason') === 'banned') { clearPw(); showSigned(); setMsg('startMsg', reasonText('banned', m.get('detail'))); }   // 암호 판은 두 줄 문구를 넣으면 아래 글자에 닿는다
         else { setMsg('pwMsg', reasonText(m.get('reason'), m.get('detail'))); $('pwBtn').disabled = false; }
         break;
       case 'gameExit':

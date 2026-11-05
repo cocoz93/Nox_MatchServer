@@ -9,12 +9,14 @@
 //   · ★ 런처 P1 — 자동 로그인 열쇠(`login_keys` 표 · Docs/LAUNCHER_PLAN.md). 열쇠 글 자체는 저장하지 않고 SHA-256 만 둔다
 //     (DB 가 새도 열쇠를 못 씀). 열쇠 하나 = 기기 하나 · 만료는 쓸 때마다 「지금 + 수명」으로 밀린다
 //   · ★ 11-05 플랜1 — 암호 바꾸기는 한 트랜잭션: 암호 저장 + 그 계정 열쇠 전부 삭제 + 새 열쇠 넣기. 중간에 실패하면 암호도 열쇠도 그대로
+//   · ★ 11-05 플랜1 — 계정 정지(`account_bans` · `tools/db/007_account_bans.sql`). 여러 행이면 가장 늦은 끝 시각이 이긴다 · 기간이 지나면 저절로 풀린다 · 끝 시각 == 지금이면 풀림
 #pragma once
 
 #include <array>
 #include <cstdint>
 #include <map>
 #include <string>
+#include <vector>
 
 #include "nox/AccountRules.h"
 
@@ -34,6 +36,19 @@ struct LoginKeyRow {
     std::string accountName;   // 표를 이어 읽은 계정 이름(토큰에 실을 이름 · 폼 이름과 대조)
     uint32_t ttlSec = 0;       // 수명(자동 로그인 30일 · 이번 실행만 12시간 — `AuthService.h`)
     uint32_t expiresUnix = 0;
+};
+
+// ★ 11-05 플랜1 — 유효한 정지 한 행 · 운영 명령 `--bans` 한 줄
+struct BanRow {
+    uint32_t untilUnix = 0;
+    std::string reason;
+};
+struct BanListRow {
+    std::string name;
+    uint32_t untilUnix = 0;
+    std::string reason;
+    std::string source;
+    uint32_t createdUnix = 0;
 };
 
 enum class FindResult : uint8_t { Found, NotFound, Failed, kCount };
@@ -61,6 +76,12 @@ public:
     // ★ 11-05 플랜1 — 암호 바꾸기(머리 주석). false = 아무것도 안 바뀜
     virtual bool ChangePassword(uint64_t id, const PasswordRecord& pw, const LoginKeyHash& h, const std::string& device, uint32_t ttlSec,
                                 uint32_t nowUnix) = 0;
+
+    // ★ 11-05 플랜1 — 계정 정지(머리 주석). LiftBans 는 지금 유효한 행만 풀고 그 수를 돌려준다(기간이 지난 행은 이력 그대로)
+    virtual FindResult FindActiveBan(uint64_t id, uint32_t nowUnix, BanRow& out) = 0;
+    virtual bool InsertBan(uint64_t id, uint32_t untilUnix, const std::string& reason, const std::string& source, uint32_t nowUnix) = 0;
+    virtual bool LiftBans(uint64_t id, uint32_t nowUnix, unsigned& lifted) = 0;
+    virtual bool ListActiveBans(uint32_t nowUnix, std::vector<BanListRow>& out) = 0;
 };
 
 // 메모리 가짜(시험) — 실패 손잡이 · 옛 행 넣기
@@ -74,8 +95,13 @@ public:
     bool TouchKey(const LoginKeyHash& h, uint32_t nowUnix, uint32_t expiresUnix) override;
     bool DeleteKey(const LoginKeyHash& h) override;
     bool ChangePassword(uint64_t id, const PasswordRecord& pw, const LoginKeyHash& h, const std::string& device, uint32_t ttlSec, uint32_t nowUnix) override;
+    FindResult FindActiveBan(uint64_t id, uint32_t nowUnix, BanRow& out) override;
+    bool InsertBan(uint64_t id, uint32_t untilUnix, const std::string& reason, const std::string& source, uint32_t nowUnix) override;
+    bool LiftBans(uint64_t id, uint32_t nowUnix, unsigned& lifted) override;
+    bool ListActiveBans(uint32_t nowUnix, std::vector<BanListRow>& out) override;
 
     void SetFail(bool on) { fail_ = on; }
+    void SetFailBan(bool on) { failBan_ = on; }         // 정지 칸만 실패(찾기 · 암호 확인은 됨 — 실패 답이 정지 앞에서 안 새는지 보려고)
     void SetFailChange(bool on) { failChange_ = on; }   // 암호 바꾸기 저장만 실패(찾기는 됨 — 그대로 남는지 보려고)
     uint64_t AddLegacy(const std::string& name);   // 암호 없는 옛 행
     size_t Count() const { return rows_.size(); }
@@ -99,9 +125,19 @@ private:
     };
     std::map<std::string, Row> rows_;
     std::map<LoginKeyHash, KeyRow> keys_;
+    struct BanEntry {
+        uint64_t accountId = 0;
+        uint32_t untilUnix = 0;
+        std::string reason;
+        std::string source;
+        uint32_t createdUnix = 0;
+        uint32_t liftedUnix = 0;
+    };
+    std::vector<BanEntry> bans_;
     uint64_t next_ = 1;
     bool fail_ = false;
     bool failChange_ = false;
+    bool failBan_ = false;
     unsigned findCalls_ = 0;
     unsigned insertCalls_ = 0;
 };

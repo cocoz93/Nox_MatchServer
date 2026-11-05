@@ -26,6 +26,16 @@ constexpr const char* kKeyDelete = "DELETE FROM login_keys WHERE key_hash = ?";
 // ★ 11-05 플랜1 — 암호 바꾸기(권한은 그대로 — accounts UPDATE · login_keys DELETE 를 이미 가짐)
 constexpr const char* kPassSet = "UPDATE accounts SET pass_salt = ?, pass_hash = ?, pass_iter = ? WHERE id = ?";
 constexpr const char* kKeyDeleteAll = "DELETE FROM login_keys WHERE account_id = ?";
+// ★ 11-05 플랜1 — 계정 정지(`tools/db/007_account_bans.sql`)
+constexpr const char* kBanFind =
+    "SELECT until_unix, reason FROM account_bans WHERE account_id = ? AND lifted_unix = 0 AND until_unix > ? ORDER BY until_unix DESC LIMIT 1";
+constexpr const char* kBanInsert =
+    "INSERT INTO account_bans (account_id, until_unix, reason, source, created_unix, lifted_unix) VALUES (?, ?, ?, ?, ?, 0)";
+constexpr const char* kBanLift = "UPDATE account_bans SET lifted_unix = ? WHERE account_id = ? AND lifted_unix = 0 AND until_unix > ?";
+constexpr const char* kBanList =
+    "SELECT a.name, b.until_unix, b.reason, b.source, b.created_unix FROM account_bans b JOIN accounts a ON a.id = b.account_id "
+    "WHERE b.lifted_unix = 0 AND b.until_unix > ? ORDER BY b.id";
+constexpr size_t kBanReasonBytes = 800;   // VARCHAR(200) · utf8mb4 한 글자 최대 4바이트
 
 }  // namespace
 
@@ -42,11 +52,15 @@ struct CMySqlAccountStore::Conn {
     MYSQL_STMT* keyDelete = nullptr;
     MYSQL_STMT* passSet = nullptr;     // ★ 11-05 플랜1
     MYSQL_STMT* keyDeleteAll = nullptr;
+    MYSQL_STMT* banFind = nullptr;     // ★ 11-05 플랜1 — 정지
+    MYSQL_STMT* banInsert = nullptr;
+    MYSQL_STMT* banLift = nullptr;
+    MYSQL_STMT* banList = nullptr;
     unsigned lastErrno = 0;
     std::string lastError;
 
     ~Conn() {
-        for (MYSQL_STMT* s : {find, insert, claim, touch, keyPrune, keyInsert, keyFind, keyTouch, keyDelete, passSet, keyDeleteAll})
+        for (MYSQL_STMT* s : {find, insert, claim, touch, keyPrune, keyInsert, keyFind, keyTouch, keyDelete, passSet, keyDeleteAll, banFind, banInsert, banLift, banList})
             if (s) mysql_stmt_close(s);
         if (m) mysql_close(m);
     }
@@ -89,7 +103,8 @@ bool CMySqlAccountStore::Open(std::string& err) {
     if (!c->Prepare(c->find, kFind) || !c->Prepare(c->insert, kInsert) || !c->Prepare(c->claim, kClaim) || !c->Prepare(c->touch, kTouch) ||
         !c->Prepare(c->keyPrune, kKeyPrune) || !c->Prepare(c->keyInsert, kKeyInsert) || !c->Prepare(c->keyFind, kKeyFind) ||
         !c->Prepare(c->keyTouch, kKeyTouch) || !c->Prepare(c->keyDelete, kKeyDelete) || !c->Prepare(c->passSet, kPassSet) ||
-        !c->Prepare(c->keyDeleteAll, kKeyDeleteAll)) {
+        !c->Prepare(c->keyDeleteAll, kKeyDeleteAll) || !c->Prepare(c->banFind, kBanFind) || !c->Prepare(c->banInsert, kBanInsert) ||
+        !c->Prepare(c->banLift, kBanLift) || !c->Prepare(c->banList, kBanList)) {
         err = lastError_ = "준비된 문장 — " + c->lastError + "(표 모양 · nox_auth 권한이 SQL 파일과 다른가)";
         return false;
     }
@@ -309,6 +324,111 @@ bool CMySqlAccountStore::DeleteKey(const LoginKeyHash& h) {
         db::Bin(p[0], hash, l0);
         if (mysql_stmt_bind_param(c.keyDelete, p) != 0) return c.StmtFail(c.keyDelete, "열쇠 지우기 묶기");
         if (mysql_stmt_execute(c.keyDelete) != 0) return c.StmtFail(c.keyDelete, "열쇠 지우기");
+        return true;
+    });
+}
+
+// ★ 11-05 플랜1 — 계정 정지(`AccountStore.h` 머리 · 여러 행이면 가장 늦은 끝 시각)
+FindResult CMySqlAccountStore::FindActiveBan(uint64_t id, uint32_t nowUnix, BanRow& out) {
+    bool found = false;
+    const bool ok = Retry([&](Conn& c) {
+        MYSQL_BIND p[2] = {};
+        db::U64(p[0], id);
+        db::U32(p[1], nowUnix);
+        uint32_t until = 0;
+        char reason[kBanReasonBytes];
+        unsigned long reasonLen = 0;
+        MYSQL_BIND r[2] = {};
+        db::U32(r[0], until);
+        r[1].buffer_type = MYSQL_TYPE_BLOB;
+        r[1].buffer = reason;
+        r[1].buffer_length = sizeof(reason);
+        r[1].length = &reasonLen;
+        if (mysql_stmt_bind_param(c.banFind, p) != 0 || mysql_stmt_bind_result(c.banFind, r) != 0) return c.StmtFail(c.banFind, "정지 찾기 묶기");
+        if (mysql_stmt_execute(c.banFind) != 0) return c.StmtFail(c.banFind, "정지 찾기");
+        if (mysql_stmt_store_result(c.banFind) != 0) return c.StmtFail(c.banFind, "정지 찾기 받기");
+        const int f = mysql_stmt_fetch(c.banFind);
+        mysql_stmt_free_result(c.banFind);
+        if (f == MYSQL_NO_DATA) return found = false, true;
+        if (f != 0) return c.StmtFail(c.banFind, "정지 찾기 꺼내기");
+        found = true;
+        out = BanRow{};
+        out.untilUnix = until;
+        out.reason.assign(reason, reasonLen);
+        return true;
+    });
+    if (!ok) return FindResult::Failed;
+    return found ? FindResult::Found : FindResult::NotFound;
+}
+
+bool CMySqlAccountStore::InsertBan(uint64_t id, uint32_t untilUnix, const std::string& reason, const std::string& source, uint32_t nowUnix) {
+    return Retry([&](Conn& c) {
+        MYSQL_BIND p[5] = {};
+        unsigned long l2 = 0, l3 = 0;
+        db::U64(p[0], id);
+        db::U32(p[1], untilUnix);
+        db::Txt(p[2], reason, l2);
+        db::Txt(p[3], source, l3);
+        db::U32(p[4], nowUnix);
+        if (mysql_stmt_bind_param(c.banInsert, p) != 0) return c.StmtFail(c.banInsert, "정지 넣기 묶기");
+        if (mysql_stmt_execute(c.banInsert) != 0) return c.StmtFail(c.banInsert, "정지 넣기");
+        return true;
+    });
+}
+
+bool CMySqlAccountStore::LiftBans(uint64_t id, uint32_t nowUnix, unsigned& lifted) {
+    lifted = 0;
+    return Retry([&](Conn& c) {
+        MYSQL_BIND p[3] = {};
+        db::U32(p[0], nowUnix);
+        db::U64(p[1], id);
+        db::U32(p[2], nowUnix);
+        if (mysql_stmt_bind_param(c.banLift, p) != 0) return c.StmtFail(c.banLift, "정지 풀기 묶기");
+        if (mysql_stmt_execute(c.banLift) != 0) return c.StmtFail(c.banLift, "정지 풀기");
+        lifted = static_cast<unsigned>(mysql_stmt_affected_rows(c.banLift));
+        return true;
+    });
+}
+
+bool CMySqlAccountStore::ListActiveBans(uint32_t nowUnix, std::vector<BanListRow>& out) {
+    out.clear();
+    return Retry([&](Conn& c) {
+        out.clear();   // 끊겨 다시 할 때 앞 번 줄이 남지 않게
+        MYSQL_BIND p[1] = {};
+        db::U32(p[0], nowUnix);
+        char name[32], reason[kBanReasonBytes], source[32];
+        unsigned long nameLen = 0, reasonLen = 0, sourceLen = 0;
+        uint32_t until = 0, created = 0;
+        MYSQL_BIND r[5] = {};
+        r[0].buffer_type = MYSQL_TYPE_BLOB;
+        r[0].buffer = name;
+        r[0].buffer_length = sizeof(name);
+        r[0].length = &nameLen;
+        db::U32(r[1], until);
+        r[2].buffer_type = MYSQL_TYPE_BLOB;
+        r[2].buffer = reason;
+        r[2].buffer_length = sizeof(reason);
+        r[2].length = &reasonLen;
+        r[3].buffer_type = MYSQL_TYPE_BLOB;
+        r[3].buffer = source;
+        r[3].buffer_length = sizeof(source);
+        r[3].length = &sourceLen;
+        db::U32(r[4], created);
+        if (mysql_stmt_bind_param(c.banList, p) != 0 || mysql_stmt_bind_result(c.banList, r) != 0) return c.StmtFail(c.banList, "정지 목록 묶기");
+        if (mysql_stmt_execute(c.banList) != 0) return c.StmtFail(c.banList, "정지 목록");
+        if (mysql_stmt_store_result(c.banList) != 0) return c.StmtFail(c.banList, "정지 목록 받기");
+        int f = 0;
+        while ((f = mysql_stmt_fetch(c.banList)) == 0) {
+            BanListRow row;
+            row.name.assign(name, nameLen);
+            row.untilUnix = until;
+            row.reason.assign(reason, reasonLen);
+            row.source.assign(source, sourceLen);
+            row.createdUnix = created;
+            out.push_back(std::move(row));
+        }
+        mysql_stmt_free_result(c.banList);
+        if (f != MYSQL_NO_DATA) return c.StmtFail(c.banList, "정지 목록 꺼내기");
         return true;
     });
 }

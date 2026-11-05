@@ -71,6 +71,35 @@ inline bool ParseLoginFail(std::string_view s, LoginFail& out) {
     return false;
 }
 
+// ★ 11-05 플랜1 — 계정 정지. 답 둘째 줄 = `<끝 시각> <사유>`(런처가 문구를 짓고 DLL 은 끝 시각만 씀 · 사유는 없을 수 있음).
+//   끝 시각 최댓값 = 영구 · 넣은 쪽 글은 `account_bans.source`
+constexpr uint32_t kBanForever = 0xFFFFFFFFu;
+constexpr std::string_view kBanSourceAdmin = "admin";
+constexpr std::string_view kBanSourceAuto = "auto";
+
+inline std::string MakeBanDetail(uint32_t untilUnix, std::string_view reason) {
+    std::string s = std::to_string(untilUnix);
+    if (!reason.empty()) {
+        s += ' ';
+        s.append(reason);
+    }
+    return s;
+}
+
+// 끝 시각만 읽는다. 숫자가 아니거나 0 · 넘침이면 false
+inline bool ParseBanUntil(std::string_view detail, uint32_t& untilUnix) {
+    uint64_t v = 0;
+    size_t i = 0;
+    for (; i < detail.size() && detail[i] != ' '; ++i) {
+        if (detail[i] < '0' || detail[i] > '9') return false;
+        v = v * 10 + static_cast<uint64_t>(detail[i] - '0');
+        if (v > kBanForever) return false;
+    }
+    if (i == 0 || v == 0) return false;
+    untilUnix = static_cast<uint32_t>(v);
+    return true;
+}
+
 enum class ApgarKind : uint8_t {
     Missing,   // `apgar` 줄이 없었음(또는 인자가 빔)
     Token,     // `NXL1…` — payload = 16진 글자(길이는 부르는 쪽이 토큰 풀기로 본다)

@@ -10,6 +10,7 @@
 //   ⑦ ★ 10-28 지문 고정 — 평문 주소 · 꼴이 틀린 지문은 붙지 않음(요청 0) · SHA-256 · 대문자 지문
 //   ⑧ ★ 10-28 실제 nox_auth 에 지문 고정(NOX_AUTH_LIVE_PIN 이 있고 8443 이 떠 있을 때만 — 아니면 건너뜀) · ★ 런처 P4 부터 /launcher/login 에
 //   ⑨ ★ 런처 P4 — 런처 요청(열쇠 발급 · 로그아웃) 본문 · 요청마다 다른 200 답 꼴 · 기준 주소(WithPath)
+//   ⑩ ★ 11-05 플랜1 — 정지 답 둘째 줄 읽기 · 로그인 화면 안내 네 갈래 전수(`LoginNotice.h`)
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -19,12 +20,15 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
+#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "AuthClient.h"
+#include "LoginNotice.h"
 #include "nox/LoginToken.h"   // kLoginTokenSize 만 쓴다(머리 파일만 — 링크 안 함)
 
 #pragma comment(lib, "ws2_32.lib")
@@ -541,6 +545,72 @@ int main()
                   authclient::WithPath(L"https://h:8443", L"/token") == L"https://h:8443/token" &&
                   authclient::WithPath(L"https://h:8443/", L"/logout") == L"https://h:8443/logout",
               "⑨ 기준 주소 — 옛 꼴(/login 꼬리) · 맨 주소 · 끝 / 를 다 같은 길로");
+    }
+
+    // ⑩ ★ 11-05 플랜1 — 정지 답 · 안내 고르기
+    {
+        Script s;
+        s.status = 403;
+        s.body = std::string("NXL!banned\n") + nox::MakeBanDetail(1800000000u, "\xEC\x82\xAC\xEC\x9C\xA0 x");
+        srv.Set(s);
+        const authclient::Result banned = authclient::Token(UrlFor("http", srv.Port()), "wn9457", std::string("NXK1") + std::string(64, 'a'), kTo);
+        uint32_t until = 0;
+        Check(banned.line == "NXL!banned" && banned.detail == "1800000000 \xEC\x82\xAC\xEC\x9C\xA0 x" && nox::ParseBanUntil(banned.detail, until) && until == 1800000000u,
+              "⑩ /token 403 — 첫 줄 까닭 · 둘째 줄 끝 시각 + 사유(UTF-8)");
+        until = 7;
+        const bool badRead = !nox::ParseBanUntil("", until) && !nox::ParseBanUntil(" x", until) && !nox::ParseBanUntil("0 x", until) && !nox::ParseBanUntil("12a x", until) &&
+                             !nox::ParseBanUntil("4294967296", until) && until == 7;
+        Check(badRead, "⑩ 끝 시각 못 읽음 — 빈 글 · 숫자 없음 · 0 · 숫자 아님 · 넘침(값 안 건드림)");
+        Check(nox::ParseBanUntil("4294967295", until) && until == nox::kBanForever && nox::MakeBanDetail(5, "") == "5", "⑩ 영구 값 · 사유 없으면 끝 시각만");
+
+        // 네 갈래가 다 나오고 글이 서로 다른지 — 값이 아니라 개수로 본다
+        const struct {
+            bool keyInvalid;
+            uint32_t until;
+            loginnotice::Kind want;
+        } cases[] = {
+            {false, 0, loginnotice::Kind::Unreachable},
+            {true, 0, loginnotice::Kind::Expired},
+            {false, 1800000000u, loginnotice::Kind::Banned},
+            {true, 1800000000u, loginnotice::Kind::Banned},
+            {false, nox::kBanForever, loginnotice::Kind::BannedForever},
+            {true, nox::kBanForever, loginnotice::Kind::BannedForever},
+        };
+        int seen[static_cast<int>(loginnotice::Kind::kCount)] = {};
+        std::map<std::wstring, int> texts;
+        for (const auto& c : cases) {
+            const loginnotice::Kind k = loginnotice::Pick(c.keyInvalid, c.until);
+            Check(k == c.want, "⑩ 안내 고르기 표");
+            ++seen[static_cast<int>(k)];
+            ++texts[loginnotice::Text(k, c.until)];
+            Check(std::string(loginnotice::KindName(k)) != "?", "⑩ 안내 갈래마다 이름 있음");
+        }
+        int kinds = 0;
+        for (const int n : seen) kinds += n ? 1 : 0;
+        Check(kinds == static_cast<int>(loginnotice::Kind::kCount) && texts.size() == static_cast<size_t>(loginnotice::Kind::kCount), "⑩ 네 갈래 · 글 넷이 모두 나옴");
+        Check(loginnotice::Text(loginnotice::Kind::Unreachable, 0) == L"서버에 연결할 수 없습니다. 잠시 후 온라인을 다시 눌러 주세요." &&
+                  loginnotice::Text(loginnotice::Kind::Expired, 0) == L"로그인이 만료되었습니다. 런처에서 다시 로그인해 주세요." &&
+                  loginnotice::Text(loginnotice::Kind::BannedForever, nox::kBanForever) == L"계정이 영구 정지되었습니다.",
+              "⑩ 기간 없는 글 셋");
+        // 끝 시각의 시 올림 — 이 PC 시각대로 값을 지어 본다(딱 정시 · 1초 넘김 · 자정 넘어감)
+        std::tm tm{};
+        tm.tm_year = 2027 - 1900;
+        tm.tm_mon = 2;
+        tm.tm_mday = 9;
+        tm.tm_hour = 14;
+        tm.tm_isdst = -1;
+        const uint32_t onHour = static_cast<uint32_t>(std::mktime(&tm));
+        Check(loginnotice::Text(loginnotice::Kind::Banned, onHour) == L"계정이 3월 9일 14시까지 정지되었습니다.", "⑩ 정시 끝 — 그 시");
+        Check(loginnotice::Text(loginnotice::Kind::Banned, onHour + 1) == L"계정이 3월 9일 15시까지 정지되었습니다.", "⑩ 1초 넘김 — 다음 시로 올림");
+        Check(loginnotice::Text(loginnotice::Kind::Banned, onHour + 3600) == L"계정이 3월 9일 15시까지 정지되었습니다.", "⑩ 다음 정시 — 더 안 올림");
+        tm = std::tm{};
+        tm.tm_year = 2027 - 1900;
+        tm.tm_mon = 2;
+        tm.tm_mday = 9;
+        tm.tm_hour = 23;
+        tm.tm_min = 30;
+        tm.tm_isdst = -1;
+        Check(loginnotice::Text(loginnotice::Kind::Banned, static_cast<uint32_t>(std::mktime(&tm))) == L"계정이 3월 10일 0시까지 정지되었습니다.", "⑩ 자정 넘어감 — 다음 날 0시");
     }
 
     srv.Stop();

@@ -121,6 +121,7 @@
 #include "HostGameEntry.h"     // ⑤ · ⑥ 내 방 정보 · 항목 · 채널 짓기(방 정보 포장은 서버와 같은 WolGameInfo — build.bat 이 같이 빌드)
 #include "LobbyLineFilter.h"
 #include "LoginRewriter.h"     // ★ 로그인 암호 조각 5 — 기록에 찍는 보낸 글에서 암호 칸 가리기(Log 모드) · 로비 연결의 apgar 자리 바꿔쓰기(Lobby 모드)
+#include "LoginNotice.h"       // ★ 11-05 플랜1 — 로그인 화면에서 돌아왔을 때의 안내 고르기
 #include "AuthClient.h"        // ★ 로그인 암호 조각 5 의 3 — 로그인 서버(nox_auth)에 이름 · 암호를 묻는 부품(WinHTTP) · ★ 런처 P4 — 이제 이름 · 열쇠로 토큰
 #include "../common/LaunchKey.h"   // ★ 런처 P4 — 런처가 이 PC 에 둔 자동 로그인 열쇠(DPAPI)
 
@@ -443,8 +444,10 @@ static std::string LaunchName()
 //   게임 주 스레드가 최대 3초 막힌다(`AuthClient.h`). TLS 검사를 끄지 않으므로 믿을 수 없는 서버(XWIS 등 우리 로비가 아닌 곳)에는 본문(열쇠)이 나가기 전에 멈춘다
 //   ★ 10-28 다른 PC — 환경변수 NOX_AUTH_PIN(서버 인증서 SHA-256 16진 64자 · 꾸러미 2_PLAY 가 넣음)이 있으면 윈도 검사 대신 그 지문으로 가른다
 static volatile LONG g_loginKeyInvalid = 0;   // ★ 11-04 플랜1 — 마지막 로그인 답이 열쇠 거절이었나(`NXL!key_invalid`) · 실패 안내를 고른다(받기 스레드 → 주 스레드)
+static volatile LONG g_loginBannedUntil = 0;   // ★ 11-05 플랜1 — 마지막 로그인 답의 정지 끝 시각(0 = 정지 아님 · 받기 스레드 → 주 스레드 · `LoginNotice.h`)
 static std::string AuthLogin(SOCKET s, const std::string& name, const std::string& password)
 {
+    InterlockedExchange(&g_loginBannedUntil, 0);
     (void)password;   // ★ 런처 P4 — 정품 창의 암호 칸은 쓰지 않는다(선에도 안 나감 — apgar 자리를 통째로 바꿈)
     if (LaunchName().empty()) {
         if (g_log[0]) Detail("로그인 서버 안 부름 s=%u — 런처로 안 켬(NOX_LAUNCH 없음) → NXL!launcher_required", (unsigned)s);
@@ -486,6 +489,10 @@ static std::string AuthLogin(SOCKET s, const std::string& name, const std::strin
                token ? "로그인 토큰(NXL1…)" : r.line.c_str());   // 토큰 글은 기록에 안 남김
     }
     InterlockedExchange(&g_loginKeyInvalid, r.line == authclient::detail::FailLine(nox::LoginFail::KeyInvalid) ? 1 : 0);
+    if (r.line == authclient::detail::FailLine(nox::LoginFail::Banned)) {
+        uint32_t until = 0;
+        if (nox::ParseBanUntil(r.detail, until)) InterlockedExchange(&g_loginBannedUntil, (LONG)until);
+    }
     return r.line;
 }
 
@@ -2250,8 +2257,6 @@ static AutoResult AutoAct(int i, DWORD win)
 static const uintptr_t kChatWin = 0x69c8bc, kOptsBackWin = 0x711328, kWolProgWin = 0x6d5d94;
 static const DWORD kBtnOptsBack = 152, kBtnProgCancel = 1806, kBtnProgOk = 1807;
 static const DWORD kAutoRunLimitMs = 10000;   // 정상은 약 1초(11-04 로컬 · 다른 PC 는 미측정). 사람이 「안 되나 보다」 할 때쯤으로 어림 — 다른 PC 판에서 다시 볼 값
-static const wchar_t kAutoFailText[] = L"서버에 연결할 수 없습니다. 잠시 후 온라인을 다시 눌러 주세요.";
-static const wchar_t kAutoExpiredText[] = L"로그인이 만료되었습니다. 런처에서 다시 로그인해 주세요.";   // ★ 11-04 플랜1 — 열쇠 거절만. 다시 눌러도 안 되는 실패를 「잠시 후 다시」로 안내하면 사람이 갇힌다
 enum class BackWhy { None, Chat, Fail };
 static BackWhy g_backWhy = BackWhy::None;     // 지금 로그인 창을 돌려보내는 중인가(주 스레드만)
 static DWORD g_backLastMs = 0;
@@ -2298,9 +2303,12 @@ static bool BackToConnTick(DWORD now)
         AutoMuteSet(false, "접속 방식 도착");
         Log("⑯ 접속 방식으로 돌아감(누름 %d 번 · 까닭 %s)", g_backTries, why == BackWhy::Fail ? "실패" : "대화방 뒤로");
         if (why == BackWhy::Fail) {
-            const bool expired = g_loginKeyInvalid != 0;
-            Log("⑯ 실패 안내 — %s", expired ? "로그인 만료(key_invalid)" : "서버 연결");
-            ((PFN_dlgopen)kDlgOpen)(0, NULL, expired ? kAutoExpiredText : kAutoFailText, kDlgNoticeFlags, 0, 0);   // 부모 0 = ㉑ 안내 창과 같은 꼴
+            const uint32_t bannedUntil = (uint32_t)g_loginBannedUntil;
+            const loginnotice::Kind kind = loginnotice::Pick(g_loginKeyInvalid != 0, bannedUntil);
+            Log("⑯ 실패 안내 — %s", loginnotice::KindName(kind));
+            static std::wstring noticeText;   // 알림창이 닫힐 때까지 글을 살려 둔다
+            noticeText = loginnotice::Text(kind, bannedUntil);
+            ((PFN_dlgopen)kDlgOpen)(0, NULL, noticeText.c_str(), kDlgNoticeFlags, 0, 0);   // 부모 0 = ㉑ 안내 창과 같은 꼴
         }
         return false;
     }

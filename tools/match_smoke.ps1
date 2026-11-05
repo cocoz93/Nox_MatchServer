@@ -232,12 +232,13 @@ if ($Auth) {
     if ($LASTEXITCODE -ne 0) { throw "SQL 실패: $out" }
     return $out
   }
-  $schema = 'DROP TABLE IF EXISTS match_totals, login_keys, ratings, match_players, matches, accounts, schema_version;' + "`n" +
+  $schema = 'DROP TABLE IF EXISTS account_bans, match_totals, login_keys, ratings, match_players, matches, accounts, schema_version;' + "`n" +
     [IO.File]::ReadAllText((Join-Path $repo 'tools\db\001_init.sql')) + "`n" + [IO.File]::ReadAllText((Join-Path $repo 'tools\db\002_auth.sql')) + "`n" +
     [IO.File]::ReadAllText((Join-Path $repo 'tools\db\003_rating.sql')) + "`n" +   # ★ 레이팅 조각 3 — 표 버전 3(로그인 서버도 본다)
     [IO.File]::ReadAllText((Join-Path $repo 'tools\db\004_launcher_keys.sql')) + "`n" +   # ★ 런처 P3 — 열쇠 표 · 표 버전 4
     [IO.File]::ReadAllText((Join-Path $repo 'tools\db\005_match_kills.sql')) + "`n" +   # ★ 11-04 플랜2 — 표 버전 5
     [IO.File]::ReadAllText((Join-Path $repo 'tools\db\006_match_totals.sql'))   # ★ 11-04 전적 검색 — 합계 표가 accounts 를 가리켜 맨 앞에서 지움 · 표 버전 6
+  $schema += "`n" + [IO.File]::ReadAllText((Join-Path $repo 'tools\db\007_account_bans.sql'))   # ★ 11-05 플랜1 — 정지 테이블이 accounts 를 가리켜 맨 앞에서 지움 · 표 버전 7
   try { Sql $schema | Out-Null } catch { Skip "시험 DB $testDb 표 깔기 못 함 — $_" }
   $ap = Start-Process -FilePath $AuthExe -PassThru -WindowStyle Hidden -RedirectStandardOutput $alog -ArgumentList @(
     '--config', "`"$ini`"", '--test-db', '--workers', '2', '--seconds', '150')
