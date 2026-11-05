@@ -9,6 +9,8 @@
 //   ⑤ 셈 — 갈래 열여섯이 모두 나옴 · 합 = 요청 수(세는 자리 하나)
 //   ⑥ ★ 조각 3 화면 — 양식(GET / · /signup · 칸 한도 · 스크립트 없음) · 결과 화면 · 되돌린 이름 걸러 냄 · 암호 안 실림 ·
 //     규칙 갈래마다 안내 글 · 화면 답 머리(HTML · 콘텐츠 보안 정책 · nosniff)
+//   ⑦ ★ 11-05 플랜1 시도 제한 — 단계 표 전수 · 횟수별 잠금 시간 · 막힌 동안 DB · 해시 안 감 · 성공 · 1시간 초기화 · 다른 계정 · 주소 안 막힘 ·
+//     주소별 합산(로그인 실패 + 가입) · 없는 이름은 계정 칸 안 만듦 · 잠긴 동안 돌아온 요청은 안 셈 · 지난 칸 지움
 #include <cctype>
 #include <cstdio>
 #include <cstring>
@@ -291,6 +293,20 @@ void TestSignupLogin() {
         Check(shown == sizeof(cases) / sizeof(cases[0]), "안내 글 " + std::to_string(shown) + "/" + std::to_string(sizeof(cases) / sizeof(cases[0])));
     }
 
+    // ⑦ 시도 제한 두 갈래가 이 셈에도 나오게(자세한 값은 TestThrottle)
+    constexpr uint32_t kThrottledIp = 0x0a000009u;
+    for (int i = 0; i < 20; ++i) {
+        HttpRequest bad = Post("/launcher/login", "name=nobody" + std::to_string(i % 10) + "&password=ab12cd");
+        bad.peerIp = kThrottledIp;
+        g.Do(bad, O::LoginNoAccount, "주소별 20회 채움");
+    }
+    HttpRequest lockedLogin = Post("/launcher/login", "name=alice9&password=ab12cd");
+    lockedLogin.peerIp = kThrottledIp;
+    g.Do(lockedLogin, O::LoginThrottled, "주소 잠김 — 로그인");
+    HttpRequest lockedSignup = Post("/signup", "name=zed&password=ab12cd&password2=ab12cd");
+    lockedSignup.peerIp = kThrottledIp;
+    g.Do(lockedSignup, O::SignupThrottled, "주소 잠김 — 가입");
+
     // ⑤ 셈
     const auto s = g.svc.Stats();
     unsigned long long total = 0;
@@ -302,6 +318,169 @@ void TestSignupLogin() {
     Check(kinds == kAuthOutcomeCount, "갈래 " + std::to_string(kinds) + "/" + std::to_string(kAuthOutcomeCount) + " 이 나옴");
     Check(total == g.requests, "셈 합 " + std::to_string(total) + " = 요청 " + std::to_string(g.requests));
     for (size_t i = 0; i < kAuthOutcomeCount; ++i) Check(AuthOutcomeName(static_cast<AuthOutcome>(i))[0] != '?', "갈래마다 이름 있음");
+}
+
+// ★ 11-05 플랜1 — 시도 제한(`LoginThrottle.h`)
+std::string Detail(const HttpResponse& r) {
+    const size_t nl = r.body.find('\n');
+    return nl == std::string::npos ? std::string() : r.body.substr(nl + 1);
+}
+
+void TestThrottle() {
+    std::printf("⑦ 시도 제한\n");
+    using O = AuthOutcome;
+    // 단계 표 전수 — 경계마다
+    const struct {
+        uint32_t fails, account, address;
+    } stages[] = {
+        {0, 0, 0}, {1, 0, 0}, {4, 0, 0}, {5, 60, 0}, {6, 300, 0}, {7, 900, 0}, {8, 900, 0}, {19, 900, 0}, {20, 900, 600}, {21, 900, 600}, {1000, 900, 600},
+    };
+    for (const auto& st : stages)
+        Check(AccountLockSec(st.fails) == st.account && AddressLockSec(st.fails) == st.address, "단계 표 " + std::to_string(st.fails) + "회");
+
+    constexpr uint32_t kOther = 0x0a000002u;   // 계정별만 보려고 주소를 나눈다
+    auto from = [](uint32_t ip, HttpRequest r) {
+        r.peerIp = ip;
+        return r;
+    };
+    Rig g;
+    g.Do(from(kOther, Post("/signup", "name=alice9&password=ab12cd&password2=ab12cd")), O::SignupCreated, "alice9 가입");
+    g.Do(from(kOther, Post("/signup", "name=bob&password=pw1234&password2=pw1234")), O::SignupCreated, "bob 가입");
+    const HttpRequest wrong = Post("/launcher/login", "name=alice9&password=ab12zz");
+    const HttpRequest right = Post("/launcher/login", "name=alice9&password=ab12cd");
+
+    // 횟수별 잠금 시간 — 5회째 1분 → 풀린 뒤 틀리면 5분 → 15분 → 15분
+    for (int i = 1; i <= 5; ++i) g.Do(wrong, O::LoginWrongPassword, std::to_string(i) + "회째 — 아직 암호 틀림 답");
+    unsigned finds = g.db.FindCalls();
+    HttpResponse r = g.Do(right, O::LoginThrottled, "5회 뒤 맞는 암호도 거절");
+    Check(FailBody(HttpResponse{r.status, r.contentType, r.body.substr(0, r.body.find('\n')), {}}, 429, nox::LoginFail::TooManyTries), "429 첫 줄 NXL!too_many_tries");
+    Check(Detail(r) == "60 account" && Header(r, "Retry-After") == "60", "둘째 줄 60 account · Retry-After");
+    Check(g.db.FindCalls() == finds, "막힌 동안 DB · 해시 안 감");
+    g.clock = kNow + 59;
+    Check(Detail(g.Do(wrong, O::LoginThrottled, "1분 안")) == "1 account", "남은 초가 줄어듦");
+    Check(g.db.FindCalls() == finds, "막힌 동안 틀린 암호도 안 셈");
+    g.clock = kNow + 60;
+    g.Do(wrong, O::LoginWrongPassword, "풀린 뒤 또 틀림");
+    Check(Detail(g.Do(right, O::LoginThrottled, "6회째 뒤")) == "300 account", "6회째 5분");
+    g.clock += 300;
+    g.Do(wrong, O::LoginWrongPassword, "7회째");
+    Check(Detail(g.Do(right, O::LoginThrottled, "7회째 뒤")) == "900 account", "7회째 15분");
+    g.clock += 900;
+    g.Do(wrong, O::LoginWrongPassword, "8회째");
+    Check(Detail(g.Do(right, O::LoginThrottled, "8회째 뒤")) == "900 account", "8회째도 15분");
+
+    // 다른 계정 · 다른 주소의 같은 계정
+    g.Do(from(kOther, Post("/launcher/login", "name=bob&password=pw1234")), O::LoginOk, "다른 계정은 안 막힘");
+    g.Do(Post("/launcher/login", "name=bob&password=pw1234"), O::LoginOk, "같은 주소의 다른 계정도 안 막힘(주소는 아직 20회 전)");
+    g.Do(from(kOther, right), O::LoginThrottled, "계정별 잠금은 주소를 바꿔도 막힘");
+
+    // 성공 초기화
+    g.clock += 900;
+    g.Do(right, O::LoginOk, "풀린 뒤 맞는 암호");
+    for (int i = 0; i < 4; ++i) g.Do(wrong, O::LoginWrongPassword, "성공 뒤 다시 1~4회");
+    g.Do(right, O::LoginOk, "4회까진 안 막힘 — 셈이 0 부터(성공 초기화)");
+
+    // 1시간 초기화 — 4회 + 1시간 + 4회 = 안 막힘 · 3599 초면 이어짐
+    for (int i = 0; i < 4; ++i) g.Do(wrong, O::LoginWrongPassword, "1시간 시험 앞 4회");
+    g.clock += 3600;
+    for (int i = 0; i < 4; ++i) g.Do(wrong, O::LoginWrongPassword, "1시간 뒤 4회");
+    g.Do(right, O::LoginOk, "1시간 뒤 셈이 0 부터");
+    for (int i = 0; i < 4; ++i) g.Do(wrong, O::LoginWrongPassword, "3599 시험 앞 4회");
+    g.clock += 3599;
+    g.Do(wrong, O::LoginWrongPassword, "3599 초 뒤 5회째");
+    Check(Detail(g.Do(right, O::LoginThrottled, "3599 초면 이어짐")) == "60 account", "1시간 전이면 셈이 이어짐");
+
+    // 주소별 — 로그인 실패 + 가입 시도 합산 · 20회째 10분 · 다른 주소 안 막힘
+    {
+        Rig a;
+        constexpr uint32_t kBad = 0x0a000003u;
+        a.Do(from(kOther, Post("/signup", "name=carol&password=ab12cd&password2=ab12cd")), O::SignupCreated, "carol 가입");
+        for (int i = 0; i < 9; ++i) a.Do(from(kBad, Post("/launcher/login", "name=none" + std::to_string(i) + "&password=ab12cd")), O::LoginNoAccount, "없는 이름");
+        a.db.AddLegacy("erin");
+        a.Do(from(kBad, Post("/launcher/login", "name=erin&password=ab12cd")), O::LoginNoAccount, "옛 행(주소별만)");
+        for (int i = 0; i < 9; ++i)
+            a.Do(from(kBad, Post("/signup", "name=new" + std::to_string(i) + "&password=ab12cd&password2=ab12cd")), O::SignupCreated, "가입 시도도 합산");
+        a.Do(from(kBad, Post("/signup", "name=badname_&password=ab12cd&password2=ab12cd")), O::SignupBadName, "규칙 밖은 해시를 안 돌려 안 셈");
+        a.Do(from(kBad, Post("/launcher/login", "name=carol&password=ab%zz")), O::LoginBadInput, "폼 틀림도 안 셈");
+        a.Do(from(kBad, Post("/launcher/login", "name=carol&password=ab12cd")), O::LoginOk, "19회 — 아직 안 막힘 · 성공은 주소 셈을 안 지움");
+        a.Do(from(kBad, Post("/launcher/login", "name=carol&password=ab12zz")), O::LoginWrongPassword, "20회째");
+        const unsigned aFinds = a.db.FindCalls(), aInserts = a.db.InsertCalls();
+        HttpResponse ar = a.Do(from(kBad, Post("/launcher/login", "name=new1&password=ab12cd")), O::LoginThrottled, "주소 잠김 — 딴 계정도");
+        Check(ar.status == 429 && Detail(ar) == "600 address", "600 address");
+        ar = a.Do(from(kBad, Post("/signup", "name=fresh&password=ab12cd&password2=ab12cd")), O::SignupThrottled, "주소 잠김 — 가입");
+        Check(ar.status == 429 && IsPage(ar) && Has(ar.body, "시도가 너무 많습니다. 10분 뒤 다시 해 주세요.") && Header(ar, "Retry-After") == "600" &&
+                  Has(ar.body, "value=\"fresh\""),
+              "가입 화면 문구 · 이름 다시 채움");
+        Check(a.db.FindCalls() == aFinds && a.db.InsertCalls() == aInserts, "주소 잠긴 동안 DB · 해시 안 감");
+        a.Do(from(kOther, Post("/launcher/login", "name=carol&password=ab12cd")), O::LoginOk, "다른 주소는 안 막힘");
+        a.clock += 599;
+        Check(Has(a.Do(from(kBad, Post("/signup", "name=fresh&password=ab12cd&password2=ab12cd")), O::SignupThrottled, "1초 남음").body, "1분 뒤"), "초를 분으로 올림");
+        a.clock += 1;
+        a.Do(from(kBad, Post("/launcher/login", "name=carol&password=ab12cd")), O::LoginOk, "10분 뒤 풀림");
+        a.Do(from(kBad, Post("/launcher/login", "name=none0&password=ab12cd")), O::LoginNoAccount, "풀린 뒤 또 실패");
+        Check(Detail(a.Do(from(kBad, Post("/launcher/login", "name=carol&password=ab12cd")), O::LoginThrottled, "또 10분")) == "600 address",
+              "1시간 안이면 실패마다 다시 10분");
+        a.clock += 3600;
+        a.Do(from(kBad, Post("/launcher/login", "name=carol&password=ab12cd")), O::LoginOk, "마지막 실패에서 1시간 — 주소 셈 0");
+    }
+
+    // 없는 이름은 계정 칸을 안 만든다 — 없는 이름으로 5번 틀린 뒤 그 이름으로 가입하면 안 막힘
+    {
+        Rig n;
+        constexpr uint32_t kA = 0x0a000004u, kB = 0x0a000005u;
+        for (int i = 0; i < 6; ++i) n.Do(from(kA, Post("/launcher/login", "name=dave&password=ab12cd")), O::LoginNoAccount, "없는 이름 6회");
+        n.Do(from(kB, Post("/signup", "name=dave&password=ab12cd&password2=ab12cd")), O::SignupCreated, "그 이름으로 가입");
+        n.Do(from(kB, Post("/launcher/login", "name=dave&password=ab12cd")), O::LoginOk, "계정 칸이 없어 안 막힘");
+        n.Do(from(kB, Post("/token", "name=dave&key=NXK1" + std::string(64, '0'))), O::TokenBadKey, "열쇠 길은 시도 제한을 안 지남");
+    }
+    // 열쇠 길 — 암호로 잠겨도 있던 열쇠는 그대로
+    {
+        Rig k;
+        k.Do(Post("/signup", "name=gina&password=ab12cd&password2=ab12cd"), O::SignupCreated, "gina 가입");
+        const std::string key = k.Do(Post("/launcher/login", "name=gina&password=ab12cd&remember=1"), O::LoginOk, "gina 열쇠").body;
+        for (int i = 0; i < 5; ++i) k.Do(Post("/launcher/login", "name=gina&password=ab12zz"), O::LoginWrongPassword, "gina 틀림");
+        k.Do(Post("/launcher/login", "name=gina&password=ab12cd"), O::LoginThrottled, "gina 잠김");
+        k.Do(Post("/token", "name=gina&key=" + key), O::TokenOk, "잠겨도 열쇠로는 됨(이미 로그인한 사람은 안 막힘)");
+    }
+
+    // 부품 — 칸 수 · 잠긴 동안 돌아온 요청 · 지난 칸 지움 · 긴 쪽
+    {
+        CLoginThrottle t;
+        const std::string name = "alice9";
+        t.OnFail(nullptr, kIp, kNow);
+        Check(t.AccountSlots() == 0 && t.AddressSlots() == 1, "nullptr — 계정 칸 없음 · 주소 칸 하나");
+        for (int i = 0; i < 5; ++i) t.OnFail(&name, 1000 + i, kNow);
+        Check(t.AccountSlots() == 1 && t.RetryAfterSec(name, 9, kNow) == 60, "다른 주소에서 5회 — 계정 잠김");
+        t.OnFail(&name, 9, kNow + 1);   // 일꾼 넷이 같이 돌리던 해시가 잠근 뒤 돌아옴
+        t.OnFail(&name, 9, kNow + 1);
+        Check(t.RetryAfterSec(name, 9, kNow + 1) == 59, "잠긴 동안 돌아온 요청은 안 셈");
+        t.OnFail(&name, 9, kNow + 60);
+        Check(t.RetryAfterSec(name, 9, kNow + 60) == 300, "그 뒤 첫 실패 = 6회째(7회째로 뛰지 않음)");
+        ThrottleScope sc = ThrottleScope::Address;
+        Check(t.RetryAfterSec(name, 9, kNow + 60, &sc) == 300 && sc == ThrottleScope::Account, "계정이 길면 account");
+        for (int i = 0; i < 19; ++i) t.OnFail(nullptr, 77, kNow + 60);
+        Check(t.RetryAfterSec(name, 77, kNow + 60) == 300, "주소 19회 — 계정 잠금만");
+        t.OnFail(nullptr, 77, kNow + 60);
+        sc = ThrottleScope::Account;
+        Check(t.RetryAfterSec(name, 77, kNow + 60, &sc) == 600 && sc == ThrottleScope::Address, "주소가 길면 address · 긴 쪽");
+        Check(t.AddressRetryAfterSec(77, kNow + 60) == 600 && t.AddressRetryAfterSec(78, kNow + 60) == 0, "가입용 주소 검사");
+        // 앞선 검사 없이 OnFail 만 와도 1시간이면 셈이 0 부터(부르는 쪽 순서에 안 기댐)
+        {
+            CLoginThrottle u;
+            for (int i = 0; i < 4; ++i) u.OnFail(&name, 5, kNow);
+            const std::string third = "carol";
+            u.OnFail(&third, 7, kNow + 3599);   // 칸 지우기가 방금 돌아 다음 실패 때는 안 돎 — 셈 초기화 줄만 본다
+            u.OnFail(&name, 5, kNow + 3600);
+            Check(u.RetryAfterSec(name, 5, kNow + 3600) == 0, "검사 없이 1시간 뒤 실패 — 셈 1(잠금 없음)");
+            for (int i = 0; i < 4; ++i) u.OnFail(&name, 6, kNow + 3599 + 3600 + i);
+            Check(u.RetryAfterSec(name, 6, kNow + 3599 + 3600 + 3) == 60, "그 뒤 3599 초 안의 실패는 이어 셈 — 5회째 잠금");
+        }
+        const std::string other = "bob";
+        t.OnFail(&other, 200, kNow + 60 + 3600);   // 지난 칸 지움 — 이 칸 둘만 남는다
+        Check(t.AccountSlots() == 1 && t.AddressSlots() == 1, "1시간 지난 칸을 지움(메모리가 안 자람) — 계정 " + std::to_string(t.AccountSlots()) + " · 주소 " + std::to_string(t.AddressSlots()));
+        t.OnSuccess(other, kNow + 60 + 3601);
+        Check(t.AccountSlots() == 0, "성공 — 계정 칸 지움");
+    }
 }
 
 }  // namespace
@@ -339,6 +518,7 @@ int main(int argc, char** argv) {
     if (argc == 3 && std::strcmp(argv[1], "--dump-pages") == 0) return DumpPages(argv[2]);
     TestForm();
     TestSignupLogin();
+    TestThrottle();
     std::printf("%s — 확인 %d건 · 실패 %d건\n", g_fails ? "[실패]" : "[통과]", g_checks, g_fails);
     return g_fails ? 1 : 0;
 }

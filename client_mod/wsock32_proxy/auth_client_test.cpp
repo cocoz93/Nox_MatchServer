@@ -304,6 +304,15 @@ int main()
             { 401, "", "NXL!server_error", "401 빈 본문" },
             { 500, "NXL!wrong_password", "NXL!server_error", "500 은 본문을 안 믿음" },
             { 404, "", "NXL!server_error", "404" },
+            // ★ 11-05 플랜1 — 새 상태 둘 · 둘째 줄이 붙어도 line 은 한 줄(`apgar` 자리에 그대로 들어간다)
+            { 429, "NXL!too_many_tries", "NXL!too_many_tries", "429 시도 제한" },
+            { 429, "NXL!too_many_tries\n60 account", "NXL!too_many_tries", "429 둘째 줄이 붙어도 첫 줄만" },
+            { 403, "NXL!banned", "NXL!banned", "403 정지" },
+            { 403, "NXL!banned\n0\nreason", "NXL!banned", "403 둘째 줄 · 셋째 줄이 붙어도 첫 줄만" },
+            { 429, "NXL!bogus\n60 account", "NXL!server_error", "429 모르는 까닭" },
+            { 429, "hello\nNXL!too_many_tries", "NXL!server_error", "둘째 줄에만 까닭 — 안 믿음" },
+            { 403, "", "NXL!server_error", "403 빈 본문" },
+            { 200, "NXL!too_many_tries\n60 account", "NXL!server_error", "200 인데 실패 표시 + 둘째 줄" },
         };
         for (const C& c : cases) {
             Script s;
@@ -312,6 +321,24 @@ int main()
             srv.Set(s);
             const authclient::Result r = authclient::Token(UrlFor("http", srv.Port()), "wn9457", "ab12cd", kTo);
             Check(r.line == c.want && r.status == c.status, c.what);
+        }
+        // ★ 11-05 플랜1 — 둘째 줄 값은 detail 로만
+        {
+            const struct { const char* body; const char* detail; } ds[] = {
+                { "NXL!too_many_tries\n60 account", "60 account" },
+                { "NXL!too_many_tries\r\n599 address\r\n", "599 address" },
+                { "NXL!banned\n0\nreason", "0\nreason" },
+                { "NXL!banned", "" },
+                { "NXL!bogus\n60 account", "" },   // 안 믿은 답의 값은 안 옮긴다
+            };
+            for (const auto& d : ds) {
+                Script s;
+                s.status = 429;
+                s.body = d.body;
+                srv.Set(s);
+                const authclient::Result r = authclient::Token(UrlFor("http", srv.Port()), "wn9457", "ab12cd", kTo);
+                Check(r.detail == d.detail, d.body);
+            }
         }
         // 토큰 꼴이 한 글자라도 틀리면 서버 오류
         const std::string good = Tok();

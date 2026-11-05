@@ -104,7 +104,7 @@ add_executable(lobby_test server/tests/lobby_test.cpp)
 target_link_libraries(lobby_test PRIVATE nox_lobby_core)
 
 # ★ 로그인 암호 조각 2 — 로그인 서버의 판단(가입 · 로그인 · Docs/LOGIN_AUTH_DESIGN.md). 소켓 · DB 없이 시험된다(auth_test — 메모리 저장소)
-add_library(nox_auth_core STATIC server/src/auth/AuthService.cpp server/src/auth/AccountStore.cpp)
+add_library(nox_auth_core STATIC server/src/auth/AuthService.cpp server/src/auth/AccountStore.cpp server/src/auth/LoginThrottle.cpp)
 target_link_libraries(nox_auth_core PUBLIC nox_common)
 add_executable(auth_test server/tests/auth_test.cpp)
 target_link_libraries(auth_test PRIVATE nox_auth_core)

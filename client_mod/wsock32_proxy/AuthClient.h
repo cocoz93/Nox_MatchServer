@@ -3,11 +3,12 @@
 //   설계 Docs/LOGIN_AUTH_DESIGN.md 「로그인 한 번의 부르는 차례」 · 요청 · 답 꼴의 짝은 server/src/auth/AuthService.cpp 의 Login
 //
 // ★ 런처 P4 — 요청 셋(옛 `POST /login` 이름 · 암호 → 토큰은 서버가 닫음 · `AuthService.h`). 전송 · 한도 · 지문은 셋이 같다
-//   Token         — DLL: POST <기준>/token · 폼 `name=…&key=…` → 200 `NXL1<토큰 16진 114자>` 또는 400 · 401 · 503 `NXL!<까닭>`
+//   Token         — DLL: POST <기준>/token · 폼 `name=…&key=…` → 200 `NXL1<토큰 16진 114자>` 또는 400 · 401 · 403 · 429 · 503 `NXL!<까닭>`
 //   LauncherLogin — 런처: POST <기준>/launcher/login · 폼 `name` · `password` · `device` · `remember` → 200 `NXK1<열쇠 16진 64자>` 또는 `NXL!<까닭>`
 //   Logout        — 런처: POST <기준>/logout · 폼 `key` → 200 `NXOK` 또는 `NXL!<까닭>`
 // 폼 값은 바이트 단위 %XX 인코딩. 돌려주는 글(Result::line)은 늘 그 요청의 성공 꼴 하나 또는 `NXL!<까닭>` 이다 —
 //   서버 답이 이상하면 `NXL!server_error`, 못 닿으면 `NXL!unreachable`(Token 의 답은 그대로 `apgar` 자리에 넣을 수 있다)
+//   ★ 11-05 플랜1 — 실패 답의 둘째 줄(남은 초 · 끝 시각 · 사유)은 `Result::detail` 로만 — `line` 은 늘 한 줄이라 `apgar` 자리에 그대로 들어간다
 //
 // 한도 — 처음부터 끝까지 timeoutMs. 게임 주 스레드가 막히는 시간이라(5초 넘으면 윈도가 「응답 없음」으로 봄 — 설계 메모) 반드시 지켜야 한다.
 //   WinHTTP 의 단계별 시간 제한은 합을 보장하지 않는다(10-26 시험 — 한도 1초에 응답 없음이 1.9초 · 헤더 0.7초 + 본문 0.7초가 그대로 성공).
@@ -57,6 +58,7 @@ enum class Reply : unsigned char { Token, Key, LogoutOk };
 
 struct Result {
     std::string line;   // `apgar` 자리에 넣을 글(`NXL1…` 또는 `NXL!…`)
+    std::string detail; // ★ 11-05 플랜1 — 실패 답 둘째 줄의 값(없으면 빈 글 · 사유는 UTF-8)
     int status = 0;     // HTTP 상태(못 닿았으면 0)
     DWORD error = 0;    // 못 닿았을 때의 WinHTTP 오류(GetLastError) · 마감이 와서 끊었으면 ERROR_WINHTTP_TIMEOUT
     DWORD ms = 0;       // 걸린 시간
@@ -101,9 +103,11 @@ inline bool MarkHex(const std::string& body, std::string_view mark, size_t hexLe
     return ok;
 }
 
-// 서버 답을 돌려줄 글로 — 상태와 본문이 서로 맞아야 믿는다(200 은 그 요청의 성공 꼴만 · 400 401 503 은 아는 까닭만). 그 밖은 서버 오류
-inline std::string Classify(Reply kind, int status, const std::string& rawBody)
+// 서버 답을 돌려줄 글로 — 상태와 본문이 서로 맞아야 믿는다(200 은 그 요청의 성공 꼴만 · 400 401 403 429 503 은 아는 까닭만). 그 밖은 서버 오류
+//   ★ 11-05 플랜1 — 실패 답은 첫 줄이 까닭 · 나머지가 값(`LoginLine.h` 머리)
+inline std::string Classify(Reply kind, int status, const std::string& rawBody, std::string& detailOut)
 {
+    detailOut.clear();
     const std::string body = Trim(rawBody);
     if (status == 200) {
         bool ok = false;
@@ -113,10 +117,15 @@ inline std::string Classify(Reply kind, int status, const std::string& rawBody)
         case Reply::LogoutOk: ok = body == kLogoutOk; break;
         }
         if (ok) return body;
-    } else if (status == 400 || status == 401 || status == 503) {
-        if (body.compare(0, nox::kLoginFailMark.size(), nox::kLoginFailMark) == 0) {
+    } else if (status == 400 || status == 401 || status == 403 || status == 429 || status == 503) {
+        const size_t nl = body.find('\n');
+        const std::string first = Trim(body.substr(0, nl));
+        if (first.compare(0, nox::kLoginFailMark.size(), nox::kLoginFailMark) == 0) {
             nox::LoginFail f;
-            if (nox::ParseLoginFail(std::string_view(body).substr(nox::kLoginFailMark.size()), f)) return body;
+            if (nox::ParseLoginFail(std::string_view(first).substr(nox::kLoginFailMark.size()), f)) {
+                if (nl != std::string::npos) detailOut = Trim(body.substr(nl + 1));
+                return first;
+            }
         }
     }
     return FailLine(nox::LoginFail::ServerError);
@@ -284,7 +293,7 @@ inline void Work(Shared& s)
         if (got == 0) break;
         reply.append(buf, got);
     }
-    res.line = Classify(s.kind, res.status, reply);
+    res.line = Classify(s.kind, res.status, reply, res.detail);
     res.error = 0;
 }
 

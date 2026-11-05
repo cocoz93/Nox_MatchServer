@@ -4,6 +4,7 @@
 namespace nox::auth {
 
 FindResult CMemoryAccountStore::Find(const std::string& name, AccountRow& out) {
+    ++findCalls_;
     if (fail_) return FindResult::Failed;
     const auto it = rows_.find(name);
     if (it == rows_.end()) return FindResult::NotFound;
@@ -12,6 +13,7 @@ FindResult CMemoryAccountStore::Find(const std::string& name, AccountRow& out) {
 }
 
 InsertResult CMemoryAccountStore::Insert(const std::string& name, const PasswordRecord& pw, uint32_t /*nowUnix*/, uint64_t& id) {
+    ++insertCalls_;
     if (fail_) return InsertResult::Failed;
     const auto it = rows_.find(name);
     if (it != rows_.end()) {

@@ -47,11 +47,13 @@ const char* AuthOutcomeName(AuthOutcome o) {
     case AuthOutcome::SignupBadPassword: return "가입 — 암호 규칙";
     case AuthOutcome::SignupMismatch: return "가입 — 암호 확인 다름";
     case AuthOutcome::SignupFailed: return "가입 — 실패";
+    case AuthOutcome::SignupThrottled: return "가입 — 시도 제한";
     case AuthOutcome::LoginOk: return "로그인 — 됨";
     case AuthOutcome::LoginWrongPassword: return "로그인 — 암호 틀림";
     case AuthOutcome::LoginNoAccount: return "로그인 — 계정 없음";
     case AuthOutcome::LoginBadInput: return "로그인 — 규칙 밖";
     case AuthOutcome::LoginFailed: return "로그인 — 실패";
+    case AuthOutcome::LoginThrottled: return "로그인 — 시도 제한";
     case AuthOutcome::LoginClosed: return "옛 로그인 — 닫힘";
     case AuthOutcome::TokenOk: return "토큰 — 됨";
     case AuthOutcome::TokenBadKey: return "토큰 — 열쇠 없음";
@@ -203,6 +205,14 @@ static HttpResponse LoginFailReply(int status, LoginFail why) {
     return r;
 }
 
+// ★ 11-05 플랜1 — 시도 제한 답. 값은 둘째 줄(`LoginLine.h` 머리) · 런처가 문구를 고른다
+static HttpResponse ThrottledReply(uint32_t sec, ThrottleScope scope) {
+    HttpResponse r = LoginFailReply(429, LoginFail::TooManyTries);
+    r.body += "\n" + std::to_string(sec) + (scope == ThrottleScope::Account ? " account" : " address");
+    r.headers.emplace_back("Retry-After", std::to_string(sec));
+    return r;
+}
+
 HttpResponse CAuthService::Login(const HttpRequest& req, IAccountStore& db, AuthOutcome& o) {
     std::map<std::string, std::string> form;
     const auto name = [&]() -> const std::string& { return form["name"]; };
@@ -210,10 +220,17 @@ HttpResponse CAuthService::Login(const HttpRequest& req, IAccountStore& db, Auth
         o = AuthOutcome::LoginBadInput;   // 규칙 밖 암호는 어떤 행과도 안 맞는다 — 해시 없이 거절
         return LoginFailReply(400, LoginFail::BadInput);
     }
+    const uint32_t now = cfg_.unixNow();
+    ThrottleScope scope = ThrottleScope::Account;
+    if (const uint32_t wait = throttle_.RetryAfterSec(name(), req.peerIp, now, &scope)) {   // DB · 해시 앞 — 맞는 암호도 거절
+        o = AuthOutcome::LoginThrottled;
+        return ThrottledReply(wait, scope);
+    }
     AccountRow row;
     switch (db.Find(name(), row)) {
     case FindResult::Found: break;
     case FindResult::NotFound:
+        throttle_.OnFail(nullptr, req.peerIp, now);   // 없는 이름은 계정 칸을 안 만든다
         o = AuthOutcome::LoginNoAccount;
         return LoginFailReply(401, LoginFail::NoAccount);
     case FindResult::Failed:
@@ -222,15 +239,17 @@ HttpResponse CAuthService::Login(const HttpRequest& req, IAccountStore& db, Auth
         return LoginFailReply(503, LoginFail::ServerError);
     }
     if (!row.hasPassword) {   // 아이디만 시절의 행 — 가입하면 이 행에 암호가 들어간다
+        throttle_.OnFail(nullptr, req.peerIp, now);
         o = AuthOutcome::LoginNoAccount;
         return LoginFailReply(401, LoginFail::NoAccount);
     }
     if (!VerifyPassword(form["password"], row.password)) {
+        throttle_.OnFail(&name(), req.peerIp, now);
         o = AuthOutcome::LoginWrongPassword;
         return LoginFailReply(401, LoginFail::WrongPassword);
     }
+    throttle_.OnSuccess(name(), now);
     // ★ 런처 P1 — 토큰 대신 열쇠를 준다(토큰은 게임이 로비에 갈 때 DLL 이 `/token` 으로 받음 — 토큰의 IP 가 게임 PC 가 되게)
-    const uint32_t now = cfg_.unixNow();
     uint8_t key[kLoginKeyBytes];
     LoginKeyHash h{};
     const uint32_t ttl = form["remember"] == "1" ? kKeyTtlRememberSec : kKeyTtlSessionSec;
@@ -350,9 +369,18 @@ HttpResponse CAuthService::Signup(const HttpRequest& req, IAccountStore& db, Aut
         o = AuthOutcome::SignupMismatch;
         return Page(400, SignupFormPage("암호 확인이 다릅니다.", true, name));
     }
+    // ★ 11-05 플랜1 — 가입도 해시를 돌리므로 로그인 실패와 같은 주소별 셈에 합친다(시도마다 — 값을 따로 안 만듦)
+    const uint32_t now = cfg_.unixNow();
+    if (const uint32_t wait = throttle_.AddressRetryAfterSec(req.peerIp, now)) {
+        o = AuthOutcome::SignupThrottled;
+        HttpResponse r = Page(429, SignupFormPage("시도가 너무 많습니다. " + std::to_string((wait + 59) / 60) + "분 뒤 다시 해 주세요.", true, name));
+        r.headers.emplace_back("Retry-After", std::to_string(wait));
+        return r;
+    }
+    throttle_.OnFail(nullptr, req.peerIp, now);
     PasswordRecord rec;
     uint64_t id = 0;
-    const InsertResult ir = MakePasswordRecord(pw, cfg_.iterations, rec) ? db.Insert(name, rec, cfg_.unixNow(), id) : InsertResult::Failed;
+    const InsertResult ir = MakePasswordRecord(pw, cfg_.iterations, rec) ? db.Insert(name, rec, now, id) : InsertResult::Failed;
     switch (ir) {
     case InsertResult::Created:
     case InsertResult::Claimed:

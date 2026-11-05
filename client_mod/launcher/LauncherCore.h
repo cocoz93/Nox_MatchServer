@@ -220,6 +220,7 @@ enum class Outcome { Ok, Fail };
 struct LoginResult {
     Outcome outcome = Outcome::Fail;
     std::string reason;   // 실패 까닭(`LoginFailName` — wrong_password 등 · 열쇠 저장 실패는 key_store)
+    std::string detail;   // ★ 11-05 플랜1 — 답 둘째 줄의 값(`Result::detail`) · 화면이 문구를 고른다
 };
 
 inline std::string ReasonOf(const std::string& line)
@@ -237,6 +238,7 @@ inline LoginResult Login(const Config& c, const std::string& name, std::string& 
     password.clear();
     if (a.line.compare(0, nox::kLoginKeyMark.size(), nox::kLoginKeyMark) != 0) {
         r.reason = ReasonOf(a.line);
+        r.detail = a.detail;
         return r;
     }
     const bool saved = launchkey::Save(name, a.line);
@@ -269,6 +271,7 @@ inline LoginResult CheckKey(const Config& c, const std::string& name)
         return r;
     }
     r.reason = ReasonOf(a.line);
+    r.detail = a.detail;
     if (r.reason == nox::LoginFailName(nox::LoginFail::KeyInvalid)) {
         launchkey::Remove(name);
         State s = LoadState();

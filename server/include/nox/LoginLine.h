@@ -10,6 +10,8 @@
 //   · `None`             — 정품 손님 로그인(녹음 그대로)
 //   · 그 밖              — 평문 암호(DLL 이 없거나 판이 낮은 클라)
 // 로그인 서버(`/login`)의 답 본문도 앞의 두 꼴 그대로 — DLL 은 받은 글을 그대로 `apgar` 자리에 넣는다
+//   ★ 11-05 플랜1 — 실패 답에 값이 붙으면 둘째 줄에 싣는다(`NXL!<까닭>\n<값>`). 첫 줄은 그대로라 `ParseLoginFail` 이 글 전체를 대조해도 되고
+//   `apgar` 자리에는 첫 줄만 들어간다(`AuthClient.h` Result::line · detail)
 #pragma once
 
 #include <cstddef>
@@ -37,6 +39,8 @@ enum class LoginFail : uint8_t {
     BadInput,        // 이름 · 암호 규칙 밖
     KeyInvalid,          // ★ 런처 P1 — 열쇠가 없음 · 만료 · 폐기 · 남의 이름(런처로 다시 로그인)
     LauncherRequired,    // ★ 런처 P1 — 런처 없이 켬(DLL 이 스스로) · 암호 → 토큰 길(`/login`)은 닫힘
+    TooManyTries,        // ★ 11-05 플랜1 — 시도 제한(답 둘째 줄 = `<남은 초> account|address`)
+    Banned,              // ★ 11-05 플랜1 — 계정 정지(답 둘째 줄 = 끝 시각 · 사유)
     kCount
 };
 
@@ -50,6 +54,8 @@ inline const char* LoginFailName(LoginFail f) {
     case LoginFail::BadInput: return "bad_input";
     case LoginFail::KeyInvalid: return "key_invalid";
     case LoginFail::LauncherRequired: return "launcher_required";
+    case LoginFail::TooManyTries: return "too_many_tries";
+    case LoginFail::Banned: return "banned";
     case LoginFail::kCount: break;
     }
     return "?";

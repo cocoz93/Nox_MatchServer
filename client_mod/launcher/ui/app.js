@@ -14,7 +14,15 @@ const REASON = {
   key_store: '이 PC 에 로그인 정보를 저장하지 못했습니다.',
   launch_failed: '게임을 실행하지 못했습니다. 게임 폴더를 확인해 주세요.',
 };
-const reasonText = (r) => REASON[r] || '알 수 없는 오류입니다(' + (r || '?') + ').';
+// 값이 붙은 까닭 — 서버 답 둘째 줄(LoginLine.h)을 문구로. 초는 분으로 올림(60초 = 1분 · 61초 = 2분)
+function reasonText(r, detail) {
+  if (r === 'too_many_tries') {
+    const parts = String(detail || '').split(' ');
+    const minutes = Math.max(1, Math.ceil((Number(parts[0]) || 60) / 60));
+    return (parts[1] === 'address' ? '시도가 너무 많습니다. ' : '암호를 여러 번 틀렸습니다. ') + minutes + '분 뒤 다시 해 주세요.';
+  }
+  return REASON[r] || '알 수 없는 오류입니다(' + (r || '?') + ').';
+}
 
 let me = { name: '', remember: false };
 
@@ -75,12 +83,12 @@ if (host) {
         break;
       case 'login':
         if (m.get('ok') === '1') { me = { name: m.get('name'), remember: m.get('remember') === '1' }; showSigned(); }
-        else showLogin(reasonText(m.get('reason')));
+        else showLogin(reasonText(m.get('reason'), m.get('detail')));
         break;
       case 'start':
         if (m.get('ok') === '1') setMsg('startMsg', '게임 실행 중', true);
         else if (m.get('reason') === 'key_invalid') showLogin(reasonText('key_invalid'));
-        else { setMsg('startMsg', reasonText(m.get('reason'))); $('startBtn').disabled = false; }
+        else { setMsg('startMsg', reasonText(m.get('reason'), m.get('detail'))); $('startBtn').disabled = false; }
         break;
       case 'gameExit':
         if (m.get('loggedOut') === '1') showLogin('게임이 끝나 로그아웃했습니다.', true);

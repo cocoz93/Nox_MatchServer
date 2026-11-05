@@ -74,6 +74,8 @@ public:
     size_t Count() const { return rows_.size(); }
     uint32_t LastLogin(uint64_t id) const;         // 0 = 없음 · 안 들어옴
     size_t KeyCount() const { return keys_.size(); }
+    unsigned FindCalls() const { return findCalls_; }       // ★ 11-05 플랜1 — 막힌 요청이 DB · 해시까지 안 갔는지(시험)
+    unsigned InsertCalls() const { return insertCalls_; }
     bool HasDevice(const std::string& device) const;   // 그 기기 이름의 열쇠가 있나(시험 — 지문은 서비스 안에서만 지어짐)
 
 private:
@@ -92,6 +94,8 @@ private:
     std::map<LoginKeyHash, KeyRow> keys_;
     uint64_t next_ = 1;
     bool fail_ = false;
+    unsigned findCalls_ = 0;
+    unsigned insertCalls_ = 0;
 };
 
 }  // namespace nox::auth

@@ -142,6 +142,17 @@ try {
   Check ($r.status -eq 405) "GET /token 405 ($($r.status))"
   $r = Req 'POST' '/nope' ''
   Check ($r.status -eq 404) "없는 길 404 ($($r.status))"
+  # ★ 11-05 플랜1 — 시도 제한: 위에서 1회 틀린 smoke1 을 4번 더 틀려 5회째 잠금 → 맞는 암호도 429 + 둘째 줄 · 열쇠 길은 그대로
+  for ($i = 2; $i -le 5; $i++) {
+    $r = Req 'POST' '/launcher/login' "name=smoke1&password=Sm0k!p13"
+    Check ($r.status -eq 401 -and $r.body -ceq 'NXL!wrong_password') "$($i)회째 암호 틀림 401 ($($r.status))"
+  }
+  $r = Req 'POST' '/launcher/login' "name=smoke1&password=$([uri]::EscapeDataString($pw))"
+  $lines = $r.body -split "`n"
+  Check ($r.status -eq 429 -and $lines[0] -ceq 'NXL!too_many_tries' -and $lines[1] -cmatch '^(60|59|58) account$') `
+    "5회 뒤 맞는 암호도 429 · 둘째 줄 남은 초 ($($r.status) $($lines -join ' / ') · $($r.ms) ms)"
+  $r = Req 'POST' '/token' "name=smoke1&key=$key"
+  Check ($r.status -eq 200 -and $r.body.StartsWith('NXL1')) "잠겨도 열쇠 길은 됨 200 ($($r.status))"
 
   Write-Host '③ DB 행'
   $row = (Sql "SELECT LENGTH(pass_salt), LENGTH(pass_hash), pass_iter, last_login_unix > 1 FROM accounts WHERE name = 'smoke1';") -split "`t"

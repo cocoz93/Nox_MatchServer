@@ -1,7 +1,7 @@
 ﻿// AuthService.h — 로그인 서버의 판단(가입 · 로그인). 설계 Docs/LOGIN_AUTH_DESIGN.md 「클래스 설계」 nox_auth.
 //
 // 소켓도 스레드도 모른다 — 요청 하나와 그 일꾼의 저장소를 넣으면 답 하나를 돌려준다(로비 `Lobby` 와 같은 짜임 `Lobby.h:9`).
-//   일꾼 여럿이 이 하나를 같이 부른다 — 바뀌는 것은 셈(원자 값)뿐
+//   일꾼 여럿이 이 하나를 같이 부른다 — 바뀌는 것은 셈(원자 값)과 시도 제한(`CLoginThrottle` — 안에 잠금 · 해시 동안은 안 쥠)
 // 길
 //   · POST /login  — ★ 런처 P1 부터 닫힘: 410 `NXL!launcher_required`(암호 → 토큰 길을 막음 · 11-01 사용자 결정 4)
 //     옛 뜻 — 폼 `name` · `password` → 본문 한 줄 `NXL1<토큰 16진>`(200) 또는 `NXL!<까닭>`(`LoginLine.h`).
@@ -9,12 +9,13 @@
 //   · ★ 런처 P1 — 자동 로그인 열쇠(Docs/LAUNCHER_PLAN.md)
 //     POST /launcher/login — 폼 `name` · `password` · `device`(기기 이름 · 없어도 됨) · `remember`(`1` = 30일 · 그 밖 = 12시간)
 //                            → 200 `NXK1<열쇠 16진 64자>` · 실패는 옛 `/login` 과 같은 `NXL!<까닭>`(400 · 401 · 503)
+//                            ★ 11-05 플랜1 — 시도 제한이면 429 `NXL!too_many_tries` + 둘째 줄 `<남은 초> account|address`(`LoginThrottle.h`)
 //     POST /token          — 폼 `name` · `key`(`NXK1…`) → 200 `NXL1<토큰>`(옛 `/login` 답과 같은 꼴 — DLL 이 `apgar` 에 넣음) ·
 //                            401 `NXL!key_invalid`(없음 · 만료 · 남의 이름) · 400 `NXL!bad_input` · 503 `NXL!server_error`.
 //                            통과하면 열쇠 만료를 「지금 + 수명」으로 밀고 마지막 로그인을 적는다
 //     POST /logout         — 폼 `key` → 200 `NXOK`(없는 열쇠여도 — 몇 번 해도 같다) · 400 · 503
 //     열쇠 글은 저장하지 않는다 — SHA-256 만(`AccountStore.h`)
-//   · POST /signup — 폼 `name` · `password` · `password2` → 201 · 409 · 400 · 503 · 본문은 결과 화면(★ 조각 3 `SignupPage.h`)
+//   · POST /signup — 폼 `name` · `password` · `password2` → 201 · 409 · 400 · 429(★ 11-05 플랜1 시도 제한) · 503 · 본문은 결과 화면(★ 조각 3 `SignupPage.h`)
 //   · GET / · /signup — 가입 양식(★ 조각 3)
 //   · 그 밖 — 404 · 길은 맞는데 방식이 다르면 405
 // 화면 답에는 콘텐츠 보안 정책(스크립트 금지 · 폼은 이 서버로만)을 · 모든 답에 `nosniff` 를 싣는다
@@ -31,6 +32,7 @@
 
 #include "AccountStore.h"
 #include "HttpSysServer.h"
+#include "LoginThrottle.h"
 #include "nox/JoinToken.h"
 
 namespace nox::auth {
@@ -58,11 +60,13 @@ enum class AuthOutcome : uint8_t {
     SignupBadPassword,
     SignupMismatch,      // 암호 확인 칸이 다름
     SignupFailed,        // 해시 · DB 실패
+    SignupThrottled,     // ★ 11-05 플랜1 — 주소별 시도 제한(해시 안 돎)
     LoginOk,             // ★ 런처 P1 — 이제 `/launcher/login` 의 열쇠 발급(암호 확인 갈래 다섯은 옛 `/login` 과 같음)
     LoginWrongPassword,
     LoginNoAccount,      // 없거나 암호 없는 옛 행
     LoginBadInput,       // 이름 · 암호 규칙 밖 · 폼이 틀림
     LoginFailed,         // DB · 서명 · 열쇠 넣기 실패
+    LoginThrottled,      // ★ 11-05 플랜1 — 시도 제한(DB · 해시 안 돎)
     LoginClosed,         // ★ 런처 P1 — 옛 `/login`(410)
     TokenOk,             // ★ 런처 P1 — `/token`
     TokenBadKey,         //   열쇠 없음 · 남의 이름
@@ -98,6 +102,7 @@ private:
     bool IssueLoginToken(const HttpRequest& req, IAccountStore& db, uint64_t accountId, const std::string& name, uint32_t now, std::string& line);
 
     AuthConfig cfg_;
+    CLoginThrottle throttle_;   // ★ 11-05 플랜1
     std::array<std::atomic<uint64_t>, kAuthOutcomeCount> stats_{};
 };
 

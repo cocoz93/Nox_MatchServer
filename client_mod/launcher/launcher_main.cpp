@@ -170,7 +170,7 @@ void OnPageMessage(const std::string& text)
         std::thread([name, pw, remember, saveId]() mutable {   // 이번 실행 이름(g_sessionName)은 화면 스레드가 이 답을 받을 때 고친다(WndProc)
             const launcher::LoginResult r = launcher::Login(g_cfg, name, pw, remember, saveId);
             InterlockedExchange(&g_busy, 0);
-            PostToUi(WM_APP_POST, Q({ { "ev", "login" }, { "ok", r.outcome == launcher::Outcome::Ok ? "1" : "0" }, { "reason", r.reason }, { "name", name },
+            PostToUi(WM_APP_POST, Q({ { "ev", "login" }, { "ok", r.outcome == launcher::Outcome::Ok ? "1" : "0" }, { "reason", r.reason }, { "detail", r.detail }, { "name", name },
                                       { "remember", remember ? "1" : "0" } }));
         }).detach();
         SecureZeroMemory(&m["password"][0], m["password"].size());
@@ -187,7 +187,7 @@ void OnPageMessage(const std::string& text)
                 const launcher::LoginResult r = launcher::CheckKey(g_cfg, name);
                 if (r.outcome != launcher::Outcome::Ok) {
                     InterlockedExchange(&g_busy, 0);
-                    PostToUi(WM_APP_POST, Q({ { "ev", "start" }, { "ok", "0" }, { "reason", r.reason } }));
+                    PostToUi(WM_APP_POST, Q({ { "ev", "start" }, { "ok", "0" }, { "reason", r.reason }, { "detail", r.detail } }));
                     return;
                 }
             }
@@ -362,7 +362,7 @@ int RunCli(int argc, wchar_t** argv)
     if (!exe.empty()) g_cfg.gameExe = exe;
     const launcher::LoginResult r = launcher::Login(g_cfg, name, pw, remember);
     if (r.outcome != launcher::Outcome::Ok) {
-        say("login " + name + " fail " + r.reason);
+        say("login " + name + " fail " + r.reason + (r.detail.empty() ? "" : " (" + r.detail + ")"));
         return 2;
     }
     say("login " + name + " ok (remember " + (remember ? "1" : "0") + ")");
