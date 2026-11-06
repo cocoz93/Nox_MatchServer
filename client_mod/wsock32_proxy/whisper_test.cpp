@@ -123,6 +123,57 @@ static void TestParse()
           "② 명단 이름 앞뒤 빈칸");
 }
 
+// ★ 조각 5 — 대화방 명단에서 고른 줄로 친 글(정품 비공개 0x41f430 의 이름 · 글)
+struct ListRow {
+    const char* name;
+    const wchar_t* text;
+    const char* me;
+    Cmd cmd;
+    const char* target;
+    const wchar_t* out;
+};
+static void TestParseList()
+{
+    const ListRow rows[] = {
+        {" qa2", L"안녕", "qa1", Cmd::Whisper, "qa2", L"안녕"},   // 명단 이름은 앞에 빈칸
+        {"qa2  ", L"  hi", "qa1", Cmd::Whisper, "qa2", L"hi"},    // 글 앞 빈칸은 /w 처럼 건너뜀
+        {"qa2", L"a\tb", "qa1", Cmd::Whisper, "qa2", L"a b"},     // 제어 글자 → 빈칸
+        {"qa2", L"%s %n", "qa1", Cmd::Whisper, "qa2", L"%s %n"},
+        {"qa1", L"hi", "", Cmd::Whisper, "qa1", L"hi"},           // 내 이름 모름
+        {"qa2", L"/w qa3 x", "qa1", Cmd::Whisper, "qa2", L"/w qa3 x"},   // 글 안의 명령 꼴은 그냥 글
+        {" qa1", L"hi", "qa1", Cmd::ToSelf, "", L""},             // 내 줄을 고름 → 11번
+        {"", L"hello world", "qa1", Cmd::WhisperForm, "", L""},   // 빈 이름 — 글의 첫 낱말이 대상이 되면 안 됨
+        {"   ", L"hi", "qa1", Cmd::WhisperForm, "", L""},
+        {nullptr, L"hi", "qa1", Cmd::WhisperForm, "", L""},
+        {"qa2", L"", "qa1", Cmd::WhisperForm, "", L""},
+        {"qa2", L"   ", "qa1", Cmd::WhisperForm, "", L""},
+        {"qa2", L"\r\n", "qa1", Cmd::WhisperForm, "", L""},
+        {"qa2", nullptr, "qa1", Cmd::WhisperForm, "", L""},
+        {"@qa2", L"hi", "qa1", Cmd::WhisperForm, "", L""},       // 계정 규칙 밖 꼴
+        {"abcdefghij", L"x", "qa1", Cmd::WhisperForm, "", L""},   // 10자
+        {"q a", L"x", "qa1", Cmd::WhisperForm, "", L""},          // 가운데 빈칸
+        {"\xEA\xB0\x80", L"x", "qa1", Cmd::WhisperForm, "", L""},   // 한글 바이트(가)
+    };
+    size_t count[static_cast<size_t>(Cmd::kCount)] = {};
+    for (const ListRow& r : rows) {
+        const Parsed p = ParseListWhisper(r.name, r.text, r.me);
+        ++count[static_cast<size_t>(p.cmd)];
+        char what[220];
+        std::snprintf(what, sizeof(what), "②-2 고른 줄 「%s」 글 「%s」 → %s (기대 %s)", r.name ? r.name : "(null)", r.text ? ToUtf8(r.text).c_str() : "(null)",
+                      CmdName(p.cmd), CmdName(r.cmd));
+        Check(p.cmd == r.cmd && p.target == r.target && p.text == r.out, what);
+    }
+    const size_t want[] = {0, 6, 0, 11, 0, 1};   // Plain · Whisper · Reply · WhisperForm · ReplyForm · ToSelf — 고른 줄은 일반 채팅 · 답장이 없다
+    static_assert(sizeof(want) / sizeof(want[0]) == static_cast<size_t>(Cmd::kCount), "갈래 수");
+    for (size_t i = 0; i < static_cast<size_t>(Cmd::kCount); ++i) {
+        char what[120];
+        std::snprintf(what, sizeof(what), "②-2 고른 줄 갈래 개수 %s = %zu (기대 %zu)", CmdName(static_cast<Cmd>(i)), count[i], want[i]);
+        Check(count[i] == want[i], what);
+    }
+    const Parsed longL = ParseListWhisper(" qa2", (std::wstring(100, L'가')).c_str(), "qa1");
+    Check(longL.cmd == Cmd::Whisper && longL.text == std::wstring(80, L'가'), "②-2 고른 줄 글 80자로 자름");
+}
+
 static void TestChooseShow()
 {
     size_t count[static_cast<size_t>(Where::kCount)] = {};
@@ -431,6 +482,7 @@ int main()
 {
     TestUtf();
     TestParse();
+    TestParseList();
     TestChooseShow();
     TestSplit();
     TestBox();

@@ -266,6 +266,7 @@ static void MenuSummary();   // ★ 매칭 손보기 8 — ⑫
 static void AcceptSummary(); // ★ 매칭 손보기 6 — ⑬
 static void NoticeSummary(); // ★ 10-31 — ⑭
 static void LauncherSummary(); // ★ 런처 P5 — ⑮
+static void WhisperSummary();  // ★ 11-06 귓속말 조각 5 — 입력 자리 셋 × 갈래
 
 static DWORD WINAPI SummaryThread(LPVOID)
 {
@@ -283,6 +284,7 @@ static DWORD WINAPI SummaryThread(LPVOID)
         AcceptSummary(); // ★ 매칭 손보기 6 — ⑬ 도
         NoticeSummary(); // ★ 10-31 — ⑭ 도
         LauncherSummary(); // ★ 런처 P5 — ⑮ 도
+        WhisperSummary();  // ★ 11-06 귓속말 조각 5 도
         if (tick % 10) continue;   // 모듈 요약은 10초마다
         ModStat now[kMaxMods];
         int n;
@@ -546,6 +548,8 @@ static std::deque<std::string> g_chatIn;    // 받은 줄(둘째 → 주) · 빈
 static HANDLE g_chatWake = NULL;            // 새 NOXCHAT → 다시 붙기 기다림 · 멈춤에서 깸(자동 리셋) · g_chatCs 아래 한 번 만듦
 static volatile LONG g_chatStarted = 0;     // 둘째 스레드를 띄웠나(주 스레드가 잠금 없이 봄)
 static volatile LONG g_chatInDropped = 0;   // 큐가 넘쳐 버린 줄
+static std::deque<std::string> g_chatOut;   // ★ 조각 5 — 보낼 줄(주 → 둘째 · 「W 이름 글\r\n」) · g_chatCs
+static bool g_chatUp = false;               // ★ 조각 5 — AUTHOK 받은 연결이 있음(주 스레드가 보낼지 8번으로 안내할지) · g_chatCs
 static const size_t kChatInMax = 200;       // 주 스레드가 못 비우는 동안(그리기 고리가 안 도는 화면) 쌓이는 한도 — 넘치면 오래된 것부터 버리고 셈
 static const DWORD kChatConnectMs = 3000;   // 붙기 한도 — 죽은 주소에 윈도 기본(약 21초)만큼 안 막히게
 static const DWORD kChatSilentMs = 90000;   // 서버는 30초 조용하면 PING(`ChatHub.h` kChatPingMs) — 90초 아무것도 안 오면 끊긴 것으로(서버 kChatIdleMs 와 같은 값)
@@ -671,17 +675,29 @@ static ChatEnd ChatSession(const ChatTarget& t)
     bool end = false;
     char tmp[1024];
     while (!end) {
+        std::deque<std::string> out;   // ★ 조각 5 — 주 스레드가 쌓은 보낼 줄(AUTHOK 뒤에만 쌓임 — g_chatUp)
         EnterCriticalSection(&g_chatCs);
         if (g_chatTarget.gen != e.gen) {
             e.moved = g_chatTarget.ip != t.ip || g_chatTarget.port != t.port || g_chatTarget.name != t.name;
             e.gen = g_chatTarget.gen;   // 같은 대상이면(같은 계정으로 다시 로그인) 이 연결 그대로 — 그 NOXCHAT 은 이 연결이 받아들임
         }
+        out.swap(g_chatOut);
         LeaveCriticalSection(&g_chatCs);
         if (e.moved) {
             e.why = whisper::Drop::Lost;
             Log("귓속말 — 새 NOXCHAT 의 주소 · 이름이 달라 끊고 새로 붙음");
             break;
         }
+        for (const std::string& l : out) {
+            if (!ChatSendAll(s, l)) {
+                e.why = whisper::Drop::Lost;
+                Log("귓속말 보내기 실패 err=%d — 끊김으로", ((PFN_wscErr)Resolve(111))());
+                end = true;
+                break;
+            }
+            Log("귓속말 보냄 W(%zu바이트)", l.size());   // 길이만 — 이름 · 글은 기록에 안 남김
+        }
+        if (end) break;
         fd_set rf;
         FD_ZERO(&rf);
         FD_SET(s, &rf);
@@ -709,6 +725,9 @@ static ChatEnd ChatSession(const ChatTarget& t)
             switch (sl.kind) {
             case whisper::Line::AuthOk:
                 e.authed = true;
+                EnterCriticalSection(&g_chatCs);
+                g_chatUp = true;   // ★ 조각 5 — 이제부터 /w 를 보낸다
+                LeaveCriticalSection(&g_chatCs);
                 Log("귓속말 로그인 됨 — %s", t.name.c_str());
                 break;
             case whisper::Line::AuthNo:
@@ -745,6 +764,14 @@ static ChatEnd ChatSession(const ChatTarget& t)
         }
     }
     ((PFN_wscClose)Resolve(3))(s);
+    // ★ 조각 5 — 연결 없음으로 돌리고 못 보낸 줄을 버린 뒤에 끊김 표시를 넣는다. 주 스레드는 받은 줄을 비운 다음에 입력을 받으므로(`WhisperInput`)
+    //   그사이 친 /w 는 8번 안내로 · 그 전에 친(답 기다림에 든) 것은 끊김 표시에서 8번으로 — 답 차례가 안 어긋난다
+    EnterCriticalSection(&g_chatCs);
+    g_chatUp = false;
+    const size_t unsent = g_chatOut.size();
+    g_chatOut.clear();
+    LeaveCriticalSection(&g_chatCs);
+    if (unsent) Log("귓속말 연결이 끝나 못 보낸 줄 %zu 버림(8번 안내로)", unsent);
     if (e.authed) ChatQueue(std::string());   // 끊김 표시 — 답을 못 받은 보낸 글을 주 스레드가 8번으로
     return e;
 }
@@ -823,26 +850,6 @@ static void ChatNote(SOCKET s, uint32_t ip, uint16_t port)
     SetEvent(g_chatWake);
     Log("귓속말 연결 대상 — %u.%u.%u.%u:%u · 이름 %s · 로그인 서버 주소 %s(%ld번째)%s", ip >> 24, (ip >> 16) & 255, (ip >> 8) & 255, ip & 255, port,
         name.empty() ? "(못 봄)" : name.c_str(), urlOk ? "구함" : "못 구함", gen, started ? " · 둘째 스레드 띄움" : "");
-}
-
-// 주 스레드(`FrameTick`) — 받은 줄을 꺼내 판단 부품에. 표시(대화방 줄 · 판 가운데)는 조각 5 — 지금은 낼 것 상자에 쥐기만
-static whisper::CWhisperState g_whState;
-static whisper::CShowBox g_whBox;
-static void WhisperTick()
-{
-    if (!g_chatStarted) return;
-    std::deque<std::string> in;
-    EnterCriticalSection(&g_chatCs);
-    in.swap(g_chatIn);
-    LeaveCriticalSection(&g_chatCs);
-    if (in.empty()) return;
-    std::vector<whisper::Notice> show;
-    for (const std::string& l : in) {
-        if (l.empty()) g_whState.OnDisconnect(show);
-        else g_whState.OnServerLine(whisper::ParseServerLine(l), show);
-    }
-    for (const whisper::Notice& n : show) g_whBox.Push(n);
-    Log("귓속말 주 스레드 — 받은 줄 %zu · 낼 것 %zu · 쥔 것 %zu · 답 기다림 %zu", in.size(), show.size(), g_whBox.Held(), g_whState.Pending());
 }
 
 static LobbyLineFilter* LobbyFilterOf(SOCKET s)
@@ -3493,6 +3500,26 @@ static bool TestPressLine(const char* line)
         ((PFN_wndproc4)kWinCall94)(entry, kMsgEntrySet, (DWORD)(uintptr_t)w, 0);
         return true;
     }
+    if (line[0] == 'R' || line[0] == 'G') {   // ★ 11-06 귓속말 조각 5 — `R 글` 대화방 입력칸 1910 · `G 글` 판 채팅 입력칸에 글을 넣고 Enter 알림(0x401f).
+        //   사람이 치고 Enter 를 누른 것과 같은 정품 처리 함수로 가서 입력 자리(0x447ab8 · 0x487361)를 그대로 지난다(조사 파일럿 W6 · W5 꼴 · 11-05 실물)
+        static const uintptr_t kGameChatWin = 0x6f70d8, kGameChatEntry = 0x6f70dc, kGameChatProc = 0x487340;
+        static const DWORD kRoomEntryId = 1910;
+        wchar_t w[200] = {};
+        if (line[1]) MultiByteToWideChar(CP_UTF8, 0, line + 2, -1, w, _countof(w) - 1);
+        DWORD win = 0, entry = 0;
+        if (line[0] == 'R') {
+            ReadSelf(kChatWin, &win);
+            entry = win ? ((PFN_findchild)kFindChild)(win, kRoomEntryId) : 0;
+        } else {
+            ReadSelf(kGameChatWin, &win);
+            ReadSelf(kGameChatEntry, &entry);
+        }
+        if (!win || !entry) return false;
+        ((PFN_wndproc4)kWinCall94)(entry, kMsgEntrySet, (DWORD)(uintptr_t)w, 0);
+        if (line[0] == 'R') ((PFN_wndproc4)kWinCall94)(win, kMsgEntryEnter, entry, 0);
+        else ((PFN_wndproc4)kGameChatProc)(win, kMsgEntryEnter, entry, 0);
+        return true;
+    }
     if (line[0] == 'C') {   // `C 안녕` — 정품 채팅 보내기 함수로 한 줄(UTF-8 파일 글자 → UTF-16). `K` 는 입력칸 1910 에 글자를 못 넣어(11-05) 진짜 와이어 꼴을 보려면 이 길
         wchar_t w[160] = {};
         MultiByteToWideChar(CP_UTF8, 0, line + 2, -1, w, 159);
@@ -3598,6 +3625,163 @@ static void TestPressTick()
     const bool ok = TestPressLine(line);
     const LONG n = InterlockedIncrement(ok ? &g_testPressOk : &g_testPressMiss);
     Log("⑰ 시험 누름 「%s」 — %s(누적 %ld)", line, ok ? "함" : "창 · 단추를 못 찾음", n);
+}
+
+// ─────────────── ★ 11-06 귓속말 조각 5 — 입력 잡기 셋 · 표시(플랜 `Docs/MO_WHISPER_PLAN_1105.md` 5절 「입력 잡기」 · 「표시」 · 7절 문구)
+//   입력 — 정품이 입력 글을 넘기는 call 셋을 DLL 로 돌린다(HookCallSite). /w · /r 이면 귓속말(원래 함수를 안 부름) · 아니면 원래 함수 그대로
+//     0x487361 판 채팅 → 0x486fd0(글, 팀) · 0x447ab8 대화방 입력 → 0x446b00(글) · 0x446b7a 대화방 명단에서 고른 줄 → 정품 비공개 0x41f430(이름, 글)
+//     고른 줄은 언제나 귓속말로 — 정품은 WOL 비공개 메시지를 보내 우리 로비에선 말없이 사라졌다(사람 확인 103). 0 을 돌려 정품의 「내 줄」(0x446b8c → 0x446d20(이름, 글, 1, 1))을
+//     건너뛴다 — 보낸 줄은 서버 답(TO) 뒤 한 번만(/w 와 같게 · 안 그러면 두 줄 · 없는 사람이면 글 줄 + 안내 줄)
+//   보내기 — 주 스레드가 g_chatCs 아래 받은 줄을 먼저 비우고(끊김 표시를 먼저 반영해야 답 차례가 안 어긋남) OnInput → 보낼 줄을 g_chatOut 에(둘째 스레드가 50ms 안에 보냄)
+//   표시 — 매 틀(FrameTick) ChooseShow · 대화방 줄 0x446d20(이름, 글, 1, 받음 0 · 보냄 1 — 머리 꼴은 `ui_apply.ps1` 의 정품 문구 두 줄) ·
+//     머리 없는 안내(7 · 9 · 10 · 11) = 대화방 출력 칸 [0x69c8c8] 에 줄 더하기(0x400d · 색 7 — 0x446d20 안쪽 0x446d89 와 같은 호출) · 판 가운데 0x445020(글) ·
+//     그 밖 화면(게임 목록 · 메뉴 · 숨은 대화방)은 쥐었다가 다음에(CShowBox 20건)
+//   받은 글은 0x446d20 · 0x445020 모두 형식 문자열이 아닌 인자로만 넘어간다(플랜 9절 · 역어셈블) — %s %n 이 든 글도 그대로
+typedef int(__cdecl* PFN_whRoomSend)(const wchar_t*);
+typedef int(__cdecl* PFN_whPriv)(const char*, const wchar_t*);
+typedef void(__cdecl* PFN_whRoomLine)(const char*, const wchar_t*, int, int);
+typedef void(__cdecl* PFN_whCenter)(const wchar_t*);
+typedef int(__cdecl* PFN_whPlay)(void);
+static const uintptr_t kWhGameChatCall = 0x487361, kWhRoomSendCall = 0x447ab8, kWhRoomSend = 0x446b00, kWhListCall = 0x446b7a, kWhPriv = 0x41f430;
+static const uintptr_t kWhRoomLine = 0x446d20, kWhRoomOut = 0x69c8c8, kWhCenter = 0x445020, kWhPlay = 0x42ca50;
+static const DWORD kWhPlainColor = 7;   // 0x446d20 이 귓속말 줄에 쓰는 색(채널 줄은 6) — 머리 없는 안내도 귓속말 줄과 같은 색
+
+enum class WhSite : uint8_t { Game, Room, List, kCount };
+static const char* WhSiteName(WhSite s)
+{
+    switch (s) {
+    case WhSite::Game: return "판 채팅";
+    case WhSite::Room: return "대화방";
+    case WhSite::List: return "고른 줄";
+    case WhSite::kCount: break;
+    }
+    return "?";
+}
+static whisper::CWhisperState g_whState;   // 주 스레드만 · 바꿀 때는 g_chatCs 아래(받은 줄 비우기와 입력이 한 잠금 안에서)
+static whisper::CShowBox g_whBox;          // 주 스레드만
+static volatile LONG g_whInput[(size_t)WhSite::kCount][(size_t)whisper::Cmd::kCount] = {};   // 세는 자리 — 입력 자리 셋 × 갈래 여섯(일반 채팅 포함)
+static volatile LONG g_whRoomNoOut = 0;    // 머리 없는 안내를 대화방 줄로 골랐는데 출력 칸이 없던 수
+
+// 요약 스레드(1초마다) — 셈이 바뀌었으면 자리마다 한 줄(갈래 여섯 전부 · 0 도 찍음 — 「안 셌다」와 「0번」을 가르게)
+static void WhisperSummary()
+{
+    static LONG seen[(size_t)WhSite::kCount][(size_t)whisper::Cmd::kCount] = {};
+    static LONG noOutSeen = 0;
+    bool changed = g_whRoomNoOut != noOutSeen;
+    LONG now[(size_t)WhSite::kCount][(size_t)whisper::Cmd::kCount];
+    for (size_t s = 0; s < (size_t)WhSite::kCount; ++s)
+        for (size_t c = 0; c < (size_t)whisper::Cmd::kCount; ++c) {
+            now[s][c] = g_whInput[s][c];
+            changed = changed || now[s][c] != seen[s][c];
+        }
+    if (!changed) return;
+    for (size_t s = 0; s < (size_t)WhSite::kCount; ++s) {
+        char line[400];
+        int o = _snprintf(line, sizeof(line) - 1, "귓속말 셈 — %s |", WhSiteName((WhSite)s));
+        for (size_t c = 0; c < (size_t)whisper::Cmd::kCount && o > 0 && o < (int)sizeof(line) - 60; ++c)
+            o += _snprintf(line + o, sizeof(line) - 1 - o, " %s %ld", whisper::CmdName((whisper::Cmd)c), now[s][c]);
+        line[sizeof(line) - 1] = 0;
+        Log("%s", line);
+    }
+    noOutSeen = g_whRoomNoOut;
+    Log("귓속말 셈 — 대화방 출력 칸 없어 못 낸 안내 %ld", noOutSeen);
+    memcpy(seen, now, sizeof(seen));
+}
+
+static std::string WhMyName()
+{
+    EnterCriticalSection(&g_tokCs);
+    const std::string n = g_loginName;
+    LeaveCriticalSection(&g_tokCs);
+    return n;
+}
+
+// g_chatCs 를 쥔 채로 — 받은 줄을 판단 부품에(빈 글자 = AUTHOK 받은 연결이 끊김 → 답 못 받은 보낸 글은 8번)
+static size_t WhisperDrainLocked(std::vector<whisper::Notice>& show)
+{
+    std::deque<std::string> in;
+    in.swap(g_chatIn);
+    for (const std::string& l : in) {
+        if (l.empty()) g_whState.OnDisconnect(show);
+        else g_whState.OnServerLine(whisper::ParseServerLine(l), show);
+    }
+    return in.size();
+}
+
+// 입력 하나 — 귓속말 명령이면 true(원래 호출을 안 함)
+static bool WhisperInput(WhSite site, const whisper::Parsed& p)
+{
+    InterlockedIncrement(&g_whInput[(size_t)site][(size_t)p.cmd]);
+    if (p.cmd == whisper::Cmd::Plain) return false;
+    std::vector<whisper::Notice> show;
+    EnterCriticalSection(&g_chatCs);
+    const size_t got = WhisperDrainLocked(show);
+    const std::string line = g_whState.OnInput(p, g_chatUp, show);
+    if (!line.empty()) g_chatOut.push_back(line + "\r\n");
+    const size_t pend = g_whState.Pending();
+    LeaveCriticalSection(&g_chatCs);
+    for (const whisper::Notice& n : show) g_whBox.Push(n);
+    Log("귓속말 입력 — %s · %s · %s(받은 줄 %zu · 낼 것 %zu · 답 기다림 %zu)", WhSiteName(site), whisper::CmdName(p.cmd), line.empty() ? "안 보냄" : "보냄", got, show.size(), pend);
+    return true;
+}
+
+static void __cdecl WhGameChat(const wchar_t* text, int team)
+{
+    if (WhisperInput(WhSite::Game, whisper::ParseCommand(text, WhMyName()))) return;
+    ((PFN_chatSend)kChatSendFn)(text, team);
+}
+static int __cdecl WhRoomSend(const wchar_t* text)
+{
+    if (WhisperInput(WhSite::Room, whisper::ParseCommand(text, WhMyName()))) return 0;   // 부른 쪽(0x447abd 뒤)은 반환을 안 쓴다
+    return ((PFN_whRoomSend)kWhRoomSend)(text);
+}
+static int __cdecl WhListSend(const char* name, const wchar_t* text)
+{
+    WhisperInput(WhSite::List, whisper::ParseListWhisper(name, text, WhMyName()));   // 꼴 틀림이어도 정품 길로 안 보낸다(말없이 사라지는 대신 7번)
+    return 0;   // 0x446b84 — 0 이면 정품 「내 줄」을 건너뜀
+}
+
+static void WhRoomSink(const whisper::Notice& n)
+{
+    const whisper::RoomArgs a = whisper::RoomOf(n);
+    bool noOut = false;
+    if (a.plain) {
+        DWORD out = 0;
+        if (ReadSelf(kWhRoomOut, &out) && out) ((PFN_wndproc4)kWinCall94)(out, kMsgListAdd, (DWORD)(uintptr_t)a.text.c_str(), kWhPlainColor);
+        else { noOut = true; InterlockedIncrement(&g_whRoomNoOut); }
+    } else {
+        ((PFN_whRoomLine)kWhRoomLine)(a.name.c_str(), a.text.c_str(), 1, a.sent);
+    }
+    Log("귓속말 표시 — 대화방 줄 · %s%s", whisper::KindName(n.kind), noOut ? "(출력 칸 없음 — 안 냄)" : "");
+}
+static void WhCenterSink(const std::wstring& line)
+{
+    ((PFN_whCenter)kWhCenter)(line.c_str());
+    Log("귓속말 표시 — 판 가운데(%zu자)", whisper::CountChars(line));
+}
+
+// 매 틀(주 스레드) — 받은 줄을 판단 부품에 · 쥔 것을 지금 화면에
+static void WhisperTick()
+{
+    std::vector<whisper::Notice> show;
+    size_t got = 0;
+    if (g_chatStarted) {
+        EnterCriticalSection(&g_chatCs);
+        got = WhisperDrainLocked(show);
+        LeaveCriticalSection(&g_chatCs);
+    }
+    for (const whisper::Notice& n : show) g_whBox.Push(n);
+    if (got) Log("귓속말 주 스레드 — 받은 줄 %zu · 낼 것 %zu · 쥔 것 %zu · 답 기다림 %zu", got, show.size(), g_whBox.Held(), g_whState.Pending());
+    static size_t s_heldLogged = 0;
+    if (g_whBox.Held() == 0) { s_heldLogged = 0; return; }
+    DWORD chat = 0;
+    ReadSelf(kChatWin, &chat);
+    const whisper::Where w = whisper::ChooseShow(ChatVisible(), chat != 0, ((PFN_whPlay)kWhPlay)());
+    g_whBox.Pump(w, (uint64_t)GetTickCount(), WhRoomSink, WhCenterSink);
+    if (w == whisper::Where::Hold && g_whBox.Held() != s_heldLogged) {
+        s_heldLogged = g_whBox.Held();
+        Log("귓속말 쥔 것 %zu — 대화방 · 판이 아닌 화면(버림 누적 %llu)", s_heldLogged, (unsigned long long)g_whBox.GetStats().dropped);
+    }
 }
 
 static const uintptr_t kDrawAll = 0x489bf0;
@@ -3728,6 +3912,11 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID)
             HookCallSite(kListRowCallB, kListRowFn, (void*)ListRowHook, "㉓ 목록 줄 — 다시 그리기");
         }
         if (gameOk) HookCallSite(kMainLoopCallMenu, kMainLoop, (void*)MenuLoopEntry, "⑱ 메뉴 주 고리");   // ★ 11-02 — 판 안에서 창 닫기
+        if (gameOk) {   // ★ 11-06 귓속말 조각 5 — 입력 잡기 셋(묶음 설명은 WhisperInput 위)
+            HookCallSite(kWhGameChatCall, kChatSendFn, (void*)WhGameChat, "귓속말 — 판 채팅 입력");
+            HookCallSite(kWhRoomSendCall, kWhRoomSend, (void*)WhRoomSend, "귓속말 — 대화방 입력");
+            HookCallSite(kWhListCall, kWhPriv, (void*)WhListSend, "귓속말 — 대화방 고른 줄(정품 비공개)");
+        }
     }
     return TRUE;
 }

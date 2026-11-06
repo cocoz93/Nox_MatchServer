@@ -195,6 +195,19 @@ inline std::string TrimListName(const char* name) {
     return n.substr(a, b - a + 1);
 }
 
+// ★ 조각 5 — 정품 비공개 요청 0x41f430(대화방 명단에서 줄을 고르고 친 글 · 사람 확인 103)의 이름 · 글 → `/w 이름 글` 과 같은 판단(제어 글자 · 빈 글 · 자기에게 · 80자).
+//   이름을 먼저 본다 — 계정 규칙 밖(빈 이름 포함)이면 꼴 틀림(7번). 이름을 안 보고 글 앞에 붙이면 빈 이름일 때 글의 첫 낱말이 대상이 된다
+inline Parsed ParseListWhisper(const char* listName, const wchar_t* text, const std::string& myName) {
+    const std::string name = TrimListName(listName);
+    if (!IsName(name)) {
+        Parsed p;
+        p.cmd = Cmd::WhisperForm;
+        return p;
+    }
+    const std::wstring raw = L"/w " + ToWide(name) + L" " + (text != nullptr ? std::wstring(text) : std::wstring());
+    return ParseCommand(raw.c_str(), myName);
+}
+
 // ─────────────── 표시 자리
 
 enum class Where : uint8_t { Room, Center, Hold, kCount };

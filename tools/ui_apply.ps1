@@ -84,7 +84,11 @@ $csfSwaps = @(
   @{ name = 'Noxworld.wnd:Ping'; orig = '핑'; new = '맵' },
   # ★ 11-05 — 서버가 판 안 이름을 로비 이름으로 덮으면 방에 들 때 클라가 한 번 찍는 문구(`cdecode.c:1470` · 실물 _out/qa_1105/o1/o0_room_2s_c1.png). 왜 바뀌었는지 알게
   @{ name = 'Cdecode.c:NameChange'; orig = '서버에서 당신의 이름을 %s로 바꾸었습니다.'; new = '게임 안에서는 계정 이름 %s(으)로 표시됩니다.' },
-  @{ name = 'WolFind.wnd:WindowTitle'; orig = '찾기/호출'; new = '유저 찾기' })   # ★ 11-04 플랜1 — 「호출!」 단추를 숨겨 제목만 남아 있었음. wolfind.wnd 만 쓰는 열쇠
+  @{ name = 'WolFind.wnd:WindowTitle'; orig = '찾기/호출'; new = '유저 찾기' },   # ★ 11-04 플랜1 — 「호출!」 단추를 숨겨 제목만 남아 있었음. wolfind.wnd 만 쓰는 열쇠
+  # ★ 11-06 귓속말 조각 5 — 대화방의 귓속말 줄 머리(플랜 `Docs/MO_WHISPER_PLAN_1105.md` 7절 1 · 2번). 정품 0x446d20 만 읽는 문구 둘(`0x69c900` · `0x69c904` · 읽는 자리 0x446d95 · 0x446d65)
+  #   %S = 이름(좁은 글자) · %s = 글 — 차례를 바꾸지 않는다(0x446d20 이 그 차례로 넘김). 원래 값은 실물 nox.csf 에서 읽음(_out/whisper/csfget.py)
+  @{ name = 'WolChat.c:Privatemessage'; orig = '<비공개 참여불가자 %S> %s'; new = '<%S 님의 귓속말> %s' },
+  @{ name = 'WolChat.c:PrivateTomessage'; orig = '<비공개 참여자 %S> %s'; new = '<%S 님에게 귓속말> %s' })
 # ★ 11-04 플랜1 — 새 창 파일. 원본 = 없음 · 적용됨 = 이 바이트 그대로 · 다르면 모름(남의 파일을 지우지 않게)
 #   ENABLEDIMAGE = NULL — 정품은 꺼져도 앞 그림(ENABLED)을 그린다. 꺼진 그림은 뒤 칸만 바꿔(`widget_button.go` buttonDrawImg · 원본 기준) 앞 그림이 있으면 빨강 그대로(11-04 캡처 s2)
 #   글자 · 칸 색은 정품 창과 같은 꼴 · 머리 좌표 0 0(DLL 이 옮김 — 판 밖 좌표는 파일로 못 넣음) · 그림은 대화방 「뒤로」와 같은 큰 단추(시안)
