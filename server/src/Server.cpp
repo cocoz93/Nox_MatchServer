@@ -1865,6 +1865,21 @@ void Server::RestartPlayers() {
     for (Team& t : teams_) t.score = 0;
 }
 
+// ★ 11-06 진단 — 머리 주석은 `Server.h` `DebugKillPair`. 죽이는 길은 `--debug-kill` 과 같은 `Damage`(킬 처리 · 점수 · `RoundCheckLimit`)
+bool Server::DebugKillPair(bool flip) {
+    int64_t first = kNoSession, second = kNoSession;
+    for (auto& kv : sessions_) {
+        if (!kv.second.inGame || kv.second.observer || kv.second.respawnAtFrame != 0) continue;
+        if (first == kNoSession) first = kv.first;
+        else { second = kv.first; break; }
+    }
+    if (first == kNoSession || second == kNoSession) return false;
+    const int64_t killer = flip ? second : first, victim = flip ? first : second;
+    Log("[진단] 프레임 %u — %s 가 %s 를 죽인다(반복 진단)\n", frame_, AddrText(killer), AddrText(victim));
+    Damage(victim, 9999, killer, nullptr, /*ignoreInvuln=*/true);
+    return true;
+}
+
 // ★ 매칭 손보기 3 — 머리 주석은 `Server.h` `RestartInPlace`. `RestartPlayers` 와 달리 클라가 맵을 안 지우므로 알림을 직접 낸다(부활 길)
 void Server::RestartInPlace() {
     size_t n = 0;

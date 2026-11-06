@@ -438,6 +438,9 @@ int main(int argc, char** argv) {
         } else if (a == "--debug-kill" && i + 1 < argc) {
             // 진단 — N틱 뒤 첫 사람이 둘째를 죽인 것으로 친다(킬→점수→판끝 사슬 확인용)
             opt.room.debugKillAfter = std::atoi(argv[++i]);
+        } else if (a == "--debug-kill-every" && i + 1 < argc) {
+            // ★ 11-06 진단 — 판 중에만 N틱마다 번갈아 죽인다(N킬 판이 끝까지 가나 · 부활이 반복되나 · `--auto-respawn` 과 같이 쓴다)
+            opt.room.debugKillEvery = std::atoi(argv[++i]);
         } else if (a == "--debug-score" && i + 2 < argc) {
             // 진단 — N틱 뒤 첫 사람의 점수를 <점수> 로 만든다(판 끝 사슬 확인용)
             opt.room.debugScoreAfter = std::atoi(argv[++i]);

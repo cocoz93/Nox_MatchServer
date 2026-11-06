@@ -112,6 +112,7 @@ struct RoomSettings {
     int debugWarpAfter = 0, debugWarpX = 0, debugWarpY = 0;
     int debugWallAfter = 0, debugWallGx = 0, debugWallGy = 0;
     int debugKillAfter = 0;         // 진단 — N틱 뒤 첫 사람이 둘째를 죽인다 (0 끔)
+    int debugKillEvery = 0;         // ★ 11-06 진단 --debug-kill-every N — 판 중에만 N틱마다 산 사람 둘이 번갈아 죽인다 (0 끔 · 부활은 --auto-respawn)
     int debugScoreAfter = 0;        // 진단 — N틱 뒤 첫 사람 점수를 올린다 (0 끔)
     int debugScoreVal = 0;
     int debugCrashAfter = 0;        // 진단 --debug-crash N — N 틱 뒤 일부러 죽는다(크래시 덤프 확인 · 0 끔 · 10-08)

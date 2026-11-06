@@ -370,6 +370,16 @@ void nox::CRoom::TickDiagnostics(size_t made) {
     unsigned long long& tracePetsInWall = _tracePetsInWall;
     unsigned long long& tracePetsSamples = _tracePetsSamples;
     const int64_t bot0Sid = _bot0Sid;
+    // ★ 11-06 진단 `--debug-kill-every N` — 판 중에만 N틱마다 번갈아 죽인다. 대기 맵에선 안 셈(대기 중 죽이면 판 시작 전 점수가 섞임)
+    if (opt.debugKillEvery > 0 && _phase == RoomPhase::Playing) {
+        if (++_debugKillTicks >= static_cast<uint32_t>(opt.debugKillEvery) && srv.DebugKillPair((_debugKillCount & 1) != 0)) {
+            ++_debugKillCount;
+            _debugKillTicks = 0;
+            srv.Log("[진단] 반복 처치 %u번째 · 틱 %u\n", _debugKillCount, srv.frame());
+        }
+    } else {
+        _debugKillTicks = 0;
+    }
     // ★ 09-20 6-j(3) — 크리처 추적. **조용한 주행에서도 찍는다**(판정에 쓰는 줄이라)
     if (opt.tracePets > 0 && (srv.frame() % static_cast<uint32_t>(opt.tracePets)) == 0) {
         for (size_t pi = 0; pi < srv.petCount(); ++pi) {

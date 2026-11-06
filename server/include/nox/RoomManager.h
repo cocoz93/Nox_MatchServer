@@ -214,6 +214,7 @@ private:
     WorldExtras _extras;                       // 월드 차리기가 남긴 것(맵 깃발 자리 · 서버 찾기 답의 맵 이름)
     int64_t _bot0Sid = -1;                     // `[성장]` 줄의 봇 세션 — 통신 층 값이라 스레드를 띄우기 전에 읽어 둔다
     bool _modeStarted = false;
+    uint32_t _debugKillTicks = 0, _debugKillCount = 0;   // ★ 11-06 진단 `--debug-kill-every` — 판 중 지난 틱 · 죽인 수
     unsigned long long _tracePetsInWall = 0;   // ③ 크리처가 **벽 칸 안**에 있던 표본 수
     unsigned long long _tracePetsSamples = 0;  // 그 분모 — 0 옆에 늘 지나간 양을 같이 읽는다
     unsigned long long _lastAbilFp = 0;        // 조용한 주행의 능력 갈래 지문(옛 루프 안 `static`)
