@@ -114,6 +114,7 @@
 #include <stdarg.h>
 #include <string.h>
 
+#include <deque>    // ★ 11-06 귓속말 조각 4 — 둘째 연결이 받은 줄 큐
 #include <map>
 #include <string>
 #include <vector>
@@ -392,10 +393,9 @@ static bool g_hostGameOn = false;       // ⑥ Host Game 돌리기 스레드(판
 static volatile LONG g_ourLobby = 0;    // ⑤ · ⑥ 지금 로비 연결이 `NOXSERVER` 를 보냈나 — 새 로비 연결마다 0
 static volatile LONG g_lobbyIp = 0;     // 그 로비 연결의 상대 IPv4(a<<24|b<<16|c<<8|d) — 채널이 곧 게임 서버
 static std::string g_nick;              // ⑤ · ⑥ 로비 로그인의 `NICK <닉>` — g_tokCs 로 지킨다
-// ★ 11-06 귓속말 조각 3 — 로비가 알린 채팅 서버(`NOXCHAT a.b.c.d:포트`). 둘째 스레드(조각 4)가 읽는다 · 0 = 아직 못 받음
-static volatile LONG g_chatIp = 0;      // a<<24|b<<16|c<<8|d(g_lobbyIp 와 같은 차례)
-static volatile LONG g_chatPort = 0;
+// ★ 11-06 귓속말 조각 3 — 로비가 알린 채팅 서버(`NOXCHAT a.b.c.d:포트`). ★ 조각 4 — 주소는 둘째 연결의 대상(`g_chatTarget` · 아래 「둘째 연결」)에 적는다
 static volatile LONG g_chatNotices = 0; // 받은 NOXCHAT 줄 수(꼴 틀림 포함 — 다시 로그인할 때마다 하나)
+static std::string g_loginName;         // ★ 귓속말 조각 4 — `AuthLogin` 이 받은 로그인 이름(NICK) · 둘째 연결의 AUTH 이름 · g_tokCs 로 지킨다
 
 static std::string MyRoomLine(const std::vector<std::string>& items);
 static void RankListArrived();   // ★ 11-05 플랜1 — `RankListBusy`
@@ -456,10 +456,43 @@ static std::string LaunchName()
 //   ★ 10-28 다른 PC — 환경변수 NOX_AUTH_PIN(서버 인증서 SHA-256 16진 64자 · 꾸러미 2_PLAY 가 넣음)이 있으면 윈도 검사 대신 그 지문으로 가른다
 static volatile LONG g_loginKeyInvalid = 0;   // ★ 11-04 플랜1 — 마지막 로그인 답이 열쇠 거절이었나(`NXL!key_invalid`) · 실패 안내를 고른다(받기 스레드 → 주 스레드)
 static volatile LONG g_loginBannedUntil = 0;   // ★ 11-05 플랜1 — 마지막 로그인 답의 정지 끝 시각(0 = 정지 아님 · 받기 스레드 → 주 스레드 · `LoginNotice.h`)
+
+// ★ 11-06 귓속말 조각 4 — 로그인 서버 기준 주소(길 없음): NOX_AUTH_URL 이 있으면 그것, 없으면 이 로비 연결의 상대 IP : 8443. false = 상대 주소를 못 읽음
+//   `AuthLogin` 과 둘째 연결(`ChatNote` — 로비 소켓이 살아 있는 NOXCHAT 처리 때 한 번)이 같이 쓴다
+static bool AuthUrlOf(SOCKET s, std::wstring& url)
+{
+    wchar_t over[512];
+    const DWORD en = GetEnvironmentVariableW(L"NOX_AUTH_URL", over, 512);
+    if (en > 0 && en < 512) {
+        url = over;
+        return true;
+    }
+    typedef int (WSAAPI* PFN_getpeername)(SOCKET, struct sockaddr*, int*);
+    sockaddr_in peer = {};
+    int plen = (int)sizeof(peer);
+    if (((PFN_getpeername)Resolve(5))(s, (struct sockaddr*)&peer, &plen) != 0 || peer.sin_family != AF_INET) return false;
+    const unsigned char* b = (const unsigned char*)&peer.sin_addr;
+    wchar_t buf[64];
+    swprintf(buf, 64, L"https://%u.%u.%u.%u:8443", b[0], b[1], b[2], b[3]);
+    url = buf;
+    return true;
+}
+
+// ★ 조각 4 — 환경변수 NOX_AUTH_PIN(10-28 다른 PC · 서버 인증서 지문). `AuthLogin` 에서 뗐다
+static std::string AuthPinHex()
+{
+    char pin[80] = {};
+    const DWORD pn = GetEnvironmentVariableA("NOX_AUTH_PIN", pin, sizeof(pin));
+    return pn > 0 && pn < sizeof(pin) ? std::string(pin, pn) : std::string(pn ? "?" : "");   // 너무 길면 틀린 꼴로 넘겨 붙지 않게
+}
+
 static std::string AuthLogin(SOCKET s, const std::string& name, const std::string& password)
 {
     InterlockedExchange(&g_loginBannedUntil, 0);
     (void)password;   // ★ 런처 P4 — 정품 창의 암호 칸은 쓰지 않는다(선에도 안 나감 — apgar 자리를 통째로 바꿈)
+    EnterCriticalSection(&g_tokCs);
+    g_loginName = name;   // ★ 귓속말 조각 4 — 둘째 연결이 이 이름으로 AUTH(런처 · 열쇠 유무와 상관없이 — 아이디만 판 로비도 이 이름으로 받음)
+    LeaveCriticalSection(&g_tokCs);
     if (LaunchName().empty()) {
         if (g_log[0]) Detail("로그인 서버 안 부름 s=%u — 런처로 안 켬(NOX_LAUNCH 없음) → NXL!launcher_required", (unsigned)s);
         return authclient::detail::FailLine(nox::LoginFail::LauncherRequired);
@@ -470,26 +503,11 @@ static std::string AuthLogin(SOCKET s, const std::string& name, const std::strin
         InterlockedExchange(&g_loginKeyInvalid, 1);
         return authclient::detail::FailLine(nox::LoginFail::KeyInvalid);
     }
-    char pin[80] = {};
-    const DWORD pn = GetEnvironmentVariableA("NOX_AUTH_PIN", pin, sizeof(pin));
-    const std::string pinHex = pn > 0 && pn < sizeof(pin) ? std::string(pin, pn) : std::string(pn ? "?" : "");   // 너무 길면 틀린 꼴로 넘겨 붙지 않게
+    const std::string pinHex = AuthPinHex();
     std::wstring url;
-    wchar_t over[512];
-    const DWORD en = GetEnvironmentVariableW(L"NOX_AUTH_URL", over, 512);
-    if (en > 0 && en < 512) {
-        url = over;
-    } else {
-        typedef int (WSAAPI* PFN_getpeername)(SOCKET, struct sockaddr*, int*);
-        sockaddr_in peer = {};
-        int plen = (int)sizeof(peer);
-        if (((PFN_getpeername)Resolve(5))(s, (struct sockaddr*)&peer, &plen) != 0 || peer.sin_family != AF_INET) {
-            if (g_log[0]) Detail("로그인 서버 호출 못 함 — 로비 연결의 상대 주소를 못 읽음 s=%u", (unsigned)s);
-            return authclient::detail::FailLine(nox::LoginFail::Unreachable);
-        }
-        const unsigned char* b = (const unsigned char*)&peer.sin_addr;
-        wchar_t buf[64];
-        swprintf(buf, 64, L"https://%u.%u.%u.%u:8443", b[0], b[1], b[2], b[3]);
-        url = buf;
+    if (!AuthUrlOf(s, url)) {
+        if (g_log[0]) Detail("로그인 서버 호출 못 함 — 로비 연결의 상대 주소를 못 읽음 s=%u", (unsigned)s);
+        return authclient::detail::FailLine(nox::LoginFail::Unreachable);
     }
     url = authclient::WithPath(url, L"/token");
     const authclient::Result r = authclient::Token(url, name, key, authclient::kTimeoutMs, pinHex);
@@ -505,6 +523,326 @@ static std::string AuthLogin(SOCKET s, const std::string& name, const std::strin
         if (nox::ParseBanUntil(r.detail, until)) InterlockedExchange(&g_loginBannedUntil, (LONG)until);
     }
     return r.line;
+}
+
+// ─────────────── ★ 11-06 귓속말 조각 4 — 둘째 연결(채팅 서버 nox_chat · 플랜 `Docs/MO_WHISPER_PLAN_1105.md` 5절 「둘째 스레드」)
+//   로비 받기 스레드의 NOXCHAT 처리(`ChatNote`)가 대상(주소 · 로그인 이름 · 로그인 서버 주소)을 적고 깨운다 → 둘째 스레드(`ChatThread`)가 연결 → /token → AUTH → 받기.
+//   받은 F · TO · NOUSER · LIMIT 은 잠금 걸린 큐(`g_chatIn`)로 → 주 스레드 `FrameTick` 의 `WhisperTick` 이 꺼내 판단 부품(`WhisperCore.h`)에 넣는다(게임 함수는 주 스레드에서만).
+//   소켓 함수는 진짜 wsock32(`Resolve`) — 우리 훅(로비 줄 거름 · 기록 · 로그인 줄 바꿔쓰기)을 안 탄다.
+//   `AuthLogin` 을 그대로 안 쓰는 까닭: 소켓 번호는 닫힌 뒤 다른 소켓에 다시 쓰여 엉뚱한 곳에 열쇠를 보낼 수 있고, `g_loginKeyInvalid` · `g_loginBannedUntil` 은
+//   로비 실패 안내가 읽는다(둘째 연결은 둘 다 안 건드림). 그래서 로비 소켓이 살아 있는 NOXCHAT 처리 때 로그인 서버 주소를 한 번 구해 둔다.
+//   토큰은 채팅 서버에 붙은 뒤에 받는다 — 채팅 서버가 죽었을 때 모두가 로그인 서버를 치지 않게(플랜 5절)
+struct ChatTarget {
+    uint32_t ip = 0;        // a<<24|b<<16|c<<8|d(g_lobbyIp 와 같은 차례)
+    uint16_t port = 0;
+    std::string name;       // AuthLogin 이 받은 로그인 이름
+    std::wstring authUrl;   // 로그인 서버 기준 주소(빈 글자 = 못 구함 → 토큰 못 받음)
+    std::string pin;        // NOX_AUTH_PIN
+    LONG gen = 0;           // NOXCHAT 을 받을 때마다 하나씩(0 = 아직 없음)
+};
+static CRITICAL_SECTION g_chatCs;
+static ChatTarget g_chatTarget;             // g_chatCs
+static std::deque<std::string> g_chatIn;    // 받은 줄(둘째 → 주) · 빈 글자 = AUTHOK 받은 연결이 끊김 · g_chatCs
+static HANDLE g_chatWake = NULL;            // 새 NOXCHAT → 다시 붙기 기다림 · 멈춤에서 깸(자동 리셋) · g_chatCs 아래 한 번 만듦
+static volatile LONG g_chatStarted = 0;     // 둘째 스레드를 띄웠나(주 스레드가 잠금 없이 봄)
+static volatile LONG g_chatInDropped = 0;   // 큐가 넘쳐 버린 줄
+static const size_t kChatInMax = 200;       // 주 스레드가 못 비우는 동안(그리기 고리가 안 도는 화면) 쌓이는 한도 — 넘치면 오래된 것부터 버리고 셈
+static const DWORD kChatConnectMs = 3000;   // 붙기 한도 — 죽은 주소에 윈도 기본(약 21초)만큼 안 막히게
+static const DWORD kChatSilentMs = 90000;   // 서버는 30초 조용하면 PING(`ChatHub.h` kChatPingMs) — 90초 아무것도 안 오면 끊긴 것으로(서버 kChatIdleMs 와 같은 값)
+static const size_t kChatLineMax = 4096;    // 줄바꿈 없이 이만큼 오면 끊음(서버 `TcpLines.h` kMaxLine 과 같은 값)
+
+typedef SOCKET(WSAAPI* PFN_wscSocket)(int, int, int);
+typedef int(WSAAPI* PFN_wscConnect)(SOCKET, const struct sockaddr*, int);
+typedef int(WSAAPI* PFN_wscIoctl)(SOCKET, long, u_long*);
+typedef int(WSAAPI* PFN_wscSelect)(int, fd_set*, fd_set*, fd_set*, const struct timeval*);
+typedef int(WSAAPI* PFN_wscSend)(SOCKET, const char*, int, int);
+typedef int(WSAAPI* PFN_wscRecv)(SOCKET, char*, int, int);
+typedef int(WSAAPI* PFN_wscClose)(SOCKET);
+typedef int(WSAAPI* PFN_wscErr)(void);
+typedef int(WSAAPI* PFN_wscStartup)(WORD, LPWSADATA);
+
+static bool ChatSendAll(SOCKET s, const std::string& d)
+{
+    for (size_t i = 0; i < d.size();) {
+        const int r = ((PFN_wscSend)Resolve(19))(s, d.data() + i, (int)(d.size() - i), 0);
+        if (r <= 0) return false;
+        i += (size_t)r;
+    }
+    return true;
+}
+
+// 받은 줄 하나를 주 스레드 큐에 — F · TO · NOUSER · LIMIT 만(그 밖은 이 스레드가 끝냄). 빈 글자 = 끊김 표시
+static void ChatQueue(const std::string& line)
+{
+    EnterCriticalSection(&g_chatCs);
+    if (g_chatIn.size() >= kChatInMax) {
+        g_chatIn.pop_front();
+        const LONG n = InterlockedIncrement(&g_chatInDropped);
+        if (n == 1 || n % 50 == 0) Log("귓속말 받은 줄 큐가 넘쳐 오래된 것을 버림(누적 %ld) — 주 스레드가 못 비움", n);
+    }
+    g_chatIn.push_back(line);
+    const size_t q = g_chatIn.size();
+    LeaveCriticalSection(&g_chatCs);
+    if (!line.empty()) Log("귓속말 받음 %s(큐 %zu)", line.substr(0, line.find(' ')).c_str(), q);   // 낱말만 — 이름 · 글은 기록에 안 남김(서버와 같음)
+}
+
+struct ChatEnd {
+    whisper::Drop why = whisper::Drop::ConnectFail;
+    bool authed = false;   // AUTHOK 를 받았나 — 받았으면 다시 붙기 간격을 3초로 되돌린다
+    bool moved = false;    // 새 NOXCHAT 의 주소 · 이름이 달라 끊음 — 곧바로 다시
+    LONG gen = 0;          // 이 연결이 받아들인 마지막 NOXCHAT 차례 번호 — 같은 대상의 NOXCHAT(같은 계정으로 다시 로그인)은 연결을 그대로 두고 받아들인다
+};
+
+// 연결 하나 — 붙기 → 토큰 → AUTH → 받기 고리. 끝난 까닭을 돌려준다
+static ChatEnd ChatSession(const ChatTarget& t)
+{
+    ChatEnd e;
+    e.gen = t.gen;
+    const unsigned a0 = t.ip >> 24, a1 = (t.ip >> 16) & 255, a2 = (t.ip >> 8) & 255, a3 = t.ip & 255;
+    if (t.name.empty()) {   // 로그인 줄이 이 DLL 을 안 지났다 — 이름 없이는 서버가 꼴 틀림으로 거절하므로 붙지 않는다
+        e.why = whisper::Drop::AuthForm;
+        Log("귓속말 — 로그인 이름을 못 봄(로그인 줄이 이 DLL 을 안 지남) · 안 붙음");
+        return e;
+    }
+    const SOCKET s = ((PFN_wscSocket)Resolve(23))(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s == INVALID_SOCKET) {
+        Log("귓속말 소켓 못 만듦 err=%d", ((PFN_wscErr)Resolve(111))());
+        return e;
+    }
+    sockaddr_in addr = {};
+    addr.sin_family = AF_INET;
+    addr.sin_port = (u_short)(((t.port & 0xff) << 8) | (t.port >> 8));   // 망 차례(htons — 이 DLL 은 바이트 차례 함수를 들여오지 않는다)
+    addr.sin_addr.s_addr = (t.ip >> 24) | ((t.ip >> 8) & 0xff00) | ((t.ip & 0xff00) << 8) | ((t.ip & 0xff) << 24);
+    u_long nb = 1;
+    ((PFN_wscIoctl)Resolve(12))(s, FIONBIO, &nb);
+    const DWORD t0 = GetTickCount();
+    bool up = ((PFN_wscConnect)Resolve(4))(s, (const struct sockaddr*)&addr, sizeof(addr)) == 0;
+    if (!up && ((PFN_wscErr)Resolve(111))() == WSAEWOULDBLOCK) {
+        fd_set wf, ef;
+        FD_ZERO(&wf); FD_ZERO(&ef);
+        FD_SET(s, &wf); FD_SET(s, &ef);
+        timeval tv = { (long)(kChatConnectMs / 1000), (long)(kChatConnectMs % 1000) * 1000 };
+        up = ((PFN_wscSelect)Resolve(18))(0, NULL, &wf, &ef, &tv) > 0 && wf.fd_count == 1;   // 못 붙으면 ef 쪽에 선다(FD_ISSET 은 들여오는 함수라 안 씀)
+    }
+    if (!up) {
+        ((PFN_wscClose)Resolve(3))(s);
+        Log("귓속말 서버에 못 붙음 — %u.%u.%u.%u:%u(%lums)", a0, a1, a2, a3, t.port, GetTickCount() - t0);
+        return e;
+    }
+    nb = 0;
+    ((PFN_wscIoctl)Resolve(12))(s, FIONBIO, &nb);
+    Log("귓속말 서버에 붙음 — %u.%u.%u.%u:%u(%lums)", a0, a1, a2, a3, t.port, GetTickCount() - t0);
+
+    // 토큰 — 런처 열쇠가 있으면 /token(최대 3초 · 이 스레드라 게임은 안 막힘). 열쇠가 없으면 토큰 없이(아이디만 판 채팅 서버만 받고 토큰 판은 AUTHNO form → 멈춤)
+    std::string auth = "AUTH " + t.name;
+    std::string key;
+    if (!LaunchName().empty() && launchkey::Load(t.name, key)) {
+        authclient::Result r;
+        if (t.authUrl.empty()) r.line = authclient::detail::FailLine(nox::LoginFail::Unreachable);
+        else r = authclient::Token(authclient::WithPath(t.authUrl, L"/token"), t.name, key, authclient::kTimeoutMs, t.pin);
+        SecureZeroMemory(&key[0], key.size());
+        std::string hex;
+        whisper::Drop why = whisper::Drop::TokenUnreachable;
+        const bool ok = whisper::TokenOfLine(r.line, hex, why);
+        Log("귓속말 토큰 — 상태=%d 오류=%lu %lums → %s", r.status, r.error, r.ms, ok ? "받음" : r.line.c_str());   // 토큰 글은 기록에 안 남김
+        if (!ok) {
+            ((PFN_wscClose)Resolve(3))(s);
+            e.why = why;
+            return e;
+        }
+        auth += " " + hex;
+        SecureZeroMemory(&hex[0], hex.size());
+    } else {
+        Log("귓속말 — 런처 열쇠가 없어 토큰 없이 AUTH(아이디만 판 채팅 서버만 받음)");
+    }
+    auth += "\r\n";
+    const bool sent = ChatSendAll(s, auth);
+    SecureZeroMemory(&auth[0], auth.size());
+    if (!sent) {
+        ((PFN_wscClose)Resolve(3))(s);
+        e.why = whisper::Drop::Lost;
+        Log("귓속말 AUTH 못 보냄 err=%d", ((PFN_wscErr)Resolve(111))());
+        return e;
+    }
+
+    // 받기 고리 — 50ms 마다 새 NOXCHAT 을 본다(주소 · 이름이 바뀌었으면 끊고 새로)
+    std::string buf;
+    DWORD lastRecv = GetTickCount();
+    bool end = false;
+    char tmp[1024];
+    while (!end) {
+        EnterCriticalSection(&g_chatCs);
+        if (g_chatTarget.gen != e.gen) {
+            e.moved = g_chatTarget.ip != t.ip || g_chatTarget.port != t.port || g_chatTarget.name != t.name;
+            e.gen = g_chatTarget.gen;   // 같은 대상이면(같은 계정으로 다시 로그인) 이 연결 그대로 — 그 NOXCHAT 은 이 연결이 받아들임
+        }
+        LeaveCriticalSection(&g_chatCs);
+        if (e.moved) {
+            e.why = whisper::Drop::Lost;
+            Log("귓속말 — 새 NOXCHAT 의 주소 · 이름이 달라 끊고 새로 붙음");
+            break;
+        }
+        fd_set rf;
+        FD_ZERO(&rf);
+        FD_SET(s, &rf);
+        timeval tv = { 0, 50 * 1000 };
+        const int sr = ((PFN_wscSelect)Resolve(18))(0, &rf, NULL, NULL, &tv);
+        if (sr == 0) {
+            if (GetTickCount() - lastRecv < kChatSilentMs) continue;
+            e.why = whisper::Drop::Lost;
+            Log("귓속말 서버가 %lu초 동안 아무것도 안 보냄 — 끊긴 것으로", kChatSilentMs / 1000);
+            break;
+        }
+        const int r = sr < 0 ? -1 : ((PFN_wscRecv)Resolve(16))(s, tmp, (int)sizeof(tmp), 0);
+        if (r <= 0) {
+            e.why = whisper::Drop::Lost;
+            Log("귓속말 연결 끊김 r=%d err=%d", r, r < 0 ? ((PFN_wscErr)Resolve(111))() : 0);
+            break;
+        }
+        lastRecv = GetTickCount();
+        buf.append(tmp, (size_t)r);
+        for (size_t p; !end && (p = buf.find('\n')) != std::string::npos;) {
+            std::string line = buf.substr(0, p);
+            buf.erase(0, p + 1);
+            if (!line.empty() && line.back() == '\r') line.pop_back();   // 서버는 \r\n(`TcpLines.cpp` Send)
+            const whisper::ServerLine sl = whisper::ParseServerLine(line);
+            switch (sl.kind) {
+            case whisper::Line::AuthOk:
+                e.authed = true;
+                Log("귓속말 로그인 됨 — %s", t.name.c_str());
+                break;
+            case whisper::Line::AuthNo:
+                e.why = whisper::DropOfAuthNo(sl.text);
+                Log("귓속말 로그인 거절 — AUTHNO %s", sl.text.c_str());
+                end = true;
+                break;
+            case whisper::Line::Kicked:
+                e.why = whisper::Drop::Kicked;
+                Log("귓속말 — KICKED(같은 이름이 다른 게임에서 새로 붙음)");
+                end = true;
+                break;
+            case whisper::Line::Ping:
+                if (!ChatSendAll(s, "PONG\r\n")) { e.why = whisper::Drop::Lost; end = true; }
+                break;
+            case whisper::Line::Pong:
+                break;
+            case whisper::Line::From:
+            case whisper::Line::To:
+            case whisper::Line::NoUser:
+            case whisper::Line::Limit:
+                ChatQueue(line);
+                break;
+            case whisper::Line::Unknown:
+            case whisper::Line::kCount:
+                Log("귓속말 모르는 줄 %zu바이트 — 버림", line.size());
+                break;
+            }
+        }
+        if (!end && buf.size() > kChatLineMax) {
+            e.why = whisper::Drop::Lost;
+            Log("귓속말 줄바꿈 없이 %zu바이트 — 끊음", buf.size());
+            break;
+        }
+    }
+    ((PFN_wscClose)Resolve(3))(s);
+    if (e.authed) ChatQueue(std::string());   // 끊김 표시 — 답을 못 받은 보낸 글을 주 스레드가 8번으로
+    return e;
+}
+
+static DWORD WINAPI ChatThread(LPVOID)
+{
+    WSADATA wd = {};
+    const int st = ((PFN_wscStartup)Resolve(115))(MAKEWORD(2, 2), &wd);   // 자기 참조 수 — Game.exe 가 WSACleanup 을 불러도(10곳) 이 연결은 산다(플랜 5절)
+    Log("귓속말 둘째 스레드 %lu 시작 — WSAStartup %d", GetCurrentThreadId(), st);
+    uint32_t failures = 0;   // 이어진 실패(AUTHOK 받으면 0 · 새 NOXCHAT 이면 0)
+    LONG seenGen = 0, stoppedGen = 0;
+    for (;;) {
+        ResetEvent(g_chatWake);   // 이미 읽을 NOXCHAT 의 깨움을 지운다 — 차례 번호를 이 뒤에 읽으므로 그다음 깨움은 안 놓친다
+        EnterCriticalSection(&g_chatCs);
+        const ChatTarget t = g_chatTarget;
+        LeaveCriticalSection(&g_chatCs);
+        if (t.gen == stoppedGen) {   // 멈춤 — 다음 NOXCHAT(로비에 다시 로그인)까지
+            WaitForSingleObject(g_chatWake, INFINITE);
+            continue;
+        }
+        if (t.gen != seenGen) {
+            seenGen = t.gen;
+            failures = 0;
+        }
+        const ChatEnd e = ChatSession(t);
+        seenGen = e.gen;   // 연결 중에 받아들인 같은 대상의 NOXCHAT 으로는 실패 수를 안 지운다
+        if (e.moved) continue;
+        if (e.authed) failures = 0;
+        if (!whisper::ShouldRetry(e.why)) {
+            stoppedGen = e.gen;   // 연결이 받아들인 NOXCHAT 까지는 멈춤 앞의 것 — 멈출 까닭이 온 뒤의 NOXCHAT(새 로그인)만 다시 붙게
+            Log("귓속말 멈춤 — %s · 다음 NOXCHAT(로비에 다시 로그인)까지 안 붙음", whisper::DropName(e.why));
+            continue;
+        }
+        ResetEvent(g_chatWake);
+        EnterCriticalSection(&g_chatCs);
+        const LONG now = g_chatTarget.gen;
+        LeaveCriticalSection(&g_chatCs);
+        if (now != e.gen) {   // 붙기 · 토큰 동안 새 NOXCHAT — 새 로그인이니 기다리지 않는다(위에서 실패 수도 0)
+            Log("귓속말 — 연결 중에 새 NOXCHAT(%ld번째) · 기다리지 않고 다시(%s)", now, whisper::DropName(e.why));
+            continue;
+        }
+        LARGE_INTEGER q;
+        QueryPerformanceCounter(&q);
+        const uint32_t wait = whisper::NextRetryMs(failures, (uint32_t)q.LowPart);
+        ++failures;
+        Log("귓속말 다시 붙기 %ums 뒤 — %s(이어진 실패 %u)", wait, whisper::DropName(e.why), failures);
+        WaitForSingleObject(g_chatWake, wait);   // 새 NOXCHAT 이면 일찍 깬다
+    }
+}
+
+// NOXCHAT 처리(로비 받기 스레드) — 대상을 적고 둘째 스레드를 깨운다(처음이면 띄운다). 로그인 서버 주소는 로비 소켓이 살아 있는 지금 구한다
+static void ChatNote(SOCKET s, uint32_t ip, uint16_t port)
+{
+    std::wstring url;
+    const bool urlOk = AuthUrlOf(s, url);
+    const std::string pin = AuthPinHex();
+    EnterCriticalSection(&g_tokCs);
+    const std::string name = g_loginName;
+    LeaveCriticalSection(&g_tokCs);
+    EnterCriticalSection(&g_chatCs);
+    g_chatTarget.ip = ip;
+    g_chatTarget.port = port;
+    g_chatTarget.name = name;
+    g_chatTarget.authUrl = urlOk ? url : std::wstring();
+    g_chatTarget.pin = pin;
+    const LONG gen = ++g_chatTarget.gen;
+    bool started = false;
+    if (!g_chatStarted) {
+        g_chatWake = CreateEventW(NULL, FALSE, FALSE, NULL);
+        const HANDLE th = CreateThread(NULL, 0, ChatThread, NULL, 0, NULL);
+        if (th) CloseHandle(th);
+        started = th != NULL;
+        InterlockedExchange(&g_chatStarted, 1);   // 못 띄웠어도 다시 안 해 본다(기록에 남음)
+    }
+    LeaveCriticalSection(&g_chatCs);
+    SetEvent(g_chatWake);
+    Log("귓속말 연결 대상 — %u.%u.%u.%u:%u · 이름 %s · 로그인 서버 주소 %s(%ld번째)%s", ip >> 24, (ip >> 16) & 255, (ip >> 8) & 255, ip & 255, port,
+        name.empty() ? "(못 봄)" : name.c_str(), urlOk ? "구함" : "못 구함", gen, started ? " · 둘째 스레드 띄움" : "");
+}
+
+// 주 스레드(`FrameTick`) — 받은 줄을 꺼내 판단 부품에. 표시(대화방 줄 · 판 가운데)는 조각 5 — 지금은 낼 것 상자에 쥐기만
+static whisper::CWhisperState g_whState;
+static whisper::CShowBox g_whBox;
+static void WhisperTick()
+{
+    if (!g_chatStarted) return;
+    std::deque<std::string> in;
+    EnterCriticalSection(&g_chatCs);
+    in.swap(g_chatIn);
+    LeaveCriticalSection(&g_chatCs);
+    if (in.empty()) return;
+    std::vector<whisper::Notice> show;
+    for (const std::string& l : in) {
+        if (l.empty()) g_whState.OnDisconnect(show);
+        else g_whState.OnServerLine(whisper::ParseServerLine(l), show);
+    }
+    for (const whisper::Notice& n : show) g_whBox.Push(n);
+    Log("귓속말 주 스레드 — 받은 줄 %zu · 낼 것 %zu · 쥔 것 %zu · 답 기다림 %zu", in.size(), show.size(), g_whBox.Held(), g_whState.Pending());
 }
 
 static LobbyLineFilter* LobbyFilterOf(SOCKET s)
@@ -598,14 +936,13 @@ static void OnTokenLine(const std::string& line, const char* who)
 static void OnControlLine(SOCKET s, const std::string& line, const char* who)
 {
     if (line.compare(0, strlen(LobbyLineFilter::kRankMark), LobbyLineFilter::kRankMark) == 0) { RankOnLobbyLine(s, line); return; }   // ★ ⑬
-    if (line.compare(0, strlen(LobbyLineFilter::kChatMark), LobbyLineFilter::kChatMark) == 0) {   // ★ 11-06 귓속말 조각 3 — 주소만 적는다(연결은 조각 4)
+    if (line.compare(0, strlen(LobbyLineFilter::kChatMark), LobbyLineFilter::kChatMark) == 0) {   // ★ 11-06 귓속말 조각 3 — 주소 · ★ 조각 4 — 둘째 연결을 깨움
         uint32_t ip = 0;
         uint16_t port = 0;
         const LONG n = InterlockedIncrement(&g_chatNotices);
         if (!whisper::ParseChatLine(line, ip, port)) { Log("귓속말 서버 알림 꼴이 틀려 버림 — %.60s(%ld번째)", line.c_str(), n); return; }
-        InterlockedExchange(&g_chatIp, (LONG)ip);
-        InterlockedExchange(&g_chatPort, (LONG)port);
         Log("귓속말 서버 알림 받음 — %u.%u.%u.%u:%u(%ld번째)", ip >> 24, (ip >> 16) & 255, (ip >> 8) & 255, ip & 255, port, n);
+        ChatNote(s, ip, port);
         return;
     }
     if (line.compare(0, strlen(LobbyLineFilter::kServerMark), LobbyLineFilter::kServerMark) != 0) { OnTokenLine(line, who); return; }
@@ -3275,6 +3612,7 @@ static void FrameTick(volatile LONG* count, const char* what)
     LauncherTick();
     LobbyLostTick(what);   // ★ 11-03 ㉑
     RoomUiTick();          // ★ 11-04 ㉒
+    WhisperTick();         // ★ 11-06 귓속말 조각 4 — 둘째 연결이 받은 줄
     TestPressTick();
 }
 static void __cdecl DrawAllMain()
@@ -3342,6 +3680,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID)
         InitializeCriticalSection(&g_resolveCs);
         InitializeCriticalSection(&g_tokCs);
         InitializeCriticalSection(&g_ruCs);   // ★ 11-04 ㉒
+        InitializeCriticalSection(&g_chatCs); // ★ 11-06 귓속말 조각 4 — 둘째 연결
         char sw[8] = { 0 };
         const bool off = GetEnvironmentVariableA("NOX_NO_HOSTGAME", sw, sizeof(sw)) && sw[0] == '1';   // ⑤ · ⑥ 끄기
         sw[0] = 0;

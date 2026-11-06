@@ -491,7 +491,7 @@ enum class Drop : uint8_t {
     ConnectFail,        // 채팅 서버에 못 붙음
     Lost,               // 붙은 뒤 끊김 · 받기 오류 · 모르는 AUTHNO
     TokenUnreachable,   // /token 이 로그인 서버에 못 닿음 · 시간 초과 · 그 밖의 답
-    TokenRefused,       // /token 401 · 403(열쇠 거절 · 정지 — 다른 PC 에서 암호를 바꾼 경우도)
+    TokenRefused,       // /token 401 · 403(열쇠 거절 · 정지 — 다른 PC 에서 암호를 바꾼 경우도) · ★ 조각 4 — 400(이름 · 열쇠 꼴 · `TokenOfLine`)
     AuthToken,          // AUTHNO token — 채팅 서버가 토큰을 거절(새 토큰으로 다시)
     AuthReplay,         // AUTHNO replay — 같은 토큰(새 토큰으로 다시)
     AuthBanned,         // AUTHNO banned — 정지
@@ -538,6 +538,21 @@ inline Drop DropOfAuthNo(const std::string& why) {
     if (why == "banned") return Drop::AuthBanned;
     if (why == "form") return Drop::AuthForm;
     return Drop::Lost;   // again 등 — DLL 은 AUTH 를 한 번만 보내므로 오지 않을 줄
+}
+
+// ★ 조각 4 — /token 답 줄(`AuthClient.h` Token 의 line — 200 이면 `NXL1<16진>` · 실패면 `NXL!<까닭>`) → AUTH 에 실을 16진 토큰.
+//   토큰이 아니면 false · why = 그 갈래. 열쇠 거절(401) · 정지(403) · 꼴 틀림(400 — 같은 이름 · 열쇠로는 다시 해도 같음)은 멈춤,
+//   못 닿음 · 서버 오류(503) · 시도 제한(429) · 모르는 답은 다시. 까닭 낱말은 `LoginLine.h` LoginFailName 의 글(DLL 시험이 서버 머리 파일 없이 돌게 글로 대조)
+inline bool TokenOfLine(const std::string& line, std::string& hex, Drop& why) {
+    static const char kToken[] = "NXL1", kFail[] = "NXL!";
+    hex.clear();
+    if (line.size() > sizeof(kToken) - 1 && line.compare(0, sizeof(kToken) - 1, kToken) == 0) {
+        hex = line.substr(sizeof(kToken) - 1);
+        return true;
+    }
+    const std::string w = line.compare(0, sizeof(kFail) - 1, kFail) == 0 ? line.substr(sizeof(kFail) - 1) : std::string();
+    why = (w == "key_invalid" || w == "banned" || w == "bad_input") ? Drop::TokenRefused : Drop::TokenUnreachable;
+    return false;
 }
 
 // 로비 줄 `NOXCHAT a.b.c.d:포트`(`Lobby.cpp` FinishLogin) → ip(a 가 가장 높은 바이트) · port. 꼴이 하나라도 틀리면 false

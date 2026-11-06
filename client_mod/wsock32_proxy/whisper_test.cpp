@@ -8,7 +8,7 @@
 //   ⑤ 낼 것 상자 — 20건 넘침(오래된 것부터) · 대화방은 한꺼번에 · 판 가운데 1.7초 경계 · 나눈 줄 차례 · 들어온 수 = 낸 수 + 버림 + 쥔 수
 //   ⑥ 답장 상대(받기 전 · 두 사람에게 받은 뒤 · 내가 보낸 뒤) · 서버 답 차례(TO · NOUSER · LIMIT 이 기다리던 대상) · 끊김 = 8번
 //   ⑦ 문구 꼴(7절 3 · 4 · 5 · 6 · 8 머리 · 7 · 9 · 10 · 11 머리 없음 · 대화방 인자)
-//   ⑧ NextRetryMs 경계 · ShouldRetry 전수 · AUTHNO 까닭 → 멈춤 갈래
+//   ⑧ NextRetryMs 경계 · ShouldRetry 전수 · AUTHNO 까닭 → 멈춤 갈래 · ★ 조각 4 /token 답 줄 → 토큰 · 멈춤 · 다시
 //   ⑨ 서버 줄 해석 · NOXCHAT 줄 해석
 #include <cstdio>
 #include <string>
@@ -346,6 +346,33 @@ static void TestRetry()
     Check(DropOfAuthNo("token") == Drop::AuthToken && DropOfAuthNo("replay") == Drop::AuthReplay && DropOfAuthNo("banned") == Drop::AuthBanned &&
               DropOfAuthNo("form") == Drop::AuthForm && DropOfAuthNo("again") == Drop::Lost && DropOfAuthNo("") == Drop::Lost,
           "⑧ AUTHNO 까닭 다섯 + 빈칸");
+    // ★ 조각 4 — /token 답 줄 → 토큰 · 멈춤 · 다시(로그인 서버 까닭 낱말 전부 + 꼴 밖)
+    struct TokCase { const char* line; bool ok; const char* hex; Drop why; };
+    const TokCase tc[] = {
+        {"NXL1abc123", true, "abc123", Drop::kCount},
+        {"NXL1", false, "", Drop::TokenUnreachable},              // 토큰 글 없음
+        {"NXL!key_invalid", false, "", Drop::TokenRefused},       // 401
+        {"NXL!banned", false, "", Drop::TokenRefused},            // 403
+        {"NXL!bad_input", false, "", Drop::TokenRefused},         // 400
+        {"NXL!unreachable", false, "", Drop::TokenUnreachable},   // DLL 이 못 닿음
+        {"NXL!server_error", false, "", Drop::TokenUnreachable},  // 503 · 모르는 답
+        {"NXL!too_many_tries", false, "", Drop::TokenUnreachable},   // 429
+        {"NXL!launcher_required", false, "", Drop::TokenUnreachable},
+        {"NXL!key_invalidx", false, "", Drop::TokenUnreachable},  // 낱말과 앞만 같음
+        {"", false, "", Drop::TokenUnreachable},
+        {"key_invalid", false, "", Drop::TokenUnreachable},       // 머리 없음
+    };
+    size_t refused = 0;
+    for (const TokCase& c : tc) {
+        std::string hex = "x";
+        Drop why = Drop::kCount;
+        const bool ok = TokenOfLine(c.line, hex, why);
+        char what[120];
+        std::snprintf(what, sizeof(what), "⑧ 토큰 답 「%s」 → %s", c.line, ok ? "토큰" : DropName(why));
+        Check(ok == c.ok && hex == c.hex && why == c.why, what);
+        refused += !ok && why == Drop::TokenRefused;
+    }
+    Check(refused == 3, "⑧ 토큰 답 멈춤 셋(key_invalid · banned · bad_input)");
 }
 
 static void TestLines()

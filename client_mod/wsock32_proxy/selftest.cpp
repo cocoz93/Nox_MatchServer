@@ -58,6 +58,7 @@ struct FakeAuth {
     SOCKET ls = INVALID_SOCKET;
     std::string request;
     std::string reply;
+    int status = 200;   // ★ 귓속말 조각 4 — 401 거절 답도
 };
 
 static DWORD WINAPI FakeAuthMain(LPVOID p)
@@ -80,7 +81,8 @@ static DWORD WINAPI FakeAuthMain(LPVOID p)
         req.append(b, r);
     }
     f->request = req;
-    const std::string resp = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: " + std::to_string(f->reply.size()) +
+    const std::string resp = std::string(f->status == 200 ? "HTTP/1.1 200 OK" : "HTTP/1.1 401 Unauthorized") +
+                             "\r\nContent-Type: text/plain\r\nContent-Length: " + std::to_string(f->reply.size()) +
                              "\r\nConnection: close\r\n\r\n" + f->reply;
     send(c, resp.data(), (int)resp.size(), 0);
     closesocket(c);
@@ -125,6 +127,9 @@ int main(int argc, char** argv)
         return 2;
     }
     const bool wantLog = strcmp(argv[1], "log") == 0;
+    char exe[MAX_PATH]; GetModuleFileNameA(NULL, exe, MAX_PATH);   // ★ 귓속말 조각 4 — 둘째 연결 시험이 중간에 기록을 읽어 앞으로 옮김
+    const char* base = strrchr(exe, '\\') + 1;
+    char logPath[MAX_PATH]; sprintf(logPath, "%s\\wsock_%s_%lu.log", argv[2], base, GetCurrentProcessId());
 
     // 실린 wsock32.dll 이 이 폴더의 것인가
     char self[MAX_PATH], ws[MAX_PATH] = { 0 };
@@ -194,6 +199,16 @@ int main(int argc, char** argv)
 
     hostent* h = gethostbyname("localhost");
     Check(h != NULL, "gethostbyname localhost");
+
+    // ★ 귓속말 조각 4 — 아무도 안 듣는 포트(받아 두고 바로 닫음). NOXCHAT 이 이제 둘째 연결을 띄우므로 진짜 채팅 서버(4020)가 떠 있는 PC 에서도 시험이 그쪽에 안 붙게
+    auto deadPort = [&]() {
+        SOCKET d = socket(AF_INET, SOCK_STREAM, 0);
+        bind(d, (sockaddr*)&any, sizeof(any));
+        const u_short p = PortOf(d);
+        closesocket(d);
+        return p;
+    };
+    const u_short deadChat1 = deadPort();
 
     // ── 10-10 토큰 작업 4 — 로비 연결(첫 보내기 CVERS) · NOXTOKEN 떼기 · 게임 서버로 가는 접속 시도·CONNECT 꼬리 ──
     {
@@ -331,7 +346,7 @@ int main(int argc, char** argv)
             bgot.append(b, r);
         }
         Check(bgot == before, "myroom: no line before our-lobby mark (NOXSERVER)");
-        const std::string list = "NOXSERVER 1\r\nNOXCHAT 127.0.0.1:4020\r\n: 321 u:\r\n: 323 u:\r\n";   // ★ 11-06 귓속말 — NOXCHAT 도 떼어야 함
+        const std::string list = "NOXSERVER 1\r\nNOXCHAT 127.0.0.1:" + std::to_string(deadChat1) + "\r\n: 321 u:\r\n: 323 u:\r\n";   // ★ 11-06 귓속말 — NOXCHAT 도 떼어야 함
         send(lsv, list.data(), (int)list.size(), 0);
         std::string lgot;
         while (lgot.find(": 323 u:\r\n") == std::string::npos) {
@@ -497,6 +512,156 @@ int main(int argc, char** argv)
             closesocket(rl);
         }
 
+        // ★ 11-06 귓속말 조각 4 — 둘째 연결(채팅 서버). 로비 소켓으로 NOXCHAT 이 오면 DLL 이 진짜 wsock32 로 따로 붙는다.
+        //   ① 죽은 주소 — 못 붙음 · 그동안 /token 0(토큰은 붙은 뒤에) ② 산 주소 — /token(로그인 이름 · 열쇠) → AUTH 이름 토큰 · PING 에 PONG · 받은 줄은 기록에 낱말만
+        //   ③ 서버가 끊으면 3~4초 뒤 새 토큰으로 다시 · AUTHOK 뒤 또 끊으면 다시 3~4초(간격이 되돌아감) ④ KICKED → 멈춤(안 붙음 · /token 0)
+        //   ⑤ 새 NOXCHAT → 깨어 붙음 → 토큰 거절(401) → AUTH 없이 끊고 멈춤. 기록을 보며 기다리므로 log 판에서만(nolog 판은 둘째 스레드가 죽은 주소에만 붙어 봄)
+        if (wantLog) {
+            auto chatNote = [&](u_short port) {   // 로비가 NOXCHAT 을 보냄 — 다음 줄(: 999)이 게임에 오면 받기 훅이 NOXCHAT 을 처리한 뒤다
+                const std::string l = "NOXCHAT 127.0.0.1:" + std::to_string(port) + "\r\n: 999 u:\r\n";
+                send(lsv, l.data(), (int)l.size(), 0);
+                std::string g;
+                while (g.find(": 999 u:\r\n") == std::string::npos) {
+                    char b[64]; int r = recv(lc, b, sizeof(b), 0);
+                    if (r <= 0) break;
+                    g.append(b, r);
+                }
+                return g == ": 999 u:\r\n";
+            };
+            auto readable = [](SOCKET s, DWORD ms) {   // 듣는 소켓이면 들어온 연결 · 붙은 소켓이면 받을 것(닫힘 포함)
+                fd_set f; FD_ZERO(&f); FD_SET(s, &f);
+                timeval tv = { (long)(ms / 1000), (long)(ms % 1000) * 1000 };
+                return select(0, &f, NULL, NULL, &tv) > 0;
+            };
+            auto readLine = [](SOCKET s, std::string& buf) {   // 한 줄(\r\n 뗌) · 줄 없이 끊기면 "<closed>"
+                for (;;) {
+                    const size_t p = buf.find('\n');
+                    if (p != std::string::npos) {
+                        std::string l = buf.substr(0, p);
+                        buf.erase(0, p + 1);
+                        if (!l.empty() && l.back() == '\r') l.pop_back();
+                        return l;
+                    }
+                    char b[256]; const int r = recv(s, b, sizeof(b), 0);
+                    if (r <= 0) return std::string("<closed>");
+                    buf.append(b, r);
+                }
+            };
+            auto acceptChat = [&](SOCKET ls) {   // 8초 안에 안 오면 INVALID_SOCKET(앞 Check 가 이미 실패 · 시험이 멈추지 않게 — 11-06 돌연변이 「새 NOXCHAT 이 멈춤을 안 깸」이 accept 에서 멈춤)
+                if (!readable(ls, 8000)) return INVALID_SOCKET;
+                SOCKET c = accept(ls, NULL, NULL);
+                int ms = 6000;   // /token 이 끼어 RecvTimeout(3초)보다 길게
+                setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, (const char*)&ms, sizeof(ms));
+                return c;
+            };
+            auto waitLog = [&](const std::string& needle, DWORD ms) {
+                for (const DWORD t0 = GetTickCount(); GetTickCount() - t0 < ms; Sleep(50))
+                    if (FileHas(logPath, needle.c_str())) return true;
+                return FileHas(logPath, needle.c_str());
+            };
+            auto tokenOf = [](char c) { return "NXL1" + std::string(114, c); };
+
+            char tmpDir[MAX_PATH];
+            GetTempPathA(MAX_PATH, tmpDir);
+            const std::string appData = std::string(tmpDir) + "nox_selftest_chat_" + std::to_string(GetCurrentProcessId());
+            SetEnvironmentVariableA("LOCALAPPDATA", appData.c_str());
+            SetEnvironmentVariableA("NOX_LAUNCH", "selftst");
+            const std::string key = "NXK1" + std::string(64, 'e');
+            Check(launchkey::Save("selftst", key), "chat: launcher key saved under the temp LOCALAPPDATA");
+            SOCKET als = socket(AF_INET, SOCK_STREAM, 0);
+            bind(als, (sockaddr*)&any, sizeof(any)); listen(als, 4);
+            SetEnvironmentVariableA("NOX_AUTH_URL", ("http://127.0.0.1:" + std::to_string(PortOf(als))).c_str());   // NOXCHAT 처리 때 읽힘
+            SOCKET cls = socket(AF_INET, SOCK_STREAM, 0);
+            bind(cls, (sockaddr*)&any, sizeof(any)); listen(cls, 4);
+            const u_short chatPort = PortOf(cls);
+            std::string cb;
+
+            // ① 죽은 주소
+            const u_short deadChat2 = deadPort();
+            Check(chatNote(deadChat2), "chat ①: NOXCHAT removed from the lobby stream (next line arrives)");
+            Check(waitLog("귓속말 서버에 못 붙음 — 127.0.0.1:" + std::to_string(deadChat2), 6000), "chat ①: dead chat server -> connect fails (logged)");
+            Check(!readable(als, 0), "chat ①: no /token while the chat server is down (token only after connecting)");
+
+            // ② 산 주소 — 토큰 · AUTH · PING
+            FakeAuth fb; fb.ls = als; fb.reply = tokenOf('b');
+            HANDLE th = CreateThread(NULL, 0, FakeAuthMain, &fb, 0, NULL);
+            Check(chatNote(chatPort), "chat ②: NOXCHAT (live address) removed from the lobby stream");
+            Check(readable(cls, 6000), "chat ②: DLL connects to the chat server (woken from the retry wait)");
+            SOCKET cs = acceptChat(cls);
+            Check(readLine(cs, cb) == "AUTH selftst " + fb.reply.substr(4), "chat ②: AUTH <login name> <token hex> after /token");
+            WaitForSingleObject(th, 5000); CloseHandle(th);
+            Check(fb.request.find("POST /token") == 0 && fb.request.find("name=selftst&key=" + key) != std::string::npos,
+                  "chat ②: /token with the login name (NICK) and the saved launcher key");
+            const char ok1[] = "AUTHOK\r\nPING\r\n";
+            send(cs, ok1, (int)strlen(ok1), 0);
+            Check(readLine(cs, cb) == "PONG", "chat ②: server PING answered with PONG");
+            const char lines[] = "F qa2 hello\r\nTO qa2 hello\r\nXYZ\r\n";
+            send(cs, lines, (int)strlen(lines), 0);
+            Check(waitLog("귓속말 모르는 줄 3바이트", 3000), "chat ②: unknown line logged by size only (\\r stripped -> 3 bytes)");
+            Check(FileHas(logPath, "귓속말 로그인 됨 — selftst") && FileHas(logPath, "귓속말 받음 F(큐 1)") && FileHas(logPath, "귓속말 받음 TO(큐 2)"),
+                  "chat ②: AUTHOK · F · TO logged (F and TO queued for the main thread)");
+
+            // ③ 서버가 끊음 → 3~4초 뒤 새 토큰으로 · AUTHOK 뒤 또 끊으면 간격이 다시 3~4초
+            char gapMsg[160];
+            for (int round = 0; round < 2; ++round) {
+                FakeAuth fn; fn.ls = als; fn.reply = tokenOf(round == 0 ? 'c' : 'd');
+                th = CreateThread(NULL, 0, FakeAuthMain, &fn, 0, NULL);
+                const DWORD t0 = GetTickCount();
+                closesocket(cs);
+                const bool back = readable(cls, 9000);
+                const DWORD gap = GetTickCount() - t0;
+                sprintf(gapMsg, "chat ③: after the server closes (round %d), DLL reconnects in 2.9~5.5 s (got %lu ms)", round + 1, gap);
+                Check(back && gap >= 2900 && gap <= 5500, gapMsg);
+                cs = acceptChat(cls);
+                cb.clear();
+                Check(readLine(cs, cb) == "AUTH selftst " + fn.reply.substr(4), round == 0 ? "chat ③: reconnect with a new token" : "chat ③: second reconnect with a new token");
+                WaitForSingleObject(th, 5000); CloseHandle(th);
+                if (round == 0) send(cs, "AUTHOK\r\n", 8, 0);   // 붙은 뒤 끊기면 이어진 실패가 0 으로 — 다음 간격도 3~4초
+                Sleep(100);
+            }
+
+            // ④ KICKED → 멈춤. 붙어 있는 동안 온 같은 대상의 NOXCHAT(같은 계정으로 다시 로그인)은 연결이 받아들인 것 — 그 뒤 KICKED 면 그래도 멈춰야 한다
+            Check(chatNote(chatPort), "chat ④: NOXCHAT for the same target while connected removed from the lobby stream");
+            Sleep(200);   // 받기 고리(50ms)가 차례 번호를 읽을 틈
+            Check(!readable(cs, 0) && !readable(cls, 0), "chat ④: same-target NOXCHAT keeps the connection (not closed, no new connect)");
+            const char kick[] = "AUTHOK\r\nKICKED\r\n";
+            send(cs, kick, (int)strlen(kick), 0);
+            Check(readLine(cs, cb) == "<closed>", "chat ④: KICKED -> DLL closes");
+            closesocket(cs);
+            Check(!readable(cls, 4500) && !readable(als, 0), "chat ④: after KICKED no reconnect and no /token for 4.5 s (stopped)");
+            Check(FileHas(logPath, "귓속말 멈춤 — KICKED"), "chat ④: stop logged");
+
+            // ⑤ 새 NOXCHAT → 깨어 붙음 → 토큰 거절 → 멈춤
+            FakeAuth fr; fr.ls = als; fr.status = 401; fr.reply = "NXL!key_invalid";
+            th = CreateThread(NULL, 0, FakeAuthMain, &fr, 0, NULL);
+            Check(chatNote(chatPort), "chat ⑤: NOXCHAT again (login again) removed from the lobby stream");
+            Check(readable(cls, 6000), "chat ⑤: new NOXCHAT wakes the stopped connection");
+            cs = acceptChat(cls);
+            cb.clear();
+            Check(readLine(cs, cb) == "<closed>", "chat ⑤: /token refused (401 key_invalid) -> DLL closes without sending AUTH");
+            WaitForSingleObject(th, 5000); CloseHandle(th);
+            closesocket(cs);
+            Check(fr.request.find("POST /token") == 0, "chat ⑤: /token was asked once after connecting");
+            Check(!readable(cls, 4500) && !readable(als, 0), "chat ⑤: after the token refusal no reconnect for 4.5 s (stopped)");
+            Check(FileHas(logPath, "귓속말 멈춤 — 토큰 거절"), "chat ⑤: stop logged");
+
+            // 기록 — 귓속말 줄에 글 · 토큰 · 열쇠가 없고, 둘째 연결의 보내기는 우리 훅을 안 탄다(훅을 타면 ` send s=` 줄에 AUTH · 토큰이 찍힌다)
+            Check(FileHas(logPath, ("귓속말 연결 대상 — 127.0.0.1:" + std::to_string(chatPort) + " · 이름 selftst").c_str()), "chat: target line (address · login name)");
+            Check(FileLineHas(logPath, "귓속말", "selftst") && !FileLineHas(logPath, "귓속말", "hello") && !FileLineHas(logPath, "귓속말", "bbbbbbbb") &&
+                      !FileLineHas(logPath, "귓속말", "cccccccc") && !FileLineHas(logPath, "귓속말", "eeeeeeee"),
+                  "chat: whisper log lines carry no message text, token or key");
+            Check(FileLineHas(logPath, " send s=", "AUTHOK") && !FileLineHas(logPath, " send s=", "AUTH selftst") && !FileLineHas(logPath, " send s=", "PONG"),
+                  "chat: second connection sends through the real wsock32 (never on a hooked send line)");
+
+            closesocket(cls); closesocket(als);
+            Check(launchkey::Remove("selftst"), "chat: launcher key removed");
+            SetEnvironmentVariableA("NOX_AUTH_URL", NULL);
+            SetEnvironmentVariableA("NOX_LAUNCH", NULL);
+            RemoveDirectoryA((appData + "\\NoxOnline\\keys").c_str());
+            RemoveDirectoryA((appData + "\\NoxOnline").c_str());
+            RemoveDirectoryA(appData.c_str());
+        }
+
         closesocket(pc); closesocket(psv); closesocket(lc); closesocket(lsv); closesocket(lsl);
         closesocket(game); closesocket(other); closesocket(cli);
     }
@@ -505,9 +670,6 @@ int main(int argc, char** argv)
     WSACleanup();
 
     // 로그 — 켰으면 일곱 가운데 이 시험이 부른 다섯이 있어야 하고, 껐으면 파일이 없어야 한다
-    char exe[MAX_PATH]; GetModuleFileNameA(NULL, exe, MAX_PATH);
-    const char* base = strrchr(exe, '\\') + 1;
-    char logPath[MAX_PATH]; sprintf(logPath, "%s\\wsock_%s_%lu.log", argv[2], base, GetCurrentProcessId());
     if (wantLog) {
         Check(FileHas(logPath, "wsock32"), "log: attach line");
         Check(FileHas(logPath, "sendto 0x0e"), "log: sendto 0x0e detail");
@@ -528,7 +690,7 @@ int main(int argc, char** argv)
         Check(FileLineHas(logPath, " send s=", "NOOP interleaved"), "log: another socket's line is shown as is while the lobby socket holds a half apgar line (per-socket state)");
         Check(FileHas(logPath, "gethostbyname \"localhost\""), "log: gethostbyname");
         Check(FileHas(logPath, "부른 곳=selftest.exe"), "log: caller module name");
-        Check(FileHas(logPath, "귓속말 서버 알림 받음 — 127.0.0.1:4020(1번째)"), "log: NOXCHAT address read (whisper piece 3)");
+        Check(FileHas(logPath, ("귓속말 서버 알림 받음 — 127.0.0.1:" + std::to_string(deadChat1) + "(1번째)").c_str()), "log: NOXCHAT address read (whisper piece 3)");
     } else {
         Check(GetFileAttributesA(logPath) == INVALID_FILE_ATTRIBUTES, "no log file when NOX_HOOK_LOG_DIR unset");
     }
