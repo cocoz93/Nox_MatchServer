@@ -124,6 +124,7 @@
 #include "RankNotice.h"        // ★ 11-05 플랜1 — 줄 서기 제한 줄 · 문구
 #include "GameListRow.h"       // ★ 11-06 플랜1 조각 6 ㉓ — 게임 목록 줄
 #include "LoginNotice.h"       // ★ 11-05 플랜1 — 로그인 화면에서 돌아왔을 때의 안내 고르기
+#include "WhisperCore.h"       // ★ 11-06 귓속말 조각 3 — 명령 해석 · 표시 자리 · 다시 붙기 값 · NOXCHAT 줄 읽기(소켓 없는 판단 — whisper_test 가 같은 코드를 봄)
 #include "AuthClient.h"        // ★ 로그인 암호 조각 5 의 3 — 로그인 서버(nox_auth)에 이름 · 암호를 묻는 부품(WinHTTP) · ★ 런처 P4 — 이제 이름 · 열쇠로 토큰
 #include "../common/LaunchKey.h"   // ★ 런처 P4 — 런처가 이 PC 에 둔 자동 로그인 열쇠(DPAPI)
 
@@ -369,7 +370,8 @@ FWD(1120) FWD(1130) FWD(1140) FWD(1141) FWD(1142)
 //   ★ 판 4 = 랭크 매칭(`kNoxClientRankVersion`) — ⑪ `NOXRANK JOIN` · `NOXRANK LEAVE` 를 보냄 · 로비는 이 판 이상의 표시만 믿음
 //   ★ 판 5 = 수락 단계(`kNoxClientAcceptVersion` · 매칭 손보기 6) — ⑬ 로비 `NOXRANK FOUND` 에 「수락?」 · 예면 `NOXRANK ACCEPT`
 //   ★ 판 6 = 줄 서기 제한 안내(`kNoxClientPenaltyVersion` · 플랜 11-05 7절) — `NOXRANK WARN` · `BLOCKED` · `BANNED`
-static const char kNoxClientHello[] = "NOXCLIENT 6\r\n";
+//   ★ 판 7 = 귓속말(`kNoxClientWhisperVersion` · `Docs/MO_WHISPER_PLAN_1105.md`) — 로비가 로그인 끝에 `NOXCHAT <채팅 서버 주소>` 를 보냄 · ② 처럼 떼어 낸다
+static const char kNoxClientHello[] = "NOXCLIENT 7\r\n";
 static wchar_t g_rankWaitNote[100];   // ★ 11-05 플랜1 — 기다림 글 앞에 얹는 경고(머리 주석 `g_rankWaitBuf`)
 static const DWORD kTokenHoldMs = 60000;                   // 토큰을 쥐고 있는 시간(토큰 만료 30초보다 넉넉히 — 판정은 서버가 한다)
 static const size_t kTokenRaw = 51;                        // `JoinToken.h` kJoinTokenSize
@@ -390,6 +392,10 @@ static bool g_hostGameOn = false;       // ⑥ Host Game 돌리기 스레드(판
 static volatile LONG g_ourLobby = 0;    // ⑤ · ⑥ 지금 로비 연결이 `NOXSERVER` 를 보냈나 — 새 로비 연결마다 0
 static volatile LONG g_lobbyIp = 0;     // 그 로비 연결의 상대 IPv4(a<<24|b<<16|c<<8|d) — 채널이 곧 게임 서버
 static std::string g_nick;              // ⑤ · ⑥ 로비 로그인의 `NICK <닉>` — g_tokCs 로 지킨다
+// ★ 11-06 귓속말 조각 3 — 로비가 알린 채팅 서버(`NOXCHAT a.b.c.d:포트`). 둘째 스레드(조각 4)가 읽는다 · 0 = 아직 못 받음
+static volatile LONG g_chatIp = 0;      // a<<24|b<<16|c<<8|d(g_lobbyIp 와 같은 차례)
+static volatile LONG g_chatPort = 0;
+static volatile LONG g_chatNotices = 0; // 받은 NOXCHAT 줄 수(꼴 틀림 포함 — 다시 로그인할 때마다 하나)
 
 static std::string MyRoomLine(const std::vector<std::string>& items);
 static void RankListArrived();   // ★ 11-05 플랜1 — `RankListBusy`
@@ -592,6 +598,16 @@ static void OnTokenLine(const std::string& line, const char* who)
 static void OnControlLine(SOCKET s, const std::string& line, const char* who)
 {
     if (line.compare(0, strlen(LobbyLineFilter::kRankMark), LobbyLineFilter::kRankMark) == 0) { RankOnLobbyLine(s, line); return; }   // ★ ⑬
+    if (line.compare(0, strlen(LobbyLineFilter::kChatMark), LobbyLineFilter::kChatMark) == 0) {   // ★ 11-06 귓속말 조각 3 — 주소만 적는다(연결은 조각 4)
+        uint32_t ip = 0;
+        uint16_t port = 0;
+        const LONG n = InterlockedIncrement(&g_chatNotices);
+        if (!whisper::ParseChatLine(line, ip, port)) { Log("귓속말 서버 알림 꼴이 틀려 버림 — %.60s(%ld번째)", line.c_str(), n); return; }
+        InterlockedExchange(&g_chatIp, (LONG)ip);
+        InterlockedExchange(&g_chatPort, (LONG)port);
+        Log("귓속말 서버 알림 받음 — %u.%u.%u.%u:%u(%ld번째)", ip >> 24, (ip >> 16) & 255, (ip >> 8) & 255, ip & 255, port, n);
+        return;
+    }
     if (line.compare(0, strlen(LobbyLineFilter::kServerMark), LobbyLineFilter::kServerMark) != 0) { OnTokenLine(line, who); return; }
     typedef int (WSAAPI* PFN_getpeername)(SOCKET, struct sockaddr*, int*);
     const DWORD err = GetLastError();

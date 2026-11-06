@@ -220,7 +220,7 @@ int main(int argc, char** argv)
             if (r <= 0) break;
             atLobby.append(b, r);
         }
-        Check(atLobby == std::string("NOXCLIENT 6\r\n") + cvers, "lobby: NOXCLIENT 6 goes out before CVERS");   // ★ 매칭 손보기 6 — 판 5(수락 단계)
+        Check(atLobby == std::string("NOXCLIENT 7\r\n") + cvers, "lobby: NOXCLIENT 7 goes out before CVERS");   // ★ 매칭 손보기 6 — 판 5(수락 단계) · ★ 11-06 판 7(귓속말)
 
         // 토큰 줄을 둘로 나눠 보낸다(TCP 가 줄을 자르는 경우) — 클라는 토큰 줄 없이 앞뒤 줄만 받아야 한다
         const std::string line = std::string("NOXTOKEN 127.0.0.1:") + std::to_string(gamePort) + " " + hex + "\r\n";
@@ -331,7 +331,7 @@ int main(int argc, char** argv)
             bgot.append(b, r);
         }
         Check(bgot == before, "myroom: no line before our-lobby mark (NOXSERVER)");
-        const std::string list = "NOXSERVER 1\r\n: 321 u:\r\n: 323 u:\r\n";
+        const std::string list = "NOXSERVER 1\r\nNOXCHAT 127.0.0.1:4020\r\n: 321 u:\r\n: 323 u:\r\n";   // ★ 11-06 귓속말 — NOXCHAT 도 떼어야 함
         send(lsv, list.data(), (int)list.size(), 0);
         std::string lgot;
         while (lgot.find(": 323 u:\r\n") == std::string::npos) {
@@ -343,6 +343,7 @@ int main(int argc, char** argv)
         const bool myRoomOn = sw && sw[0] == '1';
         const std::string head = ": 326 u #selftst's_game 1 0 37 1 41681088 2130706433 128::G1P3";
         Check(lgot.find("NOXSERVER") == std::string::npos, "lobby: NOXSERVER line removed");
+        Check(lgot.find("NOXCHAT") == std::string::npos && lgot.find(": 321 u:\r\n") != std::string::npos, "lobby: NOXCHAT line removed (the next line still arrives)");
         if (myRoomOn)
             // 321 줄 10 · 326 머리 · 방 정보 머리 남은 3 + 포장 78 · \r\n · 323 줄 10
             Check(lgot.compare(0, 10, ": 321 u:\r\n") == 0 && lgot.compare(10, head.size(), head) == 0 &&
@@ -527,6 +528,7 @@ int main(int argc, char** argv)
         Check(FileLineHas(logPath, " send s=", "NOOP interleaved"), "log: another socket's line is shown as is while the lobby socket holds a half apgar line (per-socket state)");
         Check(FileHas(logPath, "gethostbyname \"localhost\""), "log: gethostbyname");
         Check(FileHas(logPath, "부른 곳=selftest.exe"), "log: caller module name");
+        Check(FileHas(logPath, "귓속말 서버 알림 받음 — 127.0.0.1:4020(1번째)"), "log: NOXCHAT address read (whisper piece 3)");
     } else {
         Check(GetFileAttributesA(logPath) == INVALID_FILE_ATTRIBUTES, "no log file when NOX_HOOK_LOG_DIR unset");
     }

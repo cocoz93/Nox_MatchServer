@@ -9,6 +9,7 @@
 //   ⑥ ★ 10-16 끼우기를 켜면 — 방 목록 끝(`: 323 `) 바로 앞마다 끼울 줄이 한 번씩 들어가고, 그때 넘긴 목록 줄 수가 맞다.
 //      끄면 목록 줄도 그대로 지나간다(①과 같은 기대값). 줄 가운데의 `: 323` · `: 32` 로만 끝나는 줄은 건드리지 않는다
 //   ⑦ ★ 10-16 「우리 로비」 표시 `NOXSERVER …` 줄도 토큰 줄처럼 떼어 차례대로 넘긴다 · `NOXSERVERX` 같은 다른 줄은 그대로
+//   ⑧ ★ 11-06 귓속말 조각 3 — 채팅 서버 주소 `NOXCHAT …` 줄도 같은 길 · `NOXCHATX` 는 그대로
 #include <cstdio>
 #include <cstring>
 #include <random>
@@ -49,7 +50,8 @@ static std::string Expected(const std::string& s, bool insert) {
         const std::string line = s.substr(i, end - i);
         if (insert && StartsWith(line, LobbyLineFilter::kListItem)) ++items;
         if (insert && StartsWith(line, LobbyLineFilter::kListEnd)) { out += InsertLine(items); items = 0; }
-        if (!StartsWith(line, LobbyLineFilter::kMark) && !StartsWith(line, LobbyLineFilter::kServerMark) && !StartsWith(line, LobbyLineFilter::kRankMark))
+        if (!StartsWith(line, LobbyLineFilter::kMark) && !StartsWith(line, LobbyLineFilter::kServerMark) && !StartsWith(line, LobbyLineFilter::kRankMark) &&
+            !StartsWith(line, LobbyLineFilter::kChatMark))
             out += line;
         i = end;
     }
@@ -80,8 +82,8 @@ static bool RunOne(const std::string& stream, const std::vector<size_t>& cuts, i
         got.append(buf, static_cast<size_t>(r));
     }
     if (got != Expected(stream, insert)) { std::printf("① 받은 바이트가 다름 len=%d 끼우기=%d\n", len, insert ? 1 : 0); return false; }
-    // ★ 매칭 손보기 6 — 떼는 줄 셋(NOXSERVER · NOXTOKEN · NOXRANK) · ★ 11-05 플랜1 — NOXRANK 낱말 셋 더해 여섯
-    if (tokens != 6 || tokenLine != wantLine) { std::printf("② 토큰 줄 %d개 [%s]\n", tokens, tokenLine.c_str()); return false; }
+    // ★ 매칭 손보기 6 — 떼는 줄 셋(NOXSERVER · NOXTOKEN · NOXRANK) · ★ 11-05 플랜1 — NOXRANK 낱말 셋 더해 여섯 · ★ 11-06 귓속말 — NOXCHAT 더해 일곱
+    if (tokens != 7 || tokenLine != wantLine) { std::printf("② 토큰 줄 %d개 [%s]\n", tokens, tokenLine.c_str()); return false; }
     return true;
 }
 
@@ -99,6 +101,8 @@ int main() {
         "NOXRANK WARN accept\r\n"
         "NOXRANK BANNED 1800000000\r\n"
         "NOXRANKX 1\r\n"                                           // ★ 표시와 앞만 같은 다른 줄(그대로)
+        "NOXCHAT 192.168.0.9:4020\r\n"                             // ★ 11-06 ⑧ 떼어 낼 줄 넷째(로비가 376 바로 앞에 보냄)
+        "NOXCHATX 1\r\n"                                           // ⑧ 표시와 앞만 같은 다른 줄(그대로)
         ":wn9457!u@h JOINGAME 1 32 37 1 0 2130706433 1 :#NoxOrigin's_game\r\n"
         ": 332 u #NoxOrigin's_game :G1P3....\r\n"
         ": 353 u = #NoxOrigin's_game :@NoxOrigin,0,2130706433 wn9457,0,2130706433\r\n"
@@ -112,7 +116,7 @@ int main() {
         ": 323 u:\r\n"
         ": 321 u:\r\n"
         ": 323 u:\r\n";
-    const std::string want = "NOXSERVER 1|" + tokLine + "|NOXRANK FOUND 10|NOXRANK BLOCKED 60|NOXRANK WARN accept|NOXRANK BANNED 1800000000";   // 떼어 낸 줄 셋의 차례(★ 매칭 손보기 6 — NOXRANK 더함)
+    const std::string want = "NOXSERVER 1|" + tokLine + "|NOXRANK FOUND 10|NOXRANK BLOCKED 60|NOXRANK WARN accept|NOXRANK BANNED 1800000000|NOXCHAT 192.168.0.9:4020";   // 떼어 낸 줄 셋의 차례(★ 매칭 손보기 6 — NOXRANK 더함 · ★ 11-06 NOXCHAT)
     const int lens[] = { 1, 2, 3, 5, 8, 9, 10, 16, 64, 256, 512, 4096 };
     long long runs = 0, calls = 0, wb = 0;
     int fails = 0;
@@ -120,7 +124,8 @@ int main() {
     const std::string withIns = Expected(stream, true);
     if (withIns.find(InsertLine(2) + ": 323 u:") == std::string::npos || withIns.find(InsertLine(0) + ": 323 u:") == std::string::npos ||
         Expected(stream, false).find("INS ") != std::string::npos ||
-        Expected(stream, false).find("NOXSERVER 1\r\n") != std::string::npos || Expected(stream, false).find("NOXSERVERX 1\r\n") == std::string::npos) {
+        Expected(stream, false).find("NOXSERVER 1\r\n") != std::string::npos || Expected(stream, false).find("NOXSERVERX 1\r\n") == std::string::npos ||
+        Expected(stream, false).find("NOXCHAT ") != std::string::npos || Expected(stream, false).find("NOXCHATX 1\r\n") == std::string::npos) {
         std::printf("기대값이 끼움을 안 담음\n");
         ++fails;
     }

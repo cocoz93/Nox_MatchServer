@@ -15,6 +15,11 @@ cl /nologo /utf-8 /O2 /W3 /EHsc /MT linefilter_test.cpp /Fe:linefilter_test.exe 
 if errorlevel 1 ( echo linefilter_test build failed & popd & exit /b 1 )
 "%~dp0linefilter_test.exe"
 if errorlevel 1 set RC=1
+rem whisper core (same header as the DLL): command parse table, show place, hold box, reply target, retry values, NOXCHAT line (11-06 whisper piece 3)
+cl /nologo /utf-8 /std:c++17 /O2 /W3 /EHsc /MT whisper_test.cpp /Fe:whisper_test.exe >nul
+if errorlevel 1 ( echo whisper_test build failed & popd & exit /b 1 )
+"%~dp0whisper_test.exe"
+if errorlevel 1 set RC=1
 rem host game entry/channel builder vs the bytes dumped from the genuine client (10-16 pilot)
 cl /nologo /utf-8 /std:c++17 /O2 /W3 /EHsc /MT /I ..\..\server\include hostgame_test.cpp ..\..\server\src\lobby\WolGameInfo.cpp /Fe:hostgame_test.exe >nul
 if errorlevel 1 ( echo hostgame_test build failed & popd & exit /b 1 )
