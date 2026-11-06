@@ -6,6 +6,7 @@
 #                                   -AllowIp 를 주면 그 주소에서 오는 것만 받는다(없으면 아무 주소 — 10-07 「잠깐 켤 동안은 열어도」)
 #               -Auth(★ 10-28 다른 PC 암호 로그인) 면 넷째 — 로그인 서버 TCP 8443. nox_auth 는 윈도 HTTP 서버(http.sys — 커널 · System)가 대신 들어
 #                 프로그램으로 거를 수 없어 포트로만 연다(mo_host 가 로그인 서버를 띄울 때만 넘긴다)
+#               ★ 11-06 귓속말 조각 2 — 채팅 서버 nox_chat.exe TCP 4020 도 같이 연다(규칙 넷 · -Auth 면 다섯 — 로비가 NOXCHAT 으로 알려 주는 주소가 이 PC)
 #   -Mode Close : 이름이 "NoxMO " 로 시작하는 규칙만 지운다
 #   -Mode Show  : 지금 있는 녹스 관련 규칙을 적기만 한다
 #
@@ -36,6 +37,7 @@ try {
   $router = Join-Path $repo 'build\Release\nox_router.exe'
   $server = Join-Path $repo 'build\Release\nox_server.exe'
   $lobby = Join-Path $repo 'build\Release\nox_lobby.exe'   # ★ 10-20 v2 작업 6
+  $chat = Join-Path $repo 'build\Release\nox_chat.exe'     # ★ 11-06 귓속말 조각 2
   if ($Mode -eq 'Open') {
     if ($AllowIp -and $AllowIp -notmatch '^\d{1,3}(\.\d{1,3}){3}$') { throw "-AllowIp 꼴이 아니다: $AllowIp" }
     $remote = if ($AllowIp) { $AllowIp } else { 'Any' }
@@ -43,10 +45,11 @@ try {
     New-NetFirewallRule -DisplayName 'NoxMO router TCP 4005' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 4005 -Program $router -RemoteAddress $remote -Profile Any | Out-Null
     New-NetFirewallRule -DisplayName 'NoxMO lobby TCP 4000' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 4000 -Program $lobby -RemoteAddress $remote -Profile Any | Out-Null
     New-NetFirewallRule -DisplayName 'NoxMO server UDP 18590' -Direction Inbound -Action Allow -Protocol UDP -LocalPort 18590 -Program $server -RemoteAddress $remote -Profile Any | Out-Null
+    New-NetFirewallRule -DisplayName 'NoxMO chat TCP 4020' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 4020 -Program $chat -RemoteAddress $remote -Profile Any | Out-Null
     if ($Auth) {   # ★ 10-28 — http.sys(System)가 받으므로 프로그램 조건 없이 포트만
       New-NetFirewallRule -DisplayName 'NoxMO auth TCP 8443' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 8443 -RemoteAddress $remote -Profile Any | Out-Null
     }
-    Say "[열림] NoxMO 규칙 $(if ($Auth) { '넷(로그인 서버 8443 포함)' } else { '셋' }) — 받는 주소 $remote"
+    Say "[열림] NoxMO 규칙 $(if ($Auth) { '다섯(채팅 4020 · 로그인 서버 8443 포함)' } else { '넷(채팅 4020 포함)' }) — 받는 주소 $remote"
   } elseif ($Mode -eq 'Close') {
     $n = @(Get-NetFirewallRule -DisplayName 'NoxMO *' -ErrorAction SilentlyContinue).Count
     Get-NetFirewallRule -DisplayName 'NoxMO *' -ErrorAction SilentlyContinue | Remove-NetFirewallRule

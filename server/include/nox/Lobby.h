@@ -88,9 +88,13 @@ constexpr int kNoxClientRankVersion = 4;
 constexpr int kNoxClientAcceptVersion = 5;
 // ★ 11-05 플랜1 — 판 6 = 줄 서기 제한 안내(`NOXRANK WARN` · `BLOCKED` · `BANNED` · 문구는 DLL `RankNotice.h`). 낮은 판은 제한 중이면 471 거절
 constexpr int kNoxClientPenaltyVersion = 6;
+// ★ 11-06 귓속말 조각 2 — 판 7 = DLL 이 `NOXCHAT 주소:포트` 줄을 떼어 채팅 서버(nox_chat)에 둘째 연결을 맺는다(`Docs/MO_WHISPER_PLAN_1105.md` 3절).
+//   로비는 로그인이 끝날 때 이 판 이상에게만 보낸다 — 낮은 판 DLL 은 이 줄을 못 떼고 정품 로비 모듈까지 넘긴다. 로비는 채팅 서버와 연결하지 않는다
+constexpr int kNoxClientWhisperVersion = 7;
 // 수락 한도 — 플랜 「10초 무응답」. 넘으면 수락한 사람은 줄 앞에 되돌리고(`NOXRANK WAIT`) 안 한 사람은 줄에서 뺀다(`NOXRANK EXPIRED`)
 constexpr uint32_t kRankAcceptMs = 10000;
 constexpr uint16_t kDefaultAuthPort = 8443;   // 로그인 서버(nox_auth) — 가입 페이지 주소 안내에 씀(`[auth] port`)
+constexpr uint16_t kDefaultChatPort = 4020;   // ★ 11-06 귓속말 — 채팅 서버(nox_chat)의 `kChatPort`(`ChatHub.h`)와 같은 값(`[chat] port`)
 
 // ★ 10-14 플랜 B 작업 8d — 로비가 그리는 방 하나. 채널이 방 관리자의 돌고 있는 방(`CRoomManager::ListRooms`)에서 채운다
 //   (옛 설정 파일 `[rooms]` 의 「방장 이름 = 게임 방 번호」 자리)
@@ -239,6 +243,10 @@ struct LobbyConfig {
     uint32_t rankMax = kRankMaxDefault;
     uint32_t rankGatherMs = kRankGatherMsDefault;
     uint32_t rankPenaltySec = 0;   // ★ 11-05 플랜1 — 시험 인자 `--rank-penalty-sec`(0 = 플랜 값 · `RankPenalty.h` `PenaltyStep`)
+    // ★ 11-06 귓속말 조각 2 — `NOXCHAT` 줄에 실을 채팅 서버 주소(설정 `[chat] host · port`). 주소 0 = 이 접속이 붙은 내 쪽 주소(로비와 같은 PC) ·
+    //   포트 0 = 안 알림(DLL 은 둘째 연결을 안 맺는다)
+    uint32_t chatIp = 0;
+    uint16_t chatPort = kDefaultChatPort;
 };
 
 // 로비의 셈 — 입장 토큰 갈래
@@ -306,6 +314,8 @@ struct LobbyStats {
     unsigned long long loginDeadlineClosed = 0;   // `kLoginDeadlineMs` 안에 USER 가 없어 끊음
     unsigned long long loginRejected = 0;    // ★ 10-28 암호 판 로그인 실패 — 378 로 거절(위 실패 갈래들의 합과 같아야 한다)
     unsigned long long loginRejectClosed = 0;   // ★ 10-28 378 뒤 `kLoginRejectCloseMs` 안에 클라가 안 끊어 끊음
+    unsigned long long chatNotices = 0;      // ★ 11-06 귓속말 — 로그인 성공에 `NOXCHAT` 을 보냄(판 7 이상)
+    unsigned long long chatNoticeOld = 0;    // ★ 11-06 귓속말 — 로그인 성공인데 DLL 판이 7 아래라 안 보냄(포트 0 이면 둘 다 안 셈)
     // ★ 레이팅 조각 4 — 점수 물음 하나는 아래 다섯 중 하나로 끝난다(시험은 합을 본다 — `RatingTotal`)
     unsigned long long ratingAsked = 0;      // 토큰 로그인이 저장소에 물음
     unsigned long long ratingShown = 0;      // 답 — 점수 · 순위 줄

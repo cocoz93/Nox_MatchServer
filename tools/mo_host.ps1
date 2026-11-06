@@ -11,6 +11,8 @@
 #          ★ 로그인 암호 조각 6 — 로비는 --no-auth(아이디만 · 설정에 [auth] 가 있어도). 로그인 서버(nox_auth)는 이 판에 안 띄운다
 #          ★ 10-28 다른 PC 암호 로그인 — 설정에 [auth] 가 있고 -NoAuth 가 아니면 암호 판: 로비에 --no-auth 안 붙임 · ③.5 로그인 서버를 띄우고
 #          방화벽에 8443 도 연다. 다른 PC 의 DLL 은 꾸러미의 인증서 지문(tools\pack_client.ps1)으로 이 PC 로그인 서버를 가른다(그 PC 믿는 루트 안 씀)
+#       ②.5 ★ 11-06 귓속말 조각 2 — 채팅 서버(nox_chat — 클라 TCP 4020)가 안 떠 있으면 띄운다. 로비가 로그인 때 DLL 판 7 이상에
+#          「NOXCHAT <클라가 붙은 주소>:4020」을 알려 준다 · 방화벽 4020 · 아이디만 판이면 --no-auth · -NoDb 면 정지 읽기 없음
 #       ③ ★ 10-20 v2 — 게임 서버(nox_server — UDP 18590 · --lobby 127.0.0.1:4010 · 방 없이 시작 · 새 방은 로비가 묻는다)가 안 떠 있으면 띄운다.
 #          같은 PC 라 등록 주소 0 — 로비가 클라가 붙은 주소(공인 IP)를 게임 서버 주소로 알려 준다. 게임 서버를 다른 PC 에 두면 --register-ip 가 있어야 한다
 #       ③.5 ★ 10-28 — 암호 판이면 로그인 서버(nox_auth — https://+:8443 · 가입 /signup)가 안 떠 있으면 띄운다(사람 1회 auth_setup 뒤라야 뜸)
@@ -29,6 +31,7 @@ $routerExe = Join-Path $repo 'build\Release\nox_router.exe'
 $authExe = Join-Path $repo 'build\Release\nox_auth.exe'   # ★ 10-28
 $serverExe = Join-Path $repo 'build\Release\nox_server.exe'
 $lobbyExe = Join-Path $repo 'build\Release\nox_lobby.exe'   # ★ 10-20 v2 작업 6
+$chatExe = Join-Path $repo 'build\Release\nox_chat.exe'     # ★ 11-06 귓속말 조각 2
 $firewall = Join-Path $PSScriptRoot 'mo_firewall.ps1'
 $fwResult = Join-Path $env:TEMP 'nox_mo_firewall_result.txt'   # mo_firewall.ps1 이 승인 창 뒤에서 남기는 결과(UTF-8)
 
@@ -106,6 +109,21 @@ try {
       Start-Sleep -Seconds 2
       if (-not (Get-NetTCPConnection -State Listen -LocalPort 4000 -ErrorAction SilentlyContinue)) { throw '로비가 뜨지 않았다 — 로비 창의 글을 보세요(★ 7단계 — [멈춤] DB 면 사람 1회 config\db_setup.sql 또는 -NoDb)' }
       Write-Host '로비: 띄움 (클라 TCP 0.0.0.0:4000 · 게임 서버 연결 127.0.0.1:4010)'
+    }
+    # ★ 11-06 귓속말 조각 2 — 채팅 서버. TCP 4020 을 nox_chat 이 들고 있으면 그것을 쓴다 · 다른 것이 들면 멈춤
+    $l4020 = @(Get-NetTCPConnection -State Listen -LocalPort 4020 -ErrorAction SilentlyContinue)
+    if (@($l4020 | Where-Object { (Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).ProcessName -eq 'nox_chat' }).Count -ge 1) {
+      Write-Host '채팅 서버: 이미 떠 있음 (TCP 4020) — 같은 설정 파일로 띄운 것이어야 로그인 토큰이 맞는다'
+    } elseif ($l4020.Count -ge 1) {
+      throw 'TCP 4020 을 다른 프로그램이 듣는다 — 그 창을 닫고 다시 실행하세요'
+    } else {
+      $chatArgs = @('--config', "`"$cfg`"", '--bind', '0.0.0.0', '--port', '4020', '--quiet')
+      if ($NoDb) { $chatArgs += '--no-db' }
+      if (-not $authOn) { $chatArgs += '--no-auth' }   # 로비와 같게 — 아이디만 판엔 로그인 서버가 없어 토큰을 못 받는다
+      Start-Process -FilePath $chatExe -ArgumentList $chatArgs
+      Start-Sleep -Seconds 2
+      if (-not (Get-NetTCPConnection -State Listen -LocalPort 4020 -ErrorAction SilentlyContinue)) { throw '채팅 서버가 뜨지 않았다 — 채팅 서버 창의 글을 보세요([멈춤] DB 면 -NoDb)' }
+      Write-Host '채팅 서버: 띄움 (클라 TCP 0.0.0.0:4020)'
     }
     # 게임 서버 — UDP 18590 을 든 nox_server 가 있으면 그것을 쓴다(로비에 붙어 있는지는 로비 창의 「등록」 줄로 본다)
     $latCsv = ''

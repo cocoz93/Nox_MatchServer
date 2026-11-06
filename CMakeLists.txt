@@ -110,6 +110,9 @@ add_library(nox_chat_core STATIC server/src/chat/ChatHub.cpp)
 target_link_libraries(nox_chat_core PUBLIC nox_lobby_core)
 add_executable(chat_test server/tests/chat_test.cpp)
 target_link_libraries(chat_test PRIVATE nox_chat_core)
+# ★ 11-06 귓속말 조각 2 — 채팅 서버 프로세스 nox_chat(포트 4020 · 소켓은 CTcpLines). MySQL 이 있으면 아래에서 정지 읽기(account_bans · 로비와 같은 CDbLobbyStore 읽기 워커)
+add_executable(nox_chat server/src/chat/chat_main.cpp)
+target_link_libraries(nox_chat PRIVATE nox_chat_core)
 
 # ★ 로그인 암호 조각 2 — 로그인 서버의 판단(가입 · 로그인 · Docs/LOGIN_AUTH_DESIGN.md). 소켓 · DB 없이 시험된다(auth_test — 메모리 저장소)
 add_library(nox_auth_core STATIC server/src/auth/AuthService.cpp server/src/auth/AccountStore.cpp server/src/auth/LoginThrottle.cpp server/src/auth/BanCommand.cpp)
@@ -134,6 +137,10 @@ if (EXISTS "${NOX_MYSQL_DIR}/include/mysql.h" AND EXISTS "${NOX_MYSQL_DIR}/lib/l
   target_link_libraries(nox_lobby PRIVATE nox_db)
   target_compile_definitions(nox_lobby PRIVATE NOX_HAVE_MYSQL=1)
   add_custom_command(TARGET nox_lobby POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different ${NOX_MYSQL_DLLS} $<TARGET_FILE_DIR:nox_lobby>)
+  # ★ 11-06 귓속말 조각 2 — 채팅 서버도 정지 읽기에 DB 워커를 쓴다([db] · --no-db 면 정지 목록 없음)
+  target_link_libraries(nox_chat PRIVATE nox_db)
+  target_compile_definitions(nox_chat PRIVATE NOX_HAVE_MYSQL=1)
+  add_custom_command(TARGET nox_chat POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different ${NOX_MYSQL_DLLS} $<TARGET_FILE_DIR:nox_chat>)
   # ★ 11-04 전적 검색 — 승패 합계 표를 판 행에서 다시 계산하는 일회성 도구(운영 프로세스에 안 섞음 · `nox/MatchTotalsRebuild.h`)
   add_executable(nox_match_totals server/src/match_totals_main.cpp)
   target_link_libraries(nox_match_totals PRIVATE nox_db)
@@ -209,6 +216,10 @@ if (NOX_POWERSHELL AND WIN32)
   add_test(NAME nox_lobby_smoke
            COMMAND ${NOX_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
                    -File ${CMAKE_SOURCE_DIR}/tools/nox_lobby_smoke.ps1 -Exe $<TARGET_FILE:nox_lobby>)
+  # ★ 11-06 귓속말 조각 2 — 채팅 서버 nox_chat 소켓 왕복(토큰 판 · 이름 판 · 한글 귓속말 · 끊겼다 다시 붙기 · KICKED · 기록에 내용 · 토큰 없음 · DB 없음)
+  add_test(NAME chat_smoke
+           COMMAND ${NOX_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
+                   -File ${CMAKE_SOURCE_DIR}/tools/chat_smoke.ps1 -Exe $<TARGET_FILE:nox_chat>)
   # ★ 10-21 MO 7단계 조각 8b — 판 하나를 끝까지(패킷 클라 둘 로그인 → 새 방 · 참가 → 게임 안 → `!start` → 진단 죽임 → 판 결과 →
   #   로비 저장(--no-db 메모리) → SAVED ok → 게임 서버가 쥔 것을 지움). 대기 맵(So_LOD)이 없으면 건너뜀 · DB 행은 -Db(사람 1회 뒤)
   add_test(NAME match_smoke
@@ -227,6 +238,11 @@ if (NOX_POWERSHELL AND WIN32)
              COMMAND ${NOX_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
                      -File ${CMAKE_SOURCE_DIR}/tools/ban_smoke.ps1 -Exe $<TARGET_FILE:nox_server> -LobbyExe $<TARGET_FILE:nox_lobby> -AuthExe $<TARGET_FILE:nox_auth>)
     set_tests_properties(ban_smoke PROPERTIES SKIP_RETURN_CODE 77)
+    # ★ 11-06 귓속말 조각 2 — 채팅 서버 정지 읽기(시험 DB · 정지 행 → 5초 주기 안 끊음 · 다시 로그인 banned · 풀면 들어옴 · 닫기 이벤트). 설정 [db] 가 없으면 77
+    add_test(NAME chat_smoke_db
+             COMMAND ${NOX_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
+                     -File ${CMAKE_SOURCE_DIR}/tools/chat_smoke.ps1 -Db -Exe $<TARGET_FILE:nox_chat>)
+    set_tests_properties(chat_smoke_db PROPERTIES SKIP_RETURN_CODE 77)
     add_test(NAME auth_smoke
              COMMAND ${NOX_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
                      -File ${CMAKE_SOURCE_DIR}/tools/auth_smoke.ps1 -Exe $<TARGET_FILE:nox_auth>)

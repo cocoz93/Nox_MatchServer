@@ -699,6 +699,15 @@ void Lobby::FinishLogin(int conn, Conn& c, LoginState result, const std::string&
         if (!cfg_.authOn) out.push_back({conn, ": 372 u :- You can chat, but joining a game needs a successful login."});
     }
     if (!ratingLine.empty()) out.push_back({conn, ": 372 u :- " + ratingLine});   // ★ 레이팅 조각 4 — 정품은 공지를 로비 채팅창에 줄로(`Game.exe` 0x40c180 → 0x446e90)
+    // ★ 11-06 귓속말 조각 2 — 채팅 서버 주소(로그인 성공만 · 판 7 이상만). DLL 이 떼고 둘째 연결을 맺는다 — 낮은 판은 이 줄을 정품 모듈에 넘기므로 안 보낸다
+    if (result == LoginState::Ok && cfg_.chatPort != 0) {
+        if (c.clientVer >= kNoxClientWhisperVersion) {
+            out.push_back({conn, "NOXCHAT " + IpDotted(cfg_.chatIp ? cfg_.chatIp : c.localIp) + ":" + std::to_string(cfg_.chatPort)});
+            ++stats_.chatNotices;
+        } else {
+            ++stats_.chatNoticeOld;
+        }
+    }
     out.push_back({conn, ": 376 u"});
     // ★ 레이팅 조각 4 — 쌓아 둔 뒷줄을 받은 차례대로(이 함수는 한 바퀴 안 — 그 사이 끊김 없음). 넘기는 동안 다시 쌓이지 않는다(로그인이 끝났다)
     std::vector<std::string> held;

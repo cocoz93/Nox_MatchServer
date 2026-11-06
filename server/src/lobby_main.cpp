@@ -27,6 +27,7 @@
 //     없거나 `--no-auth` 면 아이디만(시험용 · 정할 것 c — 다른 PC 판 `mo_host`). 받은 줄 기록은 `apgar` 인자를 가린다(`RedactLoginLine`)
 //   ★ 랭크 매칭 조각 4 — `[rank] min · max · gather_sec`(랭크 줄 — 기본 2 · 12 · 30 · `Docs/RANK_MATCH_PLAN.md`). 같은 이름의 실행 인자가 설정보다 앞선다.
 //     2 ≤ 최소 ≤ 최대 ≤ 31 · 모으기 0~3600초가 아니면 뜨지 않는다(조용히 기본값으로 떨어지지 않게). 부하 실험은 최소 = 최대 = 12
+//   ★ 11-06 귓속말 조각 2 — `[chat] host · port`(채팅 서버 nox_chat 주소 — 로그인 성공 때 DLL 판 7 이상에 `NOXCHAT`). 기본 = 로비 주소 · 4020 · port 0 = 안 알림
 // ⚠ --bind 0.0.0.0 은 처음 실행할 때 Windows 방화벽 허용 창이 뜰 수 있다. 같은 PC 시험은 --bind 127.0.0.1 로 충분하다.
 //   연결 포트는 기본 127.0.0.1 — 게임 서버가 다른 PC 면 --link-bind 로 내부 주소를 준다(바깥 주소에 열지 말 것)
 #include <winsock2.h>
@@ -173,6 +174,15 @@ int main(int argc, char** argv) {
     }
     Log(cfg.authOn ? "[로비] 로그인 = 로그인 토큰(로그인 서버 :%u · 가입 https://<로비 주소>:%u/signup)\n"
                    : "[로비] 로그인 = 아이디만(시험용 — [auth] key 없음 또는 --no-auth)\n", cfg.authPort, cfg.authPort);
+    // ★ 11-06 귓속말 조각 2 — 채팅 서버 주소(로그인 성공 때 DLL 판 7 이상에 `NOXCHAT`). host 없음 = 접속이 붙은 로비 주소 · port 0 = 안 알림
+    if (!ini.Get("chat", "host").empty() && !nox::ParseIpv4(ini.Get("chat", "host"), cfg.chatIp)) {
+        Log("[멈춤] 설정 파일의 [chat] host 가 IPv4 가 아니다 — %s\n", configPath.c_str());
+        return 2;
+    }
+    if (!ini.Get("chat", "port").empty()) cfg.chatPort = static_cast<uint16_t>(std::atoi(ini.Get("chat", "port").c_str()));
+    if (cfg.chatPort == 0) Log("[로비] 귓속말 채팅 서버 = 안 알림([chat] port 0)\n");
+    else Log("[로비] 귓속말 채팅 서버 = %s:%u(DLL 판 %d 이상에 NOXCHAT)\n", cfg.chatIp ? nox::Ipv4ToString(cfg.chatIp).c_str() : "<로비 주소>",
+             cfg.chatPort, nox::wol::kNoxClientWhisperVersion);
     // ★ 랭크 매칭 조각 4 — 랭크 줄(실행 인자 > 설정 `[rank]` > 기본값). 틀린 값이면 뜨지 않는다
     {
         auto pick = [&ini](const std::string& arg, const char* key, uint32_t def, uint32_t& v) {

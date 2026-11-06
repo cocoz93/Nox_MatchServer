@@ -7,6 +7,7 @@
 #       ③ 라우터 nox_router 127.0.0.1:4005 → ③.5 ★ 로그인 암호 조각 6 — 로그인 서버 nox_auth https 8443(설정에 [auth] key 가 있고 -NoAuth 가 아닐 때 ·
 #          사람 1회 config\auth_setup.sql · tools\auth_setup.ps1 전이면 뜨지 않아 멈춤 — 그때는 -NoAuth) → ④ 로비 nox_lobby 127.0.0.1:4000(게임 서버 연결 127.0.0.1:4010 ·
 #          -NoAuth 면 --no-auth = 아이디만)
+#       ④.5 ★ 11-06 귓속말 조각 2 — 채팅 서버 nox_chat 127.0.0.1:4020(로비보다 먼저 · 로비가 로그인 때 NOXCHAT 으로 알려 줌 · 로그인 서버가 없으면 --no-auth)
 #       ⑤ 게임 서버 nox_server UDP 18590 --lobby 127.0.0.1:4010(로비 기록에서 등록 확인 — 방 없이 시작 · 새 방은 로비가 묻는다)
 #          -BattleScoreLimit N 이면 `--battle-score-limit N`(판 점수 한도 시험 손잡이 — 옛 사람 판 start_rooms_check.ps1 과 같은 이름 · 1 이면 한 킬로 판 끝)
 #          -RankedAll 이면 `--ranked-all`(★ 레이팅 — 모든 방을 랭크로 · 매칭 전 점수 검증용 · Docs/RATING_DESIGN.md)
@@ -20,9 +21,9 @@
 #            · 기본(로그인 서버 있음) — 클라마다 런처 창 하나(--exe Game.exe · Game2.exe). 사람이 런처에 로그인 → 게임이 화면 넷을 스스로 넘어 대화방까지(⑯)
 #            · -Password1 / -Password2 를 주면 그 클라는 창 없이 런처 명령 줄(--cli · 이름 -Name1 / -Name2 · 이번 실행만 — 게임이 끝나면 로그아웃)
 #            · -NoAuth — 런처 없이 Game.exe 를 NOX_LAUNCH=<-Name1 / -Name2>(기본 mo1 · mo2)로. 열쇠가 없어 DLL 은 key_invalid 를 싣지만 로비가 아이디만 봄
-#       기록 = _out\mo_local\<월일_시분초>\ — router.log · auth.log · lobby.log · server.log · 판 결과는 게임 서버 실행 파일 옆 results\matches.jsonl
+#       기록 = _out\mo_local\<월일_시분초>\ — router.log · auth.log · chat.log · lobby.log · server.log · 판 결과는 게임 서버 실행 파일 옆 results\matches.jsonl
 #   -Mode Stop
-#       게임 서버 · 로비 · 로그인 서버 = 닫기 이벤트(nox_server_stop_<pid> · nox_lobby_stop_<pid> · nox_auth_stop_<pid> — 끝 줄 셈을 찍고 나감 · 응답 없을 때만 강제)
+#       게임 서버 · 로비 · 로그인 서버 · 채팅 서버 = 닫기 이벤트(nox_server_stop_<pid> · nox_lobby_stop_<pid> · nox_auth_stop_<pid> · nox_chat_stop_<pid> — 끝 줄 셈을 찍고 나감 · 응답 없을 때만 강제)
 #       라우터 = 끔(상태 · 셈이 없는 콘솔 — mo_host.ps1 과 같음). 클라는 사람이 게임 메뉴로 끈다
 #
 # 왜 — 10-20 v2 로 로비와 게임 서버가 다른 프로세스가 됐다. 옛 사람 판은 채널 하나(nox_server --lobby-port)만 띄웠다.
@@ -35,7 +36,7 @@ $bin = Join-Path $repo 'build\Release'
 $game = 'C:\Program Files\GOG Galaxy\Games\Nox'
 
 function Stop-Servers {
-  foreach ($kind in @('nox_server', 'nox_lobby', 'nox_auth')) {   # ★ 로그인 암호 조각 6 — nox_auth 도 같은 꼴의 닫기 이벤트
+  foreach ($kind in @('nox_server', 'nox_lobby', 'nox_auth', 'nox_chat')) {   # ★ 로그인 암호 조각 6 — nox_auth 도 같은 꼴의 닫기 이벤트 · ★ 11-06 귓속말 — nox_chat 도
     foreach ($p in @(Get-Process $kind -ErrorAction SilentlyContinue)) {
       try { [void][Threading.EventWaitHandle]::OpenExisting("$($kind)_stop_$($p.Id)").Set() } catch { }
       if (-not $p.WaitForExit(8000)) { Stop-Process -Id $p.Id -Force; Write-Host "$kind pid $($p.Id) — 닫기 이벤트에 답이 없어 강제 종료" }
@@ -52,7 +53,7 @@ try {
   if (-not ($now -contains '127.0.0.1')) {
     throw "servserv.westwood.com → $($now -join ',') — 정품 인터넷 메뉴가 우리 라우터로 안 온다. 먼저: powershell -ExecutionPolicy Bypass -File `"$PSScriptRoot\hosts_lobby.ps1`" -Mode On"
   }
-  foreach ($exe in @('nox_router.exe', 'nox_lobby.exe', 'nox_server.exe')) {
+  foreach ($exe in @('nox_router.exe', 'nox_lobby.exe', 'nox_server.exe', 'nox_chat.exe')) {
     if (-not (Test-Path -LiteralPath (Join-Path $bin $exe))) { throw "실행 파일이 없다 — 빌드 먼저(tools\build.ps1): $exe" }
   }
   Stop-Servers   # 앞 판에 남은 것
@@ -100,6 +101,15 @@ try {
   $lobbyArgs = "--config `"$cfg`" --bind 127.0.0.1 --lobby-port 4000 --link-bind 127.0.0.1 --link-port 4010"
   if ($NoDb) { $lobbyArgs += ' --no-db' }   # ★ 7단계
   if ($NoAuth) { $lobbyArgs += ' --no-auth' }   # ★ 로그인 암호 — 설정에 [auth] 가 있어도 아이디만(DLL 이 토큰을 아직 못 붙이는 동안 접속 시험용)
+  # ★ 11-06 귓속말 조각 2 — 채팅 서버(TCP 4020). 로비가 로그인 때 DLL 판 7 이상에 「NOXCHAT 127.0.0.1:4020」(로비 주소 = 루프백) ·
+  #   로그인 서버가 없으면 --no-auth(이름만 · 로비와 같게) · -NoDb 면 정지 읽기 없음
+  $chatArgs = "--config `"$cfg`" --bind 127.0.0.1 --port 4020"
+  if ($NoDb) { $chatArgs += ' --no-db' }
+  if (-not $authOn) { $chatArgs += ' --no-auth' }
+  Launch 'nox_chat.exe' $chatArgs (Join-Path $logDir 'chat.log')
+  $ok = $false
+  for ($i = 0; $i -lt 50 -and -not $ok; $i++) { Start-Sleep -Milliseconds 200; $ok = [bool](Get-NetTCPConnection -State Listen -LocalPort 4020 -ErrorAction SilentlyContinue) }
+  if (-not $ok) { throw "채팅 서버가 TCP 4020 을 못 열었다 — $logDir\chat.log ([멈춤] DB 줄이면 -NoDb)" }
   Launch 'nox_lobby.exe' $lobbyArgs (Join-Path $logDir 'lobby.log')
   $ok = $false
   for ($i = 0; $i -lt 50 -and -not $ok; $i++) { Start-Sleep -Milliseconds 200; $ok = [bool](Get-NetTCPConnection -State Listen -LocalPort 4000 -ErrorAction SilentlyContinue) }

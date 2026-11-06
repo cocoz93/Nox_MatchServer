@@ -2758,6 +2758,108 @@ void LoginUnitTests() {
     }
 }
 
+// ── ★ 11-06 귓속말 조각 2 — 로그인 성공 때 `NOXCHAT 주소:포트`(`Docs/MO_WHISPER_PLAN_1105.md` 3절) ──
+//   판 7 이상 · 로그인 성공만 · 376 바로 앞 한 줄 · 주소 = 설정 > 접속이 붙은 내 쪽 주소(상대 주소 아님) · 포트 0 = 안 알림 ·
+//   판 6 이하는 안 보냄(옛 DLL 은 이 줄을 정품 모듈에 넘긴다 — 셈은 따로)
+void ChatNoticeUnitTests() {
+    using namespace nox::wol;
+    FakeRooms fake;
+    fake.rooms = {FakeRoom(0, "host1")};
+    nox::JoinKey loginKey = LobbyTestKey();
+    loginKey[0] ^= 0x77;
+    const uint32_t peer = 0x0a000005u;    // 10.0.0.5 — 상대
+    const uint32_t local = 0xc0a80009u;   // 192.168.0.9 — 클라가 붙은 로비 쪽 주소
+    auto cfgOf = [&](bool auth) {
+        LobbyConfig cfg;
+        cfg.joinKey = LobbyTestKey();
+        cfg.unixNow = [] { return kLobbyTestNow; };
+        cfg.nonce = [] { return 0x0102030405060708ull; };
+        cfg.nowMs = [] { return 1000u; };
+        cfg.authOn = auth;
+        cfg.loginKey = loginKey;
+        return cfg;
+    };
+    // 로그인 토큰(`AuthService.cpp` 와 같은 꼴) — ip 는 상대 주소
+    auto apgar = [&](const std::string& name, uint32_t ip) {
+        nox::LoginToken lt;
+        lt.accountId = 7;
+        lt.clientIp = ip;
+        lt.expiresAt = kLobbyTestNow + nox::kLoginTokenLifetimeSec;
+        lt.nonce = 900;
+        lt.name = name;
+        uint8_t raw[nox::kLoginTokenSize];
+        nox::SignLoginToken(loginKey, lt, raw);
+        return "apgar NXL1" + nox::ToHex(raw, sizeof(raw)) + " 0";
+    };
+    struct Seen {
+        std::vector<std::string> lines;
+        LobbyStats st;
+        size_t chat = 0;       // NOXCHAT 줄 수
+        size_t chatAt = 0;     // 마지막 NOXCHAT 줄 자리
+        size_t at376 = 0;      // 376 자리(없으면 줄 수)
+        std::string chatLine;
+    };
+    auto run = [&](const LobbyConfig& cfg, const std::string& ver, const std::string& nick, const std::string& apgarLine) {
+        Lobby l(cfg, fake);
+        l.OnConnect(1, peer, local);
+        std::vector<Out> out;
+        std::vector<std::string> b = {"NOXCLIENT " + ver, "CVERS 11020 9472", "PASS supersecret", "NICK " + nick};
+        if (!apgarLine.empty()) b.push_back(apgarLine);
+        b.insert(b.end(), {"SERIAL 7726", "USER UserName HostName irc.westwood.com :RealName"});
+        for (const std::string& s : b) l.OnLine(1, s, out);
+        Seen r;
+        r.st = l.Stats();
+        for (const Out& x : out) r.lines.push_back(x.line);
+        r.at376 = r.lines.size();
+        for (size_t i = 0; i < r.lines.size(); ++i) {
+            if (r.lines[i] == ": 376 u") r.at376 = i;
+            if (r.lines[i].rfind("NOXCHAT", 0) == 0) {
+                ++r.chat;
+                r.chatAt = i;
+                r.chatLine = r.lines[i];
+            }
+        }
+        return r;
+    };
+    const std::string longNick(17, 'a');
+
+    // ① 판 7 · 아이디만 · 기본 설정 — 내 쪽 주소 · 4020 · 376 바로 앞 · 한 줄
+    const Seen a = run(cfgOf(false), "7", "wn", "");
+    Check(a.chat == 1 && a.chatLine == "NOXCHAT 192.168.0.9:4020" && a.chatAt + 1 == a.at376 && a.at376 < a.lines.size() &&
+              a.lines[0] == "NOXSERVER 1" && a.st.chatNotices == 1 && a.st.chatNoticeOld == 0,
+          "① 판 7 — NOXCHAT 192.168.0.9:4020 한 줄 · 376 바로 앞 · 상대 주소 10.0.0.5 아님 (" + a.chatLine + ")");
+    // ② 판 6 · 판 1 — 안 보냄 · 옛 판 셈 / 판 8 — 보냄(이상)
+    const Seen b6 = run(cfgOf(false), "6", "wn", "");
+    const Seen b1 = run(cfgOf(false), "1", "wn", "");
+    const Seen b8 = run(cfgOf(false), "8", "wn", "");
+    Check(b6.chat == 0 && b6.at376 < b6.lines.size() && b6.st.chatNoticeOld == 1 && b6.st.chatNotices == 0 && b1.chat == 0 &&
+              b1.st.chatNoticeOld == 1 && b8.chat == 1 && b8.st.chatNotices == 1,
+          "② 판 6 · 1 → 안 보냄(로그인은 끝남 · 옛 판 셈 1) · 판 8 → 보냄");
+    // ③ 설정 주소 · 포트가 앞섬 / 포트 0 = 안 알림(셈 둘 다 0)
+    LobbyConfig c3 = cfgOf(false);
+    c3.chatIp = 0x0a010203u;
+    c3.chatPort = 4777;
+    const Seen s3 = run(c3, "7", "wn", "");
+    LobbyConfig c0 = cfgOf(false);
+    c0.chatPort = 0;
+    const Seen s0 = run(c0, "7", "wn", "");
+    Check(s3.chat == 1 && s3.chatLine == "NOXCHAT 10.1.2.3:4777" && s0.chat == 0 && s0.at376 < s0.lines.size() && s0.st.chatNotices == 0 &&
+              s0.st.chatNoticeOld == 0,
+          "③ [chat] host · port 가 앞섬 (" + s3.chatLine + ") · 포트 0 → 안 보냄 · 셈 0");
+    // ④ 실패한 로그인엔 안 보냄 — 아이디만 이름 17바이트(안내 + 376) · 암호 판 남의 토큰(378)
+    const Seen f1 = run(cfgOf(false), "7", longNick, "");
+    const Seen f2 = run(cfgOf(true), "7", "wn", apgar("eve", peer));
+    Check(f1.chat == 0 && f1.at376 < f1.lines.size() && f1.st.loginBadName == 1 && f1.st.chatNotices + f1.st.chatNoticeOld == 0 && f2.chat == 0 &&
+              !f2.lines.empty() && f2.lines.back().rfind(": 378 ", 0) == 0 && f2.st.chatNotices + f2.st.chatNoticeOld == 0,
+          "④ 실패 로그인 — 이름 17바이트(376 은 감) · 남의 토큰(378) 둘 다 NOXCHAT 없음 · 셈 0");
+    // ⑤ 암호 판 맞는 토큰 · 판 7 — 보냄 / 판 6 — 안 보냄
+    const Seen t7 = run(cfgOf(true), "7", "wn", apgar("wn", peer));
+    const Seen t6 = run(cfgOf(true), "6", "wn", apgar("wn", peer));
+    Check(t7.chat == 1 && t7.chatLine == "NOXCHAT 192.168.0.9:4020" && t7.chatAt + 1 == t7.at376 && t7.st.loginToken[0] == 1 && t6.chat == 0 &&
+              t6.st.chatNoticeOld == 1 && t6.st.loginToken[0] == 1,
+          "⑤ 암호 판 토큰 로그인 — 판 7 보냄 · 판 6 안 보냄");
+}
+
 // ★ 11-04 플랜2 — 대전 기록 순수 계산(`MatchHistory.h`). 결과 갈래 전부 · 승패 · 표 한도 · 줄 꼴
 void MatchHistoryUnitTests() {
     using namespace nox::wol;
@@ -4463,6 +4565,7 @@ int main(int argc, char** argv) {
         LobbyStoreUnitTests();    // ★ 7단계 조각 4
         MirrorSaveUnitTests();    // ★ 7단계 조각 5
         LoginUnitTests();         // ★ 7단계 조각 6
+        ChatNoticeUnitTests();    // ★ 11-06 귓속말 조각 2
         MatchHistoryUnitTests();  // ★ 11-04 플랜2
         BanUnitTests();           // ★ 11-05 플랜1 조각 4
         ChatUnitTests();          // ★ 10-20 v2 작업 3b
