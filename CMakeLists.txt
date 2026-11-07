@@ -104,6 +104,9 @@ target_link_libraries(nox_lobby PRIVATE nox_lobby_core)
 
 add_executable(lobby_test server/tests/lobby_test.cpp)
 target_link_libraries(lobby_test PRIVATE nox_lobby_core)
+# ★ 11-07 점수 묶기 조각 1 — 1:1 랭크 줄에서 점수가 가까운 둘을 묶는 판단(RankMatch.h · 머리 파일뿐 · Docs/MO_RANK_MATCH_PLAN_1107.md 4절)
+add_executable(rankmatch_test server/tests/rankmatch_test.cpp)
+target_link_libraries(rankmatch_test PRIVATE nox_lobby_core)
 
 # ★ 11-06 귓속말 조각 1 — 채팅 서버 nox_chat 의 판단(이름 → 연결 표 · 토큰 · 속도 · 정지 · Docs/MO_WHISPER_PLAN_1105.md 4절). 정지 목록은 로비와 같은 CBanList(nox_lobby_core)
 add_library(nox_chat_core STATIC server/src/chat/ChatHub.cpp)
@@ -166,6 +169,7 @@ add_test(NAME lobby_unit COMMAND lobby_test)
 add_test(NAME common_unit COMMAND common_test)
 add_test(NAME auth_unit COMMAND auth_test)   # ★ 로그인 암호 조각 2
 add_test(NAME chat_unit COMMAND chat_test)   # ★ 11-06 귓속말 조각 1
+add_test(NAME rankmatch_unit COMMAND rankmatch_test)   # ★ 11-07 점수 묶기 조각 1
 # ★ 7단계 조각 7 — 진짜 MySQL 의 시험 DB(nox_mo_test). 설정 [db] 가 없거나 못 붙으면 77 = 「건너뜀」(통과로 안 보이게)
 if (NOX_HAVE_MYSQL)
   add_test(NAME db_test COMMAND db_test "${CMAKE_SOURCE_DIR}/config/nox_mo.ini" "${CMAKE_SOURCE_DIR}/tools/db/001_init.sql" "${CMAKE_SOURCE_DIR}/tools/db/002_auth.sql" "${CMAKE_SOURCE_DIR}/tools/db/003_rating.sql" "${CMAKE_SOURCE_DIR}/tools/db/004_launcher_keys.sql" "${CMAKE_SOURCE_DIR}/tools/db/005_match_kills.sql" "${CMAKE_SOURCE_DIR}/tools/db/006_match_totals.sql" "${CMAKE_SOURCE_DIR}/tools/db/007_account_bans.sql")
