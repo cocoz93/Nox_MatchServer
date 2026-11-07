@@ -112,7 +112,7 @@ std::vector<MemberUiFact> CRoomManager::ListMemberUi() const {
             f.host = host && host->sessionId == m.sessionId;
             f.canStart = f.host && startable;
             f.scoreLimit = room._settings.battleScoreLimit > 0 ? static_cast<uint32_t>(std::min(room._settings.battleScoreLimit, 255)) : room._game.Settings().limitValue;
-            f.timeLimitSec = room._game.RoundTimerSec();   // ★ 11-07 T1 — 지금 건 시계(T2 에서 방 설정 값으로)
+            f.timeLimitSec = room.MatchTimeLimitSec();   // ★ 11-07 T2 — 방 틀 값(점수 칸과 같은 꼴 — 대기 중에도 다음 판 길이 · 옛 T1 꼴 = 지금 건 시계라 대기 중 0)
             f.battleMap = room._settings.battleMapPath.empty() ? std::string() : MapKeyOf(room._settings.battleMapPath);
             r.push_back(std::move(f));
         }

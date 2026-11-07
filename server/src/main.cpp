@@ -449,6 +449,10 @@ int main(int argc, char** argv) {
             // ★ 10-16 작업 13d — 진단 — 판(`!start`)의 점수 한도를 N 으로(0 = 그대로) · 방 틀이라 로비가 만든 방에도 실린다
             //   ★ 11-03 — 다른 PC 판도 이 값(`tools/mo_host.ps1 -BattleScoreLimit` — 기본 1)
             opt.room.battleScoreLimit = std::atoi(argv[++i]);
+        } else if (a == "--battle-time-limit-sec" && i + 1 < argc) {
+            // ★ 11-07 판 시간 제한 T2 — 진단 — 판 시계 길이(초 · 0 = 시계 없음 · 기본 600 `RoomSettings::battleTimeLimitSec`) · 방 틀이라 로비가 만든 방에도 실린다.
+            //   실물 시험에서 시간 초과 판을 몇십 초로 보려고(11-07 사용자 — 실물 시험 전용)
+            opt.room.battleTimeLimitSec = std::atoi(argv[++i]);
         } else if (a == "--ranked-all") {
             // ★ 레이팅 조각 2 — 시험 손잡이 — 모든 방을 랭크로(매칭 전 점수 검증용 · 방 틀이라 로비가 만든 방에도 실린다)
             opt.room.ranked = true;

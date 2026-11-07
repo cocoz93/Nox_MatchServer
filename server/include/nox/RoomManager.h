@@ -189,6 +189,8 @@ private:
     bool CanStartMatch() const { return FindMap(_settings.battleMapPath) && FindMap(_settings.mapPath); }
     // ★ 매칭 손보기 3 — `inPlace` 면 맵을 안 바꾼다(`Server::RestartInPlace` — 한 맵 랭크 방 · 방 관리자 `SetRankOneMap`) · 다음 판 맵도 안 걸어 둠(같은 맵 다시 열기)
     void StartMatch(bool inPlace = false);
+    // ★ 11-07 판 시간 제한 T2 — 판 시계 길이(초 · 방 틀 `battleTimeLimitSec` · 0 이하 = 없음). 판 열기(`StartMatch`)와 Home 창(`ListMemberUi`)이 같은 값을 쓴다
+    uint32_t MatchTimeLimitSec() const;
     void OnRoundRestarted();
     // ★ 10-16 결함 ④ — 판 중인데 게임 안 사람이 `kMinPlayers` 밑이면 대기 맵으로 바로(판 끝 쉬는 중이면 그 흐름에 맡김 — 어차피 대기 맵으로 연다).
     //   원작에는 없는 규칙(원작 아레나는 혼자 남아도 점수 한도까지 돈다) — 「판 단위 대전」 방이라 혼자 남은 판은 끝낸다(10-16 결정)

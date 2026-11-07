@@ -46,7 +46,11 @@ struct RoomSettings {
     std::vector<std::string> battleMapChoices;
     // ★ 10-16 작업 13d — 진단(시험 손잡이) `--battle-score-limit N` — 판을 열 때 점수 한도를 N 으로(0 = 그대로 · 원작 15).
     //   정품 확인에서 판 끝(→ 대기 맵)을 한 킬로 보려고. 판 끝 조건 결정(「10-16 정한 것」 — 지금 서버 그대로)은 안 바꾼다
-    int battleScoreLimit = 0;
+    //   ★ 11-07 판 시간 제한 T2 — 기본 0 → 10(11-07 사용자 「10분 또는 10킬」 · 랭크 · 일반 같음). 0 = 게임 기본 15(원작 · `--battle-score-limit 0`)
+    int battleScoreLimit = 10;
+    // ★ 11-07 판 시간 제한 T2 — 판 시계 길이(초 · 방이 판을 열 때 `Server::ArmRoundTimer` · `CRoom::MatchTimeLimitSec`). 기본 600(11-07 사용자 「10분 또는 10킬」 ·
+    //   11-06 15킬 판 실물이 9분 40초 — 10킬 판은 대개 이 안에 끝나고 늘어지는 판만 자른다). 0 = 시계 없음 · 진단 `--battle-time-limit-sec N`(실물 시험에서 짧게)
+    int battleTimeLimitSec = 600;
     // ★ 레이팅 조각 2 — 랭크 방(판 결과에 `ranked` · 로비가 점수를 매김 · `Docs/RATING_DESIGN.md`). 매칭이 생기면 매칭이 방을 만들 때 켠다.
     //   그 전엔 시험 손잡이 `--ranked-all`(방 틀이라 로비가 만든 방에도 실린다)
     //   ★ 랭크 매칭 조각 5 — 로비의 랭크 줄이 묶은 요청(`CREATE` 꼬리)이면 켠다

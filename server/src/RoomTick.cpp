@@ -907,6 +907,9 @@ void nox::CRoom::StartMatch(bool inPlace) {
     if (!battle || !wait) return;   // 부르는 쪽이 `CanStartMatch` 로 걸렀다
     // ★ 10-16 작업 13d — 시험 손잡이 — 점수 한도(전환이 보내는 `af` 에 실리게 먼저). 대기 맵으로 돌아가도 그대로 둔다(채팅 모드는 점수가 안 오른다 — 13c)
     if (_settings.battleScoreLimit > 0) _game.SetLimitValue(static_cast<uint8_t>(std::min(_settings.battleScoreLimit, 255)));
+    // ★ 11-07 판 시간 제한 T2 — 판 시계(머리 주석은 `Server.h` `ArmRoundTimer`). 두 길 모두 판을 열기 **전에** 건다 — 맵 바꾸기 길은 전환이 보내는
+    //   `af` 19번 · `b0` 45번에 남은 시간이 실리게, 제자리 길(맵을 안 바꿔 `af` · `b0` 가 안 감)은 켬이 바뀐 다음 틱의 `d3` 로 간다
+    _game.ArmRoundTimer(MatchTimeLimitSec());
     if (inPlace) {   // ★ 매칭 손보기 3 — 한 맵 랭크 방(이미 대전 맵 · 대전 모드) — 맵을 안 바꾸고 점수 · 부활만 · 판 끝엔 같은 맵 다시 열기
         _game.RestartInPlace();
         _game.ClearNextRoundMap();
@@ -937,6 +940,11 @@ void nox::CRoom::StartMatch(bool inPlace) {
     _game.Log("[판] 시작 — 대전 맵 %s(%s) · 끝나면 대기 맵 %s · 사람 %zu\n", battle->key.c_str(), _settings.battleMode.c_str(), wait->key.c_str(),
               _game.inGameCount());
     if (!inPlace) _game.ArmLimitNotice();   // ★ 11-03 — 다른 PC 판 ① 「한 번 죽였는데 안 끝남」 · 맵을 안 바꾸는 한 맵 방은 준비가 다시 안 와 안 건다
+}
+
+// ★ 11-07 판 시간 제한 T2 — 머리 주석은 `RoomManager.h`. 상한 255분 = 정품에 분을 싣는 `af` 19번이 한 바이트(`Server::WireSettings`)
+uint32_t nox::CRoom::MatchTimeLimitSec() const {
+    return _settings.battleTimeLimitSec > 0 ? static_cast<uint32_t>(std::min(_settings.battleTimeLimitSec, 255 * 60)) : 0u;
 }
 
 // ★ 10-19 MO 5단계 작업 2 — 머리 주석은 `RoomManager.h` `CollectRoundOutcome`. 방 관리자가 틱 뒤(판 상태를 바꾸기 전에) 부른다
@@ -1141,6 +1149,7 @@ void nox::CRoom::CheckMatchHeadcount() {
         _game.Log("[판] 사람 모자람(게임 안 %zu < %zu) — 판 끝처럼 닫음(쉬는 시간 뒤 %s)\n", left, kMinPlayers, _rankWait == RankWait::Started ? "모두 내보냄" : "대기 맵");
         return;
     }
+    _game.ArmRoundTimer(0);   // ★ 11-07 T2 — 판 끝(`EndRound`)을 안 거치는 길이라 여기서 끈다 — 안 끄면 대기 맵에서 마감에 시간 초과 판정이 돈다
     _game.SwitchMap(wait->tables, wait->initial, nox::ModeGameFlags(_settings.mode));
     _game.ClearNextRoundMap();                              // 그 맵으로 이미 왔다 — 다음 판 끝에 또 바꾸지 않게
     _phase = RoomPhase::Waiting;

@@ -25091,11 +25091,12 @@ std::shared_ptr<MapOriginal> FakeMapOriginal(const std::string& key, uint32_t cr
 // 로비가 만든 방처럼 — 대기 맵 원본에 붙은 독립 모드 · 채팅 · 대전 맵(열쇠가 목록에 없으면 빈 것) · 최대 8 · 맵 목록
 int MakeLobbyLikeRoom(nox::CRoomManager& rooms, const MapCatalog& cat, const std::string& waitKey, const std::string& battleKey,
                       int battleScoreLimit = 0, const std::vector<std::string>& roster = {}, const std::vector<int32_t>& ratings = {},
-                      const std::vector<std::string>& mapChoices = {}) {
+                      const std::vector<std::string>& mapChoices = {}, int battleTimeLimitSec = -1) {
     const auto wait = cat.Find(waitKey);
     const auto battle = cat.Find(battleKey);
     RoomSettings rs;
     rs.battleScoreLimit = battleScoreLimit;   // ★ 10-16 작업 13d
+    if (battleTimeLimitSec >= 0) rs.battleTimeLimitSec = battleTimeLimitSec;   // ★ 11-07 판 시간 제한 T2(-1 = 방 틀 기본 600)
     rs.ranked = !roster.empty();              // ★ 랭크 매칭 조각 6 — 명단이 있으면 로비 랭크 줄이 묶은 방
     rs.roster = roster;
     rs.rosterRatings = ratings;               // ★ 매칭 손보기 5
@@ -25634,9 +25635,10 @@ void TestRankOneMap() {
                 for (size_t i = 0; i + 3 <= x.size(); ++i) n += std::memcmp(x.data() + i, pat, 3) == 0 ? 1 : 0;
             return n;
         };
-        struct R { bool playing; unsigned long long switches, inPlace; bool nextMap; int eA, eB; int scoreA; };
+        struct R { bool playing; unsigned long long switches, inPlace; bool nextMap; int eA, eB; int scoreA; bool timerOn; uint32_t timerSec; };
         return R{ rooms.Room(r).Phase() == nox::RoomPhase::Playing && rooms.Room(r).RankState() == nox::CRoom::RankWait::Started, g.mapSwitches(),
-                  g.inPlaceStarts(), g.HasNextRoundMap(), respawnTo(A, netOf(Sid(srv, A))), respawnTo(B, netOf(Sid(srv, B))), g.DebugScore(Sid(srv, A)) };
+                  g.inPlaceStarts(), g.HasNextRoundMap(), respawnTo(A, netOf(Sid(srv, A))), respawnTo(B, netOf(Sid(srv, B))), g.DebugScore(Sid(srv, A)),
+                  g.RoundTimerOn(), g.RoundTimerSec() };
     };
     const auto on = run(true, "on", 1);
     const auto off = run(false, "off", 2);
@@ -25645,6 +25647,10 @@ void TestRankOneMap() {
     Check(on.playing && on.switches == 0 && on.inPlace == 1 && !on.nextMap && on.eA >= 1 && on.eB >= 1 && on.scoreA == 0 && off.playing &&
               off.switches == 1 && off.inPlace == 0,
           m);
+    // ★ 11-07 판 시간 제한 T2 — 판 여는 두 길(제자리 · 맵 바꾸기) 모두 시계를 건다(방 틀 기본 600초)
+    std::snprintf(m, sizeof(m), "★ 판 시계 두 길 — 제자리 켜짐 %d %u초 · 맵 바꾸기 켜짐 %d %u초(600)", (int)on.timerOn, on.timerSec, (int)off.timerOn, off.timerSec);
+    Check(on.timerOn && on.timerSec == 600 && off.timerOn && off.timerSec == 600, m);
+    std::printf("  %s\n", m);
     std::printf("  매칭 손보기 3 — 한 맵 랭크 방(파일럿 스위치): 맵 안 바꾸고 제자리 판 · 둘 다 부활 e9 · 점수 0 · 스위치 끄면 옛 길\n");
 }
 
@@ -26987,6 +26993,187 @@ void TestRoundTimerJoin() {
               leftAtJoin == 599676u, m);
     std::printf("  %s\n", m);
     std::printf("  11-07 판 시계 — 접속 묶음 af 19번(분) · b0 45번(그때 남은 ms) · 꺼짐이면 0\n");
+}
+
+// ── ★ 11-07 판 시간 제한 T2 — 방이 판을 열 때 시계를 건다(`CRoom::StartMatch` · 방 틀 `battleTimeLimitSec` 기본 600 · 점수 10) ─────────
+//   ① 대기 맵에 600초(18,182틱)보다 오래(20,000틱) — 시계 꺼짐 · 시간 초과 0 · Home 창 줄(ROOMUI) 대기 · 판수 10 · 시간 10
+//   ② `!start`(맵 바꾸기 길) — 명령 처리 직후 마감 − 틱 18,182 · 전환 `af` 19번 10 · `b0` 45번 600,006(두 사람 · 하나씩) · 다음 틱에 안 끝남 · ROOMUI 판 중 10 · 10
+//   ③ 10킬로 판 끝 → 끔 · 기록 600초 → 대기 맵 → 다시 `!start` = 새 18,182 · `b0` 600,006
+//   ④ 판 중 둘 다 나감(판 끝 없이 대기 맵으로 — `CheckMatchHeadcount`) → 끔 · 대기 맵에서 마감을 지나도 시간 초과 0
+//   ⑤ 방 틀 0(진단 `--battle-time-limit-sec 0`) → `!start` 해도 안 켬 · `b0` 45번 0 · ROOMUI 시간 0
+void TestRoundTimerRoom() {
+    using Ev = nox::NetworkEvent;
+    using Rq = nox::NetworkRequest;
+    using RER = nox::RoundEndReason;
+    const uint8_t conn[3] = { 0xff, 0x00, 0x00 };
+    char m[460];
+    nox::CSyncHost srv;
+    UseTokens(srv);
+    nox::CRoomManager& rooms = srv.Rooms();
+    MapCatalog cat;
+    cat.maps.push_back(FakeMapOriginal("so_lod", 0x18d8f4d9u, 1000.0f, 1000.0f));
+    cat.maps.push_back(FakeMapOriginal("estate", 0x22222222u, 3000.0f, 3000.0f));
+    const int r = MakeLobbyLikeRoom(rooms, cat, "so_lod", "estate", 10);
+    const int r0 = MakeLobbyLikeRoom(rooms, cat, "so_lod", "estate", 10, {}, {}, {}, 0);
+    nox::Server& game = rooms.Game(r);
+    nox::Server& game0 = rooms.Game(r0);
+    uint32_t now = 1000;
+    std::vector<nox::OutPacket> o;
+    srv.Tick(now, o);
+    now += 33; srv.Tick(now, o);
+    auto join = [&](int room, const std::string& account, const std::string& ip, uint64_t nonce) {
+        const auto tail = TrailerAs(account, room, ip, nonce);
+        const auto tj = WithTail(TryJoinPkt("Jack"), tail);
+        srv.OnPacket(ip + ":1", tj.data(), tj.size(), o);
+        const auto cn = WithTail(std::vector<uint8_t>(conn, conn + sizeof(conn)), tail);
+        srv.OnPacket(ip + ":2", cn.data(), cn.size(), o);
+        const auto ac = AcceptPkt("Jack");
+        srv.OnPacket(ip + ":2", ac.data(), ac.size(), o);
+        return ip + ":2";
+    };
+    auto chat = [](const std::string& text) {
+        std::vector<uint8_t> p(nox::kWireHeaderSize, 0);
+        p.push_back(static_cast<uint8_t>(nox::Op::TEXT_MESSAGE));
+        p.push_back(0); p.push_back(0); p.push_back(0x02);
+        p.push_back(0); p.push_back(0); p.push_back(0); p.push_back(0);
+        p.push_back(static_cast<uint8_t>(text.size()));
+        p.push_back(0); p.push_back(0);
+        for (const char c : text) p.push_back(static_cast<uint8_t>(c));
+        return p;
+    };
+    // 그 사람에게 간 `af` 19번 · `b0` 45번(접속 묶음 시험과 같은 찾기)
+    auto wire = [&](const nox::Server& g, const std::vector<nox::OutPacket>& out, const std::string& to, std::vector<int>& af19, std::vector<uint32_t>& b045) {
+        const std::vector<uint8_t> want = nox::BuildGameSettings2(g.Settings());
+        for (const auto& x : FlattenTo(out, to))
+            for (size_t i = 0; i < x.size(); ++i) {
+                if (i + 20 <= x.size() && x[i] == static_cast<uint8_t>(nox::Op::GAME_SETTINGS) && x[i + 5] == 0x9a && x[i + 6] == 0x03 && x[i + 7] == 0x01 &&
+                    x[i + 8] == 0x00)
+                    af19.push_back(x[i + 19]);
+                if (i + 49 <= x.size() && x[i] == static_cast<uint8_t>(nox::Op::GAME_SETTINGS_2) && std::memcmp(x.data() + i + 1, want.data() + 1, 44) == 0)
+                    b045.push_back(Rd32(x, i + 45));
+            }
+    };
+    // `!start` — 명령은 받는 자리에서 처리된다(`CRoomManager::Forward`) · 처리 직후 마감 − 틱을 보고 한 틱 돌림
+    auto start = [&](nox::Server& g, const std::string& from, std::vector<nox::OutPacket>& out, uint32_t& gap) {
+        const auto p = chat("!start");
+        srv.OnPacket(from, p.data(), p.size(), out);
+        gap = g.RoundTimerOn() ? g.RoundDeadline() - g.DebugFrame() : 0;
+        now += 34; srv.Tick(now, out);
+    };
+    const std::string A = join(r, "amy", "10.74.0.1", 741), B = join(r, "bob", "10.74.0.2", 742);
+    const std::string C = join(r0, "cal", "10.74.0.3", 743), D = join(r0, "dan", "10.74.0.4", 744);
+    for (int i = 0; i < 3; ++i) { now += 34; srv.Tick(now, o); }
+
+    // ① 대기 맵에 오래
+    game.DebugAdvanceFrame(20000);
+    for (int i = 0; i < 3; ++i) { now += 34; srv.Tick(now, o); }
+    const bool waitOn = game.RoundTimerOn();
+    const unsigned long long waitUps = game.RoundEndCount(RER::TimeUp);
+    nox::CLobbyClient::Config cfg;
+    for (size_t i = 0; i < cfg.tokenKey.size(); ++i) cfg.tokenKey[i] = static_cast<uint8_t>(i + 11);
+    cfg.epoch = 1760000000u;
+    cfg.port = 18590;
+    nox::CLobbyClient lc(rooms, cfg);
+    auto ev = [](Ev::Type t, const std::string& line) {
+        Ev e;
+        e.type = t;
+        e.lobbyConn = 5;
+        e.lobbyLine = line;
+        e.lobbyWhy = "test";
+        return e;
+    };
+    // 로비로 간 그 사람의 Home 창 줄(ROOMUI) — 수 · 마지막 것
+    auto uiOf = [](const std::vector<Rq>& rq, const std::string& name, nox::LinkRoomUi& u) {
+        int n = 0;
+        for (const Rq& q : rq) {
+            nox::LinkLine l;
+            if (nox::ParseLinkLine(q.lobbyLine, l) != nox::LinkParse::Ok || l.kind != nox::LinkKind::RoomUi || l.roomUi.name != name) continue;
+            u = l.roomUi;
+            ++n;
+        }
+        return n;
+    };
+    std::vector<Rq> rq;
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_OPENED, ""), rq);
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, nox::LinkHello("00112233445566778899aabbccddeeff")), rq);
+    nox::LinkRoomUi uiWait, uiWait0;
+    const int nWait = uiOf(rq, "amy", uiWait), nWait0 = uiOf(rq, "cal", uiWait0);
+    std::snprintf(m, sizeof(m), "① 대기 맵 20,000틱 — 켜짐 %d · 시간 초과 %llu · ROOMUI amy %d줄 상태 %u 판수 %u 시간 %u(10 · 10) · 틀 0 방 cal %d줄 시간 %u(0)", waitOn, waitUps, nWait,
+                  static_cast<unsigned>(uiWait.state), uiWait.scoreLimit, uiWait.timeLimitMin, nWait0, uiWait0.timeLimitMin);
+    Check(!waitOn && waitUps == 0 && nWait == 1 && uiWait.state == nox::RoomUiState::Waiting && uiWait.scoreLimit == 10 && uiWait.timeLimitMin == 10 && nWait0 == 1 &&
+              uiWait0.scoreLimit == 10 && uiWait0.timeLimitMin == 0, m);
+    std::printf("  %s\n", m);
+
+    // ② `!start` — 맵 바꾸기 길
+    std::vector<nox::OutPacket> o1;
+    uint32_t gap1 = 0;
+    start(game, A, o1, gap1);
+    std::vector<int> afA, afB;
+    std::vector<uint32_t> b0A, b0B;
+    wire(game, o1, A, afA, b0A);
+    wire(game, o1, B, afB, b0B);
+    const bool playing = rooms.Room(r).Phase() == nox::RoomPhase::Playing;
+    for (int i = 0; i < 2; ++i) { now += 34; srv.Tick(now, o); }
+    const bool overFirst = game.RoundOver();
+    rq.clear();
+    lc.AfterTick(rq);
+    nox::LinkRoomUi uiPlay;
+    const int nPlay = uiOf(rq, "amy", uiPlay);
+    std::snprintf(m, sizeof(m), "② !start — 판 %d · 켬 %u초 · 마감 − 틱 %u(18182) · af A %zu개 %d · B %zu개 %d(10) · b0 A %zu개 %u · B %zu개 %u(600006) · 첫 틱들 끝 %d · ROOMUI %d줄 상태 %u 판수 %u 시간 %u",
+                  playing, game.RoundTimerSec(), gap1, afA.size(), afA.empty() ? -1 : afA[0], afB.size(), afB.empty() ? -1 : afB[0], b0A.size(), b0A.empty() ? 0u : b0A[0],
+                  b0B.size(), b0B.empty() ? 0u : b0B[0], overFirst, nPlay, static_cast<unsigned>(uiPlay.state), uiPlay.scoreLimit, uiPlay.timeLimitMin);
+    Check(playing && game.RoundTimerSec() == 600 && gap1 == 18182 && afA.size() == 1 && afA[0] == 10 && afB.size() == 1 && afB[0] == 10 && b0A.size() == 1 &&
+              b0A[0] == 600006u && b0B.size() == 1 && b0B[0] == 600006u && !overFirst && nPlay == 1 && uiPlay.state == nox::RoomUiState::Playing &&
+              uiPlay.scoreLimit == 10 && uiPlay.timeLimitMin == 10, m);
+    std::printf("  %s\n", m);
+
+    // ③ 10킬로 판 끝 → 대기 맵 → 둘째 판
+    game.DebugSetScore(Sid(srv, A), 10);
+    game.DebugRoundCheck();
+    const bool overScore = game.RoundOver(), onAfterScore = game.RoundTimerOn();
+    const uint32_t recSec = game.LastRoundOutcome().timeLimitSec, recLimit = game.LastRoundOutcome().limit;
+    //   쉬는 시간은 나눠 돌린다 — 한 번에 넘기면 방 관리자가 「판 끝 참」을 못 보고 다시 열린 판만 봐 대기로 안 돌린다(`TestRoomMatchSwitch` ② 와 같은 꼴)
+    for (int k = 0; k < 40 && rooms.Room(r).Phase() == nox::RoomPhase::Playing; ++k) { now += 500; srv.Tick(now, o); }
+    now += 34; srv.Tick(now, o);
+    const bool backWait = rooms.Room(r).Phase() == nox::RoomPhase::Waiting;
+    std::vector<nox::OutPacket> o2;
+    uint32_t gap2 = 0;
+    start(game, A, o2, gap2);
+    std::vector<int> afA2;
+    std::vector<uint32_t> b0A2;
+    wire(game, o2, A, afA2, b0A2);
+    std::snprintf(m, sizeof(m), "③ 10킬 판 끝 %d · 켜짐 %d · 기록 %u초 한도 %u · 대기 맵 %d · 둘째 !start 마감 − 틱 %u(18182) · b0 A %zu개 %u(600006) · 점수 끝 %llu",
+                  overScore, onAfterScore, recSec, recLimit, backWait, gap2, b0A2.size(), b0A2.empty() ? 0u : b0A2[0], game.RoundEndCount(RER::ScorePlayer));
+    Check(overScore && !onAfterScore && recSec == 600 && recLimit == 10 && backWait && gap2 == 18182 && b0A2.size() == 1 && b0A2[0] == 600006u &&
+              game.RoundEndCount(RER::ScorePlayer) == 1, m);
+    std::printf("  %s\n", m);
+
+    // ④ 판 중 둘 다 나감 → 판 끝 없이 대기 맵 → 끔 · 마감을 지나도 시간 초과 없음
+    const unsigned long long stops0 = game.roundTimerStops();
+    game.DebugLeave(Sid(srv, A));
+    game.DebugLeave(Sid(srv, B));
+    for (int i = 0; i < 2; ++i) { now += 34; srv.Tick(now, o); }
+    const bool abortWait = rooms.Room(r).Phase() == nox::RoomPhase::Waiting, abortOn = game.RoundTimerOn();
+    game.DebugAdvanceFrame(20000);
+    for (int i = 0; i < 2; ++i) { now += 34; srv.Tick(now, o); }
+    std::snprintf(m, sizeof(m), "④ 둘 다 나감 — 대기 %d · 켜짐 %d · 끔 %llu → %llu · 20,000틱 뒤 시간 초과 %llu(0)", abortWait, abortOn, stops0, game.roundTimerStops(),
+                  game.RoundEndCount(RER::TimeUp));
+    Check(abortWait && !abortOn && game.roundTimerStops() == stops0 + 1 && game.RoundEndCount(RER::TimeUp) == 0, m);
+    std::printf("  %s\n", m);
+
+    // ⑤ 방 틀 0 — 안 켬
+    std::vector<nox::OutPacket> o5;
+    uint32_t gap5 = 0;
+    start(game0, C, o5, gap5);
+    std::vector<int> afC;
+    std::vector<uint32_t> b0C;
+    wire(game0, o5, C, afC, b0C);
+    std::snprintf(m, sizeof(m), "⑤ 틀 0 — 판 %d · 켜짐 %d · 켬 %llu · af C %zu개 %d(0) · b0 C %zu개 %u(0)", rooms.Room(r0).Phase() == nox::RoomPhase::Playing, game0.RoundTimerOn(),
+                  game0.roundTimerArms(), afC.size(), afC.empty() ? -1 : afC[0], b0C.size(), b0C.empty() ? 0u : b0C[0]);
+    Check(rooms.Room(r0).Phase() == nox::RoomPhase::Playing && !game0.RoundTimerOn() && game0.roundTimerArms() == 0 && afC.size() == 1 && afC[0] == 0 &&
+              b0C.size() == 1 && b0C[0] == 0, m);
+    std::printf("  %s\n", m);
+    (void)D;
 }
 
 // ── ★ 10-16 사람 판 결함 ④ — 판 중에 한 명만 남으면 대기 맵으로(`CRoom::CheckMatchHeadcount`) ─────────
@@ -34375,6 +34562,7 @@ int main() {
     TestRoomChatCommands();
     TestRoomMatchSwitch();
     TestRoundTimerJoin();   // ★ 11-07 판 시간 제한 T1
+    TestRoundTimerRoom();   // ★ 11-07 판 시간 제한 T2
     TestRoomMapCommand();   // ★ 11-06 플랜1 조각 6
     TestLobbyClientRank();   // ★ 랭크 매칭 조각 6
     TestRankRoom();          // ★ 랭크 매칭 조각 6
