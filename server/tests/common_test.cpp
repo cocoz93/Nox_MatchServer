@@ -890,12 +890,13 @@ void TestRating() {
         m.hasWinnerId = std::string(winner) == "player" || std::string(winner) == "team";
         m.winnerId = winnerId;
         m.players = std::move(ps);
+        for (size_t i = 0; i < m.players.size(); ++i) m.players[i].netCode = static_cast<uint16_t>(i + 1);   // ★ 11-07 — 승자 칸(각자 판 = netCode)이 가리킬 자리
         return m;
     };
-    // 자리별 기대 — 반영 안 함은 kNo
+    // 자리별 기대 — 반영 안 함은 kNo. ★ 11-07 — 판 전 점수 `before`(비면 모두 1000)
     constexpr int kNo = 9999;
-    auto same = [&](const nox::MatchRecord& m, RC kind, const std::vector<int>& want) {
-        const nox::RatingResult r = nox::RatingDeltas(m);
+    auto same = [&](const nox::MatchRecord& m, RC kind, const std::vector<int>& want, const std::vector<int32_t>& before = {}) {
+        const nox::RatingResult r = nox::RatingDeltas(m, before);
         if (r.kind < RC::kCount) ++seen[static_cast<size_t>(r.kind)];
         if (r.kind != kind || r.seats.size() != want.size()) return false;
         for (size_t i = 0; i < want.size(); ++i) {
@@ -911,15 +912,20 @@ void TestRating() {
     Check(same(rec(true, "aborted", "none", 0, {pl(true, false, 0, 5), pl(true, true, 0, 0), pl(true, false, 0, 9, true), pl(false, false, 0, 1)}),
                RC::Aborted, {10, -10, kNo, kNo}),
           "중단 — 끝까지 +10 · 나감 −10(★ 10-31) · 관전자 · 계정 없음은 반영 안 함");
-    Check(same(rec(true, "aborted", "none", 0, {pl(true, false, 0, 0), pl(true, false, 0, 3)}), RC::Aborted, {0, 0}),
-          "중단 — 나간 사람이 없으면 모두 0");
-    Check(same(rec(true, "aborted", "none", 0, {pl(true, true, 0, 0), pl(true, true, 0, 0)}), RC::Aborted, {-10, -10}),
-          "중단 — 둘 다 나가면 둘 다 −10");
+    // ★ 11-07 — 둘(둘 다 계정)인 판은 1:1 Elo(Duel). 점수가 같으면(1000 · 1000) 옛 값과 같다
+    Check(same(rec(true, "aborted", "none", 0, {pl(true, false, 0, 0), pl(true, false, 0, 3)}), RC::Duel, {0, 0}),
+          "중단 — 나간 사람이 없으면 모두 0(1:1 Elo 도 0)");
+    Check(same(rec(true, "aborted", "none", 0, {pl(true, true, 0, 0), pl(true, true, 0, 0)}), RC::Duel, {-10, -10}),
+          "중단 — 둘 다 나가면 둘 다 −10(1:1 Elo 같은 점수 — 각자 −round(20 × 0.5))");
     Check(same(rec(true, "aborted", "none", 0, {pl(true, false, 0, 0), pl(false, true, 0, 0)}), RC::Aborted, {10, kNo}),
           "중단 — 계정 없는 사람이 나가도 남은 사람 +10");
-    Check(same(rec(true, "time_up", "draw", 0, {pl(true, false, 1, 2), pl(true, true, 0, 0), pl(true, false, 2, 2, true)}), RC::NoWinner,
-               {0, -10, kNo}),
-          "비김 — 끝까지 0 · 나감 −10 · 관전자 반영 안 함");
+    // ★ 11-07 — 관전자 빼고 둘이라 1:1 Elo: 하나만 나가면 남은 쪽이 이김(옛 「끝까지 0」 → +10)
+    Check(same(rec(true, "time_up", "draw", 0, {pl(true, false, 1, 2), pl(true, true, 0, 0), pl(true, false, 2, 2, true)}), RC::Duel,
+               {10, -10, kNo}),
+          "비김 판에서 하나 나감(1:1) — 남은 쪽 +10 · 나감 −10 · 관전자 반영 안 함");
+    Check(same(rec(true, "time_up", "draw", 0, {pl(true, false, 1, 2), pl(true, true, 0, 0), pl(true, false, 2, 2)}), RC::NoWinner,
+               {0, -10, 0}),
+          "비김(셋) — 끝까지 0 · 나감 −10");
     Check(same(rec(true, "time_up", "none", 0, {pl(true, false, 0, 0), pl(false, true, 0, 0)}), RC::NoWinner, {0, kNo}),
           "승자 없음 — 끝까지 0 · 계정 없는 나감은 반영 안 함");
     Check(same(rec(true, "score_team", "team", 1,
@@ -927,10 +933,12 @@ void TestRating() {
                     pl(false, false, 2, 1)}),
                RC::Team, {10, -10, -10, kNo, kNo, kNo}),
           "팀 판 — 이긴 팀 +10 · 진 팀 −10 · 나감 −10 · 무소속 · 관전자 · 계정 없음 반영 안 함");
-    Check(same(rec(true, "score_team", "team", 2, {pl(true, false, 1, 3), pl(true, false, 2, 0)}), RC::Team, {-10, 10}),
-          "팀 판 — 이긴 팀 번호를 점수가 아니라 승자 칸으로 가름");
-    Check(same(rec(true, "score_player", "player", 1, {pl(true, false, 0, 3), pl(true, false, 0, 1)}), RC::Player, {10, -10}),
-          "각자 판 둘 — +10 · −10");
+    Check(same(rec(true, "score_team", "team", 2, {pl(true, false, 1, 3), pl(true, false, 2, 0)}), RC::Duel, {-10, 10}),
+          "팀 판 둘(1:1 Elo) — 이긴 팀 번호를 점수가 아니라 승자 칸으로 가름");
+    Check(same(rec(true, "score_player", "player", 1, {pl(true, false, 0, 3), pl(true, false, 0, 1)}), RC::Duel, {10, -10}),
+          "각자 판 둘(1:1 Elo) — +10 · −10");
+    Check(same(rec(true, "score_player", "player", 2, {pl(true, false, 0, 3), pl(true, false, 0, 1)}), RC::Duel, {-10, 10}),
+          "각자 판 둘(1:1 Elo) — 이긴 사람을 판 점수가 아니라 승자 칸(netCode)으로 가름");
     Check(same(rec(true, "score_player", "player", 1, {pl(true, false, 0, 1), pl(true, false, 0, 7), pl(true, false, 0, 4), pl(true, false, 0, -1)}),
                RC::Player, {-3, 10, 3, -10}),
           "각자 판 넷 — 순위대로 10 · 3 · −3 · −10(1/3 씩 · 반올림 · 명단 차례와 무관)");
@@ -943,29 +951,140 @@ void TestRating() {
     Check(same(rec(true, "score_player", "player", 1, {pl(true, false, 0, 3), pl(false, false, 0, 2), pl(true, false, 0, 1)}), RC::Player,
                {10, kNo, -10}),
           "각자 판 계정 없는 사람 — 순위 자리는 차지(가운데) · 점수는 반영 안 함");
-    Check(same(rec(true, "score_player", "player", 1, {pl(true, false, 0, 3), pl(true, false, 0, 1), pl(true, false, 0, 99, true)}), RC::Player,
+    // ★ 11-07 — 관전자 빼고 둘이라 1:1 Elo(값은 같음 · 이긴 사람은 승자 칸)
+    Check(same(rec(true, "score_player", "player", 1, {pl(true, false, 0, 3), pl(true, false, 0, 1), pl(true, false, 0, 99, true)}), RC::Duel,
                {10, -10, kNo}),
-          "각자 판 관전자 — 점수가 높아도 순위에 안 듦");
+          "각자 판 관전자(1:1) — 관전자는 점수가 높아도 이긴 사람이 아님");
+    Check(same(rec(true, "score_player", "player", 1, {pl(true, false, 0, 3), pl(true, false, 0, 1), pl(true, false, 0, 2), pl(true, false, 0, 99, true)}),
+               RC::Player, {10, -10, 0, kNo}),
+          "각자 판 셋 + 관전자 — 관전자는 점수가 높아도 순위에 안 듦");
     Check(same(rec(true, "score_player", "player", 1, {pl(true, false, 0, 3), pl(true, true, 0, 0), pl(true, false, 0, 1)}), RC::Player,
                {10, -10, -10}),
           "각자 판 나감 −10 · 나간 사람은 순위에 안 듦(남은 둘이 ±10)");
-    Check(same(rec(true, "score_player", "player", 1, {pl(true, false, 0, 3), pl(true, true, 0, 0)}), RC::Player, {0, -10}),
-          "각자 판 끝까지 한 사람 하나 — 상대가 없어 0 · 나감 −10");
+    // ★ 11-07 — 둘 중 하나가 나간 판은 1:1 Elo: 나감 = 짐(옛 「상대가 없어 0」 → +10)
+    Check(same(rec(true, "score_player", "player", 1, {pl(true, false, 0, 3), pl(true, true, 0, 0)}), RC::Duel, {10, -10}),
+          "각자 판 둘에서 하나 나감(1:1) — 남은 쪽 +10 · 나감 −10");
+    Check(same(rec(true, "score_player", "player", 1, {pl(true, false, 0, 3), pl(true, true, 0, 0), pl(false, false, 0, 1)}), RC::Player,
+               {10, -10, kNo}),
+          "각자 판 셋(계정 없는 사람 낌)에서 하나 나감 — 옛 갈래(나감 −10 · 남은 계정 있는 사람은 계정 없는 사람을 이겨 +10)");
 
     // 총합 — 각자 판(나감 없음)은 순위가 대칭이라 0
     {
         const nox::RatingResult r = nox::RatingDeltas(
             rec(true, "score_player", "player", 1,
-                {pl(true, false, 0, 6), pl(true, false, 0, 5), pl(true, false, 0, 4), pl(true, false, 0, 3), pl(true, false, 0, 2), pl(true, false, 0, 1)}));
+                {pl(true, false, 0, 6), pl(true, false, 0, 5), pl(true, false, 0, 4), pl(true, false, 0, 3), pl(true, false, 0, 2), pl(true, false, 0, 1)}),
+            {1500, 1400, 1300, 1200, 1100, 1000});   // ★ 11-07 — 여섯 판은 판 전 점수를 안 본다
         int sum = 0;
         for (const auto& s : r.seats) sum += s.delta;
         Check(r.seats.size() == 6 && sum == 0 && r.seats[0].delta == 10 && r.seats[1].delta == 6 && r.seats[5].delta == -10,
               "각자 판 여섯 — 10 · 6 · 2 · −2 · −6 · −10 · 총합 0");
     }
+
+    // ★ 11-07 점수 묶기 조각 3 — 1:1 Elo(플랜 `Docs/MO_RANK_MATCH_PLAN_1107.md` 5-1 표 · 5-2 갈래)
+    //   낮은 쪽 1000 · 높은 쪽 1000 + 차. 자리 차례 둘(낮은 쪽이 앞 · 뒤)로 같은 값인지도 본다
+    {
+        struct Row { int gap, lowWins, highWins, drawLow, drawHigh; };
+        const Row table[] = {{0, 10, 10, -5, -5}, {100, 13, 7, -2, -8}, {200, 15, 5, 0, -10}};
+        int cells = 0, bad = 0;
+        std::string firstBad;
+        for (const Row& t : table) {
+            for (int lowSeat = 0; lowSeat < 2; ++lowSeat) {
+                const int highSeat = 1 - lowSeat;
+                std::vector<int32_t> before(2);
+                before[lowSeat] = 1000;
+                before[highSeat] = 1000 + t.gap;
+                auto want = [&](int low, int high) {
+                    std::vector<int> w(2);
+                    w[lowSeat] = low;
+                    w[highSeat] = high;
+                    return w;
+                };
+                struct Case { const char* end; const char* kind; uint32_t id; std::vector<int> w; const char* name; };
+                const Case cs[] = {
+                    {"score_player", "player", static_cast<uint32_t>(lowSeat + 1), want(t.lowWins, -t.lowWins), "낮은 쪽 이김"},
+                    {"score_player", "player", static_cast<uint32_t>(highSeat + 1), want(-t.highWins, t.highWins), "높은 쪽 이김"},
+                    {"time_up", "draw", 0, want(t.drawLow, t.drawHigh), "비김"},
+                    {"time_up", "none", 0, want(t.drawLow, t.drawHigh), "승자 없음"},
+                };
+                for (const Case& c : cs) {
+                    ++cells;
+                    if (!same(rec(true, c.end, c.kind, c.id, {pl(true, false, 0, 1), pl(true, false, 0, 1)}), RC::Duel, c.w, before)) {
+                        if (bad++ == 0) firstBad = "차 " + std::to_string(t.gap) + " · 낮은 쪽 자리 " + std::to_string(lowSeat) + " · " + c.name;
+                    }
+                }
+            }
+        }
+        const std::string what = "1:1 Elo 표(차 0 · 100 · 200 × 낮은 쪽 자리 둘 × 낮은 쪽 이김 · 높은 쪽 이김 · 비김 · 승자 없음) " +
+                                 std::to_string(cells) + "칸 · 틀림 " + std::to_string(bad) + (bad ? " — 처음 = " + firstBad : std::string());
+        Check(cells == 24 && bad == 0, what.c_str());
+    }
+    {
+        const std::vector<int32_t> ab = {1000, 1100};   // A 낮은 쪽(이길 확률 0.36) · B 높은 쪽(0.64)
+        Check(same(rec(true, "aborted", "none", 0, {pl(true, true, 0, 0), pl(true, false, 0, 0)}), RC::Duel, {-7, 7}, ab),
+              "1:1 A만 나감 — B 가 이긴 것으로(높은 쪽 몫 7)");
+        Check(same(rec(true, "aborted", "none", 0, {pl(true, false, 0, 0), pl(true, true, 0, 0)}), RC::Duel, {13, -13}, ab),
+              "1:1 B만 나감 — A 가 이긴 것으로(낮은 쪽 몫 13)");
+        Check(same(rec(true, "aborted", "none", 0, {pl(true, true, 0, 0), pl(true, true, 0, 0)}), RC::Duel, {-7, -13}, ab),
+              "1:1 둘 다 나감 — 각자 −round(20 × 제 E) = −7 · −13");
+        Check(same(rec(true, "aborted", "none", 0, {pl(true, false, 0, 0), pl(true, false, 0, 0)}), RC::Duel, {0, 0}, ab),
+              "1:1 나간 사람 없는 중단 — 0 · 0");
+        Check(same(rec(true, "score_player", "player", 1, {pl(true, true, 0, 0), pl(true, false, 0, 2)}), RC::Duel, {-7, 7}, ab),
+              "1:1 나감이 승자 칸보다 먼저 — 승자 칸이 나간 A 여도 B 가 이김");
+        Check(same(rec(true, "score_team", "team", 2, {pl(true, false, 1, 0), pl(true, false, 2, 3)}), RC::Duel, {-7, 7}, ab),
+              "1:1 팀 판 — 이긴 팀(2)의 B");
+        Check(same(rec(true, "score_team", "team", 1, {pl(true, false, 1, 0), pl(true, false, 1, 3)}), RC::Duel, {-2, -8}, ab),
+              "1:1 팀 판 같은 팀 — 이긴 사람을 못 가려 비김으로");
+        Check(same(rec(true, "score_player", "player", 9, {pl(true, false, 0, 3), pl(true, false, 0, 1)}), RC::Duel, {-2, -8}, ab),
+              "1:1 승자 칸이 둘 다 아님 — 비김으로(판 점수로 가르지 않음)");
+        Check(same(rec(false, "score_player", "player", 1, {pl(true, false, 0, 3), pl(true, false, 0, 1)}), RC::NotRanked, {kNo, kNo}, ab),
+              "1:1 일반 판 — 반영 안 함");
+        Check(same(rec(true, "score_player", "player", 1, {pl(true, false, 0, 3), pl(true, false, 0, 9, true), pl(true, false, 0, 1)}), RC::Duel,
+                   {13, kNo, -13}, {1000, 5000, 1100}),
+              "1:1 관전자 낌 — 관전자 자리 반영 안 함 · 판 전 점수도 안 봄(가운데 5000)");
+        Check(same(rec(true, "score_player", "player", 1, {pl(true, false, 0, 3), pl(false, false, 0, 1)}), RC::Player, {10, kNo}, ab),
+              "둘인데 하나가 계정 없음 — 옛 갈래(각자 판 순위)");
+        Check(same(rec(true, "score_player", "player", 1, {pl(true, false, 0, 3), pl(true, false, 0, 2), pl(true, false, 0, 1)}), RC::Player,
+                   {10, 0, -10}, {1000, 1500, 2000}),
+              "셋 — 옛 갈래(판 전 점수 안 봄)");
+        Check(same(rec(true, "score_player", "player", 2, {pl(true, false, 0, 3), pl(true, false, 0, 1)}), RC::Duel, {-13, 13}, {1100}),
+              "판 전 점수 칸이 모자람 — 모자란 자리는 1000(1100 · 1000 에서 낮은 쪽 B 가 이김 13)");
+    }
+    {
+        // 이긴 쪽 최소 1 — 차 700 이면 높은 쪽 몫이 round(20 × 0.0175) = 0 → 1
+        const std::vector<int32_t> far = {1700, 1000};
+        Check(same(rec(true, "score_player", "player", 1, {pl(true, false, 0, 3), pl(true, false, 0, 1)}), RC::Duel, {1, -1}, far),
+              "1:1 차 700 높은 쪽 이김 — 몫 0 이 아니라 최소 1(전적 승으로 잡히게)");
+        Check(same(rec(true, "aborted", "none", 0, {pl(true, false, 0, 0), pl(true, true, 0, 0)}), RC::Duel, {1, -1}, far),
+              "1:1 차 700 낮은 쪽이 나감 — 높은 쪽 최소 1(중단 판이 전적 승)");
+        Check(same(rec(true, "score_player", "player", 2, {pl(true, false, 0, 3), pl(true, false, 0, 1)}), RC::Duel, {-20, 20}, far),
+              "1:1 차 700 낮은 쪽 이김 — 20(폭 다 받음)");
+    }
+    {
+        // 합 — 이김 · 짐은 0 · 비김은 −10(차 0 ~ 600 · 10 걸음)
+        int wins = 0, draws = 0, badWin = 0, badDraw = 0;
+        for (int gap = 0; gap <= 600; gap += 10) {
+            const nox::RatingResult w = nox::RatingDeltas(rec(true, "score_player", "player", 2, {pl(true, false, 0, 1), pl(true, false, 0, 1)}), {1000, 1000 + gap});
+            const nox::RatingResult d = nox::RatingDeltas(rec(true, "time_up", "draw", 0, {pl(true, false, 0, 1), pl(true, false, 0, 1)}), {1000 + gap, 1000});
+            ++wins;
+            ++draws;
+            if (w.kind != RC::Duel || w.seats[0].delta + w.seats[1].delta != 0 || w.seats[1].delta < 1) ++badWin;
+            if (d.kind != RC::Duel || d.seats[0].delta + d.seats[1].delta != -2 * nox::kRatingDrawPenalty) ++badDraw;
+        }
+        const std::string what = "1:1 합 — 이김 · 짐 0 · 비김 −10(61 × 2판 · 틀림 " + std::to_string(badWin) + " · " + std::to_string(badDraw) + ")";
+        Check(wins == 61 && badWin == 0 && draws == 61 && badDraw == 0, what.c_str());
+    }
+    {
+        // 조각 4 까지 저장소가 쓰는 옛 규칙(인자 하나) — 1:1 도 옛 값 · Duel 없음
+        const nox::RatingResult old = nox::RatingDeltas(rec(true, "score_player", "player", 1, {pl(true, false, 0, 3), pl(true, true, 0, 0)}));
+        Check(old.kind == RC::Player && old.seats.size() == 2 && old.seats[0].delta == 0 && old.seats[1].delta == -10,
+              "옛 규칙(인자 하나 · 조각 4 에서 없앰) — 둘 중 하나 나감 = 남은 쪽 0 · 나감 −10");
+    }
     size_t kinds = 0;
     for (size_t c : seen) kinds += c > 0 ? 1 : 0;
-    Check(kinds == static_cast<size_t>(RC::kCount), "갈래 다섯을 모두 지남");
-    Check(std::string(nox::RatingCaseName(RC::Player)) == "player" && std::string(nox::RatingCaseName(RC::kCount)) == "?", "갈래 이름");
+    Check(kinds == static_cast<size_t>(RC::kCount) && static_cast<size_t>(RC::kCount) == 6, "갈래 여섯을 모두 지남");
+    Check(std::string(nox::RatingCaseName(RC::Player)) == "player" && std::string(nox::RatingCaseName(RC::Duel)) == "duel" &&
+              std::string(nox::RatingCaseName(RC::kCount)) == "?",
+          "갈래 이름");
 }
 
 int main() {

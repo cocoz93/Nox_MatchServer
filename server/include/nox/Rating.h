@@ -11,6 +11,13 @@
 //   · 각자 판(승자 = 사람) = 끝까지 한 사람(관전자 빼고)의 점수 순위로 1등 +10 ~ 꼴등 −10 고르게(같은 점수는 순위 평균 · 반올림) · 나간 사람 −10
 //   · 반영 안 함(증감 없음 — DB 칸 NULL) = 관전자 · 계정 없는 사람(로비 안 거침) · 팀 판의 무소속(팀 0)
 //     계정 없는 사람도 각자 판 순위의 자리는 차지한다(상대이므로) — 점수만 안 바뀐다
+// ★ 11-07 점수 묶기 조각 3(`Docs/MO_RANK_MATCH_PLAN_1107.md` 5절) — 1:1 랭크 판(관전자 빼고 정확히 둘 · 둘 다 계정)은 Elo — 위 줄들보다 먼저 가른다
+//   · 내가 이길 확률 E = 1 / (1 + 10^((상대 판 전 점수 − 내 판 전 점수) / 400))
+//   · 이김 · 짐 — 이긴 쪽 몫 w = round(20 × (1 − 이긴 쪽 E)) · 최소 1 · 이긴 쪽 +w · 진 쪽 −w(합 0)
+//   · 비김 · 승자 없음 — 낮은 쪽 몫 d = round(20 × (0.5 − 낮은 쪽 E)) · 낮은 쪽 d − 5 · 높은 쪽 −d − 5(합 −10)
+//   · 하나만 나감 = 남은 쪽이 이김(1:1 은 나가면 늘 중단 — 위 10-31 줄) · 둘 다 나감 = 둘 다 짐(각자 −round(20 × 제 E)) · 나간 사람 없는 중단 = 둘 다 0
+//   · 이긴 사람 = 판 기록의 승자 칸(`winnerId` — 각자 판은 netCode · 팀 판은 팀 번호). 전적 승패(`MatchHistory.cpp` `MatchOutcomeOf`)와 같은 잣대
+//   · 둘이 아니거나 계정 없는 사람이 낀 랭크 판은 위 옛 줄 그대로
 #pragma once
 
 #include <cstdint>
@@ -21,7 +28,12 @@
 namespace nox {
 
 constexpr int32_t kRatingStart = 1000;   // `ratings` 행이 없는 사람의 점수
-constexpr int32_t kRatingStep = 10;      // 한 판 최대 증감
+constexpr int32_t kRatingStep = 10;      // 한 판 최대 증감(1:1 Elo 밖의 판)
+// ★ 11-07 1:1 Elo 의 한 판 폭 — 같은 점수끼리면 20 × 0.5 = 10 이라 옛 ±10 과 같다(이미 쌓인 점수와 이어진다 · 플랜 5-1)
+constexpr int32_t kRatingDuelK = 20;
+// ★ 11-07 1:1 비김에 둘 다 빼는 값 — 둘이 가만히 있다가 비기는 판을 손해로 만든다(사용자 값 · 플랜 1절). 비긴 판마다 점수 합이 10 줄지만
+//   순위는 「나보다 높은 사람 수」라 순위엔 영향 없다
+constexpr int32_t kRatingDrawPenalty = 5;
 
 // 판이 어느 갈래로 셈해졌나 — 시험이 갈래 전부를 개수로 본다
 enum class RatingCase : uint8_t {
@@ -30,6 +42,7 @@ enum class RatingCase : uint8_t {
     NoWinner,    // 승자 없음(none) · 비김(draw) — 끝까지 0 · 나감 −10
     Team,        // 팀 승리
     Player,      // 각자 판 승리 — 점수 순위
+    Duel,        // ★ 11-07 1:1(관전자 빼고 둘 · 둘 다 계정) — Elo(판 전 점수)
     kCount
 };
 const char* RatingCaseName(RatingCase c);
@@ -44,6 +57,10 @@ struct RatingResult {
     std::vector<RatingSeat> seats;   // `rec.players` 와 같은 차례 · 같은 수
 };
 
+// `before` = 자리별 판 전 점수(`rec.players` 와 같은 차례 · 계정 없는 자리 · 모자란 칸은 `kRatingStart`) — 1:1 Elo 만 읽는다
+RatingResult RatingDeltas(const MatchRecord& rec, const std::vector<int32_t>& before);
+// ★ 11-07 조각 3 — 옛 규칙(1:1 도 ±10 · Duel 갈래 없음). 판 전 점수를 아직 안 읽는 저장소 둘(DB 워커 · 메모리 가짜)이 조각 4 까지 쓴다 —
+//   조각 4 가 판 전 점수를 넘기게 바꾸며 없앤다(한 조각 안에서 점수 규칙과 저장 길이 어긋나지 않게)
 RatingResult RatingDeltas(const MatchRecord& rec);
 
 }  // namespace nox
