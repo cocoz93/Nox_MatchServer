@@ -1127,6 +1127,8 @@ struct Session {
     bool importantReady = false;
     // ★ 11-03 — 판을 연 뒤 첫 `CLIENT_READY`(맵을 다 읽음)에 점수 한도 공지(`Server::ArmLimitNotice`)
     bool limitNoticeOnReady = false;
+    // ★ 11-07 판 시간 제한 T3 — 점수판 켜기(`f0 14`)를 보낸 판 번호(`Server::roundTimerSerial_` · 0 = 아직) — 판마다 한 번(`Server::SendScoreboardOn`)
+    uint32_t scoreboardRound = 0;
     // ★ 11-03 — 중요 메시지 왕복 시간(틱 · 지수 평균). 재전송 대기를 정한다(`ImportantResendWait` · Server.cpp). -1 = 표본 없음 → 원본 60틱
     float impSrttTicks = -1.f;
     // 시험용 — 켜면 예전처럼 **바로** 한 통씩 보낸다(대기열·확인 없음). DebugEnterGame 만 켠다.
@@ -2948,6 +2950,7 @@ public:
     uint32_t RoundTimeLeftMs() const;                           // 남은 틱 × `tickMs_`(꺼짐 · 마감 지남 0)
     unsigned long long roundTimerArms() const { return roundTimerArms_; }
     unsigned long long roundTimerStops() const { return roundTimerStops_; }
+    unsigned long long scoreboardOns() const { return scoreboardOns_; }   // ★ 11-07 T3 — 보낸 점수판 켜기(`f0 14`) 사람 수
     // ★ 10-19 MO 5단계 작업 1 — 판 끝 기록(`EndRound`). 판이 끝날 때마다 번호가 1 오르고 마지막 기록이 바뀐다 — 한 칸이라 쌓이지 않는다.
     //   방은 틱마다 번호가 바뀌었나로 새 판 끝을 안다 — 한 칸이라 한 틱 안에 판 끝이 두 번 나면 앞 것은 덮이고, 방은 번호 차이로 그것을 센다.
     //   판 끝 깃발만 세우는 시험 손잡이(`DebugEndRound` · `DebugSetRoundOver`)는 기록을 안 남긴다
@@ -5997,6 +6000,14 @@ private:
     unsigned long long roundTimerArms_ = 0;
     unsigned long long roundTimerStops_ = 0;
     void StopRoundTimer();
+    // ★ 11-07 판 시간 제한 T3 — 정품 남은 시간은 점수판에만 뜬다(파일럿 11-07 · 단계 0 이면 시계가 켜져도 안 보임). 시계가 켜진 판에서
+    //   준비된 사람마다 한 번 `f0 14`(MSG_GAUNTLET 20)를 보낸다 — 정품 클라(원본 기준 `cdecode.c:3021-3026` → `sub_4705B0` `GAME2_1.c:4144-4152`)는
+    //   점수판이 꺼져 있으면 창을 보이고 단계 0 → 넘김(`sub_4703F0` · 퀘스트가 아니면 1 을 건너뜀 `gameloop.go:740-753`) → 2 「팀과 플레이어」 ·
+    //   이미 켜 둔 모양(단계 0 아님 · 창 보임 `sub_470580` `GAME2_1.c:4139-4141`)은 안 건드린다. 정품 서버는 준비(`GAME3_2.c:5624-5626`)에서
+    //   시계가 돌면 그 사람에게 중요로 보냄(`GAME3_2.c:5029-5035` · 우리는 퀘스트 판정 없이 시계만 봄)
+    uint32_t roundTimerSerial_ = 0;     // 시계를 건 판 번호(`ArmRoundTimer` 가 초 > 0 일 때 하나 올림)
+    unsigned long long scoreboardOns_ = 0;
+    void SendScoreboardOn();
     // `af` · `b0` 에 실을 설정 — 시계가 켜졌으면 한도(분) · 남은 ms 를 채운 사본(정품 자리 `network.go:609-610` · 원본 `cdecode.c:2115` · `:2161`)
     GameSettings WireSettings() const;
     std::vector<Flag> flags_;

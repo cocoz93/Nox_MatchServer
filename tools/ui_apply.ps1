@@ -88,7 +88,10 @@ $csfSwaps = @(
   # ★ 11-06 귓속말 조각 5 — 대화방의 귓속말 줄 머리(플랜 `Docs/MO_WHISPER_PLAN_1105.md` 7절 1 · 2번). 정품 0x446d20 만 읽는 문구 둘(`0x69c900` · `0x69c904` · 읽는 자리 0x446d95 · 0x446d65)
   #   %S = 이름(좁은 글자) · %s = 글 — 차례를 바꾸지 않는다(0x446d20 이 그 차례로 넘김). 원래 값은 실물 nox.csf 에서 읽음(_out/whisper/csfget.py)
   @{ name = 'WolChat.c:Privatemessage'; orig = '<비공개 참여불가자 %S> %s'; new = '<%S 님의 귓속말> %s' },
-  @{ name = 'WolChat.c:PrivateTomessage'; orig = '<비공개 참여자 %S> %s'; new = '<%S 님에게 귓속말> %s' })
+  @{ name = 'WolChat.c:PrivateTomessage'; orig = '<비공개 참여자 %S> %s'; new = '<%S 님에게 귓속말> %s' },
+  # ★ 11-07 판 시간 제한 T3 — 점수판의 한도 줄(이 열쇠를 읽는 곳은 `guirank.c:711` 하나 · 원본 기준). 남은 수가 아니라 킬 한도다 —
+  #   파일럿 11-07 에서 qa1 이 1킬을 낸 뒤에도 10(`_out/time_probe/R1/stages.png` 셋째 칸) · 원래 값은 실물 nox.csf 에서 읽음(`_out/time_probe/csf.txt`)
+  @{ name = 'guirank.c:LessonLimit'; orig = '남은 판수 : %d'; new = '킬 한도 : %d' })
 # ★ 11-04 플랜1 — 새 창 파일. 원본 = 없음 · 적용됨 = 이 바이트 그대로 · 다르면 모름(남의 파일을 지우지 않게)
 #   ENABLEDIMAGE = NULL — 정품은 꺼져도 앞 그림(ENABLED)을 그린다. 꺼진 그림은 뒤 칸만 바꿔(`widget_button.go` buttonDrawImg · 원본 기준) 앞 그림이 있으면 빨강 그대로(11-04 캡처 s2)
 #   글자 · 칸 색은 정품 창과 같은 꼴 · 머리 좌표 0 0(DLL 이 옮김 — 판 밖 좌표는 파일로 못 넣음) · 그림은 대화방 「뒤로」와 같은 큰 단추(시안)

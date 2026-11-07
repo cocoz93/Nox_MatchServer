@@ -91,6 +91,13 @@ inline size_t MessageSize(const uint8_t* p, size_t n, bool fromClient) {
             if (sz > bn - 10) sz = bn - 10;
             return 1 + 10 + sz;
         }
+        // ★ 11-07 T3 — 서버→클라 `f0` MSG_GAUNTLET 은 서브코드마다 길이가 다르다(원본 `cdecode.c:2909~` `switch (data[1])`).
+        //   우리가 보내는 것은 `f0 14`(점수판 켜기 · `Server::SendScoreboardOn`) 하나 — 원본 처리가 2 를 돌려준다(`cdecode.c:3021-3026`).
+        //   나머지 서브코드는 모른다(0) · 클라→서버는 표 그대로(본문 1 · `MsgLen.cpp`)
+        case static_cast<uint8_t>(Op::GAUNTLET): {
+            if (fromClient) break;
+            return (bn >= 1 && b[0] == 0x14) ? 2 : 0;
+        }
         // SEQ_IMPORTANT — 다른 메시지를 감싸는 봉투. ID(2) + 길이(1) + 그만큼
         case static_cast<uint8_t>(Op::SEQ_IMPORTANT): {
             if (bn < 3) return 0;

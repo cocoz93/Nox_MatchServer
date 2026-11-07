@@ -2037,6 +2037,7 @@ void Server::ArmRoundTimer(uint32_t sec) {
     roundDeadline_ = frame_ + static_cast<uint32_t>(std::min<uint64_t>(ticks, 0x7FFFFFFFu));
     roundTimerSec_ = sec;
     ++roundTimerArms_;
+    ++roundTimerSerial_;   // ★ 11-07 T3 — 새 판 — 점수판 켜기를 사람마다 다시 한 번(`SendScoreboardOn`)
     Log("[판 시계] 켬 %u초 — 마감 틱 %u(지금 %u · 남은 %ums)\n", sec, roundDeadline_, frame_, RoundTimeLeftMs());
 }
 
@@ -2052,6 +2053,26 @@ void Server::StopRoundTimer() {
 uint32_t Server::RoundTimeLeftMs() const {
     if (roundDeadline_ == 0 || frame_ >= roundDeadline_) return 0;
     return (roundDeadline_ - frame_) * tickMs_;
+}
+
+// ★ 11-07 판 시간 제한 T3 — 머리 주석은 `Server.h` `SendScoreboardOn`. 틱마다 시계 `d3` 뒤에 부른다.
+//   준비(`importantReady`)된 사람만 — 맵 바꾸기 길은 새 맵의 `CLIENT_READY` 뒤(`RejoinReset` 이 준비를 끔) · 제자리 길은 준비가 그대로라 건 다음 틱 ·
+//   판 중에 든 사람은 제 준비 뒤(방은 판 중 입장을 막는다). 중요 대기열도 준비 전엔 안 싣고(`FlushImportant` ①) 맵을 바꾸면 비워 와이어는 이 확인이 없어도 같다 —
+//   보낸 셈(`scoreboardOns_`)이 「준비된 사람에게 실은 수」가 되게 여기서 거른다(11-07 일부러 틀림 — 와이어는 같고 셈만 달랐음).
+//   판 번호로 한 번만 — 사람이 F9 로 끈 판에는 다시 안 켜고, 판 끝에 시계가 꺼지면 다음 판에 다시 켠다(11-07 사용자 결정)
+void Server::SendScoreboardOn() {
+    if (!RoundTimerOn()) return;
+    const uint8_t on[2] = { static_cast<uint8_t>(Op::GAUNTLET), 20 };
+    unsigned n = 0;
+    for (auto& kv : sessions_) {
+        Session& s = kv.second;
+        if (!s.inGame || !s.importantReady || s.scoreboardRound == roundTimerSerial_) continue;
+        s.scoreboardRound = roundTimerSerial_;
+        EmitImportantRaw(s, on, sizeof(on));
+        ++scoreboardOns_;
+        ++n;
+    }
+    if (n) Log("[점수판] 프레임 %u 켜기(f0 14) %u명 — 판 번호 %u · 누적 %llu\n", frame_, n, roundTimerSerial_, scoreboardOns_);
 }
 
 GameSettings Server::WireSettings() const {
@@ -18310,6 +18331,7 @@ void Server::RunTick(int ticks) {
         timerLastOn_ = RoundTimerOn();
         SendTimer();
     }
+    SendScoreboardOn();   // ★ 11-07 T3 — 시계가 켜진 판에서 준비된 사람마다 한 번(머리 주석 `Server.h`)
 
     // ★★ 09-22 `0xd7` 지연 보고 — **주기와 뽑는 방식을 둘 다 고쳤다.**
     //   ✖ 옛 우리 규칙 = 6틱마다 **접속자 전원**. 주석의 「6틱에 한 번」은 정품에서

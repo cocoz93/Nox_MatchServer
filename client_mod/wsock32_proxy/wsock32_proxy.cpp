@@ -3044,6 +3044,9 @@ static void StartBtnTick(bool inRoom, const RoomUi& s)
 static const DWORD kHomeOkId = 10149, kHomeScoreId = 10134, kHomeTimeId = 10135, kHomeMapListId = 10114;
 static const DWORD kMsgListTop = 0x401c, kMsgListText = 0x4016;
 static const uintptr_t kHomeToggleFn = 0x457050;   // 정품 Home 키가 부르는 자리(열림 ↔ 닫힘 · 시험 누름 `H` 전용 — `guiserv.c` guiServerOptsLoad · 0x6d1870 에 저장해 찾음)
+// ★ 11-07 판 시간 제한 T3 — 점수판 단계(F9 자리) · 시험 누름 `Y`(넘김) · `y`(읽기만) 전용. 파일럿 11-07 DLL 기록에서 0 → 넘김 → 2 → 3 → 4 → 5 → 0 을 봄
+//   (원본 기준 넘김 = `sub_4703F0` · 단계 = `dword_5d4594_1090120` · 퀘스트가 아니면 1 을 건너뜀 `gameloop.go:740-753` — 정품 주소는 이 판의 것)
+static const uintptr_t kRankStageFn = 0x483bd0, kRankStage = 0x6f6b94;
 static bool HomeGrayWalk(DWORD win, int depth, int& off)
 {
     bool hasOk = false;
@@ -3545,6 +3548,13 @@ static bool TestPressLine(const char* line)
     }
     if (line[0] == 'T') { TestLogText(TestFindChild(strtoul(line + 1, nullptr, 10))); return true; }   // `T 9650` — 칸 글자
     if (line[0] == 'H') { ((int(__cdecl*)())kHomeToggleFn)(); return true; }   // ★ 11-04 ㉓ — Home 키 자리(앞세우기 없이)
+    if (line[0] == 'Y' || line[0] == 'y') {   // ★ 11-07 T3 — `Y` = 점수판 단계 넘김(F9 자리) · `y` = 단계 읽기만 — 실물에서 「사람이 끈 판엔 서버가 안 다시 켬」을 보려고
+        if (line[0] == 'Y') ((void(__cdecl*)())kRankStageFn)();
+        DWORD st = 0;
+        ReadSelf(kRankStage, &st);
+        Log("⑰ 점수판 단계 = %lu(%c)", (unsigned long)st, line[0]);
+        return true;
+    }
     if (line[0] == 'S') {   // ★ 11-04 ㉒ 시작 단추 — 회색이면 사람처럼 안 눌린 것으로 친다(정품은 꺼진 칸에 누름을 안 보냄 · 마우스 확인은 사람 판)
         const DWORD btn = g_startWin ? ((PFN_findchild)kFindChild)(g_startWin, kStartBtnId) : 0;
         DWORD bf = 0;
