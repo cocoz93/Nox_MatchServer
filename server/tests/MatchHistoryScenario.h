@@ -64,7 +64,7 @@ inline std::vector<MatchRecord> HistoryScenario() {
         m.players = {HistLeft("h1", 101), HistSeat("h2", 102, 0, 0, 0)};
         v.push_back(m);
     }
-    {   // 판 2 — 랭크 끝. h1 이김(+10) · h2 짐(−10) → 둘 다 1000
+    {   // 판 2 — 랭크 끝. h1 이김 · h2 짐 — ★ 11-07 1:1 Elo · 판 전 점수 990 · 1010(판 1 결과) → h1 E 0.471 · +round(20 × 0.529) = +11 → 1001 · 999
         MatchRecord m = HistMatch("h-2", "so_lod", 2000, 510, true, "score_player", "player", 101);
         m.players = {HistSeat("h1", 101, 3, 1, 3), HistSeat("h2", 102, 1, 3, 1)};
         v.push_back(m);
@@ -94,6 +94,7 @@ inline std::vector<MatchRecord> HistoryScenario() {
         v.push_back(m);
     }
     {   // 판 7 — 늦게 다시 보낸 옛 판(끝 시각은 이르고 저장은 맨 나중). 랭크 h2 이김 — 점수는 저장할 때 고쳐지므로 표에서도 맨 위여야 점수 칸이 맞다
+        //   ★ 11-07 판 전 점수 1001 · 999 → h2 +10 → 991 · 1009(지금 점수 991 · 1009 로 다시 셈하면 9 — 저장 때 값을 쓰는지 본다)
         MatchRecord m = HistMatch("h-late", "so_lod", 500, 600, true, "score_player", "player", 102);
         m.players = {HistSeat("h1", 101, 0, 2, 0), HistSeat("h2", 102, 2, 0, 2)};
         v.push_back(m);
@@ -102,23 +103,23 @@ inline std::vector<MatchRecord> HistoryScenario() {
 }
 
 inline std::vector<std::string> HistoryExpectH1() {
-    return {"NOXRANK RECSUM 1 990 2 1 2 1 1 h1",
-            "NOXRANK RECROW L 1 990 -10 so_lod 0 2 20 500",
+    return {"NOXRANK RECSUM 1 991 2 1 2 1 1 h1",
+            "NOXRANK RECROW L 1 991 -10 so_lod 0 2 20 500",
             "NOXRANK RECROW W 0 - - lod 5 1 60 4000",
             "NOXRANK RECROW D 0 - - estate 2 2 30 3000",
             "NOXRANK RECROW 3 0 - - estate - 4 20 3000",
-            "NOXRANK RECROW W 1 1000 +10 so_lod 3 1 17 2000",
+            "NOXRANK RECROW W 1 1001 +11 so_lod 3 1 17 2000",
             "NOXRANK RECROW Q 1 990 -10 so_lod - - 10 1000",
             "NOXRANK RECEND 6"};
 }
 
 inline std::vector<std::string> HistoryExpectH2() {
-    return {"NOXRANK RECSUM 1 1010 1 2 1 1 1 h2",
-            "NOXRANK RECROW W 1 1010 +10 so_lod 2 0 20 500",
+    return {"NOXRANK RECSUM 1 1009 1 2 1 1 1 h2",
+            "NOXRANK RECROW W 1 1009 +10 so_lod 2 0 20 500",
             "NOXRANK RECROW L 0 - - lod 1 5 60 4000",
             "NOXRANK RECROW D 0 - - estate 2 2 30 3000",
             "NOXRANK RECROW W 0 - - estate 9 0 20 3000",
-            "NOXRANK RECROW L 1 1000 -10 so_lod 1 3 17 2000",
+            "NOXRANK RECROW L 1 999 -11 so_lod 1 3 17 2000",
             "NOXRANK RECROW W 1 1010 +10 so_lod 0 0 10 1000",
             "NOXRANK RECEND 6"};
 }

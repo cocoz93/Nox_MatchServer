@@ -418,6 +418,7 @@ int main(int argc, char** argv) {
     nox::MatchRecord rk2 = Sample("1760000000-3-41");   // wn 3 · Wn 1 → wn +10 · Wn −10
     rk2.ranked = true;
     rk2.winnerAccount = "wn";
+    rk2.winnerId = 1;   // ★ 11-07 — 1:1 Elo 는 이긴 사람을 승자 칸(netCode)으로 본다(견본의 2 는 관전자 자리)
     rk2.players.resize(2);
     rk2.players[0].score = 3;
     rk2.players[1].account = "Wn";
@@ -493,6 +494,20 @@ int main(int argc, char** argv) {
         size_t savedOk = 0;
         for (const StoreAnswer& a : saved) savedOk += a.save == SaveResult::Saved ? 1 : 0;
         Check(savedOk == scenario.size(), "⑩ 판 묶음 저장 " + std::to_string(savedOk));
+        {   // ★ 11-07 점수 묶기 조각 4 — 판 전 점수(행 없음 1000 · 있음 그 값) · 같은 둘의 판 연달아(앞 판 결과로 셈) · 칸 = 저장 때 셈한 값
+            //   판 1 = 둘 다 행 없음(1000 · 1000) → ±10 · 판 2 = 990 · 1010 → h1 +11 · 판 7 = 1001 · 999 → h2 +10
+            const auto dOf = [&](const char* key) {
+                std::string s;
+                for (const auto& row : ad.Rows(std::string("SELECT IFNULL(p.rating_delta,'NULL') FROM match_players p JOIN matches m ON m.id = p.match_id WHERE m.match_key = '") +
+                                               key + "' ORDER BY p.seat"))
+                    s += (s.empty() ? "" : " ") + row[0];
+                return s;
+            };
+            const auto hr = ad.Rows("SELECT a.name, r.rating FROM ratings r JOIN accounts a ON a.id = r.account_id WHERE a.name IN ('h1', 'h2') ORDER BY a.name");
+            Check(dOf("h-1") == "-10 10" && dOf("h-2") == "11 -11" && dOf("h-late") == "-10 10" && hr.size() == 2 && hr[0][1] == "991" && hr[1][1] == "1009",
+                  "★ ⑩ 1:1 판 전 점수 — 판 1 " + dOf("h-1") + " · 판 2 " + dOf("h-2") + " · 판 7 " + dOf("h-late") + " · 점수 " +
+                      (hr.size() == 2 ? hr[0][0] + " " + hr[0][1] + " · " + hr[1][0] + " " + hr[1][1] : std::string("?")));
+        }
         const std::vector<std::pair<std::string, std::vector<std::string>>> who = {{"h1", nox::test::HistoryExpectH1()},
                                                                                    {"h2", nox::test::HistoryExpectH2()},
                                                                                    {"h3", nox::test::HistoryExpectH3()},
@@ -662,6 +677,8 @@ int main(int argc, char** argv) {
         Check(snapAfter.size() == 1 && snapAfter[0].history.rows.size() == rowsBefore + 1, "⑬ 다음 읽기엔 보임(늘 안 보이는 것이 아님)");
         // 4 — 순서. 저장을 세워 두면 뒤에 넣은 점수 읽기도 기다리고, 풀리면 저장 답 뒤에 새 점수가 온다
         const int h2Before = std::atoi(ad.One("SELECT r.rating FROM ratings r JOIN accounts a ON a.id = r.account_id WHERE a.name = 'h2'").c_str());
+        // ★ 11-07 점수 묶기 조각 4 — 1:1 Elo 라 증감이 판 전 점수에 달림(±10 고정 아님) — 기대값은 지금 두 점수로 셈한 값
+        const int h1Before = std::atoi(ad.One("SELECT r.rating FROM ratings r JOIN accounts a ON a.id = r.account_id WHERE a.name = 'h1'").c_str());
         nox::MatchRecord splitRanked = scenario.back();
         splitRanked.match = "split-ranked";
         Check(splitRanked.ranked && ad.Run("LOCK TABLES matches WRITE"), "⑬ matches 잠금");
@@ -672,8 +689,9 @@ int main(int argc, char** argv) {
         Check(heldOrder.empty(), "⑬ 저장이 멈춘 동안 뒤의 점수 읽기도 답 없음(받은 답 " + std::to_string(heldOrder.size()) + ")");
         Check(ad.Run("UNLOCK TABLES"), "⑬ 잠금 풀기");
         auto ordered = WaitAnswers(ss, 2);
-        Check(ordered.size() == 2 && ordered[0].kind == StoreAnswerKind::SaveMatch && ordered[0].save == SaveResult::Saved && ordered[1].kind == StoreAnswerKind::Rating && ordered[1].ratingOk && ordered[1].rating == h2Before + 10,
-              "⑬ 풀리면 저장 답 뒤 새 점수(전 " + std::to_string(h2Before) + " · 뒤 " + std::to_string(ordered.size() == 2 ? ordered[1].rating : 0) + ")");
+        const int h2Delta = nox::RatingDeltas(splitRanked, {h1Before, h2Before}).seats[1].delta;
+        Check(ordered.size() == 2 && ordered[0].kind == StoreAnswerKind::SaveMatch && ordered[0].save == SaveResult::Saved && ordered[1].kind == StoreAnswerKind::Rating && ordered[1].ratingOk && ordered[1].rating == h2Before + h2Delta,
+              "⑬ 풀리면 저장 답 뒤 새 점수(전 " + std::to_string(h2Before) + " · 증감 " + std::to_string(h2Delta) + " · 뒤 " + std::to_string(ordered.size() == 2 ? ordered[1].rating : 0) + ")");
         // 5 — 끝낼 때 — 읽기는 하던 것만 하고 남은 조회를 버린다 · 쓰기는 남은 판을 다 한다
         const nox::db::DbStats beforeStop = ss.Stats();
         Check(ad.Run("LOCK TABLES ratings WRITE, matches WRITE"), "⑬ 두 표 잠금");

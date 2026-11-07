@@ -1073,12 +1073,6 @@ void TestRating() {
         const std::string what = "1:1 합 — 이김 · 짐 0 · 비김 −10(61 × 2판 · 틀림 " + std::to_string(badWin) + " · " + std::to_string(badDraw) + ")";
         Check(wins == 61 && badWin == 0 && draws == 61 && badDraw == 0, what.c_str());
     }
-    {
-        // 조각 4 까지 저장소가 쓰는 옛 규칙(인자 하나) — 1:1 도 옛 값 · Duel 없음
-        const nox::RatingResult old = nox::RatingDeltas(rec(true, "score_player", "player", 1, {pl(true, false, 0, 3), pl(true, true, 0, 0)}));
-        Check(old.kind == RC::Player && old.seats.size() == 2 && old.seats[0].delta == 0 && old.seats[1].delta == -10,
-              "옛 규칙(인자 하나 · 조각 4 에서 없앰) — 둘 중 하나 나감 = 남은 쪽 0 · 나감 −10");
-    }
     size_t kinds = 0;
     for (size_t c : seen) kinds += c > 0 ? 1 : 0;
     Check(kinds == static_cast<size_t>(RC::kCount) && static_cast<size_t>(RC::kCount) == 6, "갈래 여섯을 모두 지남");

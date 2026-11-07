@@ -70,8 +70,13 @@ void CMemoryLobbyStore::SaveMatch(uint32_t req, const MatchSource& src, const Ma
         const auto ins = matches_.emplace(MatchKey{src.ip, src.port, rec.match}, rec);
         a.save = ins.second ? SaveResult::Saved : SaveResult::Duplicate;
         if (ins.second) {   // ★ 레이팅 조각 3 — 새 판만(겹친 판은 DB 처럼 안 고침) · 계정 표가 없어 이름 있는 사람 = 계정
-            saved_.push_back(&ins.first->second);
-            const RatingResult rr = RatingDeltas(rec);
+            // ★ 11-07 점수 묶기 조각 4 — 판 전 점수 = 지금 `ratings_`(행 없으면 1000 · DB 워커와 같은 잣대). 셈한 증감은 판과 함께 쥐어
+            //   대전 기록이 그 값을 쓴다(DB 의 `rating_delta` 칸과 같은 뜻)
+            std::vector<int32_t> before(rec.players.size(), kRatingStart);
+            for (size_t i = 0; i < rec.players.size(); ++i)
+                if (rec.players[i].hasAccount) FindRating(rec.players[i].account, before[i]);
+            saved_.push_back({&ins.first->second, RatingDeltas(rec, before)});
+            const RatingResult& rr = saved_.back().rr;
             for (size_t i = 0; i < rec.players.size(); ++i) {
                 if (rec.players[i].hasAccount) accounts_.insert(rec.players[i].account);   // ★ 11-04 전적 검색 — 관전도 계정이다
                 if (!rec.players[i].observer && rec.players[i].hasAccount) totals_[rec.players[i].account].Add(MatchRowOf(rec, rr, i));   // ★ 11-04 전적 검색
@@ -126,10 +131,11 @@ void CMemoryLobbyStore::GetMatchHistory(uint32_t req, const std::string& account
     ReadRatingInto(account, a);
     if (const auto t = totals_.find(account); t != totals_.end()) a.history.totals = t->second;   // ★ 11-04 전적 검색 — 합계는 저장 때 올린 값
     for (auto m = saved_.rbegin(); m != saved_.rend() && a.history.rows.size() < kMatchHistoryMaxRows; ++m) {   // 저장 차례 최신부터(`kSelHistory` 와 같은 차례)
-        const RatingResult rr = RatingDeltas(**m);
-        for (size_t i = 0; i < (*m)->players.size() && a.history.rows.size() < kMatchHistoryMaxRows; ++i) {
-            const MatchRecordPlayer& p = (*m)->players[i];
-            if (!p.observer && p.hasAccount && p.account == account) a.history.rows.push_back(MatchRowOf(**m, rr, i));
+        const MatchRecord& rec = *m->rec;
+        const RatingResult& rr = m->rr;   // ★ 11-07 점수 묶기 조각 4 — 저장 때 셈한 값(Elo 는 그때 점수로 셈해 지금 다시 셈하면 달라진다)
+        for (size_t i = 0; i < rec.players.size() && a.history.rows.size() < kMatchHistoryMaxRows; ++i) {
+            const MatchRecordPlayer& p = rec.players[i];
+            if (!p.observer && p.hasAccount && p.account == account) a.history.rows.push_back(MatchRowOf(rec, rr, i));
         }
     }
     Answer(std::move(a));

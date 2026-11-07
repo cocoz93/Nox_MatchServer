@@ -57,7 +57,7 @@ struct MatchHistoryRow {
 enum class MatchOutcome : uint8_t { Win, Loss, Place, Left, Aborted, Draw, kCount };
 MatchOutcome MatchOutcomeOf(const MatchHistoryRow& r);
 
-// 판 `m` 의 자리 `seat` 에서 그 사람의 줄(판 저장 · 메모리 가짜가 같이 부른다 · 관전 여부는 부르는 쪽이 본다). `rr` = `RatingDeltas(m)`
+// 판 `m` 의 자리 `seat` 에서 그 사람의 줄(판 저장 · 메모리 가짜가 같이 부른다 · 관전 여부는 부르는 쪽이 본다). `rr` = 저장 때 셈한 `RatingDeltas(m, 판 전 점수)`
 MatchHistoryRow MatchRowOf(const MatchRecord& m, const RatingResult& rr, size_t seat);
 
 // 계정 하나의 승패 합계 — 판마다 `Add`(저장 · 다시 계산 · 메모리 가짜가 같은 함수로)

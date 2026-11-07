@@ -2000,6 +2000,9 @@ void LobbyStoreUnitTests() {
         m.players[0].account = win;
         m.players[0].score = 1;
         m.players[1].account = lose;
+        m.players[0].netCode = 1;   // ★ 11-07 — 1:1 Elo 는 이긴 사람을 승자 칸(netCode)으로 본다
+        m.players[1].netCode = 2;
+        m.winnerId = 1;
         return m;
     };
     rs.SaveMatch(40, a, duel("r-1", false, "wn", "bob"), "{}");   // 일반 판
@@ -2009,6 +2012,15 @@ void LobbyStoreUnitTests() {
     int32_t vWn = 0, vBob = 0, vCat = 0;
     const bool rated = rs.FindRating("wn", vWn) && rs.FindRating("bob", vBob) && rs.FindRating("cat", vCat);
     Check(rated && vWn == 1000 && vBob == 990 && vCat == 1010, "⑥ 랭크 판만 점수 · 겹친 판 안 셈 — wn 1000(+10 −10) · bob 990 · cat 1010");
+    {   // ★ 11-07 점수 묶기 조각 4 — 같은 둘의 1:1 랭크 판 연달아 · 둘째 판은 첫 판 결과(1010 · 990)를 판 전 점수로 셈(+9 · 1000 으로 셈하면 +10)
+        CMemoryLobbyStore es;
+        es.SaveMatch(60, a, duel("e-1", true, "ea", "eb"), "{}");
+        es.SaveMatch(61, a, duel("e-2", true, "ea", "eb"), "{}");
+        int32_t vA = 0, vB = 0;
+        const bool both = es.FindRating("ea", vA) && es.FindRating("eb", vB);
+        Check(both && vA == 1019 && vB == 981,
+              "⑥ 1:1 두 판 연달아 — 판 전 점수 1010 · 990 으로 셈 → ea " + std::to_string(vA) + "(1019) · eb " + std::to_string(vB) + "(981)");
+    }
     ans.clear();
     rs.TakeAnswers(ans);
     ans.clear();
@@ -2156,9 +2168,10 @@ void MirrorSaveUnitTests() {
     const bool dupBare = only(301, "SAVED 1760000000-0-20 dup");
     result(301, std::string(duel).replace(duel.find("0-20\""), 5, "0-21\""));
     pump();
-    Check(tail1 && dupBare && only(301, "SAVED 1760000000-0-21 ok wn 980 -10 bob 1020 10"),
-          ("⑥ 랭크 판 ok → 꼬리(wn 990 −10 · bob 1010 +10) = " + seen1 + " · 같은 판 dup → 꼬리 없음 · 두 판째 → 쌓인 점수(980 · 1020)").c_str());
-    Check(watcher.RatingOf("wn") == 980 && watcher.RatingOf("bob") == 1020, "★ ⑥ 거울이 SAVED ok 때 로비에도 넘김 — 로비가 쥔 점수 wn 980 · bob 1020");
+    // ★ 11-07 점수 묶기 조각 4 — 두 판째는 1:1 Elo 를 판 전 점수 990 · 1010 으로 셈 → 높은 쪽 bob 이 이겨 ±9(1000 으로 셈하면 ±10)
+    Check(tail1 && dupBare && only(301, "SAVED 1760000000-0-21 ok wn 981 -9 bob 1019 9"),
+          ("⑥ 랭크 판 ok → 꼬리(wn 990 −10 · bob 1010 +10) = " + seen1 + " · 같은 판 dup → 꼬리 없음 · 두 판째 → 판 전 점수로 셈한 점수(981 · 1019)").c_str());
+    Check(watcher.RatingOf("wn") == 981 && watcher.RatingOf("bob") == 1019, "★ ⑥ 거울이 SAVED ok 때 로비에도 넘김 — 로비가 쥔 점수 wn 981 · bob 1019");
 }
 
 // ── ★ 로그인 암호 조각 4 — 로그인 토큰(`Lobby` — `Docs/LOGIN_AUTH_DESIGN.md` 차이 5 · 6 · 정할 것 a · b · c) ──
@@ -2467,6 +2480,9 @@ void LoginUnitTests() {
         m.players[0].account = "wn";
         m.players[0].score = 1;
         m.players[1].account = "bob";
+        m.players[0].netCode = 1;   // ★ 11-07 — 1:1 Elo 는 이긴 사람을 승자 칸(netCode)으로 본다
+        m.players[1].netCode = 2;
+        m.winnerId = 1;
         st.SaveMatch(1, MatchSource{1, 1}, m, "{}");
         std::vector<StoreAnswer> ans;
         st.TakeAnswers(ans);

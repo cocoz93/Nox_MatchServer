@@ -88,11 +88,13 @@ void DuelDeltas(const MatchRecord& rec, size_t a, size_t b, int32_t ra, int32_t 
     r.seats[b] = {true, (aLow ? -d : d) - kRatingDrawPenalty};
 }
 
+RatingResult GroupDeltas(const MatchRecord& rec);   // 1:1 Elo 밖의 판(옛 규칙 — 아래)
+
 }  // namespace
 
 RatingResult RatingDeltas(const MatchRecord& rec, const std::vector<int32_t>& before) {
     size_t a = 0, b = 0;
-    if (!DuelSeats(rec, a, b)) return RatingDeltas(rec);
+    if (!DuelSeats(rec, a, b)) return GroupDeltas(rec);
     RatingResult r;
     r.kind = RatingCase::Duel;
     r.seats.assign(rec.players.size(), RatingSeat{});   // 관전자는 반영 안 함
@@ -101,13 +103,16 @@ RatingResult RatingDeltas(const MatchRecord& rec, const std::vector<int32_t>& be
     return r;
 }
 
-RatingResult RatingDeltas(const MatchRecord& rec) {
+namespace {
+
+// ★ 11-07 조각 4 — 옛 인자 하나 `RatingDeltas`(판 전 점수 없이 셈하는 길)를 바깥에서 못 부르게 이 파일 안으로
+RatingResult GroupDeltas(const MatchRecord& rec) {
     RatingResult r;
     r.kind = CaseOf(rec);
     r.seats.assign(rec.players.size(), RatingSeat{});
     switch (r.kind) {
         case RatingCase::NotRanked:
-        case RatingCase::Duel:   // `CaseOf` 는 안 돌려줌 — 1:1 은 위 두 인자 판이 먼저 가른다
+        case RatingCase::Duel:   // `CaseOf` 는 안 돌려줌 — 1:1 은 `RatingDeltas` 가 먼저 가른다
         case RatingCase::kCount:
             return r;
         case RatingCase::Aborted: {
@@ -167,5 +172,7 @@ RatingResult RatingDeltas(const MatchRecord& rec) {
     }
     return r;
 }
+
+}  // namespace
 
 }  // namespace nox

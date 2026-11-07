@@ -50,6 +50,8 @@ constexpr const char* kUpsRating =
     "INSERT INTO ratings (account_id, rating, updated_unix) VALUES (?,?,?) ON DUPLICATE KEY UPDATE rating = rating + ?, updated_unix = ?";
 constexpr const char* kSelRating = "SELECT r.rating FROM accounts a JOIN ratings r ON r.account_id = a.id WHERE a.name = ?";
 constexpr const char* kSelRank = "SELECT COUNT(*) FROM ratings WHERE rating > ?";
+// ★ 11-07 점수 묶기 조각 4 — 판 전 점수(판 저장 트랜잭션 안 · 행 잠금 — 읽고 고치는 사이에 다른 쓰기가 끼지 않게). 행이 없으면 시작 점수
+constexpr const char* kSelRatingLock = "SELECT rating FROM ratings WHERE account_id = ? FOR UPDATE";
 // ★ 11-04 플랜2 — 대전 기록. ★ 11-04 전적 검색 — 승패는 합계 표(`kSelTotals`) · 줄은 최근 20개만(`fk_match_players_account` 색인에 기본 열쇠가 붙어
 //   색인만 거꾸로 따라가 20줄에서 멈춘다 — 5,000판 계정 실행 계획 5000 → 20행 `_out/qa_p12/bench`). 차례 = 저장 차례(`MatchHistory.cpp` 점수 되짚기와 같은 차례)
 constexpr const char* kSelHistory =
@@ -79,11 +81,12 @@ struct CDbWorker::Conn {
     MYSQL_STMT* upsTotals = nullptr;
     MYSQL_STMT* selBans = nullptr;      // ★ 11-05 플랜1
     MYSQL_STMT* insBan = nullptr;       // ★ 11-05 플랜1
+    MYSQL_STMT* selRatingLock = nullptr;   // ★ 11-07 점수 묶기 조각 4
     unsigned lastErrno = 0;
     std::string lastError;
 
     ~Conn() {
-        for (MYSQL_STMT* s : {selAccount, insMatch, insPlayer, upsRating, selRating, selRank, selHistory, selTotals, upsTotals, selBans, insBan})
+        for (MYSQL_STMT* s : {selAccount, insMatch, insPlayer, upsRating, selRating, selRank, selHistory, selTotals, upsTotals, selBans, insBan, selRatingLock})
             if (s) mysql_stmt_close(s);
         if (m) mysql_close(m);
     }
@@ -107,7 +110,8 @@ struct CDbWorker::Conn {
     bool PrepareFor(DbWorkerRole role) {
         if (!Prepare(selAccount, kSelAccount) || !Prepare(selRating, kSelRating) || !Prepare(selRank, kSelRank)) return false;
         if (role == DbWorkerRole::Writer)
-            return Prepare(insMatch, kInsMatch) && Prepare(insPlayer, kInsPlayer) && Prepare(upsRating, kUpsRating) && Prepare(upsTotals, kUpsTotals) && Prepare(insBan, kInsBan);
+            return Prepare(insMatch, kInsMatch) && Prepare(insPlayer, kInsPlayer) && Prepare(upsRating, kUpsRating) && Prepare(upsTotals, kUpsTotals) && Prepare(insBan, kInsBan) &&
+                   Prepare(selRatingLock, kSelRatingLock);
         return Prepare(selTotals, kSelTotals) && Prepare(selHistory, kSelHistory) && Prepare(selBans, kSelBans);
     }
     // 이름으로 계정 번호(없으면 0). 실패면 false(lastErrno)
@@ -139,6 +143,24 @@ struct CDbWorker::Conn {
         I32(p[3], delta);
         U32(p[4], now);
         if (mysql_stmt_bind_param(upsRating, p) != 0 || mysql_stmt_execute(upsRating) != 0) return StmtFail(upsRating, "점수 고치기");
+        return true;
+    }
+    // ★ 11-07 점수 묶기 조각 4 — 계정 번호로 판 전 점수(판 저장 트랜잭션 안에서 부른다 · 커밋까지 그 행을 잠근다). 행이 없으면 `kRatingStart`. 실패면 false(lastErrno)
+    bool ReadRatingLocked(uint64_t accountId, int32_t& rating) {
+        rating = kRatingStart;
+        MYSQL_BIND p[1] = {};
+        U64(p[0], accountId);
+        int32_t got = 0;
+        MYSQL_BIND r[1] = {};
+        I32(r[0], got);
+        if (mysql_stmt_bind_param(selRatingLock, p) != 0 || mysql_stmt_bind_result(selRatingLock, r) != 0) return StmtFail(selRatingLock, "판 전 점수 묶기");
+        if (mysql_stmt_execute(selRatingLock) != 0) return StmtFail(selRatingLock, "판 전 점수");
+        if (mysql_stmt_store_result(selRatingLock) != 0) return StmtFail(selRatingLock, "판 전 점수 받기");
+        const int f = mysql_stmt_fetch(selRatingLock);
+        mysql_stmt_free_result(selRatingLock);
+        if (f == MYSQL_NO_DATA) return true;
+        if (f != 0) return StmtFail(selRatingLock, "판 전 점수 꺼내기");
+        rating = got;
         return true;
     }
     // ★ 레이팅 조각 3 — 이름으로 점수(행이 없으면 found false). 실패면 false(lastErrno)
@@ -590,18 +612,28 @@ bool CDbWorker::ExecSave(Conn& c, const Job& j, wol::StoreAnswer& a) {
         return true;
     }
     const uint64_t matchId = mysql_stmt_insert_id(c.insMatch);
+    // ★ 11-07 점수 묶기 조각 4 — 넣기 전에 자리마다 계정 번호 · 판 전 점수(1:1 Elo 가 판 전 점수로 셈한다 · 방이 선 때의 명단 점수는
+    //   그 사이 다른 판 결과로 옛 값이 될 수 있다 — 플랜 2절). 점수는 랭크 판의 관전자 아닌 계정만 읽는다(일반 판은 `ratings` 를 안 건드린다 —
+    //   db_test ⑬ 잠금 시험) · 그 밖 · 계정 행 없는 사람은 `kRatingStart`
+    std::vector<uint64_t> accountIds(r.players.size(), 0);
+    std::vector<int32_t> before(r.players.size(), kRatingStart);
+    for (size_t seat = 0; seat < r.players.size(); ++seat) {
+        const MatchRecordPlayer& pl = r.players[seat];
+        if (!pl.hasAccount) continue;
+        if (!c.FindAccount(pl.account, accountIds[seat]) ||
+            (r.ranked && !pl.observer && accountIds[seat] != 0 && !c.ReadRatingLocked(accountIds[seat], before[seat]))) {
+            mysql_rollback(c.m);
+            return false;
+        }
+    }
     // ★ 레이팅 조각 3 — 자리별 증감(`Rating.h`). 계정을 못 찾은 사람(이름만 있고 계정 행 없음)은 반영 안 함(NULL)
-    const RatingResult rr = RatingDeltas(r);
+    const RatingResult rr = RatingDeltas(r, before);
     bool rowsOk = true;
     unsigned long long ratingRows = 0, totalsRows = 0;
     std::vector<std::pair<std::string, int32_t>> changed;   // ★ 매칭 손보기 1 — 점수를 고친 사람(이름 · 증감 — 커밋 뒤 새 점수를 읽는다)
     for (size_t seat = 0; rowsOk && seat < r.players.size(); ++seat) {
         const MatchRecordPlayer& pl = r.players[seat];
-        uint64_t accountId = 0;
-        if (pl.hasAccount && !c.FindAccount(pl.account, accountId)) {
-            rowsOk = false;
-            break;
-        }
+        const uint64_t accountId = accountIds[seat];
         const bool rated = rr.seats[seat].rated && accountId != 0;
         const int32_t delta = rr.seats[seat].delta;
         MYSQL_BIND q[12] = {};

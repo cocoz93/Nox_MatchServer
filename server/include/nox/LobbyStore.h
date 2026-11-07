@@ -143,7 +143,11 @@ private:
     std::function<void()> wake_;
     std::vector<StoreAnswer> pending_;
     std::map<MatchKey, MatchRecord> matches_;
-    std::vector<const MatchRecord*> saved_;    // ★ 11-04 플랜2 — 저장 차례(`matches_` 원소는 주소가 안 바뀐다)
+    struct SavedMatch {   // ★ 11-07 점수 묶기 조각 4 — 판과 저장 때 셈한 증감(대전 기록이 다시 셈하지 않게)
+        const MatchRecord* rec = nullptr;
+        RatingResult rr;
+    };
+    std::vector<SavedMatch> saved_;    // ★ 11-04 플랜2 — 저장 차례(`matches_` 원소는 주소가 안 바뀐다)
     std::map<std::string, int32_t> ratings_;   // 계정 이름 → 점수
     std::map<std::string, MatchTotals> totals_;   // ★ 11-04 전적 검색 — 계정 이름 → 승패 합계(저장 때 올림 · DB 워커와 같은 잣대)
     std::set<std::string> accounts_;   // ★ 11-04 전적 검색 — 계정 표가 없어 저장된 판의 이름(점수 행은 그 일부) + 시험이 넣은 이름을 계정으로 친다(`--no-db` · 시험 잣대)

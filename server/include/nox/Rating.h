@@ -59,8 +59,5 @@ struct RatingResult {
 
 // `before` = 자리별 판 전 점수(`rec.players` 와 같은 차례 · 계정 없는 자리 · 모자란 칸은 `kRatingStart`) — 1:1 Elo 만 읽는다
 RatingResult RatingDeltas(const MatchRecord& rec, const std::vector<int32_t>& before);
-// ★ 11-07 조각 3 — 옛 규칙(1:1 도 ±10 · Duel 갈래 없음). 판 전 점수를 아직 안 읽는 저장소 둘(DB 워커 · 메모리 가짜)이 조각 4 까지 쓴다 —
-//   조각 4 가 판 전 점수를 넘기게 바꾸며 없앤다(한 조각 안에서 점수 규칙과 저장 길이 어긋나지 않게)
-RatingResult RatingDeltas(const MatchRecord& rec);
 
 }  // namespace nox
