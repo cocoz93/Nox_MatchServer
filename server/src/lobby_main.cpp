@@ -205,7 +205,26 @@ int main(int argc, char** argv) {
         cfg.rankGatherMs = gatherSec * 1000;
         cfg.rankPenaltySec = argRankPenalty;
         if (argRankPenalty > 0) Log("[로비] 시험 인자 — 줄 서기 제한 시간을 %u초로\n", argRankPenalty);
-        Log("[로비] 랭크 줄 — 최소 %u · 최대 %u · 최소가 차면 %u초 더 모음 · 기다림 한도 없음\n", cfg.rankMin, cfg.rankMax, gatherSec);
+        // ★ 11-07 점수 묶기 — 1:1(최대 2)의 허용 차(`RankMatch.h` · 플랜 `Docs/MO_RANK_MATCH_PLAN_1107.md` 1절). 기본값 = `RankMatchRule` 칸.
+        //   0 ≤ 시작 ≤ 상한 · 간격 1~3600초(ms 로 바꿔도 32비트 안 · 모으기 시간과 같은 위 한도) · 차는 32비트 부호 칸 안
+        const nox::wol::RankMatchRule def;
+        uint32_t startGap = 0, growGap = 0, growSec = 0, capGap = 0;
+        if (!pick("", "start_gap", static_cast<uint32_t>(def.startGap), startGap) || !pick("", "grow_gap", static_cast<uint32_t>(def.growGap), growGap) ||
+            !pick("", "grow_sec", def.growEveryMs / 1000, growSec) || !pick("", "cap_gap", static_cast<uint32_t>(def.capGap), capGap) ||
+            startGap > capGap || capGap > 0x7FFFFFFFu || growGap > 0x7FFFFFFFu || growSec < 1 || growSec > 3600) {
+            Log("[멈춤] 랭크 점수 묶기 설정 — 0 ≤ start_gap ≤ cap_gap · grow_sec 1~3600초여야 한다([rank] start_gap · grow_gap · grow_sec · cap_gap)\n");
+            return 2;
+        }
+        cfg.rankRule.startGap = static_cast<int32_t>(startGap);
+        cfg.rankRule.growGap = static_cast<int32_t>(growGap);
+        cfg.rankRule.growEveryMs = growSec * 1000;
+        cfg.rankRule.capGap = static_cast<int32_t>(capGap);
+        if (cfg.rankMax == 2)
+            Log("[로비] 랭크 줄 — 1:1(최소 2 · 최대 2) · 점수 차 %u → %u초마다 +%u → %u까지(가장 오래 기다린 사람부터 · 그 밖은 계속 기다림)\n",
+                startGap, growSec, growGap, capGap);
+        else
+            Log("[로비] 랭크 줄 — 최소 %u · 최대 %u · 최소가 차면 %u초 더 모음 · 기다림 한도 없음 · 점수 안 봄(점수 묶기는 최대 2 만)\n", cfg.rankMin,
+                cfg.rankMax, gatherSec);
     }
 
     // ★ 7단계 조각 8 — 저장소(계정 · 판 기록). 포트를 열기 전에 — 못 뜨면 포트도 안 잡는다
@@ -459,13 +478,13 @@ int main(int argc, char** argv) {
             "빠짐 알림 버림 %llu · 묶임 %llu(최대 %llu묶음 · 모으기 끝 %llu묶음) · 참가 답 %llu · 되돌림 %llu · 끝날 때 줄 %zu · "
             "랭크 방 요청 %llu(섬 %llu · 실패 %llu · 시간 초과 %llu · 끝날 때 기다림 %zu) · 표시 버림 %llu · 낮은 판 표시 %llu · 참가 무시 %llu · "
             "목록에서 뺀 랭크 방 %llu · 찾음 %llu명(%llu묶음 · 수락 %llu · 다 수락 %llu · 되돌림 %llu · 거절 %llu · 한도 %llu · 수락 버림 %llu · 끝날 때 %zu묶음) · "
-            "방 기다림 중 남 빠짐 되돌림 %llu · 묶인 참가 풂(474) %llu\n",
+            "방 기다림 중 남 빠짐 되돌림 %llu · 묶인 참가 풂(474) %llu · 점수 짝 %llu(가장 큰 차 %lld)\n",
             ls.rankQueued, lq(RankLeave::Dll), lq(RankLeave::List), lq(RankLeave::Closed), lr(RankLeave::Dll), lr(RankLeave::List),
             lr(RankLeave::Closed), ls.rankLeaveStray, ls.rankGrouped, ls.rankGroupFull, ls.rankGroupGather, ls.rankMatched, ls.rankRequeued,
             lobby.RankQueueSize(), ls.rankRequests, ls.rankRoomsCreated, ls.rankRoomFailed, ls.rankRoomTimeout, lobby.RankRequestsPending(),
             ls.rankMarkDropped, ls.rankOldClient, ls.rankDupJoin, ls.rankRoomsHidden, ls.rankFound, ls.rankFoundGroups, ls.rankAccepted,
             ls.rankAcceptMatched, ls.rankFoundRequeued, ls.RankDeclinedTotal(), ls.rankExpired, ls.rankAcceptStray, lobby.RankFoundPending(),
-            ls.rankReadyRequeued, ls.rankJoinReleased);
+            ls.rankReadyRequeued, ls.rankJoinReleased, ls.rankPairs, ls.rankPairGapMax);
     }
     // ★ 7단계 — 보냄 · 받음은 PING 을 넣은 수(괄호가 그중 PING) · 무소식 끊음 = 받은 줄이 한도 동안 없어 끊은 게임 서버 연결
     Log("[로비] 끝 — 게임 서버 연결 %llu(확인 %llu · 확인 실패 %llu · 등록 %llu · 등록 거절 %llu · 차례 틀림 %llu) · 연결 줄 받음 %llu(PING %llu) · "

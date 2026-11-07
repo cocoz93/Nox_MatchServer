@@ -1756,11 +1756,12 @@ void MirrorUnitTests() {
     send(a3, nox::LinkRoomLine(room(20, "ned", 0)));
     const std::string l3 = listed(10);
     Check(l3 == "#ned's_game,#mo's_game" && lb.Stats().rankRoomsHidden == 2, "⑫ ROOM_GONE 뒤 같은 번호 일반 방 → 보임 = " + l3);
-    lb.OnRatingsChanged({{"oli", 1234, 10}});   // ★ 매칭 손보기 5 — 판 저장 답이 고친 점수(거울이 SAVED ok 때 넘김)
+    // ★ 11-07 점수 묶기 — 1234 → 1080: 최대 2 줄은 점수 차가 허용 차(줄 서자마자 100) 안이어야 묶인다(oli · pat 차 234 는 안 묶임)
+    lb.OnRatingsChanged({{"oli", 1080, 10}});   // ★ 매칭 손보기 5 — 판 저장 답이 고친 점수(거울이 SAVED ok 때 넘김)
     const uint32_t reqOli = rankAsk(11, "oli", 12, "pat");
-    Check(jayRatings == std::vector<int32_t>{1000, 1000} && lastRatings == std::vector<int32_t>{1234, 1000} && lb.RatingOf("oli") == 1234 &&
+    Check(jayRatings == std::vector<int32_t>{1000, 1000} && lastRatings == std::vector<int32_t>{1080, 1000} && lb.RatingOf("oli") == 1080 &&
               lb.RatingOf("nobody") == nox::kRatingStart,
-          "★ ⑫ 랭크 방 요청 CREATE 에 명단 점수 — 점수 모름 = 시작 점수(1000 · 1000) · 판 저장 답으로 고친 oli 1234 · 없는 이름 1000");
+          "★ ⑫ 랭크 방 요청 CREATE 에 명단 점수 — 점수 모름 = 시작 점수(1000 · 1000) · 판 저장 답으로 고친 oli 1080 · 없는 이름 1000");
     send(a3, nox::LinkCreateFailed(reqOli, "no wait map"));
     clock += kRankRetryMs;   // 쉬는 시간 뒤 다시 묻는 CREATE 는 버림(이 갈래는 실패한 요청의 표시만 본다)
     out.clear();
@@ -4544,6 +4545,155 @@ void RankPenaltyUnitTests() {
     }
 }
 
+// ── ★ 11-07 점수 묶기 조각 2 — 최대 2 줄의 점수 짝(`Lobby::RankPumpPairs` · `RankMatch.h` · 플랜 `Docs/MO_RANK_MATCH_PLAN_1107.md` 4-2 · 6절) ──
+//   ① 차 150 — 줄 서자마자 안 묶임 · 모으기 길 안 탐 · 9.999초 Tick 안 묶임 · 10초 Tick 묶임(찾음 · 기록 줄 · 셈)
+//   ② 차 300 — 1시간 Tick 에도 안 묶임 · 셋째(1250)가 서면 가까운 둘(1300 · 1250)이 묶이고 1000 은 남음
+//   ③ 되돌림 셋 뒤에도 처음 줄 선 시각 — 찾음 풂(남이 거절) · 다 수락 뒤 방 기다리는 중 남이 빠짐 · 방 요청 실패(쉬는 시간 뒤)
+//      셋 다 「되돌린 사람(12 · 11 · 16초 기다림)이 차 150 상대와 곧바로 묶임」으로 본다 — 되돌릴 때 시각을 새로 적으면 기다림 0 · 0 · 5초라 허용 100 으로 안 묶인다
+//   ④ 최대 3 — 점수 안 봄(차 500 도 모으기 끝에 묶임 · 점수 짝 셈 0)
+//   시계는 32비트가 도는 자리(0xfffff000)에서 시작한다 — 기다림은 「지금 − 줄 선 시각」으로만 잰다
+struct PairRig {
+    uint32_t clock = 0xfffff000u;
+    FakeRooms fake;
+    nox::wol::Lobby lb;
+    static nox::wol::LobbyConfig Cfg(uint32_t maxN, uint32_t* clock) {
+        nox::wol::LobbyConfig cfg;
+        cfg.room.maxPlayers = 31;
+        cfg.joinKey = LobbyTestKey();
+        cfg.unixNow = [] { return kLobbyTestNow; };
+        cfg.nonce = [] { return 0x0102030405060708ull; };
+        cfg.nowMs = [clock] { return *clock; };
+        cfg.rankMin = 2;
+        cfg.rankMax = maxN;
+        return cfg;
+    }
+    explicit PairRig(uint32_t maxN) : lb(Cfg(maxN, &clock), fake) {}
+    void Login(int conn, const std::string& nick, int32_t rating) {
+        lb.OnConnect(conn, 0x7f000001, 0x7f000001);
+        std::vector<nox::wol::Out> o;
+        for (const std::string l : {std::string("NOXCLIENT 5"), "NICK " + nick, std::string("USER UserName HostName irc.westwood.com :RealName")})
+            lb.OnLine(conn, l, o);
+        lb.OnRatingsChanged({{nick, rating, 0}});
+    }
+    void Join(int conn, const std::string& nick, std::vector<nox::wol::Out>& o) {
+        lb.OnLine(conn, "NOXRANK JOIN", o);
+        lb.OnLine(conn, "JOINGAME #" + nick + "'s_game 1 ", o);
+    }
+    static int Found(const std::vector<nox::wol::Out>& o, int conn) {
+        int n = 0;
+        for (const auto& x : o) n += x.conn == conn && x.line == "NOXRANK FOUND " + std::to_string(nox::wol::kRankAcceptMs / 1000) ? 1 : 0;
+        return n;
+    }
+    // 기록 줄 가운데 `head` 로 시작하는 줄들(꺼낸 만큼 비운다)
+    std::vector<std::string> Lines(const std::string& head) {
+        std::vector<std::string> r;
+        for (const std::string& l : lb.TakeLog())
+            if (l.rfind(head, 0) == 0) r.push_back(l);
+        return r;
+    }
+};
+
+void RankScorePairUnitTests() {
+    using namespace nox::wol;
+    // ①
+    {
+        PairRig g(2);
+        g.Login(1, "amy", 1000);
+        g.Login(2, "bob", 1150);
+        g.lb.TakeLog();
+        std::vector<Out> o;
+        g.Join(1, "amy", o);
+        g.Join(2, "bob", o);
+        const std::vector<std::string> gatherLog = g.Lines("[랭크 — 모으기");
+        Check(PairRig::Found(o, 1) == 0 && PairRig::Found(o, 2) == 0 && g.lb.RankQueueSize() == 2 && gatherLog.empty() && g.lb.Stats().rankGroupGather == 0,
+              "① 차 150 · 0초 — 안 묶임 · 줄 2 · 모으기 길 안 탐(기록 " + std::to_string(gatherLog.size()) + "줄)");
+        g.clock += 9999;
+        std::vector<Out> t1;
+        g.lb.Tick(t1);
+        Check(PairRig::Found(t1, 1) == 0 && g.lb.RankQueueSize() == 2, "① 9.999초 Tick — 안 묶임");
+        g.clock += 1;
+        std::vector<Out> t2;
+        g.lb.Tick(t2);
+        const std::vector<std::string> found = g.Lines("[랭크 — 찾음]");
+        const LobbyStats& s = g.lb.Stats();
+        Check(PairRig::Found(t2, 1) == 1 && PairRig::Found(t2, 2) == 1 && g.lb.RankQueueSize() == 0 && g.lb.RankFoundPending() == 1,
+              "① 10초 Tick — 둘 다 찾음 · 줄 0");
+        Check(found.size() == 1 && found[0].find(" 최대 — amy,bob · 점수 1000 · 1150(차 150 · 허용 150 · 기다림 10.0초) · 수락 기다림 10초(방은 다 수락 뒤)") != std::string::npos,
+              "① 찾음 기록 줄 — 두 점수 · 차 · 허용 차 · 기다린 초 = " + (found.empty() ? std::string("(없음)") : found[0]));
+        Check(s.rankPairs == 1 && s.rankPairGapMax == 150 && s.rankGroupFull == 1 && s.rankGroupGather == 0 && s.rankGrouped == 2,
+              "① 셈 — 점수 짝 1 · 가장 큰 차 150 · 최대 묶음 1 · 모으기 0 · 묶인 사람 2");
+    }
+    // ②
+    {
+        PairRig g(2);
+        g.Login(3, "carl", 1000);
+        g.Login(4, "dan", 1300);
+        g.Login(5, "eve", 1250);
+        std::vector<Out> o;
+        g.Join(3, "carl", o);
+        g.Join(4, "dan", o);
+        g.clock += 3600u * 1000u;
+        g.lb.Tick(o);
+        Check(PairRig::Found(o, 3) == 0 && PairRig::Found(o, 4) == 0 && g.lb.RankQueueSize() == 2 && g.lb.Stats().rankGroupGather == 0,
+              "② 차 300 · 1시간 Tick — 안 묶임(상한 200)");
+        g.lb.TakeLog();
+        std::vector<Out> o2;
+        g.Join(5, "eve", o2);
+        const std::vector<std::string> found = g.Lines("[랭크 — 찾음]");
+        Check(PairRig::Found(o2, 3) == 0 && PairRig::Found(o2, 4) == 1 && PairRig::Found(o2, 5) == 1 && g.lb.RankQueueSize() == 1 &&
+                  found.size() == 1 && found[0].find(" — dan,eve · 점수 1300 · 1250(차 50 · 허용 200 · 기다림 3600.0초)") != std::string::npos &&
+                  g.lb.Stats().rankPairs == 1 && g.lb.Stats().rankPairGapMax == 50,
+              "② 셋째 1250 — dan · eve 묶임(기준 dan 이 1시간 기다림 · 허용 200) · carl(1250 과 250 차) 남음 = " + (found.empty() ? std::string("(없음)") : found[0]));
+    }
+    // ③ 되돌림 셋 — 공통: dee(1000)가 0초에 줄 섬 → 기다림 뒤 xan(1000)과 묶임 → 되돌림 → xan 빠짐 → yul(1150)이 섬
+    auto requeueCase = [](const char* what, uint32_t pairAt, uint32_t yulAt, bool pending, bool fail) {
+        PairRig g(2);
+        g.fake.ask = pending;
+        g.fake.canCreate = !fail;
+        g.Login(1, "dee", 1000);
+        g.Login(2, "xan", 1000);
+        g.Login(3, "yul", 1150);
+        const uint32_t t0 = g.clock;
+        std::vector<Out> o;
+        g.Join(1, "dee", o);
+        g.clock = t0 + pairAt;
+        g.Join(2, "xan", o);
+        const bool paired = PairRig::Found(o, 1) == 1 && PairRig::Found(o, 2) == 1;
+        if (pending || fail) {   // 다 수락 → 방 요청(기다림 · 곧바로 실패)
+            g.lb.OnLine(1, "NOXRANK ACCEPT", o);
+            g.lb.OnLine(2, "NOXRANK ACCEPT", o);
+        }
+        g.lb.OnLine(2, "NOXRANK LEAVE", o);   // 찾음 중이면 거절 · 방 기다림 중이면 남 빠짐 · 되돌린 뒤면 줄에서 빠짐
+        const bool deeBack = g.lb.RankQueueSize() == 1;
+        g.clock = t0 + yulAt;
+        g.lb.TakeLog();
+        std::vector<Out> o2;
+        g.Join(3, "yul", o2);
+        const std::vector<std::string> found = g.Lines("[랭크 — 찾음]");
+        const std::string waited = " · 점수 1000 · 1150(차 150 · 허용 150 · 기다림 " + std::to_string(yulAt / 1000) + ".0초)";
+        Check(paired && deeBack && PairRig::Found(o2, 1) == 1 && PairRig::Found(o2, 3) == 1 && g.lb.RankQueueSize() == 0 && found.size() == 1 &&
+                  found[0].find(" — dee,yul" + waited) != std::string::npos,
+              std::string("③ ") + what + " — 되돌린 dee 가 처음 시각으로 yul 과 곧바로 묶임 = " + (found.empty() ? std::string("(없음)") : found[0]));
+    };
+    requeueCase("찾음 풂(xan 거절)", 12000, 12000, false, false);
+    requeueCase("다 수락 뒤 방 기다리는 중 xan 빠짐", 11000, 11000, true, false);
+    requeueCase("방 요청 실패 → 쉬는 시간(5초) 뒤", 11000, 11000 + kRankRetryMs, false, true);
+    // ④
+    {
+        PairRig g(3);
+        g.Login(1, "amy", 1000);
+        g.Login(2, "bob", 1500);
+        std::vector<Out> o;
+        g.Join(1, "amy", o);
+        g.Join(2, "bob", o);
+        g.clock += kRankGatherMsDefault;
+        g.lb.Tick(o);
+        const LobbyStats& s = g.lb.Stats();
+        Check(PairRig::Found(o, 1) == 1 && PairRig::Found(o, 2) == 1 && s.rankGroupGather == 1 && s.rankPairs == 0 && g.lb.RankQueueSize() == 0,
+              "④ 최대 3 — 점수 안 봄(차 500 도 모으기 끝에 묶임 · 점수 짝 0)");
+    }
+}
+
 int main(int argc, char** argv) {
     if (argc >= 3 && std::strcmp(argv[1], "--gameinfo") == 0) {
         if (GameInfoFromRecording(argv[2]) != 0) return 1;
@@ -4560,6 +4710,7 @@ int main(int argc, char** argv) {
         RankAcceptUnitTests();    // ★ 매칭 손보기 6
         RankReadyUnitTests();     // ★ 10-31 다 수락 뒤 방 요청
         RankPenaltyUnitTests();   // ★ 11-05 플랜1 줄 서기 제한
+        RankScorePairUnitTests(); // ★ 11-07 점수 묶기 조각 2
         MirrorUnitTests();        // ★ 10-20 v2 작업 3a-2
         LinkAliveUnitTests();     // ★ 7단계 조각 2
         LobbyStoreUnitTests();    // ★ 7단계 조각 4

@@ -66,6 +66,7 @@
 #include "nox/LobbyStore.h"   // ★ 레이팅 조각 4 — 로그인 공지의 점수를 묻는다
 #include "nox/LoginLine.h"
 #include "nox/LoginToken.h"
+#include "nox/RankMatch.h"     // ★ 11-07 점수 묶기 — 1:1 줄의 점수 짝
 #include "nox/RankPenalty.h"
 #include "nox/WolGameInfo.h"
 
@@ -242,6 +243,9 @@ struct LobbyConfig {
     uint32_t rankMin = kRankMinDefault;
     uint32_t rankMax = kRankMaxDefault;
     uint32_t rankGatherMs = kRankGatherMsDefault;
+    // ★ 11-07 점수 묶기 — 최대가 2(1:1)면 점수가 가까운 둘을 묶는다(`RankMatch.h` · 설정 `[rank] start_gap · grow_gap · grow_sec · cap_gap` ·
+    //   0 ≤ 시작 ≤ 상한 · 간격 1~3600초는 부르는 쪽이 본다). 최대가 3 이상이면 안 쓴다(먼저 온 차례 그대로)
+    RankMatchRule rankRule;
     uint32_t rankPenaltySec = 0;   // ★ 11-05 플랜1 — 시험 인자 `--rank-penalty-sec`(0 = 플랜 값 · `RankPenalty.h` `PenaltyStep`)
     // ★ 11-06 귓속말 조각 2 — `NOXCHAT` 줄에 실을 채팅 서버 주소(설정 `[chat] host · port`). 주소 0 = 이 접속이 붙은 내 쪽 주소(로비와 같은 PC) ·
     //   포트 0 = 안 알림(DLL 은 둘째 연결을 안 맺는다)
@@ -336,8 +340,10 @@ struct LobbyStats {
     unsigned long long rankLeftRequested[kRankLeaveCount] = {}; // 방 요청 중 빠짐(까닭별 — 방이 서도 참가 답을 안 보냄)
     unsigned long long rankLeaveStray = 0;      // NOXRANK LEAVE 인데 줄에도 요청에도 없음(잡힌 뒤 창이 닫힘 · 거절 뒤 — 버림)
     unsigned long long rankGrouped = 0;         // 묶여 방 요청에 실린 사람(되돌린 뒤 다시 묶이면 또 셈)
-    unsigned long long rankGroupFull = 0;       // 묶은 까닭 — 최대가 참(곧바로)
+    unsigned long long rankGroupFull = 0;       // 묶은 까닭 — 최대가 참(곧바로 · ★ 11-07 최대 2 면 점수 짝 — `rankPairs` 에도 듦)
     unsigned long long rankGroupGather = 0;     // 묶은 까닭 — 최소가 찬 뒤 모으기 시간 끝
+    unsigned long long rankPairs = 0;           // ★ 11-07 점수 묶기 — 최대 2 의 점수 짝(`PickPairs`) · `rankGroupFull` 의 일부
+    long long rankPairGapMax = 0;               // ★ 11-07 — 그 짝들의 점수 차 가운데 가장 큰 값(상한을 넘은 짝이 없었나를 본다)
     unsigned long long rankRequests = 0;        // 랭크 방 요청(묶음) = 섬 + 실패 + 시간 초과 + 기다리는 중
     unsigned long long rankRoomsCreated = 0;    // 방이 섬
     unsigned long long rankRoomFailed = 0;      // 곧바로 실패 · 게임 서버 실패
@@ -466,6 +472,9 @@ private:
         //   ★ 매칭 손보기 6 — 찾음(방이 섰고 수락을 기다림) · 수락함(남을 기다림)
         enum class Rank : uint8_t { None, Queued, Requested, Found, Accepted } rank = Rank::None;
         uint32_t rankReq = 0;
+        // ★ 11-07 점수 묶기 — 처음 줄 선 시각(`RankEnqueue` 한 곳에서만 적음). 되돌림 셋(요청 실패 · 다 수락 뒤 빠짐 · 찾음 풂)은 안 고쳐
+        //   줄 맨 앞에 돌아온 사람도 처음 시각으로 허용 차를 잰다(플랜 2절). 줄에서 빠졌다가 다시 서면 새 시각
+        uint32_t rankSinceMs = 0;
     };
 
     // ★ 11-05 플랜1 — ① 랭크 줄에서 뺌(위반으로 안 셈) ② 게임 서버 전부에 내보내기 ③ 로비 접속이 있으면 안내 줄 + 끊기
@@ -508,11 +517,14 @@ private:
     void RankEnqueue(int conn, Conn& c, std::vector<Out>& out);
     void RankRemove(int conn, RankLeave why, std::vector<Out>& out);
     void RankPump(std::vector<Out>& out);
-    void RankRequest(size_t count, bool full, std::vector<Out>& out);
+    // ★ 11-07 점수 묶기 — 줄 앞 `count` 명 대신 묶을 사람 목록(줄에서 그 사람들만 뗌 · 값으로 받음 — 부르는 쪽이 줄 사본을 넘겨도 안 꼬이게) ·
+    //   `detail` = 찾음 · 묶음 기록 줄 끝에 붙일 글(점수 짝의 두 점수 · 차 · 허용 차 · 기다림)
+    void RankRequest(std::vector<int> group, bool full, const std::string& detail, std::vector<Out>& out);
+    void RankPumpPairs(uint32_t now, std::vector<Out>& out);   // ★ 11-07 — 최대 2 의 점수 짝(`PickPairs`)
     void RankReply(uint32_t req, const std::vector<int>& group, const LobbyRoom& room, std::vector<Out>& out);
     void RankRequeue(uint32_t req, const std::vector<int>& group, bool ready, std::vector<Out>& out);
     // ★ 10-31 — 방 요청(옛 길 · 다 수락한 묶음 공용) · 다 수락한 묶음이 방을 기다리는 동안 빠짐
-    void RankAskRoom(uint32_t req, const std::vector<int>& group, bool ready, const char* how, std::vector<Out>& out);
+    void RankAskRoom(uint32_t req, const std::vector<int>& group, bool ready, const std::string& how, std::vector<Out>& out);
     void RankReadyBreak(uint32_t req, std::vector<Out>& out);
     std::string RankNames(const std::vector<int>& conns) const;
     // ★ 매칭 손보기 6 — 수락 단계: 찾음 보내기 · 수락 받기 · 묶음 풀기(남은 사람을 줄 맨 앞에 — 쉬지 않음 · `except` 는 빼고) · 참가 답

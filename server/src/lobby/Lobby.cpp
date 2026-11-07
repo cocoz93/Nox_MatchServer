@@ -368,6 +368,7 @@ std::string Lobby::RankNames(const std::vector<int>& conns) const {
 
 void Lobby::RankEnqueue(int conn, Conn& c, std::vector<Out>& out) {
     c.rank = Conn::Rank::Queued;
+    c.rankSinceMs = cfg_.nowMs();   // ★ 11-07 점수 묶기 — 처음 줄 선 시각을 적는 곳은 여기 하나(되돌림 셋은 안 고침 · `Lobby.h` `Conn::rankSinceMs`)
     rankQueue_.push_back(conn);
     ++stats_.rankQueued;
     log_.push_back("[랭크 — 줄 섬] " + c.nick + " (줄 " + std::to_string(rankQueue_.size()) + "명 · 최소 " + std::to_string(cfg_.rankMin) +
@@ -440,7 +441,15 @@ void Lobby::RankPump(std::vector<Out>& out) {
         if (static_cast<int32_t>(now - rankRestDueMs_) < 0) return;
         rankResting_ = false;
     }
-    while (!rankResting_ && rankQueue_.size() >= cfg_.rankMax) RankRequest(cfg_.rankMax, true, out);
+    // ★ 11-07 점수 묶기 — 1:1(최대 2)은 점수가 가까운 둘만 묶는다(`RankMatch.h`). 아래 모으기 시간 길은 안 탄다 — 최소도 2 라 지금까지도
+    //   안 탔고(최대가 차면 곧바로 묶여 줄이 2 밑), 이제 줄에 남은 둘 이상은 점수가 멀어 기다리는 사람이라 모으기 끝에 한데 묶으면 안 된다
+    if (cfg_.rankMax == 2) {
+        rankGathering_ = false;
+        RankPumpPairs(now, out);
+        return;
+    }
+    while (!rankResting_ && rankQueue_.size() >= cfg_.rankMax)
+        RankRequest(std::vector<int>(rankQueue_.begin(), rankQueue_.begin() + static_cast<std::ptrdiff_t>(cfg_.rankMax)), true, "", out);
     if (rankResting_) return;
     if (rankQueue_.size() < cfg_.rankMin) {
         if (rankGathering_) log_.push_back("[랭크 — 모으기 멈춤] 줄 " + std::to_string(rankQueue_.size()) + "명 — 최소 밑");
@@ -454,16 +463,47 @@ void Lobby::RankPump(std::vector<Out>& out) {
     }
     if (static_cast<int32_t>(now - rankGatherDueMs_) < 0) return;
     rankGathering_ = false;
-    RankRequest(rankQueue_.size(), false, out);
+    RankRequest(rankQueue_, false, "", out);
+}
+
+// ★ 11-07 점수 묶기 — 줄 전체를 `PickPairs` 에 넣고 준 짝마다 묶는다. 점수는 로비가 쥔 값(`RatingOf` — 로그인 때 읽음 · 판 결과로 고침 ·
+//   못 읽었으면 1000 · 플랜 2절). 방 요청이 곧바로 실패하면 `RankRequeue` 가 그 짝을 줄 앞에 되돌리고 쉬는 시간을 켠다 — 남은 짝은 쉬고 난 뒤
+//   그 줄로 다시 고른다(옛 길의 `while (!rankResting_ …)` 과 같은 뜻)
+void Lobby::RankPumpPairs(uint32_t now, std::vector<Out>& out) {
+    if (rankQueue_.size() < 2) return;
+    std::vector<RankWaiter> line;
+    line.reserve(rankQueue_.size());
+    for (int id : rankQueue_) {
+        const Conn& c = conns_[id];   // 줄엔 살아 있는 접속만 있다(`RankRequest` 와 같은 전제)
+        line.push_back({id, RatingOf(c.nick), c.rankSinceMs});
+    }
+    for (const auto& [base, other] : PickPairs(line, now, cfg_.rankRule)) {
+        if (rankResting_) return;
+        const Conn& a = conns_[base];
+        const Conn& b = conns_[other];
+        const int32_t ra = RatingOf(a.nick);
+        const int32_t rb = RatingOf(b.nick);
+        const long long gap = ra > rb ? static_cast<long long>(ra) - rb : static_cast<long long>(rb) - ra;
+        const uint32_t waited = now - a.rankSinceMs;   // 기준(둘 중 오래 기다린 쪽)의 기다림 — 허용 차를 잰 시간
+        ++stats_.rankPairs;
+        stats_.rankPairGapMax = std::max(stats_.rankPairGapMax, gap);
+        const std::string detail = " · 점수 " + std::to_string(ra) + " · " + std::to_string(rb) + "(차 " + std::to_string(gap) + " · 허용 " +
+                                   std::to_string(AllowedGap(waited, cfg_.rankRule)) + " · 기다림 " + std::to_string(waited / 1000) + "." +
+                                   std::to_string(waited % 1000 / 100) + "초)";
+        RankRequest({base, other}, true, detail, out);
+    }
 }
 
 // 줄 앞 `count` 명을 묶는다. ★ 10-31 — 다 판 5 DLL 이고 둘 이상이면 방 없이 수락 단계부터(`NOXRANK FOUND <초>`) — 방은 다 수락한 뒤에 요청한다
 //   (`RankAccept`). 하나라도 낮은 판이면 옛 길(곧바로 방 요청 → 참가 답).
 //   - 왜: 방을 먼저 세우고 수락을 물으면 거절 · 한도 때마다 아무도 안 올 랭크 방이 게임 서버에 남았다(도착 한도 30초 뒤에야 닫힘).
 //     방은 확정된 판에만 — 수락은 로비 혼자 끝내고 깨진 묶음은 게임 서버에 닿지 않게(10-31 사용자 결정 ②)
-void Lobby::RankRequest(size_t count, bool full, std::vector<Out>& out) {
-    const std::vector<int> group(rankQueue_.begin(), rankQueue_.begin() + static_cast<std::ptrdiff_t>(count));
-    rankQueue_.erase(rankQueue_.begin(), rankQueue_.begin() + static_cast<std::ptrdiff_t>(count));
+//   ★ 11-07 점수 묶기 — 줄 앞 몇 명 대신 묶을 사람 목록을 받아 줄에서 그 사람들만 뗀다(점수 짝은 줄 가운데 사람끼리일 수 있다)
+void Lobby::RankRequest(std::vector<int> group, bool full, const std::string& detail, std::vector<Out>& out) {
+    for (int id : group) {
+        const auto at = std::find(rankQueue_.begin(), rankQueue_.end(), id);
+        if (at != rankQueue_.end()) rankQueue_.erase(at);
+    }
     const uint32_t req = nextReq_++;
     bool allNew = true;
     for (int id : group) {
@@ -484,16 +524,16 @@ void Lobby::RankRequest(size_t count, bool full, std::vector<Out>& out) {
         rankFound_[req] = RankFoundGroup{group, cfg_.nowMs() + kRankAcceptMs};
         ++stats_.rankFoundGroups;
         stats_.rankFound += group.size();
-        log_.push_back("[랭크 — 찾음] 요청 " + std::to_string(req) + " " + how + " — " + RankNames(group) + " · 수락 기다림 " +
+        log_.push_back("[랭크 — 찾음] 요청 " + std::to_string(req) + " " + how + " — " + RankNames(group) + detail + " · 수락 기다림 " +
                        std::to_string(kRankAcceptMs / 1000) + "초(방은 다 수락 뒤)");
         return;
     }
-    RankAskRoom(req, group, false, how, out);
+    RankAskRoom(req, group, false, how + detail, out);
 }
 
 // ★ 10-31 — 묶음(`group` — 다 요청 중)의 랭크 방을 게임 서버에 요청한다. `ready` = 수락 단계를 다 거친 묶음(판 5) —
 //   실패 · 시간 초과 · 방 기다리는 중 남이 빠지면 남은 사람에게 `NOXRANK WAIT`(DLL 이 창을 다시 기다림으로)
-void Lobby::RankAskRoom(uint32_t req, const std::vector<int>& group, bool ready, const char* how, std::vector<Out>& out) {
+void Lobby::RankAskRoom(uint32_t req, const std::vector<int>& group, bool ready, const std::string& how, std::vector<Out>& out) {
     RoomAsk ask;
     ask.ranked = true;
     for (int id : group) {
