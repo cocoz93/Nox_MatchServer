@@ -1450,7 +1450,7 @@ struct RoundOutcome {
     uint16_t winnerId = 0;          // 사람이면 `netCode` · 팀이면 팀 번호 · 그 밖은 0
     uint32_t frame = 0;             // 판이 끝난 프레임
     uint32_t limit = 0;             // 점수 한도(`GameSettings::limitValue`)
-    uint32_t timeLimitFrames = 0;   // 시간 한도(0 = 없음)
+    uint32_t timeLimitSec = 0;      // ★ 11-07 T1 — 이번 판에 건 시계 길이(초 · 0 = 안 걺 · `Server::ArmRoundTimer`)
     std::vector<RoundStanding> players;
     std::vector<RoundTeamScore> teams;
 };
@@ -2936,6 +2936,18 @@ public:
     }
     // 판이 끝났나 (점수 한도에 닿았나).
     bool RoundOver() const { return roundOver_; }
+    // ★ 11-07 판 시간 제한 T1(`Docs/MO_TIME_LIMIT_PLAN_1107.md` 5-1) — 판 시계. **방이 판을 열 때 걸고 게임이 잰다** —
+    //   옛 꼴은 설정의 한도 틱을 `frame_` 그대로와 견줘(방이 뜬 뒤 몇 틱), 방이 대기실에서 10분 넘게 산 뒤 연 판이 첫 틱에 끝났다(플랜 4-1).
+    //   걸면 마감 틱 = 지금 + ⌈초 × 1000 ÷ `tickMs_`⌉(서버 고리가 밀리면 따라잡아 한 틱 = 벽시계 `tickMs_` — 「30틱 = 1초」로 걸면 600초가 594초가 된다) ·
+    //   마감 틱에 닿으면 `RoundTimeUp`(정품 판정) · 판 끝(까닭 모두 — `EndRound` · `EndRoundForfeit`)에 끈다 · 0 초 = 끔.
+    //   켜짐 · 남은 ms 는 접속 묶음 · 맵 전환의 `af`(19번 = 분) · `b0`(45번 = 남은 ms)와 `d3`(켜짐 · 꺼짐이 바뀐 틱 · `d4` 물음 답)으로 정품 클라에 간다
+    void ArmRoundTimer(uint32_t sec);
+    bool RoundTimerOn() const { return roundDeadline_ != 0; }
+    uint32_t RoundTimerSec() const { return roundTimerSec_; }   // 건 길이(초 · 꺼짐 0)
+    uint32_t RoundDeadline() const { return roundDeadline_; }   // 마감 틱(꺼짐 0)
+    uint32_t RoundTimeLeftMs() const;                           // 남은 틱 × `tickMs_`(꺼짐 · 마감 지남 0)
+    unsigned long long roundTimerArms() const { return roundTimerArms_; }
+    unsigned long long roundTimerStops() const { return roundTimerStops_; }
     // ★ 10-19 MO 5단계 작업 1 — 판 끝 기록(`EndRound`). 판이 끝날 때마다 번호가 1 오르고 마지막 기록이 바뀐다 — 한 칸이라 쌓이지 않는다.
     //   방은 틱마다 번호가 바뀌었나로 새 판 끝을 안다 — 한 칸이라 한 틱 안에 판 끝이 두 번 나면 앞 것은 덮이고, 방은 번호 차이로 그것을 센다.
     //   판 끝 깃발만 세우는 시험 손잡이(`DebugEndRound` · `DebugSetRoundOver`)는 기록을 안 남긴다
@@ -5978,6 +5990,15 @@ private:
     RoundOutcome lastOutcome_;
     unsigned long long roundEnds_[static_cast<size_t>(RoundEndReason::kCount)] = {};
     bool timerLastRoundOver_ = false;   // 09-21 — 판 끝 상태가 **바뀐 틱**에만 시계를 보낸다
+    // ★ 11-07 T1 — 판 시계(`ArmRoundTimer`)
+    uint32_t roundDeadline_ = 0;        // 마감 틱(0 = 꺼짐)
+    uint32_t roundTimerSec_ = 0;        // 건 길이(초) — 판 끝 기록에
+    bool timerLastOn_ = false;          // 켜짐 · 꺼짐이 **바뀐 틱**에도 `d3` 을 보낸다(정품 `sub_40A1F0` 이 상태가 바뀔 때 보냄 · 원본 `GAME1.c:257`)
+    unsigned long long roundTimerArms_ = 0;
+    unsigned long long roundTimerStops_ = 0;
+    void StopRoundTimer();
+    // `af` · `b0` 에 실을 설정 — 시계가 켜졌으면 한도(분) · 남은 ms 를 채운 사본(정품 자리 `network.go:609-610` · 원본 `cdecode.c:2115` · `:2161`)
+    GameSettings WireSettings() const;
     std::vector<Flag> flags_;
     uint16_t caps_[3] = {0, 0, 0};   // 팀별 득점 (1·2 만 쓴다)
     int questTotal_ = 0;

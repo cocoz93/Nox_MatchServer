@@ -279,8 +279,7 @@ void CLobbyClient::SendChanged(std::vector<NetworkRequest>& out) {
         u.host = f.host;
         u.canStart = f.canStart;
         u.scoreLimit = f.scoreLimit;
-        constexpr uint32_t kFramesPerMin = 30 * 60;   // 서버 틱 30/초(`timeLimitFrames` 비교 자리 `Server.cpp` RoundTimeUp)
-        u.timeLimitMin = (f.timeLimitFrames + kFramesPerMin - 1) / kFramesPerMin;
+        u.timeLimitMin = (f.timeLimitSec + 59) / 60;   // ★ 11-07 T1 — 초 → 분(올림 · 정품 `af` 19번과 같은 셈 `Server::WireSettings`)
         u.map = f.battleMap;
         ui[u.name] = LinkRoomUiLine(u);
     }

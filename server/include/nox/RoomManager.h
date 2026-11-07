@@ -73,7 +73,7 @@ struct MatchResult {
     uint16_t winnerId = 0;              // 사람이면 `netCode` · 팀이면 팀 번호
     std::string winnerAccount;          // 승자가 사람이면 그 로비 이름(없으면 빈 것)
     uint32_t limit = 0;
-    uint32_t timeLimitFrames = 0;
+    uint32_t timeLimitSec = 0;          // ★ 11-07 T1 — 이번 판에 건 시계 길이(초 · 0 = 안 걺 · `RoundOutcome::timeLimitSec`)
     bool ranked = false;                // ★ 레이팅 조각 2 — 방 설정 `RoomSettings::ranked` 그대로
     std::vector<MatchPlayer> players;   // 판을 열 때 명단 차례 · 명단 밖인데 끝에 게임 안에 있으면 뒤에
     std::vector<RoundTeamScore> teams;
@@ -332,7 +332,7 @@ struct MemberUiFact {
     bool host = false;
     bool canStart = false;      // `HandleChatCommands` 의 `!start` 와 같은 조건 — 방장 · 대기 · 인원 · 맵
     uint32_t scoreLimit = 0;    // 판을 열면 쓸 점수 한도(`StartMatch`)
-    uint32_t timeLimitFrames = 0;
+    uint32_t timeLimitSec = 0;  // ★ 11-07 T1 — 판 시계 길이(초 · 0 = 없음)
     std::string battleMap;      // 대전 맵 열쇠
 };
 

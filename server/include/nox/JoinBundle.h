@@ -56,9 +56,8 @@ struct GameSettings {
     uint8_t  bytes4[4]     = { 0xFF, 0xFF, 0xFF, 0xFF };   // Field44
     uint32_t field48       = 0xFFFFFFFFu;
     uint32_t timeLeft      = 0;             // 시간 제한이 걸렸을 때만 `Sub_40A230()`
-    // ⚠ 묶음 8-g — 판 시간 한도(프레임). **0 이면 한도 없음**.
-    //   우리 캡처는 한도 없이 돌았고 남은 시간이 음수로 내려갔다 — 값은 **실측이 아니라 설정**이다
-    uint32_t timeLimitFrames = 0;
+    // ★ 11-07 판 시간 제한 T1 — 옛 `timeLimitFrames`(판 시간 한도 · 프레임 · 기본 0)를 없앴다. 시계는 판마다 거는 것이라
+    //   설정이 아니라 `Server::ArmRoundTimer` 가 쥐고, 이 구조의 `limitKind`(분) · `timeLeft`(남은 ms)는 보낼 때 `Server::WireSettings` 가 채운다
 };
 
 // `af` 20바이트 · `b0` 49바이트를 각각 짓는다

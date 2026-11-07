@@ -20102,28 +20102,122 @@ void TestRoundTimeUp() {
         Check(!srv->RoundOver(), "아레나인데 생존 판정이 돌았다");
     }
 
-    // ⑤ **시간 한도 기본은 0(없음)** — 틱이 돌아도 안 끝난다
+    // ⑤ ★ 11-07 판 시간 제한 T1 — **판 시계는 걸 때만 돈다**(`ArmRoundTimer`). 안 걸면(대기 맵 · 한도 0) 600초가 지나도 안 끝난다
+    using RER = nox::RoundEndReason;
+    char tm[400];
     {
         nox::CSyncHost srv; mk(srv, 0x100u);
-        Check(srv->Settings().timeLimitFrames == 0, "시간 한도 기본이 0 이 아니다");
+        srv->DebugAdvanceFrame(20000);                    // 600초(18,182틱)보다 오래 산 뒤
         std::vector<nox::OutPacket> out;
         uint32_t ms = 34;
         for (int t = 0; t < 20; ++t) { srv.Tick(ms, out); ms += 34; }
-        Check(!srv->RoundOver(), "한도가 없는데 시간으로 끝났다");
+        srv->ArmRoundTimer(0);                            // 한도 0 = 안 켬
+        std::snprintf(tm, sizeof(tm), "⑤ 안 건 시계 — 틱 %u · 판 끝 %d · 시간 초과 %llu · 켜짐 %d · 켬 %llu(0)", srv->DebugFrame(), srv->RoundOver(),
+                      srv->RoundEndCount(RER::TimeUp), srv->RoundTimerOn(), srv->roundTimerArms());
+        Check(!srv->RoundOver() && srv->RoundEndCount(RER::TimeUp) == 0 && !srv->RoundTimerOn() && srv->roundTimerArms() == 0, tm);
+        std::printf("  %s\n", tm);
     }
-    // 한도를 걸면 그 프레임에 끝난다
+    // ⑤-2 **600초 = 18,182틱**(`tickMs_` 33 · 올림) — 마감 한 틱 앞엔 안 끝나고 마감 틱에 끝난다 · 남은 ms 600,006 → 한 틱 뒤 599,973 · 기록 600초
+    {
+        nox::CSyncHost srv; mk(srv, 0x100u);
+        srv->DebugSetFrame(5000);                         // 방이 뜬 뒤 한참 — 마감은 건 때부터
+        srv->ArmRoundTimer(600);
+        const uint32_t dl = srv->RoundDeadline(), left0 = srv->RoundTimeLeftMs();
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 33;
+        srv.Tick(ms, out);
+        const uint32_t left1 = srv->RoundTimeLeftMs();
+        srv->DebugSetFrame(5000 + 18182 - 2);
+        ms += 33; srv.Tick(ms, out);                      // 18,181틱째
+        const bool overEarly = srv->RoundOver();
+        const uint32_t leftLast = srv->RoundTimeLeftMs();
+        ms += 33; srv.Tick(ms, out);                      // 18,182틱째 = 마감
+        std::snprintf(tm, sizeof(tm), "⑤-2 600초 — 마감 %u(23182) · 남은 %u(600006) → %u(599973) · 마감 한 틱 앞 끝 %d 남은 %u(33) · 마감 틱 끝 %d · 시간 초과 %llu · 켜짐 %d · 끔 %llu · 기록 %u초",
+                      dl, left0, left1, overEarly, leftLast, srv->RoundOver(), srv->RoundEndCount(RER::TimeUp), srv->RoundTimerOn(), srv->roundTimerStops(),
+                      srv->LastRoundOutcome().timeLimitSec);
+        Check(dl == 23182 && left0 == 600006 && left1 == 599973 && !overEarly && leftLast == 33 && srv->RoundOver() && srv->RoundEndCount(RER::TimeUp) == 1 &&
+                  !srv->RoundTimerOn() && srv->roundTimerStops() == 1 && srv->LastRoundOutcome().timeLimitSec == 600 && srv->RoundTimerSec() == 0, tm);
+        std::printf("  %s\n", tm);
+    }
+    // ⑤-3 **방이 대기실에서 10분 넘게 산 뒤 연 판이 첫 틱에 안 끝난다**(플랜 4-1 — 옛 꼴은 한도 틱을 `frame_` 그대로와 견줬다) ·
+    //   점수 한도로 끝나도 시계를 끈다 · 다시 연 둘째 판도 새 10분
     {
         nox::CSyncHost srv; mk(srv, 0x100u);
         nox::GameSettings g = srv->Settings();
-        g.timeLimitFrames = 5;
+        g.limitValue = 3;
         srv->SetGameSettings(g);
+        srv->DebugAdvanceFrame(30000);
+        srv->ArmRoundTimer(600);
         std::vector<nox::OutPacket> out;
-        uint32_t ms = 34;
-        for (int t = 0; t < 20 && !srv->RoundOver(); ++t) { srv.Tick(ms, out); ms += 34; }
-        Check(srv->RoundOver(), "한도를 걸었는데 안 끝났다");
+        uint32_t ms = 33;
+        srv.Tick(ms, out);
+        const bool overFirst = srv->RoundOver();
+        srv->DebugSetScore(Sid(srv, a), 3);
+        srv->DebugRoundCheck(); srv.TakeOut(out);         // 점수 한도
+        const bool overScore = srv->RoundOver(), onAfterScore = srv->RoundTimerOn();
+        const uint32_t recSec = srv->LastRoundOutcome().timeLimitSec;
+        ms += 33u * (nox::kRoundRestartTicks + 2); srv.Tick(ms, out);   // 다시 열기
+        const bool reopened = !srv->RoundOver();
+        srv->ArmRoundTimer(600);
+        const uint32_t dl2 = srv->RoundDeadline(), f2 = srv->DebugFrame(), left2 = srv->RoundTimeLeftMs();
+        ms += 33; srv.Tick(ms, out);
+        std::snprintf(tm, sizeof(tm), "⑤-3 오래 산 방 — 첫 틱 끝 %d · 점수 한도 끝 %d 켜짐 %d 기록 %u초 · 다시 열림 %d · 둘째 마감 %u − 틱 %u = %u(18182) 남은 %u(600006) → %u · 끝 %d · 점수 끝 %llu · 끔 %llu · 켬 %llu",
+                      overFirst, overScore, onAfterScore, recSec, reopened, dl2, f2, dl2 - f2, left2, srv->RoundTimeLeftMs(), srv->RoundOver(),
+                      srv->RoundEndCount(RER::ScorePlayer), srv->roundTimerStops(), srv->roundTimerArms());
+        Check(!overFirst && overScore && !onAfterScore && recSec == 600 && reopened && dl2 - f2 == 18182 && left2 == 600006 && srv->RoundTimeLeftMs() == 599973 &&
+                  !srv->RoundOver() && srv->RoundEndCount(RER::ScorePlayer) == 1 && srv->roundTimerStops() == 1 && srv->roundTimerArms() == 2, tm);
+        std::printf("  %s\n", tm);
+    }
+    // ⑤-4 **나감으로 끝난 판도 끈다**(`EndRoundForfeit` — 방이 상대가 다 나갔을 때 부름)
+    {
+        nox::CSyncHost srv; mk(srv, 0x100u);
+        srv->ArmRoundTimer(600);
+        srv->EndRoundForfeit();
+        std::snprintf(tm, sizeof(tm), "⑤-4 나감 — 판 끝 %d · 나감 %llu · 켜짐 %d · 끔 %llu", srv->RoundOver(), srv->roundForfeits(), srv->RoundTimerOn(), srv->roundTimerStops());
+        Check(srv->RoundOver() && srv->roundForfeits() == 1 && !srv->RoundTimerOn() && srv->roundTimerStops() == 1, tm);
+        std::printf("  %s\n", tm);
+    }
+    // ⑤-5 **`d3` — 켜짐 1 · 남은 ms 가 줄어듦 · 꺼짐 0**. 보내는 때 = 켬 · 끔이 바뀐 틱(판 끝이 안 바뀌어도) · `d4` 물음 답 ·
+    //   정품 클라는 1번이 0 이 아니면 시계를 켜고 5번을 남은 ms 로 씀(원본 `cdecode.c:2643-2647`)
+    {
+        auto d3To = [&](const std::vector<nox::OutPacket>& out) {
+            std::vector<std::vector<uint8_t>> v;
+            for (const auto& x : FlattenTo(out, a))
+                if (x.size() == 13 && x[0] == static_cast<uint8_t>(nox::Op::TIMER_STATUS)) v.push_back(x);
+            return v;
+        };
+        nox::CSyncHost srv; mk(srv, 0x100u);
+        uint32_t ms = 0;
+        std::vector<nox::OutPacket> o0;
+        ms += 33; srv.Tick(ms, o0);
+        const size_t idle = d3To(o0).size();             // 아무것도 안 바뀐 틱
+        srv->ArmRoundTimer(600);
+        std::vector<nox::OutPacket> o1;
+        ms += 33; srv.Tick(ms, o1);                       // 켠 틱
+        const auto on1 = d3To(o1);
+        std::vector<nox::OutPacket> o2;
+        ms += 33; srv.Tick(ms, o2);                       // 또 한 틱 — 안 바뀜
+        const size_t same = d3To(o2).size();
+        std::vector<nox::OutPacket> o3;
+        std::vector<uint8_t> ask(nox::kWireHeaderSize + 1, 0);
+        ask[nox::kWireHeaderSize] = static_cast<uint8_t>(nox::Op::REQUEST_TIMER_STATUS);
+        srv.OnPacket(a, ask.data(), ask.size(), o3);      // 물음 답
+        const auto on3 = d3To(o3);
+        srv->ArmRoundTimer(0);                            // 판 끝 없이 끔
+        std::vector<nox::OutPacket> o4;
+        ms += 33; srv.Tick(ms, o4);
+        const auto off4 = d3To(o4);
+        const uint32_t l1 = on1.size() == 1 ? Rd32(on1[0], 5) : 0, l3 = on3.size() == 1 ? Rd32(on3[0], 5) : 0;
+        std::snprintf(tm, sizeof(tm), "⑤-5 d3 — 가만 %zu(0) · 켬 %zu개 1번 %d 남은 %u(599973) · 다음 틱 %zu(0) · 물음 답 %zu개 1번 %d 남은 %u(599940) · 끔 %zu개 1번 %d · 판 끝 %d",
+                      idle, on1.size(), on1.size() == 1 ? on1[0][1] : -1, l1, same, on3.size(), on3.size() == 1 ? on3[0][1] : -1, l3, off4.size(),
+                      off4.size() == 1 ? off4[0][1] : -1, srv->RoundOver());
+        Check(idle == 0 && on1.size() == 1 && on1[0][1] == 1 && Rd32(on1[0], 1) == 1 && l1 == 599973 && same == 0 && on3.size() == 1 && on3[0][1] == 1 && l3 == 599940 &&
+                  l3 < l1 && off4.size() == 1 && Rd32(off4[0], 1) == 0 && !srv->RoundOver(), tm);
+        std::printf("  %s\n", tm);
     }
     std::printf("  8-g — 판 끝 나머지: 시간 초과(272 팀→사람 · 1024 적은 죽음 · 96 팀 −1부터) 까닭 1 · "
                 "탈락전 생존 하나 까닭 0 · 빈 팀도 셈 · 혼자면 안 끝남 · 탈락전은 한도 판정 안 탐\n");
+    std::printf("  11-07 판 시계 — 안 걸면 안 끝남 · 600초 = 18,182틱(한 틱 앞 안 끝남) · 오래 산 방 첫 틱 안 끝남 · 판 끝 셋(시간 · 점수 · 나감) 끔 · 둘째 판 새 10분 · d3 켬 1 · 줄어듦 · 끔 0\n");
 }
 
 // ── 묶음 9-a — 비밀벽 여닫기 ──────────────────────────────────────────
@@ -25757,7 +25851,7 @@ void TestMatchRecordRoundTrip() {
         r.winnerId = 65535;
         r.winnerAccount = std::string("\xb0\xc7\xb1\xe2", 4);   // 949 바이트(UTF-8 아님)
         r.limit = 1;
-        r.timeLimitFrames = 300 * 30;
+        r.timeLimitSec = 300;
         r.players = {player("\xb0\xc7\xb1\xe2", 65535, 0, 2147483647, 0, false, false), player("bob", 2, 0, -2147483647 - 1, 4294967295u, false, false),
                      player("", 3, 0, 0, 0, false, true), player("obs", 4, 0, 0, 0, true, false), player("a\x01" "b", 5, 1, 1, 1, false, false),
                      player("\xEC\x95\x84", 6, 2, -1, 2, false, false), player("x", 7, 0, 3, 3, false, true), player("y", 8, 0, 0, 0, false, false)};
@@ -25823,7 +25917,7 @@ void TestMatchRecordRoundTrip() {
                     (!rec.hasWinnerId || rec.winnerId == r.winnerId) &&
                     rec.hasWinnerAccount == (r.winner == RoundWinnerKind::Player && !r.winnerAccount.empty()) &&
                     (!rec.hasWinnerAccount || rec.winnerAccount == r.winnerAccount) && rec.limit == r.limit &&
-                    rec.timeLimitSec == r.timeLimitFrames / 30u && rec.ranked == r.ranked && rec.players.size() == r.players.size() &&
+                    rec.timeLimitSec == r.timeLimitSec && rec.ranked == r.ranked && rec.players.size() == r.players.size() &&
                     rec.teams.size() == r.teams.size();
         for (size_t i = 0; same && i < r.players.size(); ++i) {
             const MatchPlayer& a = r.players[i];
@@ -26835,6 +26929,66 @@ void TestRoomMatchSwitch() {
     std::printf("  10-16 플랜 B 작업 13b — 판 열기: !start → 대전 맵(USE_MAP · af 아레나 · 시작 자리) · 판 끝 → 대기 맵(af 채팅 · 알림) · 두 바퀴 · 같은 연결 · 대전 맵 없음\n");
 }
 
+// ── ★ 11-07 판 시간 제한 T1 — 들어온 사람의 접속 묶음 `af` 19번(한도 분) · `b0` 45번(남은 ms) ─────────
+//   정품 클라는 `af` 19번을 시간 한도(분)로(원본 `cdecode.c:2115`) · `b0` 45번이 0 이 아니면 시계를 켜고 그 값을 남은 ms 로 쓴다(`cdecode.c:2161-2166`)
+//   ① 시계가 꺼졌을 때 든 사람 — 19번 0 · 45번 0(옛 꼴 그대로) ② 켠 뒤 10틱 지나 든 사람 — 19번 10 · 45번 = 그때 남은 ms(건 길이 600,006 이 아니라 599,676)
+void TestRoundTimerJoin() {
+    const uint8_t conn[3] = { 0xff, 0x00, 0x00 };
+    char m[400];
+    nox::CSyncHost srv;
+    UseTokens(srv);
+    MapCatalog cat;
+    cat.maps.push_back(FakeMapOriginal("so_lod", 0x18d8f4d9u, 1000.0f, 1000.0f));
+    const int r = MakeLobbyLikeRoom(srv.Rooms(), cat, "so_lod", "");
+    nox::Server& game = srv.Rooms().Game(r);
+    uint32_t now = 1000;
+    std::vector<nox::OutPacket> o;
+    srv.Tick(now, o);
+    now += 33; srv.Tick(now, o);
+    auto join = [&](const std::string& account, const std::string& ip, uint64_t nonce, std::vector<nox::OutPacket>& out) {
+        const auto tail = TrailerAs(account, r, ip, nonce);
+        const auto tj = WithTail(TryJoinPkt("Jack"), tail);
+        srv.OnPacket(ip + ":1", tj.data(), tj.size(), out);
+        const auto cn = WithTail(std::vector<uint8_t>(conn, conn + sizeof(conn)), tail);
+        srv.OnPacket(ip + ":2", cn.data(), cn.size(), out);
+        const auto ac = AcceptPkt("Jack");
+        srv.OnPacket(ip + ":2", ac.data(), ac.size(), out);
+        return ip + ":2";
+    };
+    // 그 사람에게 간 `af`(4번 뒤 판 번호 칸 9a 03 01 00) 19번 · `b0`(1~44번이 설정으로 지은 것과 같음) 45번 — 다시 보낸 것까지 섞일 수 있어 목록으로
+    auto wire = [&](const std::vector<nox::OutPacket>& out, const std::string& to, std::vector<int>& af19, std::vector<uint32_t>& b045) {
+        const std::vector<uint8_t> want = nox::BuildGameSettings2(game.Settings());
+        for (const auto& x : FlattenTo(out, to))
+            for (size_t i = 0; i < x.size(); ++i) {
+                if (i + 20 <= x.size() && x[i] == static_cast<uint8_t>(nox::Op::GAME_SETTINGS) && x[i + 5] == 0x9a && x[i + 6] == 0x03 && x[i + 7] == 0x01 &&
+                    x[i + 8] == 0x00)
+                    af19.push_back(x[i + 19]);
+                if (i + 49 <= x.size() && x[i] == static_cast<uint8_t>(nox::Op::GAME_SETTINGS_2) && std::memcmp(x.data() + i + 1, want.data() + 1, 44) == 0)
+                    b045.push_back(Rd32(x, i + 45));
+            }
+    };
+    std::vector<nox::OutPacket> ja;
+    const std::string A = join("amy", "10.72.0.1", 721, ja);
+    std::vector<int> afA;
+    std::vector<uint32_t> b0A;
+    wire(ja, A, afA, b0A);
+    game.ArmRoundTimer(600);
+    for (int i = 0; i < 10; ++i) { now += 33; srv.Tick(now, o); }
+    const uint32_t leftAtJoin = game.RoundTimeLeftMs();
+    std::vector<nox::OutPacket> jb;
+    const std::string B = join("bob", "10.72.0.2", 722, jb);
+    std::vector<int> afB;
+    std::vector<uint32_t> b0B;
+    wire(jb, B, afB, b0B);
+    std::snprintf(m, sizeof(m), "접속 묶음 — 꺼짐에 든 amy af %zu개 19번 %d(0) · b0 %zu개 45번 %u(0) / 켠 뒤 10틱 든 bob af %zu개 19번 %d(10) · b0 %zu개 45번 %u(그때 남은 %u · 599676)",
+                  afA.size(), afA.empty() ? -1 : afA[0], b0A.size(), b0A.empty() ? 0u : b0A[0], afB.size(), afB.empty() ? -1 : afB[0], b0B.size(),
+                  b0B.empty() ? 0u : b0B[0], leftAtJoin);
+    Check(afA.size() == 1 && afA[0] == 0 && b0A.size() == 1 && b0A[0] == 0 && afB.size() == 1 && afB[0] == 10 && b0B.size() == 1 && b0B[0] == leftAtJoin &&
+              leftAtJoin == 599676u, m);
+    std::printf("  %s\n", m);
+    std::printf("  11-07 판 시계 — 접속 묶음 af 19번(분) · b0 45번(그때 남은 ms) · 꺼짐이면 0\n");
+}
+
 // ── ★ 10-16 사람 판 결함 ④ — 판 중에 한 명만 남으면 대기 맵으로(`CRoom::CheckMatchHeadcount`) ─────────
 //   전에는 혼자 남아도 점수 한도까지 판이 돌았다(그동안 아무도 못 들어옴 — 판 중 입장 막기)
 //   ① 셋이 판 → 하나 나감(둘 남음) → 판 그대로(대조군) ② 또 하나 나감(하나 남음) → 남은 사람에게 USE_MAP so_lod · 알림 ·
@@ -27284,7 +27438,7 @@ void TestMatchRecorder() {
     r.startUnix = 1760780123u; r.endUnix = 1760780456u; r.frames = 9990;
     r.reason = nox::RoundEndReason::ScorePlayer;
     r.winner = nox::RoundWinnerKind::Player; r.winnerId = 728; r.winnerAccount = "Jack";
-    r.limit = 15; r.timeLimitFrames = 0;
+    r.limit = 15; r.timeLimitSec = 0;
     auto pl = [](const std::string& acc, uint16_t nc, int32_t score, uint32_t deaths, bool left) {
         nox::MatchPlayer p; p.account = acc; p.netCode = nc; p.score = score; p.deaths = deaths; p.kills = left ? 0 : deaths + 1; p.left = left; return p;
     };
@@ -34220,6 +34374,7 @@ int main() {
     TestHostRename();
     TestRoomChatCommands();
     TestRoomMatchSwitch();
+    TestRoundTimerJoin();   // ★ 11-07 판 시간 제한 T1
     TestRoomMapCommand();   // ★ 11-06 플랜1 조각 6
     TestLobbyClientRank();   // ★ 랭크 매칭 조각 6
     TestRankRoom();          // ★ 랭크 매칭 조각 6

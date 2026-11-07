@@ -980,7 +980,7 @@ void nox::CRoom::PushMatchResult(bool aborted, const RoundOutcome& o) {
     r.winner = aborted ? RoundWinnerKind::None : o.winner;
     r.winnerId = aborted ? 0 : o.winnerId;
     r.limit = o.limit;
-    r.timeLimitFrames = o.timeLimitFrames;
+    r.timeLimitSec = o.timeLimitSec;
     r.ranked = _settings.ranked;   // ★ 레이팅 조각 2
     r.teams = o.teams;
     std::vector<bool> used(o.players.size(), false);
@@ -1123,7 +1123,7 @@ void nox::CRoom::CheckMatchHeadcount() {
         RoundOutcome now;
         now.frame = _game.frame();
         now.limit = _game.Settings().limitValue;
-        now.timeLimitFrames = _game.Settings().timeLimitFrames;
+        now.timeLimitSec = _game.RoundTimerSec();   // ★ 11-07 T1 — 중단 판도 건 길이(`EndRound` 를 안 거쳐 시계가 아직 켜져 있다)
         _game.SnapshotStandings(now.players, now.teams);
         PushMatchResult(true, now);
     }

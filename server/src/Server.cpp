@@ -1960,9 +1960,10 @@ void Server::SwitchMap(std::shared_ptr<const MapTables> tables, std::shared_ptr<
         Session& s = kv.second;
         if (!s.inGame) continue;
         const uint32_t f = s.tickFrame + 1;   // `ReopenMap` 의 `USE_MAP` 과 같은 시각 — 접속 묶음의 `af`(접속 프레임)보다 크다
-        const std::vector<uint8_t> af = BuildGameSettings(gameSettings_, f);
+        const GameSettings wire = WireSettings();   // ★ 11-07 T1 — 시계가 켜졌으면 한도(분) · 남은 ms(방이 판을 열 때 맵을 바꾸기 전에 건다)
+        const std::vector<uint8_t> af = BuildGameSettings(wire, f);
         Emit(s, /*reliable=*/true, /*stream=*/0, af.data(), af.size());
-        const std::vector<uint8_t> b0 = BuildGameSettings2(gameSettings_);
+        const std::vector<uint8_t> b0 = BuildGameSettings2(wire);
         Emit(s, /*reliable=*/true, /*stream=*/0, b0.data(), b0.size());
         ++gameSettingsResent_;
     }
@@ -2020,8 +2021,46 @@ void Server::EndRound(RoundEndReason why, RoundWinnerKind winner, uint16_t winne
     lastOutcome_.winnerId = winnerId;
     lastOutcome_.frame = frame_;
     lastOutcome_.limit = gameSettings_.limitValue;
-    lastOutcome_.timeLimitFrames = gameSettings_.timeLimitFrames;
+    lastOutcome_.timeLimitSec = roundTimerSec_;   // ★ 11-07 T1 — 이번 판에 건 길이(설정 값이 아니라)
     SnapshotStandings(lastOutcome_.players, lastOutcome_.teams);
+    StopRoundTimer();   // ★ 11-07 T1 — 까닭 모두(시간 초과 · 점수 한도 · …) — 판 끝 쉬는 동안 남은 시간이 줄어 보이지 않게(플랜 2절)
+}
+
+// ★ 11-07 T1 — 머리 주석은 `Server.h` `ArmRoundTimer`
+void Server::ArmRoundTimer(uint32_t sec) {
+    if (sec == 0) {
+        StopRoundTimer();
+        return;
+    }
+    const uint64_t tick = tickMs_ ? tickMs_ : 33u;
+    const uint64_t ticks = (static_cast<uint64_t>(sec) * 1000u + tick - 1) / tick;   // 올림 — 600초 · 33ms = 18,182틱(600,006ms)
+    roundDeadline_ = frame_ + static_cast<uint32_t>(std::min<uint64_t>(ticks, 0x7FFFFFFFu));
+    roundTimerSec_ = sec;
+    ++roundTimerArms_;
+    Log("[판 시계] 켬 %u초 — 마감 틱 %u(지금 %u · 남은 %ums)\n", sec, roundDeadline_, frame_, RoundTimeLeftMs());
+}
+
+void Server::StopRoundTimer() {
+    if (roundDeadline_ == 0) return;
+    const uint32_t left = RoundTimeLeftMs();
+    roundDeadline_ = 0;
+    roundTimerSec_ = 0;
+    ++roundTimerStops_;
+    Log("[판 시계] 끔 — 틱 %u · 남은 %ums\n", frame_, left);
+}
+
+uint32_t Server::RoundTimeLeftMs() const {
+    if (roundDeadline_ == 0 || frame_ >= roundDeadline_) return 0;
+    return (roundDeadline_ - frame_) * tickMs_;
+}
+
+GameSettings Server::WireSettings() const {
+    GameSettings g = gameSettings_;
+    if (RoundTimerOn()) {
+        g.limitKind = static_cast<uint8_t>(std::min<uint32_t>((roundTimerSec_ + 59) / 60, 255));   // 분(올림) — 정품은 이 바이트 × 60000 을 한도로 씀(원본 `GAME1.c:284`)
+        g.timeLeft = RoundTimeLeftMs();
+    }
+    return g;
 }
 
 // ★ 11-03 — 머리 주석은 `Server.h` `EndRoundForfeit`
@@ -2030,6 +2069,7 @@ void Server::EndRoundForfeit() {
     roundOver_ = true;
     restartAtFrame_ = frame_ + kRoundRestartTicks;
     ++roundForfeits_;
+    StopRoundTimer();   // ★ 11-07 T1 — 나감으로 끝난 판도 끈다
     for (const auto& kv : sessions_) {
         const Session& o = kv.second;
         if (!o.inGame || o.observer || o.netCode == 0) continue;
@@ -3063,9 +3103,13 @@ void Server::UpdateFlags() {
 void Server::BuildTimerStatus(uint8_t msg[13], uint32_t recipientFrame) const {
     // 남은 시간도 **같은 도장에서** 낸다 — 정품은 시계가 하나라 (남은시간 ÷ 도장) 이 늘 같은 비다
     // (실측 −35.6). 도장만 그 사람 시계로 바꾸고 남은 시간을 전역으로 두면 그 짝이 어긋난다.
-    const int32_t remain = -static_cast<int32_t>(recipientFrame * tickMs_);
+    // ★ 11-07 T1 — 시계가 켜졌으면 1번 = 1(켜짐) · 5번 = 남은 ms — 정품 클라는 1번이 0 이 아니면 시계를 켜고 마감 = 받은 때 + 5번(원본 `cdecode.c:2643-2647`).
+    //   남은 ms 는 마감 틱과 전역 `frame_` 으로 셈 — 받는 사람 시계(도장)와의 차는 몇 틱(수십 ms)이다. 꺼졌으면 옛 꼴 그대로
+    const bool on = RoundTimerOn();
+    const int32_t remain = on ? static_cast<int32_t>(RoundTimeLeftMs()) : -static_cast<int32_t>(recipientFrame * tickMs_);
     msg[0] = static_cast<uint8_t>(Op::TIMER_STATUS);
-    msg[1] = msg[2] = msg[3] = msg[4] = 0;      // 표본 전수가 0 이었다
+    msg[1] = msg[2] = msg[3] = msg[4] = 0;      // 표본 전수가 0 이었다(시계 꺼짐)
+    if (on) msg[1] = 1;
     const uint32_t r = static_cast<uint32_t>(remain);
     msg[5] = static_cast<uint8_t>(r);
     msg[6] = static_cast<uint8_t>(r >> 8);
@@ -4302,7 +4346,7 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
                         Log("[입장] %s — %s(모드 깃발 0x%05X)\n", AddrText(s.sessionId), JoinStartName(js),
                             static_cast<unsigned>(gameSettings_.gameFlags));
                     }
-                    std::vector<uint8_t> jb = BuildJoinBundle(s.netCode, s.frame, info97, gameSettings_, js);
+                    std::vector<uint8_t> jb = BuildJoinBundle(s.netCode, s.frame, info97, WireSettings(), js);   // ★ 11-07 T1 — 늦게 들어온 사람은 그때의 남은 시간
                     Emit(s, /*reliable=*/true, /*stream=*/0, jb.data(), jb.size());
                     ++handled_;
                 }
@@ -11445,6 +11489,7 @@ void Server::SecretWallSync(Session& s) {
 //
 // ⚠ **시간 한도 값은 우리 캡처에 없다** — 한도 없이 돌았고 남은 시간이 음수로 내려갔다.
 //   그래서 `GameSettings::timeLimitFrames` 를 두되 **기본 0(=없음)** 으로 하고 규칙만 옮긴다
+//   ★ 11-07 판 시간 제한 T1 — 그 칸을 없애고 방이 판을 열 때 거는 시계(`ArmRoundTimer` · 마감 틱 `roundDeadline_`)로 옮겼다
 void Server::RoundTimeUp() {
     if (roundOver_) return;
     const uint32_t f = gameSettings_.gameFlags;
@@ -18220,7 +18265,7 @@ void Server::RunTick(int ticks) {
     ShootingTrapUpdate();      // 9-b 쏘는 덫(화살 덫·해골)
     SecretWallUpdate();        // 9-a 비밀벽 상태 기계
     CheckVictorySurvivors();   // 8-g — 탈락전에서 하나만 남았나(`server.go:143`)
-    if (gameSettings_.timeLimitFrames != 0 && frame_ >= gameSettings_.timeLimitFrames) RoundTimeUp();
+    if (roundDeadline_ != 0 && frame_ >= roundDeadline_) RoundTimeUp();   // ★ 11-07 T1 — 방이 판을 열 때 건 마감(옛 꼴 = 설정 틱을 `frame_` 그대로와 견줌)
     UpdateProps();   // 문·오벨리스크 (P5)
     }
     GiveTestItems(); // ★ 09-30 사람 판 시험용(`--give-items` 가 없으면 아무것도 안 함)
@@ -18259,8 +18304,10 @@ void Server::RunTick(int ticks) {
     //   그 밖에는 `d4` 물음에 답하는 자리뿐이다(`network_server.go:115`). **주기 호출자가 없다.**
     // ⇒ 여기서는 **판이 끝났나**가 바뀐 틱에만 보낸다. 나머지는 물음(`d4`)에 답하는 것으로 족하다 —
     //   클라는 제 시계와 어긋나면 스스로 묻는다(그 도장은 09-21 에 받는 사람 시계로 고쳤다).
-    if (roundOver_ != timerLastRoundOver_) {
+    // ★ 11-07 T1 — 시계가 켜지거나 꺼진 틱에도(정품도 상태가 바뀔 때 한 번 · 위 `sub_40A1F0`). 판 끝 틱은 둘이 같이 바뀌어도 한 번
+    if (roundOver_ != timerLastRoundOver_ || RoundTimerOn() != timerLastOn_) {
         timerLastRoundOver_ = roundOver_;
+        timerLastOn_ = RoundTimerOn();
         SendTimer();
     }
 
