@@ -2656,6 +2656,27 @@ static bool InstallSoundMute()
     Log("⑯ 소리 막기 — %#lx 입구를 DLL 로 돌림", (DWORD)kSoundPlay);
     return true;
 }
+// ★ 11-09 ㉕ — 자리 비움 관전 요청(bb) 막기. 정품 입력 처리(0x432210)는 입력 셈 [0x697b88] − 마지막 입력 [0x697b8c] 가
+//   2700(0xa8c)을 넘으면 입력이 올 때까지 틱마다 서버 명령 0번(표식 F00D F0AD · 와이어 0xbb)을 보낸다(방장이면 0x443a20 으로 자기 안에서)
+//   0x432262 jbe(76) → jmp(EB) 한 바이트로 그 검사를 늘 건너뜀 — 함수 입구를 막으면 앞의 입력 읽기(0x432010 · 0x432080)까지 죽는다
+//   cmp ecx,0xa8c 부터 8바이트가 정품과 같을 때만 고침(다른 판에 엉뚱한 바이트를 쓰지 않게)
+static const uintptr_t kIdleCmp = 0x43225c;
+static bool InstallIdleObserverBlock()
+{
+    static const unsigned char want[8] = { 0x81, 0xF9, 0x8C, 0x0A, 0x00, 0x00, 0x76, 0x3B };
+    unsigned char* site = (unsigned char*)kIdleCmp;
+    if (memcmp(site, want, 8) != 0) {
+        Log("㉕ 자리 비움 관전 요청 막기 — %#lx 가 정품과 달라 안 붙임", (DWORD)kIdleCmp);
+        return false;
+    }
+    DWORD old = 0;
+    if (!VirtualProtect(site + 6, 1, PAGE_EXECUTE_READWRITE, &old)) { Log("㉕ 자리 비움 관전 요청 막기 — 보호 바꾸기 실패 err=%lu", GetLastError()); return false; }
+    site[6] = 0xEB;
+    VirtualProtect(site + 6, 1, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), site + 6, 1);
+    Log("㉕ 자리 비움 관전 요청 막기 — %#lx jbe → jmp (입력 없음 2700 검사 건너뜀)", (DWORD)(kIdleCmp + 6));
+    return true;
+}
 static void AutoMuteSet(bool on, const char* why)
 {
     if ((g_autoMute != 0) == on) return;
@@ -3917,6 +3938,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID)
         if (gameOk) InstallCountryHook();             // ★ 10-30 — 두 클라 판 국가 고르기 창
         if (gameOk && !g_launchAtStart.empty() && InstallSoundMute()) AutoMuteSet(true, "런처로 켠 판 · 대화방까지");   // ★ 11-04
         if (gameOk) InstallLoginHook();               // ★ 런처 P5 — ⑮ 정품 로그인 창(「로그인!」 막음 · 「등록」 → 가입 페이지)
+        if (gameOk) InstallIdleObserverBlock();       // ★ 11-09 ㉕ — 가만히 둔 클라가 관전 요청(bb)을 안 보냄
         if (gameOk) {   // ★ 11-06 플랜1 조각 6 ㉓ — 게임 목록 줄
             HookCallSite(kListRowCallA, kListRowFn, (void*)ListRowHook, "㉓ 목록 줄 — 새 항목");
             HookCallSite(kListRowCallB, kListRowFn, (void*)ListRowHook, "㉓ 목록 줄 — 다시 그리기");
