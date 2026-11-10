@@ -296,10 +296,12 @@ void CNetworkThread::Run() {
             const size_t evBefore = events.size(), outBefore = out.size();
             const size_t ctl = _network.OnDatagram(who, in, static_cast<size_t>(n), out, events);
             // ★★ **클라가 처음 보낸 오프코드를 그때그때 알린다**(옛 `main` 의 같은 줄 — 접속 제어 쪽. ⚠ `--quiet` 여도 찍는다)
-            for (const auto& kv : _network.seen()) {
-                if (!told.insert(kv.first).second) continue;
-                std::printf("[처음] 클라가 보낸 새 오프코드 0x%02x (%s)\n", kv.first, OpName(static_cast<Op>(kv.first)));
-                std::fflush(stdout);
+            if (!g_noFirstSeen) {   // ★ 11-10 부하 실험 — `--no-first-seen`(더미 플랜 5-2절)
+                for (const auto& kv : _network.seen()) {
+                    if (!told.insert(kv.first).second) continue;
+                    std::printf("[처음] 클라가 보낸 새 오프코드 0x%02x (%s)\n", kv.first, OpName(static_cast<Op>(kv.first)));
+                    std::fflush(stdout);
+                }
             }
             if (_verbose) {
                 const size_t passed = events.size() - evBefore, made = out.size() - outBefore;

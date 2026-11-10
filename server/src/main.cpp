@@ -198,6 +198,12 @@ int main(int argc, char** argv) {
             opt.statMult = std::atoi(argv[++i]);        // ★ 11-10 부하 실험 — 사람 최대 체력 · 마나 배수
         } else if (a == "--tick-sections") {
             opt.tickSections = true;                    // ★ 11-10 부하 실험 — 틱 안을 나눠 잰다(`TickSections.h`)
+        } else if (a == "--no-event-log") {
+            opt.noEventLog = true;                      // ★ 11-10 부하 실험 — 계측 끄는 스위치(더미 플랜 5-2절)
+        } else if (a == "--no-first-seen") {
+            opt.noFirstSeen = true;                     // ★ 11-10 부하 실험
+        } else if (a == "--no-op-count") {
+            opt.noOpCount = true;                       // ★ 11-10 부하 실험
         } else if (a == "--battle-maps" && i + 1 < argc) {
             // ★ 10-16 작업 13a — 대전 맵 후보(같은 꼴) — 로비가 새 방마다 하나를 정해 두고 `!start` 때 그 맵으로 바꾼다
             const std::string list = argv[++i];
@@ -667,6 +673,13 @@ int main(int argc, char** argv) {
     nox::SetStatMult(opt.statMult);   // 방을 만들기 전에 한 번
     nox::g_tickSections = opt.tickSections;   // 방을 만들기 전에 한 번
     if (opt.tickSections) std::printf("옵션: 구간 시간 켬 — 초당 [구간] 줄 · 10초마다 [틱분포] 줄\n");
+    // ★ 11-10 부하 실험 — 계측 끄는 스위치. 끄면 해당 값이 0 이라 「없었다」와 헷갈리지 않게 시작 때 한 줄 남긴다
+    nox::g_noEventLog = opt.noEventLog;
+    nox::g_noFirstSeen = opt.noFirstSeen;
+    nox::g_noOpCount = opt.noOpCount;
+    if (opt.noEventLog) std::printf("옵션: 사건 기록 끔 — Server::Log 줄이 안 나온다\n");
+    if (opt.noFirstSeen) std::printf("옵션: 처음 본 종류 알림 끔 — [처음] 줄이 안 나온다\n");
+    if (opt.noOpCount) std::printf("옵션: 메시지 종류별 셈 끔 — [종료] 받은 것의 입력 · 메시지 전체가 0 이다\n");
     if (opt.statMult != 1) std::printf("옵션: 사람 최대 체력 · 마나 × %d (소치유 회복량은 사람 대상만 × %d)\n", opt.statMult, opt.statMult);
     if (LoadMode(opt)) {
         std::printf("입장: 실험 옵션 — 방당 %d명 · 열린 방 상한 %d · 접속 때 방을 만든다(토큰 검사 끔)\n", opt.loadRoomSize, opt.loadRooms);
@@ -930,15 +943,17 @@ int main(int argc, char** argv) {
             net.PushRequests(lobbyRequests);   // 로비 답은 틱을 기다리지 않고 바로(빈 것이면 아무것도 안 한다)
             // ★★ **클라가 처음 보낸 오프코드를 그때그때 알린다** — 게임 오프코드 쪽(옛 받은 조각마다 찍던 줄 · ⚠ `--quiet` 여도 찍는다)
             // ★ 10-12 플랜 B 작업 7c — 방마다 본 것을 모아 프로세스 몫 한 줄로(옛 꼴은 방 0 것만 읽었다). `told` 는 루프 밖(옛 `static`)
-            rooms.ForEachRoom([&](const nox::CRoom& room) {
-                for (const auto& kv : room.Game().seen()) {
-                    if (told.count(kv.first)) continue;
-                    told[kv.first] = true;
-                    std::printf("[처음] 클라가 보낸 새 오프코드 0x%02x (%s)\n",
-                                kv.first, nox::OpName(static_cast<nox::Op>(kv.first)));
-                    std::fflush(stdout);
-                }
-            });
+            if (!nox::g_noFirstSeen) {   // ★ 11-10 부하 실험 — `--no-first-seen`(더미 플랜 5-2절)
+                rooms.ForEachRoom([&](const nox::CRoom& room) {
+                    for (const auto& kv : room.Game().seen()) {
+                        if (told.count(kv.first)) continue;
+                        told[kv.first] = true;
+                        std::printf("[처음] 클라가 보낸 새 오프코드 0x%02x (%s)\n",
+                                    kv.first, nox::OpName(static_cast<nox::Op>(kv.first)));
+                        std::fflush(stdout);
+                    }
+                });
+            }
             if (sectionReport) {
                 nox::g_gameSections.eventMs += nox::MsSince(secEvents);
                 nox::g_gameSections.eventCount += secEventCount;

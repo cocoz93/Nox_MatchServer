@@ -14,6 +14,12 @@ using SectionClock = std::chrono::steady_clock;
 
 inline bool g_tickSections = false;   // `--tick-sections`(방을 만들기 전에 한 번 정하고 안 바꾼다)
 
+// ★ 11-10 부하 실험 — 계측 끄는 스위치 셋(더미 플랜 5-2절 · 변수 통제 플랜 V5). 방을 만들기 전에 한 번 정하고 안 바꾼다.
+//   기본은 지금과 같다. 켬 · 끔 차이를 따로 재서 넘는 것만 끄려고 하나씩 둔다. 끊김 · 넘침 셈은 `Log` 바깥이라 사건 기록을 꺼도 읽힌다
+inline bool g_noEventLog = false;    // `--no-event-log` — `Server::Log` 입구에서 바로 돌아간다
+inline bool g_noFirstSeen = false;   // `--no-first-seen` — 「처음 본 종류」 알림 두 곳을 안 돈다
+inline bool g_noOpCount = false;     // `--no-op-count` — 메시지 종류별 셈 · 조각마다 읽은 종류 목록을 안 채운다
+
 inline double MsSince(SectionClock::time_point from) {
     return std::chrono::duration<double, std::milli>(SectionClock::now() - from).count();
 }

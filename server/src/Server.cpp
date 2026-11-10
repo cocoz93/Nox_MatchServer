@@ -180,6 +180,7 @@ static void TraceOutMsgs(FILE* f, const std::string& to, uint32_t frame, const u
 
 // ★ 10-12 플랜 B 작업 7b — 방 로그(머리 주석은 `Server.h` `Log`). 끝난 줄들은 태그를 붙여 한 번의 쓰기로 낸다
 void Server::Log(const char* fmt, ...) const {
+    if (g_noEventLog) return;   // ★ 11-10 부하 실험 — `--no-event-log`(더미 플랜 5-2절). 글자를 짓기 전에 돌아간다 · 인자 계산 몫은 남는다
     char small[1024];
     va_list ap;
     va_start(ap, fmt);
@@ -3262,7 +3263,7 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
 
     MessageIter it(body, bodyLen, /*fromClient=*/true);
     size_t count = 0;
-    lastFragOps_.clear();   // 진단 — 이 조각에서 무엇을 읽었는지 남긴다
+    if (!g_noOpCount) lastFragOps_.clear();   // 진단 — 이 조각에서 무엇을 읽었는지 남긴다
     while (it.Next()) {
         ++count;
         // ★ 09-29 ③ 와이어 대조(같은 자동 클라 · 서버만 바꿔) — **게임 패킷 안의 0x00 은 거기서 읽기를 끝낸다.**
@@ -3271,8 +3272,10 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
         //   ✖ 우리는 클라 중요 메시지(`aa`) 뒤의 **0 채움 바이트 하나하나**를 「접속 요청 재전송」으로 읽고 매번 `0x04`(「이미 접속함」
         //     `codeAlreadyJoined4`)로 답했다 — 2분 판에 **47,082건**(패킷 하나에 7개 안팎 · 대조군 0건 · `_evidence/_runs/wc0929_*.cap.txt`)
         if (endsAtZero(count, it.op())) { ++connectTailStops_; break; }
-        ++seen_[it.op()];
-        if (lastFragOps_.size() < 16) lastFragOps_.push_back(it.op());
+        if (!g_noOpCount) {   // ★ 11-10 부하 실험 — `--no-op-count`(더미 플랜 5-2절)
+            ++seen_[it.op()];
+            if (lastFragOps_.size() < 16) lastFragOps_.push_back(it.op());
+        }
 
         switch (static_cast<Op>(it.op())) {
             // ★★ 신뢰 메시지 되받기 — 클라가 0xAA 로 보내면 0xAB 로 번호를 그대로

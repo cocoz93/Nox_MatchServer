@@ -191,6 +191,9 @@ struct ServerOptions {
     int loadRoomSize = 0;       // `--load-room-size K` — 방당 인원
     int statMult = 1;           // `--stat-mult N`(1~10) — 사람 최대 체력 · 마나 배수(더미 플랜 3-2절)
     bool tickSections = false;  // `--tick-sections` — 틱 안을 11구간으로 나눠 재서 `[구간]` · `[틱분포]` 줄을 찍는다(더미 플랜 5-1절)
+    bool noEventLog = false;    // `--no-event-log` — 사건 기록을 끈다(더미 플랜 5-2절)
+    bool noFirstSeen = false;   // `--no-first-seen` — 「처음 본 종류」 알림을 끈다
+    bool noOpCount = false;     // `--no-op-count` — 메시지 종류별 셈을 끈다
     // ★ 10-19 MO 5단계 작업 3 — 판 결과 기록(`Docs/MATCH_RESULT_DESIGN.md` 「10-19 정한 것」). 기본 켜짐 — 비면 실행 파일 옆 `results\matches.jsonl`
     std::string resultsPath;    // `--results <파일>`
     bool noResults = false;     // `--no-results` — 실행 파일을 띄우는 시험(ctest)만
