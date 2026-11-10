@@ -390,12 +390,21 @@ void OnImportantBody(Dummy& d, const uint8_t* p, size_t n) {
     }
 }
 
-void ReportDecodeFail(const Dummy& d, const uint8_t* b, size_t n, const char* why) {
+// 실패 지점 앞을 얼마나 찍나 — `ff` 항목 하나가 10바이트라 항목 네다섯 개와 끝 표식이 보이는 크기.
+constexpr size_t kDecodeFailBefore = 48;
+
+// before · prevOp · prevSize 는 받은 묶음을 나누다 실패했을 때만 준다 — 실패 지점 뒤만 찍으면 어디서 어긋났는지 모른다(`d6_10c` 의 `op=ff 남은 583` 1건).
+void ReportDecodeFail(const Dummy& d, const uint8_t* b, size_t n, const char* why, size_t before = 0, uint8_t prevOp = 0, size_t prevSize = 0) {
     ++g_count.decodeFail;
     if (g_decodeFailShown >= 20) return;
     ++g_decodeFailShown;
     std::printf("[더미 %d] 못 읽음(%s) op=%02x 남은 %zu:", d.index, why, n ? b[0] : 0, n);
     for (size_t i = 0; i < n && i < 16; ++i) std::printf(" %02x", b[i]);
+    if (before != 0) {
+        const size_t show = before < kDecodeFailBefore ? before : kDecodeFailBefore;
+        std::printf(" · 앞서 읽은 %zu · 직전 op=%02x 크기 %zu · 실패 지점 앞 %zu바이트:", before, prevOp, prevSize, show);
+        for (size_t i = show; i > 0; --i) std::printf(" %02x", *(b - i));
+    }
     std::printf("\n");
     std::fflush(stdout);
 }
@@ -427,6 +436,8 @@ void ResetForMap(Dummy& d) {
 // 서버→클라 메시지 나누기 — opcount.cpp:133-197 과 같은 방식.
 void WalkMessages(Dummy& d, const uint8_t* b, size_t all) {
     size_t eaten = 0;
+    uint8_t prevOp = 0;                      // 해석 실패 기록용 — 직전에 읽은 메시지
+    size_t prevSize = 0;
     while (eaten < all) {
         bool allZero = true;                 // 조각 끝의 0 채움은 메시지가 아니다
         for (size_t i = eaten; i < all; ++i)
@@ -445,7 +456,7 @@ void WalkMessages(Dummy& d, const uint8_t* b, size_t all) {
             Put32(d.out, d.frame);
             ++g_count.sentAck;
         } else if (op == static_cast<uint8_t>(Op::SEQ_IMPORTANT)) {
-            if (eaten + 4 > all || eaten + 4 + b[eaten + 3] > all) { ReportDecodeFail(d, b + eaten, all - eaten, "봉투"); return; }
+            if (eaten + 4 > all || eaten + 4 + b[eaten + 3] > all) { ReportDecodeFail(d, b + eaten, all - eaten, "봉투", eaten, prevOp, prevSize); return; }
             const size_t inner = b[eaten + 3];
             const uint16_t id = static_cast<uint16_t>(b[eaten + 1] | (b[eaten + 2] << 8));
             if (d.seenImportant[id]) ++g_count.dupImportant;
@@ -455,7 +466,7 @@ void WalkMessages(Dummy& d, const uint8_t* b, size_t all) {
             msz = 4 + inner;
         } else if (msz == 0 && op == static_cast<uint8_t>(Op::UPDATE_STREAM)) {
             const nox::UpdateMsg m = nox::DecodeUpdate(b + eaten + 1, all - eaten - 1, &d.aliases);
-            if (!m.ok) { ReportDecodeFail(d, b + eaten, all - eaten, "갱신"); return; }
+            if (!m.ok) { ReportDecodeFail(d, b + eaten, all - eaten, "갱신", eaten, prevOp, prevSize); return; }
             msz = 1 + m.consumed;
             OnUpdate(d, m);
         } else if (op == static_cast<uint8_t>(Op::TIMESTAMP) && msz >= 3) {
@@ -493,7 +504,9 @@ void WalkMessages(Dummy& d, const uint8_t* b, size_t all) {
             OnImportantBody(d, b + eaten, msz);   // 봉투 없이 온 42 · 45 따위
         }
 
-        if (msz == 0 || eaten + msz > all) { ReportDecodeFail(d, b + eaten, all - eaten, "길이"); return; }
+        if (msz == 0 || eaten + msz > all) { ReportDecodeFail(d, b + eaten, all - eaten, "길이", eaten, prevOp, prevSize); return; }
+        prevOp = op;
+        prevSize = msz;
         eaten += msz;
     }
 }
