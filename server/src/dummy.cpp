@@ -12,6 +12,7 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -23,6 +24,7 @@
 #include <vector>
 
 #include "nox/Alias.h"
+#include "nox/MapFile.h"
 #include "nox/Opcode.h"
 #include "nox/ThingFlags.h"
 #include "nox/UpdateStream.h"
@@ -44,8 +46,8 @@ constexpr uint32_t kDeathSkipFrames = 90;         // 죽은 상대를 대상에�
 constexpr uint32_t kReviveFirstFrames = 50;       // 서버가 클릭을 받는 때: 죽음 30틱 + 15틱 뒤(Server.cpp:5553-5561)
 constexpr uint32_t kReviveGapFrames = 30;         // 코드 6 을 한 번만 보내면 놓칠 수 있어 되풀이한다
 constexpr double kCursorAhead = 150.0;            // 커서가 몸에서 100 을 넘으면 달린다(Server.h kRunCursorDist)
-constexpr uint32_t kStuckCheckFrames = 90;        // 3초마다 상대와의 거리가 줄었나 본다
-constexpr double kStuckMinGain = 20.0;            // 3초에 이만큼도 안 줄면 벽에 막힌 것으로 본다
+constexpr uint32_t kStuckCheckFrames = 90;        // 3초마다 몸이 움직였나 본다
+constexpr double kStuckMinGain = 20.0;            // 3초에 몸이 이만큼도 못 움직이면 막힌 것으로 본다(길 따라 돌아갈 때는 상대와 거리가 늘 수 있어 몸 움직임으로 본다)
 constexpr uint32_t kDetourMaxFrames = 150;        // 지점으로 가는 시간의 상한 — 지점 앞에서도 막힐 수 있다
 constexpr double kDetourArrive = 40.0;            // 지점에 이만큼 다가가면 다시 쫓는다
 constexpr uint32_t kNoHurtFrames = 200;           // 거리 안인데 이만큼 상대 체력이 안 줄면 벽 너머로 본다 — 부활 무적 150틱(Server.cpp:6397)보다 길게
@@ -57,6 +59,14 @@ constexpr Point kWaypoints[] = {
     {3234, 2025}, {3572, 3043}, {2406, 3139}, {2304, 3499}, {2627, 3831}, {2782, 3505}, {3307, 2804},
 };
 constexpr int kWaypointCount = static_cast<int>(sizeof(kWaypoints) / sizeof(kWaypoints[0]));
+
+// 길 찾기 값 — 벽 격자 한 칸은 23 유닛, 256칸(MapFile.h ReadWalls).
+constexpr int kNavSize = 256;
+constexpr int kNavCell = 23;
+constexpr uint32_t kReplanFrames = 30;            // 1초에 한 번 길을 다시 찾는다 — 상대가 움직이고, 더미가 많아도 한 프레임에 몰리지 않게
+constexpr int kLookAheadCells = 6;                // 길 위에서 곧장 갈 수 있는 먼 점을 고를 때 앞을 볼 칸 수
+constexpr double kPathStepArrive = 23.0;          // 길의 점에 한 칸만큼 다가가면 다음 점으로
+constexpr const char* kDefaultMapFile = "C:\\Program Files\\GOG Galaxy\\Games\\Nox\\maps\\Estate\\Estate.map";
 
 constexpr int64_t kStartRetryUs = 5000000;   // 대기 맵에 그대로 있으면 !start 를 다시 보내는 간격 — 채팅은 비신뢰라 방장 것이 사라지면 그 방이 영영 안 열린다
 
@@ -93,6 +103,7 @@ struct Args {
     int startWaitMs = 3000;              // 방이 찬 것을 본 뒤 !start 까지 — 마지막 사람의 대기 맵 준비를 기다린다
     uint32_t seed = 1;
     Behavior behavior = Behavior::Fight;   // 빠뜨렸을 때 조용히 가벼운 부하를 재지 않게 기본을 fight 로 둔다
+    std::string mapFile = kDefaultMapFile;   // 벽을 돌아가려고 읽는 대전 맵
 };
 
 enum class Phase { WaitTurn, TryJoin, Connect, Game };
@@ -133,7 +144,11 @@ struct Dummy {
     bool wantMove = false;               // 이번 바퀴 입력에 실을 앞으로(코드 2)
     bool wantClick = false;              // 이번 바퀴 입력에 실을 클릭(코드 6)
     uint32_t stuckCheckFrame = 0;        // 다음 막힘 확인 프레임
-    double stuckLastDist = -1.0;         // 지난 확인의 거리(음수 = 아직 없음)
+    bool stuckHave = false;              // 지난 확인의 자리가 있나
+    int stuckX = 0, stuckY = 0;          // 지난 확인의 자리
+    std::vector<Point> path;             // 벽을 돌아가는 길(세상 좌표)
+    int pathPos = 0;                     // 길에서 지금 향하는 점
+    uint32_t pathReplanFrame = 0;        // 다음에 길을 다시 찾을 프레임
     int detourIndex = -1;                // 들르는 지점(-1 = 안 들름)
     int lastDetour = -1;                 // 바로 전에 들른 지점 — 같은 곳을 되풀이하지 않게
     uint32_t detourEndFrame = 0;
@@ -213,7 +228,7 @@ void OnImportantBody(Dummy& d, const uint8_t* p, size_t n) {
                 d.dead = true;
                 d.reviveClickFrame = d.frame + kReviveFirstFrames;
                 d.detourIndex = -1;
-                d.stuckLastDist = -1.0;
+                d.stuckHave = false;
             } else {
                 for (size_t k = 0; k < d.skip.size();) {
                     const bool expired = static_cast<int32_t>(d.frame - d.skip[k].second) >= 0;
@@ -308,7 +323,8 @@ void WalkMessages(Dummy& d, const uint8_t* b, size_t all) {
             d.dead = false;                 // 맵을 옮기면 서버가 다시 세운다(RejoinReset)
             d.detourIndex = -1;
             d.lastDetour = -1;
-            d.stuckLastDist = -1.0;
+            d.path.clear();
+            d.stuckHave = false;
             d.aliases.Clear();
             const uint8_t ready = static_cast<uint8_t>(Op::CLIENT_READY);
             d.out.push_back(ready);
@@ -461,6 +477,119 @@ void MoveToward(Dummy& d, int tx, int ty) {
     ++g_count.sentMouse;
 }
 
+// 벽 격자 — 더미가 벽을 돌아가는 데만 쓴다. 서버 물리와 별개이고, 벽이 있는 칸 전체를 막힌 것으로 본다.
+// 왜 필요한가 — Estate 는 벽이 456칸인 저택이라 곧장 쫓으면 벽 양쪽에 서서 만나지 못한다(11-10 실물 — 300초 중 약 240초).
+struct NavGrid {
+    bool ok = false;
+    std::vector<uint8_t> blocked;
+    std::vector<uint32_t> seen;          // 이번 훑기에 가 봤나(훑을 때마다 지우지 않게 세대 번호로)
+    std::vector<int32_t> from;           // 어느 칸에서 왔나
+    std::vector<int32_t> queue;
+    uint32_t stamp = 0;
+};
+NavGrid g_nav;
+
+bool CellBlocked(int cx, int cy) {
+    return cx < 0 || cy < 0 || cx >= kNavSize || cy >= kNavSize || g_nav.blocked[static_cast<size_t>(cy * kNavSize + cx)] != 0;
+}
+
+// 두 점 사이에 벽 칸이 없나. 양 끝 칸은 안 본다 — 몸이 벽 칸 귀퉁이에 걸쳐 서 있어도 앞을 볼 수 있게.
+bool GridClear(int x0, int y0, int x1, int y1) {
+    if (!g_nav.ok) return true;
+    const double dx = static_cast<double>(x1 - x0), dy = static_cast<double>(y1 - y0);
+    const int steps = std::max(1, static_cast<int>(std::sqrt(dx * dx + dy * dy) / 8.0));   // 칸의 3분의 1 간격
+    const int c0x = x0 / kNavCell, c0y = y0 / kNavCell, c1x = x1 / kNavCell, c1y = y1 / kNavCell;
+    for (int i = 1; i < steps; ++i) {
+        const int cx = static_cast<int>((x0 + dx * i / steps) / kNavCell);
+        const int cy = static_cast<int>((y0 + dy * i / steps) / kNavCell);
+        if ((cx == c0x && cy == c0y) || (cx == c1x && cy == c1y)) continue;
+        if (CellBlocked(cx, cy)) return false;
+    }
+    return true;
+}
+
+// 너비 우선으로 칸을 훑어 길을 찾는다. 대각선은 옆 두 칸이 다 비었을 때만 — 벽 모서리를 뚫지 않게.
+// 출발 · 도착 칸은 막혀 있어도 된다(몸이 벽 칸 귀퉁이에 걸쳐 설 수 있다).
+bool FindPath(int fromX, int fromY, int toX, int toY, std::vector<Point>& out) {
+    out.clear();
+    if (!g_nav.ok) return false;
+    const int sx = fromX / kNavCell, sy = fromY / kNavCell, gx = toX / kNavCell, gy = toY / kNavCell;
+    if (sx < 0 || sy < 0 || gx < 0 || gy < 0 || sx >= kNavSize || sy >= kNavSize || gx >= kNavSize || gy >= kNavSize) return false;
+    const int start = sy * kNavSize + sx, goal = gy * kNavSize + gx;
+    static const int kDx[8] = {1, -1, 0, 0, 1, 1, -1, -1};
+    static const int kDy[8] = {0, 0, 1, -1, 1, -1, 1, -1};
+    const uint32_t stamp = ++g_nav.stamp;
+    g_nav.queue.clear();
+    g_nav.queue.push_back(start);
+    g_nav.seen[static_cast<size_t>(start)] = stamp;
+    g_nav.from[static_cast<size_t>(start)] = -1;
+    for (size_t head = 0; head < g_nav.queue.size() && g_nav.seen[static_cast<size_t>(goal)] != stamp; ++head) {
+        const int c = g_nav.queue[head];
+        const int cx = c % kNavSize, cy = c / kNavSize;
+        for (int k = 0; k < 8; ++k) {
+            const int nx = cx + kDx[k], ny = cy + kDy[k];
+            if (nx < 0 || ny < 0 || nx >= kNavSize || ny >= kNavSize) continue;
+            const int n = ny * kNavSize + nx;
+            if (g_nav.seen[static_cast<size_t>(n)] == stamp) continue;
+            if (n != goal && CellBlocked(nx, ny)) continue;
+            if (k >= 4 && (CellBlocked(cx + kDx[k], cy) || CellBlocked(cx, cy + kDy[k]))) continue;
+            g_nav.seen[static_cast<size_t>(n)] = stamp;
+            g_nav.from[static_cast<size_t>(n)] = c;
+            g_nav.queue.push_back(n);
+        }
+    }
+    if (g_nav.seen[static_cast<size_t>(goal)] != stamp) return false;
+    for (int c = goal; c != -1; c = g_nav.from[static_cast<size_t>(c)])
+        out.push_back(Point{(c % kNavSize) * kNavCell + kNavCell / 2, (c / kNavSize) * kNavCell + kNavCell / 2});
+    std::reverse(out.begin(), out.end());
+    return true;
+}
+
+// 맵을 읽어 격자를 채운다. 시작 지점끼리 길이 이어지는지 세어 함께 찍는다 — 격자가 잘못 깔리면 이 값이 무너진다.
+bool LoadNav(const std::string& path) {
+    nox::MapFile mf;
+    if (!mf.Load(path)) return false;
+    const auto cells = mf.ReadWalls();
+    g_nav.blocked.assign(static_cast<size_t>(kNavSize) * kNavSize, 0);
+    g_nav.seen.assign(static_cast<size_t>(kNavSize) * kNavSize, 0);
+    g_nav.from.assign(static_cast<size_t>(kNavSize) * kNavSize, -1);
+    for (const auto& w : cells) g_nav.blocked[static_cast<size_t>(w.y) * kNavSize + w.x] = 1;
+    g_nav.ok = true;
+    int free = 0, linked = 0, pairs = 0;
+    std::vector<Point> tmp;
+    for (int i = 0; i < kWaypointCount; ++i) {
+        if (!CellBlocked(kWaypoints[i].x / kNavCell, kWaypoints[i].y / kNavCell)) ++free;
+        for (int j = i + 1; j < kWaypointCount; ++j) {
+            ++pairs;
+            if (FindPath(kWaypoints[i].x, kWaypoints[i].y, kWaypoints[j].x, kWaypoints[j].y, tmp)) ++linked;
+        }
+    }
+    std::printf("[더미] 벽 격자 %zu칸 · 시작 지점 %d/%d 빈칸 · 이어진 쌍 %d/%d — %s\n", cells.size(), free, kWaypointCount, linked, pairs, path.c_str());
+    std::fflush(stdout);
+    return true;
+}
+
+// 길을 따라 달린다 — 찾은 길에서 곧장 갈 수 있는 가장 먼 점을 향한다(칸을 하나씩 밟으면 지그재그가 된다).
+// 길을 못 찾으면 곧장 간다.
+void FollowPath(Dummy& d, int tx, int ty) {
+    if (d.path.empty() || FrameReached(d, d.pathReplanFrame)) {
+        // 길이 없으면 상대를 곧장 향하는 점 하나로 채운다 — 빈 채로 두면 매 프레임 칸 전체를 다시 훑어 더미 쪽 시간이 는다
+        if (!FindPath(d.x, d.y, tx, ty, d.path)) d.path.assign(1, Point{tx, ty});
+        d.pathPos = 0;
+        d.pathReplanFrame = d.frame + kReplanFrames;
+    }
+    const int last = static_cast<int>(d.path.size()) - 1;
+    while (d.pathPos < last && DistTo(d, d.path[static_cast<size_t>(d.pathPos)].x, d.path[static_cast<size_t>(d.pathPos)].y) < kPathStepArrive) ++d.pathPos;
+    int pick = d.pathPos;
+    for (int k = std::min(d.pathPos + kLookAheadCells, last); k > d.pathPos; --k) {
+        if (GridClear(d.x, d.y, d.path[static_cast<size_t>(k)].x, d.path[static_cast<size_t>(k)].y)) {
+            pick = k;
+            break;
+        }
+    }
+    MoveToward(d, d.path[static_cast<size_t>(pick)].x, d.path[static_cast<size_t>(pick)].y);
+}
+
 // 막혔을 때 들를 지점 — 상대에 가장 가까운 지점. 바로 전 지점과 내 발밑 지점은 뺀다.
 int PickWaypoint(const Dummy& d, int tx, int ty) {
     int best = -1;
@@ -472,6 +601,18 @@ int PickWaypoint(const Dummy& d, int tx, int ty) {
         if (best < 0 || dist < bestDist) { best = i; bestDist = dist; }
     }
     return best;
+}
+
+// 막혔다 — 시작 지점 하나를 잠깐 들른다.
+void StartDetour(Dummy& d, int tx, int ty) {
+    const int w = PickWaypoint(d, tx, ty);
+    d.reachTarget = 0;
+    if (w < 0) return;
+    d.detourIndex = w;
+    d.detourEndFrame = d.frame + kDetourMaxFrames;
+    d.path.clear();
+    ++g_count.detours;
+    FollowPath(d, kWaypoints[w].x, kWaypoints[w].y);
 }
 
 // 이번 바퀴의 행동. 싸움은 판 맵에서만 — 대기 맵은 채팅 모드다(Server.cpp:4168).
@@ -488,51 +629,53 @@ void Decide(Dummy& d, const Args& a) {
     }
     const OtherPlayer* t = NearestTarget(d);
     if (!t) return;
-    const double dist = DistTo(d, t->x, t->y);
     if (d.detourIndex >= 0) {
         const Point w = kWaypoints[d.detourIndex];
         if (!FrameReached(d, d.detourEndFrame) && DistTo(d, w.x, w.y) > kDetourArrive) {
-            MoveToward(d, w.x, w.y);
+            FollowPath(d, w.x, w.y);
             return;
         }
         d.lastDetour = d.detourIndex;
         d.detourIndex = -1;
-        d.stuckLastDist = -1.0;
+        d.path.clear();
+        d.stuckHave = false;
         d.stuckCheckFrame = d.frame;
     }
-    if (dist > kMeleeReach) {
+    const double dist = DistTo(d, t->x, t->y);
+    const bool clear = GridClear(d.x, d.y, t->x, t->y);
+    if (dist > kMeleeReach || !clear) {
         d.reachTarget = 0;
         if (FrameReached(d, d.stuckCheckFrame)) {
-            if (d.stuckLastDist >= 0.0 && d.stuckLastDist - dist < kStuckMinGain) {
-                d.detourIndex = PickWaypoint(d, t->x, t->y);
-                d.detourEndFrame = d.frame + kDetourMaxFrames;
-                ++g_count.detours;
-                const Point w = kWaypoints[d.detourIndex];
-                MoveToward(d, w.x, w.y);
+            if (d.stuckHave && DistTo(d, d.stuckX, d.stuckY) < kStuckMinGain) {
+                d.stuckHave = false;
+                d.stuckCheckFrame = d.frame + kStuckCheckFrames;
+                StartDetour(d, t->x, t->y);
                 return;
             }
-            d.stuckLastDist = dist;
+            d.stuckHave = true;
+            d.stuckX = d.x;
+            d.stuckY = d.y;
             d.stuckCheckFrame = d.frame + kStuckCheckFrames;
         }
-        MoveToward(d, t->x, t->y);
+        if (clear) {
+            d.path.clear();
+            MoveToward(d, t->x, t->y);
+        } else {
+            FollowPath(d, t->x, t->y);
+        }
         return;
     }
     d.facing = FacingTo(t->x - d.x, t->y - d.y);
-    d.stuckLastDist = -1.0;
+    d.stuckHave = false;
     // ★ 벽을 사이에 두고 붙으면 판정은 「닿음」이어도 피해가 안 들어간다(MapTraceRay · Server.cpp:17501).
-    //   거리 조건만 보면 둘이 벽 양쪽에 서서 영영 휘두른다(11-10 실물 — 칼질 189번에 피해 9번). 상대 체력이 안 줄면 자리를 옮긴다.
+    //   벽 격자로 거의 가려내지만 격자에 없는 것(잠긴 문 · 정적 물체)이 사이에 있을 수 있어 상대 체력이 안 줄면 자리를 옮긴다.
     if (d.reachTarget != t->net) {
         d.reachTarget = t->net;
         d.reachSinceFrame = d.frame;
     }
     if (d.hurtNet == t->net && static_cast<int32_t>(d.hurtFrame - d.reachSinceFrame) > 0) d.reachSinceFrame = d.hurtFrame;
     if (a.behavior == Behavior::Fight && FrameReached(d, d.reachSinceFrame + kNoHurtFrames)) {
-        d.detourIndex = PickWaypoint(d, t->x, t->y);
-        d.detourEndFrame = d.frame + kDetourMaxFrames;
-        d.reachTarget = 0;
-        ++g_count.detours;
-        const Point w = kWaypoints[d.detourIndex];
-        MoveToward(d, w.x, w.y);
+        StartDetour(d, t->x, t->y);
         return;
     }
     if (a.behavior == Behavior::Fight && FrameReached(d, d.attackReadyFrame)) {
@@ -657,6 +800,11 @@ bool ParseArgs(int argc, char** argv, Args& a, std::string& err) {
         else if (k == "--duration-sec") { if (!need(a.durationSec)) return false; }
         else if (k == "--join-interval-ms") { if (!need(a.joinIntervalMs)) return false; }
         else if (k == "--start-wait-ms") { if (!need(a.startWaitMs)) return false; }
+        else if (k == "--map-file") {
+            if (!v) { err = "--map-file 값 없음"; return false; }
+            a.mapFile = v;
+            ++i;
+        }
         else if (k == "--behavior") {
             if (!v) { err = "--behavior 값 없음"; return false; }
             const std::string b = v;
@@ -702,9 +850,12 @@ int main(int argc, char** argv) {
     if (!ParseArgs(argc, argv, a, err)) {
         std::printf("인자 오류: %s\n", err.c_str());
         std::printf("쓰기: nox_dummy [--server 주소:포트] [--count N] [--room-size K] [--classes 0,1] [--duration-sec S] "
-                    "[--join-interval-ms M] [--start-wait-ms M] [--behavior idle|move|fight] [--seed S]\n");
+                    "[--join-interval-ms M] [--start-wait-ms M] [--behavior idle|move|fight] [--map-file 대전맵.map] [--seed S]\n");
         return 1;
     }
+
+    if (a.behavior != Behavior::Idle && !LoadNav(a.mapFile))
+        std::printf("[더미] 벽 격자를 못 읽음(%s) — 벽을 돌아가지 못하고 곧장 쫓기만 한다\n", a.mapFile.c_str());
 
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) { std::printf("WSAStartup 실패\n"); return 1; }
