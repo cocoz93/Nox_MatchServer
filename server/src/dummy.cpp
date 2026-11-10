@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "nox/Alias.h"
+#include "nox/GameBalance.h"
 #include "nox/MapFile.h"
 #include "nox/Opcode.h"
 #include "nox/ThingFlags.h"
@@ -56,6 +57,33 @@ constexpr uint32_t kDetourMaxFrames = 150;        // 지점으로 가는 시간�
 constexpr double kDetourArrive = 40.0;            // 지점에 이만큼 다가가면 다시 쫓는다
 constexpr uint32_t kNoHurtFrames = 200;           // 거리 안인데 이만큼 상대 체력이 안 줄면 벽 너머로 본다 — 부활 무적 150틱(Server.cpp:6397)보다 길게
 
+// 전사 능력 — 플랜 2-5절. 재사용은 서버 값(GameBalance.h kAbilityDelay) · 거리는 잠정(플랜 「돌려 보고 D6 에서 정한다」).
+struct AbilityInfo { uint8_t id; uint32_t delay; double minDist, maxDist; };
+constexpr AbilityInfo kAbilities[3] = {{1, 300, 100.0, 300.0}, {2, 300, 0.0, 150.0}, {3, 150, 80.0, 250.0}};   // 광전사 돌진 · 함성 · 작살
+constexpr uint32_t kAbilityGapFrames = 30;        // 한 능력을 보낸 뒤 다른 능력을 안 보내는 시간(플랜 2-5절)
+constexpr uint32_t kAbilityMargin = 5;            // 재사용 끝을 서버보다 먼저 보지 않게 — 더미 프레임은 받은 것 기준이라 서버보다 늦고, 재사용 막힘은 0 이어야 한다
+
+// 법사 값 — 플랜 2-6절. 주문 번호 · 깃발 · 마나는 플랜 표(원본 봇 설정 · nox_datadump --spells).
+struct SpellInfo { uint32_t id; uint8_t selfFlag; int mana; };
+constexpr SpellInfo kProtect{51, 1, 80}, kHaste{36, 1, 10}, kInvis{39, 1, 30};   // 자기 강화 — 셋 중 하나도 안 걸렸을 때만 하나
+constexpr SpellInfo kConfuse{12, 0, 10};
+constexpr SpellInfo kFireball{27, 0, 30}, kDeathRay{16, 0, 60};
+constexpr SpellInfo kChain{43, 0, 30};            // 시작 값은 0 이고 30프레임 동안 1씩 최대 30 — 끝까지 쓸 만큼 있을 때만 보낸다
+constexpr SpellInfo kBlink{4, 1, 10}, kHeal{41, 1, 30};
+constexpr const SpellInfo* kBuffs[3] = {&kProtect, &kHaste, &kInvis};
+constexpr uint32_t kBuffBitProtect = 1u << 26, kBuffBitHaste = 1u << 9, kBuffBitInvis = 1u << 0;   // 0x5A 비트(Server.cpp:7034 · :6948 · :6951)
+constexpr uint32_t kSelfBuffMask = kBuffBitProtect | kBuffBitHaste | kBuffBitInvis;
+constexpr uint32_t kSpellGapFrames = 60;          // 어떤 주문이든 2초에 하나(플랜 1-1절)
+constexpr uint32_t kCastHoldFrames = 25;          // 음소가 끝날 때까지 커서를 상대 위에 두고 안 달린다 — 가장 긴 보호막이 24틱
+constexpr uint32_t kChainHoldFrames = 60;         // 연쇄 번개는 서버가 30프레임 뒤 스스로 끝내는데(Server.cpp:6998) 달리면 끊긴다(:7736)
+constexpr double kSightRange = 150.0;             // 이 안의 상대만 주문 대상(원본 기준 GAME4.c:1960)
+constexpr double kBackOffIn = 50.0, kBackOffTo = 80.0;   // 상대가 50 안이면 80 까지 물러난다
+constexpr double kBlinkIn = 25.0;                 // 25 안이면 점멸(원본 기준 GAME4.c:2020)
+constexpr int kRetreatPercent = 25, kRecoverPercent = 80;   // 후퇴 시작 · 복귀(원본 기준 GAME4.c:1949 · :1951)
+constexpr uint32_t kRetreatMinFrames = 120, kRetreatMaxFrames = 180;   // 4~6초 도망(원본 기준 GAME5.c:263)
+constexpr uint32_t kConfuseMinFrames = 90, kConfuseMaxFrames = 900;   // 혼란은 3~30초 난수로 쉰다(원본 기준 GAME4.c:2033-2034)
+constexpr uint32_t kBlinkRestMaxFrames = 180;     // 점멸은 0~6초 난수로 쉰다(원본 기준 GAME4.c:2049-2052)
+
 // Estate 의 PlayerStart 14곳(서버 「[부활 자리]」 줄) — 맵이 보증하는 설 수 있는 자리라 막혔을 때 들를 곳으로 쓴다.
 struct Point { int x, y; };
 constexpr Point kWaypoints[] = {
@@ -78,7 +106,9 @@ constexpr int64_t kStartRetryUs = 5000000;   // 대기 맵에 그대로 있으�
     X(sentInput) X(sentPing) X(sentAck) X(sentAlias) X(sentMouse) X(sentSpell) X(sentAbility) X(sentStart) \
     X(recvDgram) X(recvBytes) X(decodeFail) X(dupImportant) X(lateTicks) X(sendFail) \
     X(petsAcquired) X(petsLost) X(spellSkippedNoMana) X(retreats) X(heals) \
-    X(sentAttack) X(sentRevive) X(sawDeath) X(selfDeath) X(revives) X(detours)
+    X(sentAttack) X(sentRevive) X(sawDeath) X(selfDeath) X(revives) X(detours) \
+    X(castProtect) X(castHaste) X(castInvis) X(castConfuse) X(castFireball) X(castDeathRay) X(castChain) X(castBlink) \
+    X(sentBerserk) X(sentRoar) X(sentHarpoon) X(firstBuffOk) X(firstBuffBad) X(buffOverlap) X(healedBack) X(statChecked) X(statMismatch)
 
 struct Counters {
 #define X(n) uint64_t n = 0;
@@ -107,6 +137,10 @@ struct Args {
     int joinIntervalMs = 200;
     int startWaitMs = 3000;              // 방이 찬 것을 본 뒤 !start 까지 — 마지막 사람의 대기 맵 준비를 기다린다
     uint32_t seed = 1;
+    int statMult = 1;                    // 서버에 준 --stat-mult 와 같은 값 — 후퇴 기준인 최대 체력을 안다(플랜 2-6절)
+    double freqMult = 1.0;               // 빈도 배수 — 측정의 절반 · 2배(플랜 1-1절). 2 면 주문 · 칼 간격이 절반
+    uint32_t SpellGap() const { return std::max<uint32_t>(1, static_cast<uint32_t>(std::lround(kSpellGapFrames / freqMult))); }
+    uint32_t AttackGap() const { return std::max<uint32_t>(1, static_cast<uint32_t>(std::lround(kAttackGapFrames / freqMult))); }
     Behavior behavior = Behavior::Fight;   // 빠뜨렸을 때 조용히 가벼운 부하를 재지 않게 기본을 fight 로 둔다
     std::string mapFile = kDefaultMapFile;   // 벽을 돌아가려고 읽는 대전 맵
 };
@@ -161,6 +195,24 @@ struct Dummy {
     uint32_t reachSinceFrame = 0;        // 붙은 때 · 그 상대 체력이 마지막으로 준 때
     uint16_t hurtNet = 0;                // 42 로 체력이 줄었다고 알려 온 번호
     uint32_t hurtFrame = 0;
+    std::mt19937 rng;                    // 더미마다 씨앗이 달라 행동이 다르고, 실행끼리는 같다
+    int hp = 0, mana = 0;                // 43 · 45 가 알려 준 지금 값
+    int maxHp = 0, maxMana = 0;          // HealthOnline · ManaOnline(서버와 같은 --stat-mult)
+    bool checkedHp43 = false, checkedDd = false, checkedDe = false;   // 입장 값을 표와 견준 것은 한 번만
+    uint32_t selfBits = 0;               // 자기 0x5A 비트
+    std::vector<std::pair<uint16_t, uint32_t>> enchants;   // 다른 사람의 0x5A 비트(투명 확인)
+    uint32_t spellReadyFrame = 0;        // 다음 주문을 보낼 수 있는 프레임
+    uint32_t castHoldEndFrame = 0;       // 음소가 끝날 때까지 커서를 상대에 두는 프레임
+    uint32_t confuseReadyFrame = 0;
+    uint32_t blinkReadyFrame = 0;
+    const SpellInfo* attackSpell = nullptr;   // 부활마다 고르는 공격 주문
+    bool firstCastAfterRevive = false;   // 부활 뒤 첫 주문을 아직 안 보냈다
+    bool retreating = false;
+    uint32_t retreatRunEndFrame = 0;     // 이 프레임까지 도망, 그 뒤는 서서 소치유
+    int retreatPoint = -1;               // 도망가는 지점
+    bool backingOff = false;
+    uint32_t abilReadyFrame[4] = {};     // 능력 번호별로 재사용이 끝나는 프레임
+    uint32_t abilGapEndFrame = 0;
     std::vector<bool> seenImportant;     // 번호 65536칸 — 같은 번호를 두 번 받으면 서버의 다시 싣기다
     std::vector<uint8_t> out;            // 이번 바퀴에 실을 메시지(입력 뒤에 붙인다)
 };
@@ -219,7 +271,18 @@ void OnUpdate(Dummy& d, const nox::UpdateMsg& m) {
     d.visibleOthers = static_cast<int>(d.others.size());
 }
 
-// 중요 메시지 봉투 하나의 내용 — 죽음 e8 <번호2> · 자기 체력 43 <체력2>.
+// 입장 때 받은 값이 표(HealthOnline · ManaOnline)와 같은지 한 번 — 더미와 서버의 --stat-mult 가 어긋나면 후퇴 기준이 틀어진다.
+void CheckEntryStat(Dummy& d, bool& done, const char* what, int got, int want) {
+    if (done) return;
+    done = true;
+    ++g_count.statChecked;
+    if (got == want) return;
+    ++g_count.statMismatch;
+    std::printf("[더미 %d] 입장 값 다름 — %s 받음 %d · 기대 %d\n", d.index, what, got, want);
+    std::fflush(stdout);
+}
+
+// 중요 메시지 봉투 하나의 내용 — 죽음 e8 <번호2> · 자기 체력 43 <체력2> · 마나 45 · 최대치 dd de · 강화 5A.
 // 표에 없는 메시지를 만나면 그 뒤는 못 읽어 멈춘다(봉투 하나에 대개 메시지 하나라 잃는 것이 없다).
 void OnImportantBody(Dummy& d, const uint8_t* p, size_t n) {
     size_t i = 0;
@@ -235,6 +298,10 @@ void OnImportantBody(Dummy& d, const uint8_t* p, size_t n) {
                 d.reviveClickFrame = d.frame + kReviveFirstFrames;
                 d.detourIndex = -1;
                 d.stuckHave = false;
+                d.selfBits = 0;              // 죽으면 강화가 풀린다 — 5A 가 늦어도 부활 뒤 새로 걸게
+                d.retreating = false;
+                d.backingOff = false;
+                d.castHoldEndFrame = d.frame;
             } else {
                 for (size_t k = 0; k < d.skip.size();) {
                     const bool expired = static_cast<int32_t>(d.frame - d.skip[k].second) >= 0;
@@ -248,9 +315,38 @@ void OnImportantBody(Dummy& d, const uint8_t* p, size_t n) {
             d.hurtFrame = d.frame;
         } else if (p[i] == static_cast<uint8_t>(Op::REPORT_PLAYER_HEALTH) && msz >= 3) {
             const int hp = p[i + 1] | (p[i + 2] << 8);
+            CheckEntryStat(d, d.checkedHp43, "43 체력", hp, d.maxHp);
+            d.hp = hp;
             if (d.dead && hp > 0) {
                 d.dead = false;
                 ++g_count.revives;
+                d.attackSpell = nullptr;     // 공격 주문은 부활마다 다시 고른다(원본 기준 GAME4.c:2035-2045)
+                d.firstCastAfterRevive = true;
+            }
+        } else if (p[i] == static_cast<uint8_t>(Op::REPORT_MANA) && msz >= 5) {
+            // 45 <번호 2> <마나 2>(Server.cpp:6502)
+            if (static_cast<uint16_t>(p[i + 1] | (p[i + 2] << 8)) == d.selfNet) d.mana = p[i + 3] | (p[i + 4] << 8);
+        } else if ((p[i] == static_cast<uint8_t>(Op::REPORT_TOTAL_HEALTH) || p[i] == static_cast<uint8_t>(Op::REPORT_TOTAL_MANA)) && msz >= 7) {
+            // dd · de <번호 2> <값 2> <값 2> — 입장 꼬리가 싣는 최대치(SnapshotTail.cpp:141 · :144)
+            if (static_cast<uint16_t>(p[i + 1] | (p[i + 2] << 8)) == d.selfNet) {
+                const int v = p[i + 3] | (p[i + 4] << 8);
+                if (p[i] == static_cast<uint8_t>(Op::REPORT_TOTAL_HEALTH)) CheckEntryStat(d, d.checkedDd, "dd 최대 체력", v, d.maxHp);
+                else CheckEntryStat(d, d.checkedDe, "de 최대 마나", v, d.maxMana);
+            }
+        } else if (p[i] == static_cast<uint8_t>(Op::REPORT_ENCHANTMENT) && msz >= 7) {
+            // 5A <번호 2> <비트 4>(Server.cpp:2291-2299) — 모든 사람에게 온다
+            const uint16_t net = static_cast<uint16_t>(p[i + 1] | (p[i + 2] << 8));
+            const uint32_t bits = static_cast<uint32_t>(p[i + 3]) | (static_cast<uint32_t>(p[i + 4]) << 8) |
+                                  (static_cast<uint32_t>(p[i + 5]) << 16) | (static_cast<uint32_t>(p[i + 6]) << 24);
+            if (net == d.selfNet) {
+                d.selfBits = bits;
+                const int on = ((bits & kBuffBitProtect) != 0) + ((bits & kBuffBitHaste) != 0) + ((bits & kBuffBitInvis) != 0);
+                if (on >= 2) ++g_count.buffOverlap;
+            } else {
+                bool found = false;
+                for (auto& e : d.enchants)
+                    if (e.first == net) { e.second = bits; found = true; break; }
+                if (!found) d.enchants.emplace_back(net, bits);
             }
         }
         i += msz;
@@ -267,6 +363,27 @@ void ReportDecodeFail(const Dummy& d, const uint8_t* b, size_t n, const char* wh
     std::fflush(stdout);
 }
 
+// 맵이 바뀌면 서버가 다시 세운다(RejoinReset) — 체력 · 마나가 차고 강화 · 재사용이 풀린다.
+void ResetForMap(Dummy& d) {
+    d.hp = d.maxHp;
+    d.mana = d.maxMana;
+    d.selfBits = 0;
+    d.enchants.clear();
+    d.spellReadyFrame = d.frame;
+    d.castHoldEndFrame = d.frame;
+    d.confuseReadyFrame = d.frame + kConfuseMinFrames + d.rng() % (kConfuseMaxFrames - kConfuseMinFrames + 1);
+    d.blinkReadyFrame = d.frame;
+    d.attackSpell = nullptr;
+    d.firstCastAfterRevive = false;
+    d.retreating = false;
+    d.backingOff = false;
+    d.abilGapEndFrame = d.frame;
+    // 서버는 맵이 바뀌어도 능력 쉬는 시간을 되돌리지 않고(되돌리는 곳은 부활 때 `AbilityCancelAll` 뿐) 판 끝 동안은 줄이지도 않아
+    // (`AbilityUpdate` 는 사람 걸음 안이라 `frozen` 이면 안 돈다) 더미는 남은 값을 모른다 — 방금 쓴 셈 치고 한 번 기다린다.
+    // 전에는 이 자리에서 지웠더니 둘째 판부터 시작 직후에만 「쉬는중」 거절이 났다(실물 d6_4 4건 · d6_10 8건 · 첫 판 0건).
+    for (const AbilityInfo& ab : kAbilities) d.abilReadyFrame[ab.id] = d.frame + ab.delay + kAbilityMargin;
+}
+
 // 서버→클라 메시지 나누기 — opcount.cpp:133-197 과 같은 방식.
 void WalkMessages(Dummy& d, const uint8_t* b, size_t all) {
     size_t eaten = 0;
@@ -280,25 +397,22 @@ void WalkMessages(Dummy& d, const uint8_t* b, size_t all) {
         size_t msz = nox::MessageSize(b + eaten, all - eaten, /*fromClient=*/false);
 
         if (op == static_cast<uint8_t>(Op::IMPORTANT)) {
-            // aa 는 cc 봉투들의 목록이다. 표의 길이는 봉투 머리까지만 센 값이라 직접 훑는다.
-            size_t q = eaten + 1;
-            bool sane = false;
-            while (q + 4 <= all && b[q] == static_cast<uint8_t>(Op::SEQ_IMPORTANT)) {
-                const size_t inner = b[q + 3];
-                if (q + 4 + inner > all) break;
-                const uint16_t id = static_cast<uint16_t>(b[q + 1] | (b[q + 2] << 8));
-                if (d.seenImportant[id]) ++g_count.dupImportant;
-                else OnImportantBody(d, b + q + 4, inner);
-                d.seenImportant[id] = true;
-                d.seenImportant[static_cast<uint16_t>(id + 0x8000)] = false;   // 번호가 한 바퀴 돌 때를 대비해 반대쪽을 비운다
-                q += 4 + inner;
-                sane = true;
-            }
-            msz = sane ? q - eaten : 1;
+            // aa 뒤에는 cc 봉투와 봉투 없는 메시지(42 · 45)가 줄 선 순서대로 섞여 온다(Server.cpp:510-518 — 큐 항목을 그대로 잇는다).
+            // 머리만 여기서 먹고 뒤는 아래 갈래가 하나씩 읽는다 — 봉투만 훑으면 봉투 없는 것을 만난 뒤의 봉투를 통째로 놓친다.
+            msz = 1;
             // 정품은 aa 를 받을 때마다 같은 묶음 27 의 프레임으로 답한다(원본 기준 network_client.go:302-318).
             d.out.push_back(static_cast<uint8_t>(Op::IMPORTANT_ACK));
             Put32(d.out, d.frame);
             ++g_count.sentAck;
+        } else if (op == static_cast<uint8_t>(Op::SEQ_IMPORTANT)) {
+            if (eaten + 4 > all || eaten + 4 + b[eaten + 3] > all) { ReportDecodeFail(d, b + eaten, all - eaten, "봉투"); return; }
+            const size_t inner = b[eaten + 3];
+            const uint16_t id = static_cast<uint16_t>(b[eaten + 1] | (b[eaten + 2] << 8));
+            if (d.seenImportant[id]) ++g_count.dupImportant;
+            else OnImportantBody(d, b + eaten + 4, inner);
+            d.seenImportant[id] = true;
+            d.seenImportant[static_cast<uint16_t>(id + 0x8000)] = false;   // 번호가 한 바퀴 돌 때를 대비해 반대쪽을 비운다
+            msz = 4 + inner;
         } else if (msz == 0 && op == static_cast<uint8_t>(Op::UPDATE_STREAM)) {
             const nox::UpdateMsg m = nox::DecodeUpdate(b + eaten + 1, all - eaten - 1, &d.aliases);
             if (!m.ok) { ReportDecodeFail(d, b + eaten, all - eaten, "갱신"); return; }
@@ -332,8 +446,11 @@ void WalkMessages(Dummy& d, const uint8_t* b, size_t all) {
             d.path.clear();
             d.stuckHave = false;
             d.aliases.Clear();
+            ResetForMap(d);
             const uint8_t ready = static_cast<uint8_t>(Op::CLIENT_READY);
             d.out.push_back(ready);
+        } else if (msz != 0 && eaten + msz <= all) {
+            OnImportantBody(d, b + eaten, msz);   // 봉투 없이 온 42 · 45 따위
         }
 
         if (msz == 0 || eaten + msz > all) { ReportDecodeFail(d, b + eaten, all - eaten, "길이"); return; }
@@ -621,6 +738,239 @@ void StartDetour(Dummy& d, int tx, int ty) {
     FollowPath(d, kWaypoints[w].x, kWaypoints[w].y);
 }
 
+// 커서를 상대 위에 둔다 — 주문은 끝나는 순간의 커서로 대상을 정한다(Server.cpp:6824-6831).
+void AimAt(Dummy& d, int x, int y) {
+    d.facing = FacingTo(x - d.x, y - d.y);
+    d.out.push_back(static_cast<uint8_t>(Op::MOUSE));
+    Put16(d.out, static_cast<uint16_t>(static_cast<int16_t>(x)));
+    Put16(d.out, static_cast<uint16_t>(static_cast<int16_t>(y)));
+    ++g_count.sentMouse;
+}
+
+// 쫓아간다 — 벽이 없으면 곧장, 있으면 길 따라. 3초에 몸이 못 움직였으면 지점을 들른다.
+void ChaseStep(Dummy& d, const OtherPlayer& t, bool clear) {
+    d.reachTarget = 0;
+    if (FrameReached(d, d.stuckCheckFrame)) {
+        if (d.stuckHave && DistTo(d, d.stuckX, d.stuckY) < kStuckMinGain) {
+            d.stuckHave = false;
+            d.stuckCheckFrame = d.frame + kStuckCheckFrames;
+            StartDetour(d, t.x, t.y);
+            return;
+        }
+        d.stuckHave = true;
+        d.stuckX = d.x;
+        d.stuckY = d.y;
+        d.stuckCheckFrame = d.frame + kStuckCheckFrames;
+    }
+    if (clear) {
+        d.path.clear();
+        MoveToward(d, t.x, t.y);
+    } else {
+        FollowPath(d, t.x, t.y);
+    }
+}
+
+// 근접 — 거리 안이면 때리고 밖이면 쫓는다. 전사와 마나가 떨어진 법사가 같이 쓴다.
+void MeleeStep(Dummy& d, const Args& a, const OtherPlayer& t, double dist, bool clear) {
+    if (dist > kMeleeReach || !clear) {
+        ChaseStep(d, t, clear);
+        return;
+    }
+    d.facing = FacingTo(t.x - d.x, t.y - d.y);
+    d.stuckHave = false;
+    // ★ 벽을 사이에 두고 붙으면 판정은 「닿음」이어도 피해가 안 들어간다(MapTraceRay · Server.cpp:17501).
+    //   벽 격자로 거의 가려내지만 격자에 없는 것(잠긴 문 · 정적 물체)이 사이에 있을 수 있어 상대 체력이 안 줄면 자리를 옮긴다.
+    if (d.reachTarget != t.net) {
+        d.reachTarget = t.net;
+        d.reachSinceFrame = d.frame;
+    }
+    if (d.hurtNet == t.net && static_cast<int32_t>(d.hurtFrame - d.reachSinceFrame) > 0) d.reachSinceFrame = d.hurtFrame;
+    if (a.behavior == Behavior::Fight && FrameReached(d, d.reachSinceFrame + kNoHurtFrames)) {
+        StartDetour(d, t.x, t.y);
+        return;
+    }
+    if (a.behavior == Behavior::Fight && FrameReached(d, d.attackReadyFrame)) {
+        d.wantClick = true;
+        ++g_count.sentAttack;
+        d.attackReadyFrame = d.frame + a.AttackGap();
+    }
+}
+
+// 전사 능력 — 재사용이 끝났고 거리가 맞으면 보낸다. 시야 150 보다 먼저 본다(돌진 · 작살은 쫓는 중에 쓴다 · 플랜 2-5절).
+void MaybeAbility(Dummy& d, const OtherPlayer& t, double dist, bool clear) {
+    if (!clear || !FrameReached(d, d.abilGapEndFrame)) return;
+    for (const AbilityInfo& ab : kAbilities) {
+        if (!FrameReached(d, d.abilReadyFrame[ab.id]) || dist < ab.minDist || dist > ab.maxDist) continue;
+        d.facing = FacingTo(t.x - d.x, t.y - d.y);   // 입력이 메시지보다 먼저 실려 이 방향을 본 뒤에 능력이 들어간다
+        d.out.push_back(static_cast<uint8_t>(Op::TRY_ABILITY));
+        d.out.push_back(ab.id);
+        ++g_count.sentAbility;
+        if (ab.id == 1) ++g_count.sentBerserk;
+        else if (ab.id == 2) ++g_count.sentRoar;
+        else ++g_count.sentHarpoon;
+        d.abilReadyFrame[ab.id] = d.frame + ab.delay + kAbilityMargin;
+        d.abilGapEndFrame = d.frame + kAbilityGapFrames;
+        return;
+    }
+}
+
+void CountCast(const SpellInfo& sp) {
+    switch (sp.id) {
+        case 51: ++g_count.castProtect; break;
+        case 36: ++g_count.castHaste; break;
+        case 39: ++g_count.castInvis; break;
+        case 12: ++g_count.castConfuse; break;
+        case 27: ++g_count.castFireball; break;
+        case 16: ++g_count.castDeathRay; break;
+        case 43: ++g_count.castChain; break;
+        case 4: ++g_count.castBlink; break;
+        case 41: ++g_count.heals; break;
+        default: break;
+    }
+}
+
+// 79 <주문 u32> <0 u32 × 4> <대상 깃발 u8> 22바이트(Server.cpp:4144-4156).
+void CastSpell(Dummy& d, const Args& a, const SpellInfo& sp, uint32_t holdFrames) {
+    const size_t at = d.out.size();
+    d.out.resize(at + 22, 0);
+    d.out[at] = static_cast<uint8_t>(Op::TRY_SPELL);
+    d.out[at + 1] = static_cast<uint8_t>(sp.id);
+    d.out[at + 21] = sp.selfFlag;
+    ++g_count.sentSpell;
+    CountCast(sp);
+    if (d.firstCastAfterRevive) {
+        d.firstCastAfterRevive = false;
+        if (&sp == &kProtect || &sp == &kHaste || &sp == &kInvis) ++g_count.firstBuffOk;
+        else ++g_count.firstBuffBad;
+    }
+    d.spellReadyFrame = d.frame + a.SpellGap();
+    d.castHoldEndFrame = d.frame + holdFrames;
+}
+
+bool EnemyInvisible(const Dummy& d, uint16_t net) {
+    for (const auto& e : d.enchants)
+        if (e.first == net) return (e.second & kBuffBitInvis) != 0;
+    return false;
+}
+
+// 도망갈 지점 — 상대 반대쪽 지점 중 상대에서 가장 먼 곳. 반대쪽에 없으면 전체에서 고른다.
+// 곧장 뒤로 달리면 저택 벽에 막혀 4~6초를 못 채우므로 길 찾기가 되는 지점으로 간다.
+int PickRetreatPoint(const Dummy& d, int ex, int ey) {
+    for (int pass = 0; pass < 2; ++pass) {
+        int best = -1;
+        double bestDist = 0.0;
+        for (int i = 0; i < kWaypointCount; ++i) {
+            const Point w = kWaypoints[i];
+            if (DistTo(d, w.x, w.y) < kDetourArrive * 2) continue;
+            const double dot = static_cast<double>(w.x - d.x) * (d.x - ex) + static_cast<double>(w.y - d.y) * (d.y - ey);
+            if (pass == 0 && dot <= 0.0) continue;
+            const double dx = static_cast<double>(w.x - ex), dy = static_cast<double>(w.y - ey);
+            const double dist = std::sqrt(dx * dx + dy * dy);
+            if (best < 0 || dist > bestDist) { best = i; bestDist = dist; }
+        }
+        if (best >= 0) return best;
+    }
+    return -1;
+}
+
+// 주문 하나를 고른다 — 자기 강화 → 점멸(붙었을 때) → 방해 → 공격(원본 기준 GAME4_3.c:1841-1844). 보냈으면 true.
+bool TryCast(Dummy& d, const Args& a, const OtherPlayer& t, double dist, bool inSight) {
+    if ((d.selfBits & kSelfBuffMask) == 0) {
+        const int start = static_cast<int>(d.rng() % 3);
+        for (int k = 0; k < 3; ++k) {
+            const SpellInfo& sp = *kBuffs[(start + k) % 3];
+            if (d.mana < sp.mana) continue;
+            CastSpell(d, a, sp, kCastHoldFrames);
+            return true;
+        }
+    }
+    if (dist < kBlinkIn && FrameReached(d, d.blinkReadyFrame) && d.mana >= kBlink.mana) {
+        CastSpell(d, a, kBlink, kCastHoldFrames);
+        d.blinkReadyFrame = d.frame + d.rng() % (kBlinkRestMaxFrames + 1);
+        return true;
+    }
+    if (!inSight) return false;
+    AimAt(d, t.x, t.y);
+    if (FrameReached(d, d.confuseReadyFrame) && !EnemyInvisible(d, t.net) && d.mana >= kConfuse.mana) {
+        CastSpell(d, a, kConfuse, kCastHoldFrames);
+        d.confuseReadyFrame = d.frame + kConfuseMinFrames + d.rng() % (kConfuseMaxFrames - kConfuseMinFrames + 1);
+        return true;
+    }
+    if (d.attackSpell && d.mana >= d.attackSpell->mana) {
+        CastSpell(d, a, *d.attackSpell, d.attackSpell == &kChain ? kChainHoldFrames : kCastHoldFrames);
+        return true;
+    }
+    ++g_count.spellSkippedNoMana;
+    d.spellReadyFrame = d.frame + a.SpellGap();
+    return false;
+}
+
+// 법사 · 컨저러(플랜 2-6절) — 후퇴 → 주문 → 맨손 · 거리 유지 순서.
+void DecideCaster(Dummy& d, const Args& a, const OtherPlayer& t, double dist, bool clear) {
+    if (!FrameReached(d, d.castHoldEndFrame)) {   // 음소가 끝날 때까지
+        AimAt(d, t.x, t.y);
+        return;
+    }
+    const bool fight = a.behavior == Behavior::Fight;
+    if (fight && !d.attackSpell) {               // 부활마다 하나(원본 기준 GAME4.c:2035-2045)
+        const int r = static_cast<int>(d.rng() % 100);
+        d.attackSpell = r < 33 ? &kFireball : (r < 66 ? &kDeathRay : &kChain);
+    }
+    if (fight && !d.retreating && d.hp > 0 && d.hp * 100 <= d.maxHp * kRetreatPercent) {
+        d.retreating = true;
+        d.retreatRunEndFrame = d.frame + kRetreatMinFrames + d.rng() % (kRetreatMaxFrames - kRetreatMinFrames + 1);
+        d.retreatPoint = -1;
+        d.backingOff = false;
+        d.path.clear();
+        ++g_count.retreats;
+    }
+    if (d.retreating) {
+        if (!FrameReached(d, d.retreatRunEndFrame)) {
+            // 후퇴 중에는 점멸을 먼저 본다(원본 기준 GAME5.c:260)
+            if (FrameReached(d, d.spellReadyFrame) && FrameReached(d, d.blinkReadyFrame) && d.mana >= kBlink.mana) {
+                CastSpell(d, a, kBlink, kCastHoldFrames);
+                d.blinkReadyFrame = d.frame + d.rng() % (kBlinkRestMaxFrames + 1);
+                return;
+            }
+            if (d.retreatPoint < 0 || DistTo(d, kWaypoints[d.retreatPoint].x, kWaypoints[d.retreatPoint].y) < kDetourArrive) {
+                d.retreatPoint = PickRetreatPoint(d, t.x, t.y);
+                d.path.clear();
+            }
+            if (d.retreatPoint >= 0) FollowPath(d, kWaypoints[d.retreatPoint].x, kWaypoints[d.retreatPoint].y);
+            return;
+        }
+        if (d.hp * 100 >= d.maxHp * kRecoverPercent) {
+            d.retreating = false;
+            ++g_count.healedBack;
+        } else if (d.mana < kHeal.mana) {
+            d.retreating = false;                // 치유할 마나가 없다 — 맨손으로 돌아간다
+        } else {
+            if (FrameReached(d, d.spellReadyFrame)) CastSpell(d, a, kHeal, kCastHoldFrames);
+            return;
+        }
+    }
+    const bool inSight = dist <= kSightRange && clear;
+    if (fight && FrameReached(d, d.spellReadyFrame) && TryCast(d, a, t, dist, inSight)) return;
+    if (fight && d.attackSpell && d.mana < d.attackSpell->mana) {   // 마나를 다 썼다 — 물러나지 않고 맨손으로
+        d.backingOff = false;
+        MeleeStep(d, a, t, dist, clear);
+        return;
+    }
+    if (!inSight) {
+        d.backingOff = false;
+        ChaseStep(d, t, clear);
+        return;
+    }
+    d.stuckHave = false;
+    if (d.backingOff && dist >= kBackOffTo) d.backingOff = false;
+    else if (!d.backingOff && dist < kBackOffIn) d.backingOff = true;
+    if (d.backingOff) {
+        MoveToward(d, d.x + (d.x - t.x) * 4, d.y + (d.y - t.y) * 4);
+        return;
+    }
+    AimAt(d, t.x, t.y);
+}
+
 // 이번 바퀴의 행동. 싸움은 판 맵에서만 — 대기 맵은 채팅 모드다(Server.cpp:4168).
 void Decide(Dummy& d, const Args& a) {
     d.wantMove = d.wantClick = false;
@@ -649,45 +999,11 @@ void Decide(Dummy& d, const Args& a) {
     }
     const double dist = DistTo(d, t->x, t->y);
     const bool clear = GridClear(d.x, d.y, t->x, t->y);
-    if (dist > kMeleeReach || !clear) {
-        d.reachTarget = 0;
-        if (FrameReached(d, d.stuckCheckFrame)) {
-            if (d.stuckHave && DistTo(d, d.stuckX, d.stuckY) < kStuckMinGain) {
-                d.stuckHave = false;
-                d.stuckCheckFrame = d.frame + kStuckCheckFrames;
-                StartDetour(d, t->x, t->y);
-                return;
-            }
-            d.stuckHave = true;
-            d.stuckX = d.x;
-            d.stuckY = d.y;
-            d.stuckCheckFrame = d.frame + kStuckCheckFrames;
-        }
-        if (clear) {
-            d.path.clear();
-            MoveToward(d, t->x, t->y);
-        } else {
-            FollowPath(d, t->x, t->y);
-        }
-        return;
-    }
-    d.facing = FacingTo(t->x - d.x, t->y - d.y);
-    d.stuckHave = false;
-    // ★ 벽을 사이에 두고 붙으면 판정은 「닿음」이어도 피해가 안 들어간다(MapTraceRay · Server.cpp:17501).
-    //   벽 격자로 거의 가려내지만 격자에 없는 것(잠긴 문 · 정적 물체)이 사이에 있을 수 있어 상대 체력이 안 줄면 자리를 옮긴다.
-    if (d.reachTarget != t->net) {
-        d.reachTarget = t->net;
-        d.reachSinceFrame = d.frame;
-    }
-    if (d.hurtNet == t->net && static_cast<int32_t>(d.hurtFrame - d.reachSinceFrame) > 0) d.reachSinceFrame = d.hurtFrame;
-    if (a.behavior == Behavior::Fight && FrameReached(d, d.reachSinceFrame + kNoHurtFrames)) {
-        StartDetour(d, t->x, t->y);
-        return;
-    }
-    if (a.behavior == Behavior::Fight && FrameReached(d, d.attackReadyFrame)) {
-        d.wantClick = true;
-        ++g_count.sentAttack;
-        d.attackReadyFrame = d.frame + kAttackGapFrames;
+    if (d.cls == 0) {
+        if (a.behavior == Behavior::Fight) MaybeAbility(d, *t, dist, clear);
+        MeleeStep(d, a, *t, dist, clear);
+    } else {
+        DecideCaster(d, a, *t, dist, clear);
     }
 }
 
@@ -807,6 +1123,12 @@ bool ParseArgs(int argc, char** argv, Args& a, std::string& err) {
         else if (k == "--duration-sec") { if (!need(a.durationSec)) return false; }
         else if (k == "--join-interval-ms") { if (!need(a.joinIntervalMs)) return false; }
         else if (k == "--start-wait-ms") { if (!need(a.startWaitMs)) return false; }
+        else if (k == "--stat-mult") { if (!need(a.statMult)) return false; }
+        else if (k == "--freq-mult") {
+            if (!v) { err = "--freq-mult 값 없음"; return false; }
+            a.freqMult = std::atof(v);
+            ++i;
+        }
         else if (k == "--map-file") {
             if (!v) { err = "--map-file 값 없음"; return false; }
             a.mapFile = v;
@@ -844,6 +1166,8 @@ bool ParseArgs(int argc, char** argv, Args& a, std::string& err) {
     if (a.roomSize < 1) { err = "--room-size 는 1 이상"; return false; }
     if (a.reserveSeats < 0 || a.reserveSeats >= a.roomSize) { err = "--reserve-seats 는 0 이상 · 방당 인원 미만"; return false; }
     if (a.count % (a.roomSize - a.reserveSeats) != 0) { err = "더미 수가 (방당 인원 - 비울 자리)의 배수가 아니다"; return false; }
+    if (a.statMult < 1 || a.statMult > 10) { err = "--stat-mult 는 1~10(서버와 같은 값)"; return false; }
+    if (!(a.freqMult > 0.0) || a.freqMult > 4.0) { err = "--freq-mult 는 0 초과 4 이하"; return false; }
     if (a.classes.empty()) { err = "--classes 가 비었다"; return false; }
     for (int c : a.classes)
         if (c < 0 || c > 2) { err = "직업은 0 전사 · 1 위저드 · 2 컨저러"; return false; }
@@ -858,10 +1182,12 @@ int main(int argc, char** argv) {
     if (!ParseArgs(argc, argv, a, err)) {
         std::printf("인자 오류: %s\n", err.c_str());
         std::printf("쓰기: nox_dummy [--server 주소:포트] [--count N] [--room-size K] [--reserve-seats R] [--classes 0,1] [--duration-sec S] "
-                    "[--join-interval-ms M] [--start-wait-ms M] [--behavior idle|move|fight] [--map-file 대전맵.map] [--seed S]\n");
+                    "[--join-interval-ms M] [--start-wait-ms M] [--behavior idle|move|fight] [--map-file 대전맵.map] [--seed S] "
+                    "[--stat-mult N] [--freq-mult X]\n");
         return 1;
     }
 
+    nox::SetStatMult(a.statMult);                // 최대 체력은 표에 서버와 같은 배수를 곱한 값이다
     if (a.behavior != Behavior::Idle && !LoadNav(a.mapFile))
         std::printf("[더미] 벽 격자를 못 읽음(%s) — 벽을 돌아가지 못하고 곧장 쫓기만 한다\n", a.mapFile.c_str());
 
@@ -883,6 +1209,11 @@ int main(int argc, char** argv) {
         Dummy& d = dummies[static_cast<size_t>(i)];
         d.index = i;
         d.cls = a.classes[static_cast<size_t>(i) % a.classes.size()];
+        d.rng.seed(a.seed * 1000u + static_cast<uint32_t>(i));
+        d.maxHp = nox::HealthOnline(static_cast<nox::CharClass>(d.cls));
+        d.maxMana = nox::ManaOnline(static_cast<nox::CharClass>(d.cls));
+        d.hp = d.maxHp;
+        d.mana = d.maxMana;
         d.joinAtUs = t0 + static_cast<int64_t>(i) * a.joinIntervalMs * 1000;
         d.seenImportant.assign(65536, false);
         d.sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
