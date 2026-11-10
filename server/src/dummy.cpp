@@ -22,6 +22,7 @@
 
 #include "nox/Alias.h"
 #include "nox/Opcode.h"
+#include "nox/ThingFlags.h"
 #include "nox/UpdateStream.h"
 #include "nox/Wire.h"
 
@@ -34,9 +35,10 @@ constexpr int kWheelSlots = 33;          // 한 바퀴를 1ms 칸으로 나눈�
 constexpr int64_t kPingUs = 2000000;     // 정품 핑 간격 2초(R1 7바이트 81번 · Docs/MO_CLIENT_SELF_SEND_1109.md)
 constexpr int64_t kJoinRetryUs = 1000000;   // 접속 시도 · 연결을 다시 보내는 간격(UDP 라 한 번이 사라질 수 있다)
 constexpr size_t kMaxOutBody = 1000;     // 한 조각에 싣는 본문 상한 — 서버 받기 버퍼 2048(NetworkThread.cpp:218) 안
+constexpr int64_t kStartRetryUs = 5000000;   // 대기 맵에 그대로 있으면 !start 를 다시 보내는 간격 — 채팅은 비신뢰라 방장 것이 사라지면 그 방이 영영 안 열린다
 
 #define NOX_DUMMY_COUNTERS(X) \
-    X(sentInput) X(sentPing) X(sentAck) X(sentAlias) X(sentMouse) X(sentSpell) X(sentAbility) \
+    X(sentInput) X(sentPing) X(sentAck) X(sentAlias) X(sentMouse) X(sentSpell) X(sentAbility) X(sentStart) \
     X(recvDgram) X(recvBytes) X(decodeFail) X(dupImportant) X(lateTicks) \
     X(petsAcquired) X(petsLost) X(spellSkippedNoMana) X(retreats) X(heals)
 
@@ -62,6 +64,7 @@ struct Args {
     std::vector<int> classes{0};
     int durationSec = 150;
     int joinIntervalMs = 200;
+    int startWaitMs = 3000;              // 방이 찬 것을 본 뒤 !start 까지 — 마지막 사람의 대기 맵 준비를 기다린다
     uint32_t seed = 1;
 };
 
@@ -84,6 +87,11 @@ struct Dummy {
     nox::AliasTable aliases;
     uint16_t selfNet = 0;
     int x = 0, y = 0;
+    std::string mapName;                 // USE_MAP 이 알려 준 지금 맵
+    std::string waitMapName;             // 처음 받은 맵 = 대기 맵
+    int visibleOthers = 0;               // 마지막 갱신에 보인 다른 사람 수(판 중 입장 거절이라 방이 찬 뒤에 연다)
+    int64_t fullSinceUs = 0;             // 방이 찬 것을 처음 본 때(0 = 아직)
+    int64_t startAtUs = 0;               // 다음 !start 를 보낼 때
     uint8_t facing = 0;
     std::vector<bool> seenImportant;     // 번호 65536칸 — 같은 번호를 두 번 받으면 서버의 다시 싣기다
     std::vector<uint8_t> out;            // 이번 바퀴에 실을 메시지(입력 뒤에 붙인다)
@@ -134,8 +142,12 @@ void OnUpdate(Dummy& d, const nox::UpdateMsg& m) {
     }
     d.x = m.x;
     d.y = m.y;
-    for (const nox::ObjEntry& o : m.objects)
+    int others = 0;
+    for (const nox::ObjEntry& o : m.objects) {
         if (o.alias == 0xff) RegisterAlias(d, o.netCode, o.type, false);
+        if (nox::ThingIsPlayer(o.type) && o.netCode != 0 && o.netCode != d.selfNet) ++others;
+    }
+    d.visibleOthers = others;
 }
 
 void ReportDecodeFail(const Dummy& d, const uint8_t* b, size_t n, const char* why) {
@@ -194,6 +206,14 @@ void WalkMessages(Dummy& d, const uint8_t* b, size_t all) {
                       (static_cast<uint32_t>(b[eaten + 3]) << 16) | (static_cast<uint32_t>(b[eaten + 4]) << 24);
         } else if (op == static_cast<uint8_t>(Op::USE_MAP) && msz >= 2) {
             // 맵이 바뀌면 서버가 준비를 끈다(Server.cpp:1910) — 준비를 안 보내면 중요 메시지가 멈춘다.
+            // 맵 파일 이름은 본문 첫 칸부터 최대 31글자(BuildUseMap · JoinBundle.cpp:170). 처음 받은 맵이 대기 맵이다.
+            const char* name = reinterpret_cast<const char*>(b + eaten + 1);
+            size_t nameLen = 0;
+            while (nameLen < 31 && eaten + 1 + nameLen < all && name[nameLen] != 0) ++nameLen;
+            d.mapName.assign(name, nameLen);
+            if (d.waitMapName.empty()) d.waitMapName = d.mapName;
+            d.visibleOthers = 0;
+            d.fullSinceUs = 0;
             d.aliases.Clear();
             const uint8_t ready = static_cast<uint8_t>(Op::CLIENT_READY);
             d.out.push_back(ready);
@@ -265,6 +285,35 @@ void PutInput(std::vector<uint8_t>& o, uint8_t facing) {
     o.insert(o.end(), m, m + sizeof(m));
 }
 
+// 채팅 — [a8][번호 2][깃발 1][x 2][y 2][글자 수 1][미상 2][글자]. 깃발 0x02 = 한 바이트 글자(Wire.h TEXT_MESSAGE).
+// 번호 · 좌표는 서버가 새로 지어서 0 으로 둔다(tools/match_smoke.ps1:172-178).
+void PutChat(std::vector<uint8_t>& o, const char* text) {
+    const size_t n = std::strlen(text);
+    const size_t at = o.size();
+    o.resize(at + 11 + n, 0);
+    o[at] = static_cast<uint8_t>(Op::TEXT_MESSAGE);
+    o[at + 3] = 0x02;
+    o[at + 8] = static_cast<uint8_t>(n);
+    std::memcpy(o.data() + at + 11, text, n);
+}
+
+// 방이 차면 !start. 방 안의 더미가 전부 보낸다 — 방장 것만 판을 열고 나머지는 안내 한 줄로 끝나서(RoomTick.cpp:835 · :854) 누가 방장인지 맞출 필요가 없다.
+void MaybeStart(Dummy& d, int64_t nowUs, const Args& a) {
+    if (a.roomSize < 2 || d.mapName.empty() || d.mapName != d.waitMapName || d.visibleOthers < a.roomSize - 1) {
+        d.fullSinceUs = 0;
+        return;
+    }
+    if (d.fullSinceUs == 0) {
+        d.fullSinceUs = nowUs;
+        d.startAtUs = nowUs + static_cast<int64_t>(a.startWaitMs) * 1000;
+        return;
+    }
+    if (nowUs < d.startAtUs) return;
+    PutChat(d.out, "!start");
+    ++g_count.sentStart;
+    d.startAtUs = nowUs + kStartRetryUs;
+}
+
 void FlushOut(Dummy& d, std::vector<uint8_t>& scratch) {
     scratch.clear();
     PutInput(scratch, d.facing);
@@ -289,7 +338,7 @@ void FlushOut(Dummy& d, std::vector<uint8_t>& scratch) {
     if (!scratch.empty()) SendGame(d, scratch.data(), scratch.size());
 }
 
-void Step(Dummy& d, int64_t nowUs, std::vector<uint8_t>& recvBuf, std::vector<uint8_t>& scratch) {
+void Step(Dummy& d, int64_t nowUs, const Args& a, std::vector<uint8_t>& recvBuf, std::vector<uint8_t>& scratch) {
     switch (d.phase) {
         case Phase::WaitTurn:
             if (nowUs < d.joinAtUs) return;
@@ -324,6 +373,7 @@ void Step(Dummy& d, int64_t nowUs, std::vector<uint8_t>& recvBuf, std::vector<ui
         ++g_count.sentPing;
         d.pingAtUs += kPingUs;
     }
+    MaybeStart(d, nowUs, a);
     FlushOut(d, scratch);
 }
 
@@ -377,6 +427,7 @@ bool ParseArgs(int argc, char** argv, Args& a, std::string& err) {
         else if (k == "--room-size") { if (!need(a.roomSize)) return false; }
         else if (k == "--duration-sec") { if (!need(a.durationSec)) return false; }
         else if (k == "--join-interval-ms") { if (!need(a.joinIntervalMs)) return false; }
+        else if (k == "--start-wait-ms") { if (!need(a.startWaitMs)) return false; }
         else if (k == "--seed") {
             int s = 0;
             if (!need(s)) return false;
@@ -413,7 +464,7 @@ int main(int argc, char** argv) {
     if (!ParseArgs(argc, argv, a, err)) {
         std::printf("인자 오류: %s\n", err.c_str());
         std::printf("쓰기: nox_dummy [--server 주소:포트] [--count N] [--room-size K] [--classes 0,1] [--duration-sec S] "
-                    "[--join-interval-ms M] [--seed S]\n");
+                    "[--join-interval-ms M] [--start-wait-ms M] [--seed S]\n");
         return 1;
     }
 
@@ -470,7 +521,7 @@ int main(int argc, char** argv) {
             if (slots[static_cast<size_t>(s)].empty()) continue;
             WaitUntilUs(timer, base + static_cast<int64_t>(s) * 1000);
             const int64_t now = NowUs();
-            for (int i : slots[static_cast<size_t>(s)]) Step(dummies[static_cast<size_t>(i)], now, recvBuf, scratch);
+            for (int i : slots[static_cast<size_t>(s)]) Step(dummies[static_cast<size_t>(i)], now, a, recvBuf, scratch);
         }
         const int64_t after = NowUs();
         const int64_t next = base + kWheelUs;
