@@ -43,19 +43,19 @@ constexpr int kWheelSlots = 33;          // 한 바퀴를 1ms 칸으로 나눈�
 constexpr int64_t kLateToleranceUs = 2000;
 constexpr int64_t kPingUs = 2000000;     // 정품 핑 간격 2초(R1 7바이트 81번 · Docs/MO_CLIENT_SELF_SEND_1109.md)
 constexpr int64_t kJoinRetryUs = 1000000;   // 접속 시도 · 연결을 다시 보내는 간격(UDP 라 한 번이 사라질 수 있다)
-constexpr size_t kMaxOutBody = 1000;     // 한 조각에 싣는 본문 상한 — 서버 받기 버퍼 2048(NetworkThread.cpp:218) 안
+constexpr size_t kMaxOutBody = 1000;     // 한 조각에 싣는 본문 상한 — 서버 받기 버퍼 2048(NetworkThread.cpp:219) 안
 // 싸움 값 — 프레임은 서버 프레임(33ms). 근거는 Docs/MO_DUMMY_PLAN_1109.md 2-4 · 2-5절.
-constexpr double kMeleeReach = 50.0;              // 이 안이면 때린다 — 닿는 거리 55(몸 10 + 롱소드 45 · Server.cpp:17135)보다 조금 안쪽
+constexpr double kMeleeReach = 50.0;              // 이 안이면 때린다 — 닿는 거리 55(몸 10 + 롱소드 45 · Server.cpp:17157)보다 조금 안쪽
 constexpr uint32_t kAttackGapFrames = 30;         // 칼은 1초에 한 번(사용자와 정한 빈도)
 constexpr uint32_t kDeathSkipFrames = 90;         // 죽은 상대를 대상에서 빼는 시간 — 갱신에 시체도 계속 실려서 안 빼면 시체를 쫓는다
-constexpr uint32_t kReviveFirstFrames = 50;       // 서버가 클릭을 받는 때: 죽음 30틱 + 15틱 뒤(Server.cpp:5553-5561)
+constexpr uint32_t kReviveFirstFrames = 50;       // 서버가 클릭을 받는 때: 죽음 30틱 + 15틱 뒤(Server.cpp:5561-5569)
 constexpr uint32_t kReviveGapFrames = 30;         // 코드 6 을 한 번만 보내면 놓칠 수 있어 되풀이한다
 constexpr double kCursorAhead = 150.0;            // 커서가 몸에서 100 을 넘으면 달린다(Server.h kRunCursorDist)
 constexpr uint32_t kStuckCheckFrames = 90;        // 3초마다 몸이 움직였나 본다
 constexpr double kStuckMinGain = 20.0;            // 3초에 몸이 이만큼도 못 움직이면 막힌 것으로 본다(길 따라 돌아갈 때는 상대와 거리가 늘 수 있어 몸 움직임으로 본다)
 constexpr uint32_t kDetourMaxFrames = 150;        // 지점으로 가는 시간의 상한 — 지점 앞에서도 막힐 수 있다
 constexpr double kDetourArrive = 40.0;            // 지점에 이만큼 다가가면 다시 쫓는다
-constexpr uint32_t kNoHurtFrames = 200;           // 거리 안인데 이만큼 상대 체력이 안 줄면 벽 너머로 본다 — 부활 무적 150틱(Server.cpp:6397)보다 길게
+constexpr uint32_t kNoHurtFrames = 200;           // 거리 안인데 이만큼 상대 체력이 안 줄면 벽 너머로 본다 — 부활 무적 150틱(Server.cpp:6416)보다 길게
 
 // 전사 능력 — 플랜 2-5절. 재사용은 서버 값(GameBalance.h kAbilityDelay) · 거리는 잠정(플랜 「돌려 보고 D6 에서 정한다」).
 struct AbilityInfo { uint8_t id; uint32_t delay; double minDist, maxDist; };
@@ -71,14 +71,14 @@ constexpr SpellInfo kFireball{27, 0, 30}, kDeathRay{16, 0, 60};
 constexpr SpellInfo kChain{43, 0, 30};            // 시작 값은 0 이고 30프레임 동안 1씩 최대 30 — 끝까지 쓸 만큼 있을 때만 보낸다
 constexpr SpellInfo kBlink{4, 1, 10}, kHeal{41, 1, 30};
 constexpr const SpellInfo* kBuffs[3] = {&kProtect, &kHaste, &kInvis};
-constexpr uint32_t kBuffBitProtect = 1u << 26, kBuffBitHaste = 1u << 9, kBuffBitInvis = 1u << 0;   // 0x5A 비트(Server.cpp:7034 · :6948 · :6951)
+constexpr uint32_t kBuffBitProtect = 1u << 26, kBuffBitHaste = 1u << 9, kBuffBitInvis = 1u << 0;   // 0x5A 비트(Server.cpp:7053 · :6967 · :6969)
 constexpr uint32_t kSelfBuffMask = kBuffBitProtect | kBuffBitHaste | kBuffBitInvis;
 constexpr uint32_t kSpellGapFrames = 60;          // 어떤 주문이든 2초에 하나(플랜 1-1절)
 constexpr uint32_t kCastHoldFrames = 25;          // 음소가 끝날 때까지 커서를 상대 위에 두고 안 달린다 — 가장 긴 보호막이 24틱
-constexpr uint32_t kChainHoldFrames = 60;         // 연쇄 번개는 서버가 30프레임 뒤 스스로 끝내는데(Server.cpp:6998) 달리면 끊긴다(:7736)
+constexpr uint32_t kChainHoldFrames = 60;         // 연쇄 번개는 서버가 30프레임 뒤 스스로 끝내는데(Server.cpp:7017) 달리면 끊긴다(:7757)
 constexpr double kSightRange = 150.0;             // 이 안의 상대만 주문 대상(원본 기준 GAME4.c:1960)
 constexpr double kBackOffIn = 50.0, kBackOffTo = 80.0;   // 상대가 50 안이면 80 까지 물러난다
-constexpr double kBlinkIn = 25.0;                 // 25 안이면 점멸(원본 기준 GAME4.c:2020)
+constexpr double kBlinkIn = 25.0;                 // 25 안이면 점멸(원본 기준 GAME4.c:2020 의 50 × 0.5 · GAME5.c:1373)
 constexpr int kRetreatPercent = 25, kRecoverPercent = 80;   // 후퇴 시작 · 복귀(원본 기준 GAME4.c:1949 · :1951)
 constexpr uint32_t kRetreatMinFrames = 120, kRetreatMaxFrames = 180;   // 4~6초 도망(원본 기준 GAME5.c:263)
 constexpr uint32_t kConfuseMinFrames = 90, kConfuseMaxFrames = 900;   // 혼란은 3~30초 난수로 쉰다(원본 기준 GAME4.c:2033-2034)
@@ -192,7 +192,7 @@ struct Dummy {
     int64_t fullSinceUs = 0;             // 방이 찬 것을 처음 본 때(0 = 아직)
     int64_t startAtUs = 0;               // 다음 !start 를 보낼 때
     uint8_t facing = 0;
-    std::vector<OtherPlayer> others;     // 마지막 갱신의 다른 사람들(서버가 거리와 무관하게 싣는다 — Server.cpp:18663)
+    std::vector<OtherPlayer> others;     // 마지막 갱신의 다른 사람들(서버가 거리와 무관하게 싣는다 — Server.cpp:18697)
     std::vector<std::pair<uint16_t, uint32_t>> skip;   // 죽어서 대상에서 뺀 번호 · 풀리는 프레임
     bool dead = false;
     uint32_t reviveClickFrame = 0;       // 다음 부활 클릭을 보낼 프레임
@@ -279,7 +279,7 @@ void RegisterAlias(Dummy& d, uint16_t netCode, uint16_t type, bool head) {
 }
 
 void OnUpdate(Dummy& d, const nox::UpdateMsg& m) {
-    // 갱신의 머리는 카메라다(번호 0 · 별칭 01 · Server.cpp:18602-18618) — 자리는 내 자리지만 번호는 안 알려 준다.
+    // 갱신의 머리는 카메라다(번호 0 · 별칭 01 · Server.cpp:18635-18651) — 자리는 내 자리지만 번호는 안 알려 준다.
     if (m.headAlias == 0xff) RegisterAlias(d, m.headNetCode, m.headType, true);
     d.x = m.x;
     d.y = m.y;
@@ -334,7 +334,7 @@ void OnImportantBody(Dummy& d, const uint8_t* p, size_t n) {
                 d.skip.emplace_back(net, d.frame + kDeathSkipFrames);
             }
         } else if (p[i] == static_cast<uint8_t>(Op::REPORT_HEALTH_DELTA) && msz >= 5) {
-            d.hurtNet = static_cast<uint16_t>(p[i + 1] | (p[i + 2] << 8));   // 42 <번호 2> <증감 2> — 음수만 온다(Server.cpp:6692)
+            d.hurtNet = static_cast<uint16_t>(p[i + 1] | (p[i + 2] << 8));   // 42 <번호 2> <증감 2> — 음수만 온다(Server.cpp:6711)
             d.hurtFrame = d.frame;
         } else if (p[i] == static_cast<uint8_t>(Op::REPORT_PLAYER_HEALTH) && msz >= 3) {
             const int hp = p[i + 1] | (p[i + 2] << 8);
@@ -347,7 +347,7 @@ void OnImportantBody(Dummy& d, const uint8_t* p, size_t n) {
                 d.firstCastAfterRevive = d.cls == 1;   // 「부활 뒤 첫 주문은 자기 강화」는 법사 규칙이다 — 컨저러는 소환이 먼저(플랜 2-7절)
             }
         } else if (p[i] == static_cast<uint8_t>(Op::REPORT_MANA) && msz >= 5) {
-            // 45 <번호 2> <마나 2>(Server.cpp:6502)
+            // 45 <번호 2> <마나 2>(Server.cpp:6520)
             if (static_cast<uint16_t>(p[i + 1] | (p[i + 2] << 8)) == d.selfNet) d.mana = p[i + 3] | (p[i + 4] << 8);
         } else if ((p[i] == static_cast<uint8_t>(Op::REPORT_TOTAL_HEALTH) || p[i] == static_cast<uint8_t>(Op::REPORT_TOTAL_MANA)) && msz >= 7) {
             // dd · de <번호 2> <값 2> <값 2> — 입장 꼬리가 싣는 최대치(SnapshotTail.cpp:141 · :144)
@@ -371,7 +371,7 @@ void OnImportantBody(Dummy& d, const uint8_t* p, size_t n) {
             for (size_t k = 0; k < d.pets.size(); ++k)
                 if (d.pets[k] == net) { d.pets.erase(d.pets.begin() + static_cast<std::ptrdiff_t>(k)); break; }
         } else if (p[i] == static_cast<uint8_t>(Op::REPORT_ENCHANTMENT) && msz >= 7) {
-            // 5A <번호 2> <비트 4>(Server.cpp:2291-2299) — 모든 사람에게 온다
+            // 5A <번호 2> <비트 4>(Server.cpp:2296-2304) — 모든 사람에게 온다
             const uint16_t net = static_cast<uint16_t>(p[i + 1] | (p[i + 2] << 8));
             const uint32_t bits = static_cast<uint32_t>(p[i + 3]) | (static_cast<uint32_t>(p[i + 4]) << 8) |
                                   (static_cast<uint32_t>(p[i + 5]) << 16) | (static_cast<uint32_t>(p[i + 6]) << 24);
@@ -418,7 +418,7 @@ void ResetForMap(Dummy& d) {
     d.retreating = false;
     d.backingOff = false;
     d.abilGapEndFrame = d.frame;
-    // 서버는 맵이 바뀌어도 능력 쉬는 시간을 되돌리지 않고(되돌리는 곳은 부활 때 `AbilityCancelAll` 뿐) 판 끝 동안은 줄이지도 않아
+    // 서버는 맵이 바뀌어도 능력 쉬는 시간을 되돌리지 않고(되돌리는 곳은 죽을 때 `AbilityCancelAll` 뿐) 판 끝 동안은 줄이지도 않아
     // (`AbilityUpdate` 는 사람 걸음 안이라 `frozen` 이면 안 돈다) 더미는 남은 값을 모른다 — 방금 쓴 셈 치고 한 번 기다린다.
     // 전에는 이 자리에서 지웠더니 둘째 판부터 시작 직후에만 「쉬는중」 거절이 났다(실물 d6_4 4건 · d6_10 8건 · 첫 판 0건).
     for (const AbilityInfo& ab : kAbilities) d.abilReadyFrame[ab.id] = d.frame + ab.delay + kAbilityMargin;
@@ -437,10 +437,10 @@ void WalkMessages(Dummy& d, const uint8_t* b, size_t all) {
         size_t msz = nox::MessageSize(b + eaten, all - eaten, /*fromClient=*/false);
 
         if (op == static_cast<uint8_t>(Op::IMPORTANT)) {
-            // aa 뒤에는 cc 봉투와 봉투 없는 메시지(42 · 45)가 줄 선 순서대로 섞여 온다(Server.cpp:510-518 — 큐 항목을 그대로 잇는다).
+            // aa 뒤에는 cc 봉투와 봉투 없는 메시지(42 · 45)가 줄 선 순서대로 섞여 온다(Server.cpp:513-521 — 큐 항목을 그대로 잇는다).
             // 머리만 여기서 먹고 뒤는 아래 갈래가 하나씩 읽는다 — 봉투만 훑으면 봉투 없는 것을 만난 뒤의 봉투를 통째로 놓친다.
             msz = 1;
-            // 정품은 aa 를 받을 때마다 같은 묶음 27 의 프레임으로 답한다(원본 기준 network_client.go:302-318).
+            // 정품은 aa 를 받을 때마다 같은 묶음 27 의 프레임으로 답한다(원본 기준 network_client.go:397-415).
             d.out.push_back(static_cast<uint8_t>(Op::IMPORTANT_ACK));
             Put32(d.out, d.frame);
             ++g_count.sentAck;
@@ -469,7 +469,7 @@ void WalkMessages(Dummy& d, const uint8_t* b, size_t all) {
         } else if (op == static_cast<uint8_t>(Op::JOIN_DATA) && msz >= 3) {
             d.selfNet = static_cast<uint16_t>(b[eaten + 1] | (b[eaten + 2] << 8));   // 2c <번호 2> <0 4> — 자기 번호를 알려 주는 메시지(JoinBundle.h:10)
         } else if (op == static_cast<uint8_t>(Op::USE_MAP) && msz >= 2) {
-            // 맵이 바뀌면 서버가 준비를 끈다(Server.cpp:1910) — 준비를 안 보내면 중요 메시지가 멈춘다.
+            // 맵이 바뀌면 서버가 준비를 끈다(Server.cpp:1915) — 준비를 안 보내면 중요 메시지가 멈춘다.
             // 맵 파일 이름은 본문 첫 칸부터 최대 31글자(BuildUseMap · JoinBundle.cpp:170). 처음 받은 맵이 대기 맵이다.
             const char* name = reinterpret_cast<const char*>(b + eaten + 1);
             size_t nameLen = 0;
@@ -516,7 +516,7 @@ void OnDatagram(Dummy& d, uint8_t* p, size_t n) {
         if (n == 10 && p[2] == static_cast<uint8_t>(Op::ACCEPTED)) {
             d.key = p[9];
             d.relNext = static_cast<uint8_t>(p[1] + 1);
-            // 0x20 + 153바이트. 본문 66번이 직업(GameBalance.h:52 · Server.cpp:4268-4270).
+            // 0x20 + 153바이트. 본문 66번이 직업(GameBalance.h:52 · Server.cpp:4276-4278).
             uint8_t accept[154] = {};
             accept[0] = static_cast<uint8_t>(Op::CLIENT_ACCEPT);
             accept[1 + 66] = static_cast<uint8_t>(d.cls);
@@ -554,7 +554,7 @@ void SendTryJoin(const Dummy& d) {
 }
 
 // 정품 입력 꼴 — 방향 칸 둘이 기본(정품 R1 14바이트 4,921번 · 칸이 왜 둘인지는 까닭 미상이라 바이트 그대로).
-// 뒤에 붙는 항목 — 앞으로 = 코드 2 + 데이터 1바이트(서버는 데이터를 안 본다 · Server.cpp:3416) · 클릭 = 코드 6, 데이터 없음(Server.cpp:3437).
+// 뒤에 붙는 항목 — 앞으로 = 코드 2 + 데이터 1바이트(서버는 데이터를 안 본다 · Server.cpp:3424) · 클릭 = 코드 6, 데이터 없음(Server.cpp:3445).
 void PutInput(std::vector<uint8_t>& o, uint8_t facing, bool move, bool click) {
     const size_t at = o.size();
     const uint8_t m[12] = {static_cast<uint8_t>(Op::PLAYER_INPUT), 0x0a, 0x01, 0, 0, 0, facing, 0x01, 0, 0, facing, facing};
@@ -627,7 +627,7 @@ const OtherPlayer* NearestTarget(const Dummy& d) {
     return best;
 }
 
-// 한 지점으로 달린다 — 힘은 늘 바라보는 쪽이라 방향을 돌리고(Server.cpp:3431-3434) 커서를 앞쪽 멀리 둔다(Server.cpp:5613).
+// 한 지점으로 달린다 — 힘은 늘 바라보는 쪽이라 방향을 돌리고(Server.cpp:3439-3442) 커서를 앞쪽 멀리 둔다(Server.cpp:5621).
 void MoveToward(Dummy& d, int tx, int ty) {
     const int dx = tx - d.x, dy = ty - d.y;
     if (dx == 0 && dy == 0) return;
@@ -778,7 +778,7 @@ void StartDetour(Dummy& d, int tx, int ty) {
     FollowPath(d, kWaypoints[w].x, kWaypoints[w].y);
 }
 
-// 커서를 상대 위에 둔다 — 주문은 끝나는 순간의 커서로 대상을 정한다(Server.cpp:6824-6831).
+// 커서를 상대 위에 둔다 — 주문은 끝나는 순간의 커서로 대상을 정한다(Server.cpp:6842-6849).
 void AimAt(Dummy& d, int x, int y) {
     d.facing = FacingTo(x - d.x, y - d.y);
     d.out.push_back(static_cast<uint8_t>(Op::MOUSE));
@@ -818,7 +818,7 @@ void MeleeStep(Dummy& d, const Args& a, const OtherPlayer& t, double dist, bool 
     }
     d.facing = FacingTo(t.x - d.x, t.y - d.y);
     d.stuckHave = false;
-    // ★ 벽을 사이에 두고 붙으면 판정은 「닿음」이어도 피해가 안 들어간다(MapTraceRay · Server.cpp:17501).
+    // ★ 벽을 사이에 두고 붙으면 판정은 「닿음」이어도 피해가 안 들어간다(MapTraceRay · Server.cpp:17523).
     //   벽 격자로 거의 가려내지만 격자에 없는 것(잠긴 문 · 정적 물체)이 사이에 있을 수 있어 상대 체력이 안 줄면 자리를 옮긴다.
     if (d.reachTarget != t.net) {
         d.reachTarget = t.net;
@@ -876,7 +876,7 @@ void CountCast(const SpellInfo& sp) {
     }
 }
 
-// 79 <주문 u32> <0 u32 × 4> <대상 깃발 u8> 22바이트(Server.cpp:4144-4156).
+// 79 <주문 u32> <0 u32 × 4> <대상 깃발 u8> 22바이트(Server.cpp:4151-4163).
 void CastSpell(Dummy& d, const Args& a, const SpellInfo& sp, uint32_t holdFrames) {
     const size_t at = d.out.size();
     d.out.resize(at + 22, 0);
@@ -1058,7 +1058,7 @@ void DecideCaster(Dummy& d, const Args& a, const OtherPlayer& t, double dist, bo
     AimAt(d, t.x, t.y);
 }
 
-// 이번 바퀴의 행동. 싸움은 판 맵에서만 — 대기 맵은 채팅 모드다(Server.cpp:4168).
+// 이번 바퀴의 행동. 싸움은 판 맵에서만 — 대기 맵은 채팅 모드다(Server.cpp:4176).
 void Decide(Dummy& d, const Args& a) {
     d.wantMove = d.wantClick = false;
     if (a.behavior == Behavior::Idle || d.mapName.empty() || d.mapName == d.waitMapName) return;
@@ -1319,7 +1319,7 @@ int main(int argc, char** argv) {
         slots[slotRng() % kWheelSlots].push_back(i);
     }
 
-    // 서버와 같은 고해상도 대기 타이머(main.cpp:850) — Sleep(1) 은 약 15.5ms 를 자서 보내는 간격이 흔들린다.
+    // 서버와 같은 고해상도 대기 타이머(main.cpp:905) — Sleep(1) 은 약 15.5ms 를 자서 보내는 간격이 흔들린다.
     HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
     if (!timer) {
         timer = CreateWaitableTimerW(nullptr, FALSE, nullptr);

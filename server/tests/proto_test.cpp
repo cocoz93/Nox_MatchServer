@@ -25969,7 +25969,6 @@ void TestLobbyMapPaths() {
     std::printf("  10-16 플랜 B 작업 13a — 로비 맵 후보: 로비 아니면 없음 · 기본 대기 So_LOD · 대전 Estate · 준 후보 · 맵 목록 겹침 하나\n");
 }
 
-// ★ 11-10 부하 실험(`Docs/MO_DUMMY_PLAN_1109.md` 3-1절) — 로비 없이 방당 K명씩 채우는 입구 · 방 틀 · 인자 검사
 // ★ 11-10 부하 실험 3-2절 — 체력 · 마나 배수(`--stat-mult`). 끝에 배수를 1 로 되돌린다(다른 시험은 표 값을 본다)
 void TestStatMult() {
     using C = nox::CharClass;
@@ -26103,6 +26102,7 @@ void TestStatMult() {
     }
 }
 
+// ★ 11-10 부하 실험(`Docs/MO_DUMMY_PLAN_1109.md` 3-1절) — 로비 없이 방당 K명씩 채우는 입구 · 방 틀 · 인자 검사
 void TestLoadEntry() {
     using Ev = nox::NetworkEvent;
     using Rq = nox::NetworkRequest;
