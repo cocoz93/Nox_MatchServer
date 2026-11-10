@@ -308,6 +308,39 @@ void CRoomManager::SetOpenEntry(int roomId) {
     _openRoom = roomId;
 }
 
+void CRoomManager::SetLoadEntry(const RoomSettings& roomTemplate, int maxOpenRooms, int roomSize) {
+    _loadEntry = true;
+    _loadTemplate = roomTemplate;
+    _loadMaxRooms = maxOpenRooms;
+    _loadRoomSize = roomSize;
+}
+
+int CRoomManager::FindLoadRoom() const {
+    const std::map<int, size_t> seats = SeatCounts();
+    for (const auto& kv : _rooms) {
+        if (kv.second->_phase != RoomPhase::Waiting) continue;   // 판 중엔 입장을 거절한다(`RoomAdmits`)
+        const auto it = seats.find(kv.first);
+        if ((it == seats.end() ? 0 : it->second) < static_cast<size_t>(_loadRoomSize)) return kv.first;
+    }
+    return kNoRoom;
+}
+
+// 자리 배정은 `CONNECTED` 때 한 번만 — 다른 사건으로는 방을 만들지 않는다.
+size_t CRoomManager::OnLoadEntryEvent(const NetworkEvent& ev) {
+    if (ev.type != NetworkEvent::Type::CONNECTED) return 0;
+    int roomId = FindLoadRoom();
+    if (roomId == kNoRoom && static_cast<int>(_rooms.size()) < _loadMaxRooms) roomId = CreateRoom(_loadTemplate);
+    if (roomId == kNoRoom) {                     // 접속 시도 뒤에 방이 다 찼거나 방을 못 차렸다
+        ++_stats.connectRejected;
+        RequestDisconnectSession(ev.sessionId);
+        return 0;
+    }
+    _seats[ev.sessionId] = roomId;
+    AddMember(Room(roomId), ev.sessionId, std::string());
+    ++_stats.assigned;
+    return Forward(roomId, ev);
+}
+
 int CRoomManager::RoomOfSession(int64_t sessionId) const {
     auto it = _seats.find(sessionId);
     return it == _seats.end() ? kNoRoom : it->second;
@@ -416,6 +449,7 @@ size_t CRoomManager::OnNetworkEvent(const NetworkEvent& ev) {
     auto it = _seats.find(ev.sessionId);
     if (it != _seats.end()) return Forward(it->second, ev);
     // 세션표에 없는 세션
+    if (_loadEntry) return OnLoadEntryEvent(ev);   // ★ 11-10 부하 실험
     if (_openEntry) {
         // 열린 방식 — 모두 방 0. `CONNECTED` 때 바로 넘겨 세션 시작 프레임이 플랜 A 끝과 같다(`ROOMS_DESIGN.md`)
         //   (`CONNECTED` 없이 오는 것 — 옛 동작대로 방 0 이 받는다)
@@ -582,6 +616,18 @@ void CRoomManager::SwapOutNetworkRequests(std::vector<NetworkRequest>& into) {
 //   클라는 접속 시도를 다시 보낼 수 있다) 받거나 `SERVER_ERROR` 사유 4(`ConnectError::Closed`) — 원본이 닫힌 판에서
 //   이름 목록 밖을 돌려보내는 메시지(`network.go:443-453`)를 그대로 쓴다. 원본 거절 규칙의 나머지(버전·인원·밴)는 기능 일이라 따로.
 void CRoomManager::OnJoinRequested(const NetworkEvent& ev) {
+    // ★ 11-10 부하 실험 — 받을지만 정한다. 방은 여기서 만들지 않는다 — 클라가 접속 시도를 다시 보낼 수 있어(위 주석) 방이 겹친다
+    if (_loadEntry) {
+        if (FindLoadRoom() == kNoRoom && static_cast<int>(_rooms.size()) >= _loadMaxRooms) {
+            ++_stats.joinRejected;
+            RespondJoin(ev.sessionId, /*accept=*/false,
+                        { static_cast<uint8_t>(Op::SERVER_ERROR), static_cast<uint8_t>(ConnectError::Closed) });
+            return;
+        }
+        ++_stats.joinAccepted;
+        RespondJoin(ev.sessionId, /*accept=*/true, {});
+        return;
+    }
     if (_openEntry) {
         if (!HasRoom(_openRoom)) {   // ★ 10-14 작업 9d — 정해 준 방이 없으면(닫힘) 거절 — 토큰의 방이 닫혔을 때와 같은 답
             ++_stats.openNoRoom;

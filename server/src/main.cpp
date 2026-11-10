@@ -189,6 +189,10 @@ int main(int argc, char** argv) {
                 if (e == std::string::npos) break;
                 p = e + 1;
             }
+        } else if (a == "--load-rooms" && i + 1 < argc) {
+            opt.loadRooms = std::atoi(argv[++i]);       // ★ 11-10 부하 실험 — 동시에 열려 있는 방 수의 상한
+        } else if (a == "--load-room-size" && i + 1 < argc) {
+            opt.loadRoomSize = std::atoi(argv[++i]);    // ★ 11-10 부하 실험 — 방당 인원
         } else if (a == "--battle-maps" && i + 1 < argc) {
             // ★ 10-16 작업 13a — 대전 맵 후보(같은 꼴) — 로비가 새 방마다 하나를 정해 두고 `!start` 때 그 맵으로 바꾼다
             const std::string list = argv[++i];
@@ -644,7 +648,16 @@ int main(int argc, char** argv) {
         return 2;
     }
     nox::CLobbyClient::Config lobbyClientCfg;   // ★ 10-20 v2 작업 4b — 키를 읽은 뒤 채운다
-    if (opt.noJoinToken) {
+    {
+        const std::string loadErr = LoadOptionsError(opt);   // ★ 11-10 부하 실험
+        if (!loadErr.empty()) {
+            std::printf("[멈춤] %s\n", loadErr.c_str());
+            return 2;
+        }
+    }
+    if (LoadMode(opt)) {
+        std::printf("입장: 실험 옵션 — 방당 %d명 · 열린 방 상한 %d · 접속 때 방을 만든다(토큰 검사 끔)\n", opt.loadRoomSize, opt.loadRooms);
+    } else if (opt.noJoinToken) {
         // ★ 10-14 작업 9d — 열린 방식의 방은 아래에서 실행 인자의 방을 만든 뒤 정한다(그 방이 처음 만든 방이라 번호 0)
         std::printf("입장: 토큰 검사 끔(--no-join-token) — 모두 방 0. 녹음 재생 · 시험 도구 · LAN 실행용\n");
     } else {
@@ -702,8 +715,9 @@ int main(int argc, char** argv) {
     rooms.SetRankOneMap(opt.rankOneMap);   // ★ 매칭 손보기 3
     // ★ 10-14 작업 8d — 로비 방식(`--lobby-port`)은 방 없이 시작한다 — 방은 로비가 만든다(작업 10 · `Docs/ROOMS_DESIGN.md` 흐름 1)
     // ★ 10-20 v2 작업 4b — 로비에 붙기(`--lobby`)도 방 없이 시작한다(새 방은 로비가 묻고 `CLobbyClient` 가 만든다)
+    // ★ 11-10 부하 실험 — 실험 옵션도 방 없이 시작한다(접속 때 만드는 것까지 부하에 넣는다 · Docs/MO_DUMMY_PLAN_1109.md 3-1절)
     nox::CRoom* room0 = nullptr;
-    if (!LobbyMode(opt)) {
+    if (!LobbyMode(opt) && !LoadMode(opt)) {
         int buildRc = 0;
         const int roomId = rooms.CreateRoom(opt.room, &buildRc);
         if (roomId == nox::CRoomManager::kNoRoom) return buildRc;
@@ -712,7 +726,10 @@ int main(int argc, char** argv) {
     }
     world.openSession = nullptr;
     rooms.SetWorldData(world);
-    const WorldExtras noRoom;   // 로비 방식 — 서버 찾기 답의 맵 이름은 녹음 틀 그대로
+    WorldExtras noRoom;   // 로비 방식 — 서버 찾기 답의 맵 이름은 녹음 틀 그대로
+    if (LoadMode(opt)) {  // ★ 11-10 부하 실험 — 첫 방이 없어 이름이 안 채워지므로 `--map` 에서 넣는다(정품 클라의 서버 목록에 뜨게)
+        if (const auto m = maps.Find(MapKeyOf(opt.room.mapPath))) noRoom.lanMapName = LanMapNameOf(m->fileName);
+    }
     if (const int rc = ConfigureNetwork(udp, opt, tmpl, room0 ? room0->Extras() : noRoom)) return rc;
     // 초당 `[성장]` 줄의 봇 번호 — 통신 층 값이라 스레드를 띄우기 전에 읽어 둔다
     if (room0) room0->SetBotSession(net.Network().SessionIdOf("bot0"));
@@ -747,6 +764,18 @@ int main(int argc, char** argv) {
         }
         battleMaps.push_back(b);
         battleKeys += (battleKeys.empty() ? "" : ", ") + MapKeyOf(b);
+    }
+    // ★ 11-10 부하 실험 — 실험 방 틀은 로비 방과 같은 함수로 채운다(틀이 어긋나면 잰 값이 운영 방의 부하가 아니다).
+    //   정원은 0(제한 없음)이고 방당 인원으로만 나눈다 — 일반 방 정원 8 과 부딪히지 않게 · 대기 · 대전 맵은 후보 맨 앞(실행끼리 맵이 안 바뀌게)
+    if (LoadMode(opt)) {
+        if (waitMaps.empty()) {
+            std::printf("[멈춤] 실험 옵션의 대기 맵이 맵 원본에 없다 — 위 [로비] 줄\n");
+            return 2;
+        }
+        RoomSettings loadFrame = opt.room;
+        nox::ApplyLobbyRoomFrame(loadFrame, waitMaps.front(), battleMaps, battleMaps.empty() ? std::string() : battleMaps.front(), /*maxPlayers=*/0);
+        rooms.SetLoadEntry(loadFrame, opt.loadRooms, opt.loadRoomSize);
+        std::printf("입장: 실험 방 틀 — 대기 %s · 대전 맵 %zu개 %s\n", waitKeys.c_str(), battleMaps.size(), battleKeys.empty() ? "(없음 — 판을 못 연다)" : battleKeys.c_str());
     }
     // ★ 10-14 플랜 B 작업 8d — 채널 안 로비(`CChannelLobby` · `--lobby-port`)는 ★ 10-20 v2 작업 4b-2 에서 걷었다 —
     //   로비는 따로 된 프로세스(`nox_lobby`)이고 이 게임 서버는 그 연결 포트에 붙는다(아래)

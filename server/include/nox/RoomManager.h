@@ -396,6 +396,11 @@ public:
     void SetJoinKey(const JoinKey& key);   // 토큰 방식 — 실제 서버
     void SetOpenEntry(int roomId);         // 토큰 검사 끄기 — 모두 그 방. 녹음 재생·대조와 시험 도구 · LAN 실행만
     bool OpenEntry() const { return _openEntry; }
+    // ★ 11-10 부하 실험(`--load-rooms N` · `--load-room-size K`) — 로비 없이 토큰 없는 사람을 방당 K명씩 채운다.
+    //   들어갈 대기 방(판 중이 아니고 K명이 안 찬 첫 방)이 없고 열린 방이 N개 미만이면 `CONNECTED` 때 이 틀로 방을 만든다.
+    //   운영에서 방 만들기가 게임 스레드에서 도는 것과 같은 자리라 방 만들기도 잰 값에 들어간다.
+    void SetLoadEntry(const RoomSettings& roomTemplate, int maxOpenRooms, int roomSize);
+    bool LoadEntry() const { return _loadEntry; }
     // 시험이 만료를 정해 보려고. ★ 10-19 MO 5단계 작업 2 — 방들의 판 결과 시각도 이 시계(있는 방 · 앞으로 만들 방)
     void SetUnixClock(std::function<uint32_t()> now) {
         _unixNow = std::move(now);
@@ -465,6 +470,13 @@ private:
     std::map<int, std::unique_ptr<CRoom>> _rooms;
     int _nextRoomId = 0;
     bool _openEntry = false;
+    // ★ 11-10 부하 실험 — `SetLoadEntry`
+    int FindLoadRoom() const;                     // 판 중이 아니고 K명이 안 찬 첫 방 · 없으면 `kNoRoom`
+    size_t OnLoadEntryEvent(const NetworkEvent& ev);
+    bool _loadEntry = false;
+    RoomSettings _loadTemplate;
+    int _loadMaxRooms = 0;
+    int _loadRoomSize = 0;
     int _openRoom = kNoRoom;                      // ★ 10-14 작업 9d — 열린 방식의 방
     WorldData _world;                             // ★ 10-14 작업 9d — 방을 차릴 때 쓰는 읽기 전용 데이터
     bool _hasWorld = false;

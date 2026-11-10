@@ -25969,6 +25969,183 @@ void TestLobbyMapPaths() {
     std::printf("  10-16 플랜 B 작업 13a — 로비 맵 후보: 로비 아니면 없음 · 기본 대기 So_LOD · 대전 Estate · 준 후보 · 맵 목록 겹침 하나\n");
 }
 
+// ★ 11-10 부하 실험(`Docs/MO_DUMMY_PLAN_1109.md` 3-1절) — 로비 없이 방당 K명씩 채우는 입구 · 방 틀 · 인자 검사
+void TestLoadEntry() {
+    using Ev = nox::NetworkEvent;
+    using Rq = nox::NetworkRequest;
+    using RM = nox::CRoomManager;
+    char m[360];
+    auto joinEv = [](int64_t sid) { Ev e; e.type = Ev::Type::JOIN_REQUESTED; e.sessionId = sid; e.body.assign(97, 0); return e; };
+    auto connEv = [](int64_t sid) { Ev e; e.type = Ev::Type::CONNECTED; e.sessionId = sid; e.addr = "10.50.0.1:" + std::to_string(20000 + sid); return e; };
+    struct Reply { int accept = 0, reject = 0, disconnect = 0; };
+    auto drain = [](RM& rooms) {
+        std::vector<Rq> rq;
+        rooms.SwapOutNetworkRequests(rq);
+        Reply r;
+        for (const Rq& q : rq) {
+            if (q.type == Rq::Type::RESPOND_JOIN) { if (q.accept) ++r.accept; else ++r.reject; }
+            if (q.type == Rq::Type::DISCONNECT_SESSION) ++r.disconnect;
+        }
+        return r;
+    };
+    RoomSettings frame;
+    frame.closeWhenEmpty = true;
+    {   // 열린 방 상한 2 · 방당 3명
+        RM rooms;
+        rooms.SetLoadEntry(frame, 2, 3);
+        for (int i = 0; i < 5; ++i) rooms.OnNetworkEvent(joinEv(1));   // 클라는 접속 시도를 되풀이할 수 있다
+        const Reply r1 = drain(rooms);
+        std::snprintf(m, sizeof(m), "① 접속 시도 5번 — 허락 %d · 거절 %d · 방 %zu(0 이어야)", r1.accept, r1.reject, rooms.RoomCount());
+        Check(r1.accept == 5 && r1.reject == 0 && rooms.RoomCount() == 0, m);
+
+        for (int64_t sid = 1; sid <= 3; ++sid) rooms.OnNetworkEvent(connEv(sid));
+        const int a = rooms.RoomOfSession(1);
+        std::snprintf(m, sizeof(m), "② 첫 접속에 방 하나 · 3명까지 같은 방 — 방 %zu · 자리 [%d %d %d] · 세션표 %zu · 배정 %llu", rooms.RoomCount(), a,
+                      rooms.RoomOfSession(2), rooms.RoomOfSession(3), rooms.SeatCount(), rooms.Stats().assigned);
+        Check(a != RM::kNoRoom && rooms.RoomOfSession(2) == a && rooms.RoomOfSession(3) == a && rooms.RoomCount() == 1 && rooms.SeatCount() == 3 &&
+                  rooms.Stats().assigned == 3, m);
+
+        rooms.OnNetworkEvent(connEv(4));
+        const int b = rooms.RoomOfSession(4);
+        const size_t afterFour = rooms.RoomCount();
+        rooms.OnNetworkEvent(connEv(4));                               // 이미 앉은 세션 — 방을 안 늘린다
+        std::snprintf(m, sizeof(m), "③ 넷째는 새 방 — 첫 방 %d · 새 방 %d · 방 %zu · 같은 세션 되풀이 뒤 방 %zu · 세션표 %zu", a, b, afterFour, rooms.RoomCount(),
+                      rooms.SeatCount());
+        Check(b != RM::kNoRoom && b != a && afterFour == 2 && rooms.RoomCount() == 2 && rooms.SeatCount() == 4, m);
+
+        drain(rooms);
+        rooms.Room(b).SetPhase(nox::RoomPhase::Playing);               // 둘째 방은 자리가 있어도 판 중
+        rooms.OnNetworkEvent(joinEv(5));
+        const Reply r4 = drain(rooms);
+        rooms.OnNetworkEvent(connEv(5));
+        const Reply r5 = drain(rooms);
+        std::snprintf(m, sizeof(m), "④ 상한에서 거절 — 접속 시도 허락 %d · 거절 %d(셈 %llu) · 접속 끊기 %d(셈 %llu) · 자리 %d · 방 %zu", r4.accept, r4.reject,
+                      rooms.Stats().joinRejected, r5.disconnect, rooms.Stats().connectRejected, rooms.RoomOfSession(5), rooms.RoomCount());
+        Check(r4.accept == 0 && r4.reject == 1 && rooms.Stats().joinRejected == 1 && r5.disconnect == 1 && rooms.Stats().connectRejected == 1 &&
+                  rooms.RoomOfSession(5) == RM::kNoRoom && rooms.RoomCount() == 2, m);
+
+        rooms.Room(b).SetPhase(nox::RoomPhase::Waiting);
+        rooms.OnNetworkEvent(joinEv(6));
+        const Reply r6 = drain(rooms);
+        rooms.OnNetworkEvent(connEv(6));
+        std::snprintf(m, sizeof(m), "⑤ 대기로 돌아온 방을 채움 — 허락 %d · 자리 %d(둘째 방 %d) · 방 %zu", r6.accept, rooms.RoomOfSession(6), b, rooms.RoomCount());
+        Check(r6.accept == 1 && rooms.RoomOfSession(6) == b && rooms.RoomCount() == 2, m);
+    }
+    {   // 판 중인 방은 건너뛰고 새 방(상한 3 · 방당 2명)
+        RM rooms;
+        rooms.SetLoadEntry(frame, 3, 2);
+        rooms.OnNetworkEvent(connEv(1));
+        const int a = rooms.RoomOfSession(1);
+        rooms.Room(a).SetPhase(nox::RoomPhase::Playing);
+        rooms.OnNetworkEvent(joinEv(2));
+        const Reply r = drain(rooms);
+        const size_t beforeConnect = rooms.RoomCount();
+        rooms.OnNetworkEvent(connEv(2));
+        const int b = rooms.RoomOfSession(2);
+        std::snprintf(m, sizeof(m), "⑥ 판 중 방 건너뜀 — 허락 %d · 접속 전 방 %zu · 첫 방 %d · 둘째 사람 방 %d · 방 %zu", r.accept, beforeConnect, a, b, rooms.RoomCount());
+        Check(r.accept == 1 && beforeConnect == 1 && b != RM::kNoRoom && b != a && rooms.RoomCount() == 2, m);
+    }
+    {   // 마지막 사람이 나가 방이 닫힌 뒤 다음 접속에 새 방(상한 1 · 방당 2명)
+        RM rooms;
+        rooms.SetLoadEntry(frame, 1, 2);
+        rooms.OnNetworkEvent(connEv(1));
+        const int a = rooms.RoomOfSession(1);
+        const uint32_t t0 = 100000;
+        rooms.BeginTick(t0);                                           // 앉은 적 있는 방(짧게 닫힘)
+        rooms.Game(a).DebugKickPlayer(1);
+        drain(rooms);
+        const size_t seatsLeft = rooms.SeatCount();
+        const uint32_t t1 = t0 + 33;
+        rooms.BeginTick(t1);                                           // 빈 때를 잰다
+        rooms.BeginTick(t1 + RM::kEmptyUsedRoomCloseMs - 1);
+        const size_t justBefore = rooms.RoomCount();
+        rooms.BeginTick(t1 + RM::kEmptyUsedRoomCloseMs);
+        const size_t closed = rooms.RoomCount();
+        rooms.OnNetworkEvent(joinEv(2));
+        const Reply r = drain(rooms);
+        rooms.OnNetworkEvent(connEv(2));
+        const int b = rooms.RoomOfSession(2);
+        std::snprintf(m, sizeof(m), "⑦ 닫힌 뒤 새 방 — 나간 뒤 세션표 %zu · 닫기 직전 방 %zu · 닫은 뒤 방 %zu · 허락 %d · 첫 방 %d · 새 방 %d · 방 %zu", seatsLeft, justBefore, closed,
+                      r.accept, a, b, rooms.RoomCount());
+        Check(seatsLeft == 0 && justBefore == 1 && closed == 0 && r.accept == 1 && b != RM::kNoRoom && b != a && rooms.RoomCount() == 1, m);
+    }
+    {   // 실험 방 틀 = 로비 방 틀 — 정원만 다르다(0 = 제한 없음)
+        const std::vector<std::string> waits = {"C:\\Nox\\maps\\So_LOD\\So_LOD.map"};
+        const std::vector<std::string> battles = {"C:\\Nox\\maps\\Estate\\Estate.map"};
+        RoomSettings base;
+        base.aoi = true;
+        base.bots.push_back(BotWant{});
+        RM lobbyRooms;
+        nox::CLobbyClient::Config cfg;
+        for (size_t i = 0; i < cfg.tokenKey.size(); ++i) cfg.tokenKey[i] = static_cast<uint8_t>(i + 1);
+        cfg.epoch = 1760000000u;
+        cfg.registerIp = 0x7f000002u;
+        cfg.port = 18590;
+        nox::CLobbyClient lc(lobbyRooms, cfg, base, waits, battles);
+        lc.SetSeed(3);
+        lc.SetClock([] { return 1000u; });
+        auto ev = [](Ev::Type t, const std::string& line) { Ev e; e.type = t; e.lobbyConn = 7; e.lobbyLine = line; e.lobbyWhy = "test"; return e; };
+        std::vector<Rq> q;
+        lc.OnNetworkEvent(ev(Ev::Type::LOBBY_OPENED, ""), q);
+        lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, nox::LinkHello("00112233445566778899aabbccddeeff")), q);
+        lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, nox::LinkCreate(42, "aa")), q);
+        int lobbyId = RM::kNoRoom;
+        for (const auto& f : lobbyRooms.ListRooms())
+            if (f.creator == "aa") lobbyId = f.roomId;
+        RoomSettings loadFrame = base;
+        nox::ApplyLobbyRoomFrame(loadFrame, waits.front(), battles, battles.front(), 0);
+        RM loadRooms;
+        loadRooms.SetLoadEntry(loadFrame, 1, 2);
+        loadRooms.OnNetworkEvent(connEv(1));
+        const int loadId = loadRooms.RoomOfSession(1);
+        if (lobbyId == RM::kNoRoom || loadId == RM::kNoRoom) {
+            std::snprintf(m, sizeof(m), "⑧ 틀 대조 — 로비 방 %d · 실험 방 %d(둘 다 있어야)", lobbyId, loadId);
+            Check(false, m);
+        } else {
+            const RoomSettings& L = lobbyRooms.Room(lobbyId).Settings();
+            const RoomSettings& E = loadRooms.Room(loadId).Settings();
+            const bool same = L.mapPath == E.mapPath && L.mode == E.mode && L.battleMapChoices == E.battleMapChoices && L.battleMapPath == E.battleMapPath &&
+                              L.battleMode == E.battleMode && L.standalone == E.standalone && L.closeWhenEmpty == E.closeWhenEmpty && L.bots.size() == E.bots.size() &&
+                              L.aoi == E.aoi && L.battleScoreLimit == E.battleScoreLimit && L.battleTimeLimitSec == E.battleTimeLimitSec;
+            std::snprintf(m, sizeof(m), "⑧ 틀 대조 — 같음 %d · 모드 %s/%s · 대전 %s/%s · 대전 모드 %s/%s · 비면 닫음 %d/%d · 봇 %zu/%zu · 시야 %d/%d · 판수 %d/%d · 시간 %d/%d · 정원 %d/%d", (int)same,
+                          L.mode.c_str(), E.mode.c_str(), MapKeyOf(L.battleMapPath).c_str(), MapKeyOf(E.battleMapPath).c_str(), L.battleMode.c_str(), E.battleMode.c_str(), (int)L.closeWhenEmpty,
+                          (int)E.closeWhenEmpty, L.bots.size(), E.bots.size(), (int)L.aoi, (int)E.aoi, L.battleScoreLimit, E.battleScoreLimit, L.battleTimeLimitSec, E.battleTimeLimitSec, L.maxPlayers,
+                          E.maxPlayers);
+            Check(same && E.mode == "chat" && E.battleMode == "arena" && E.standalone && E.closeWhenEmpty && E.bots.empty() && E.aoi && E.battleScoreLimit == 10 && E.battleTimeLimitSec == 600 &&
+                      L.maxPlayers == nox::CLobbyClient::kRoomMaxPlayers && E.maxPlayers == 0, m);
+        }
+    }
+    {   // 인자 검사 · 맵 후보 · 서버 찾기 답의 맵 이름
+        ServerOptions off;
+        off.room.mapPath = "C:\\X\\a.map";
+        std::snprintf(m, sizeof(m), "⑨ 옵션 없음 — 켜짐 %d · 오류 [%s] · 대기 %zu · 대전 %zu", (int)LoadMode(off), LoadOptionsError(off).c_str(), WaitMapPaths(off).size(), BattleMapPaths(off).size());
+        Check(!LoadMode(off) && LoadOptionsError(off).empty() && WaitMapPaths(off).empty() && BattleMapPaths(off).empty(), m);
+        ServerOptions on;
+        on.gameDir = "G";
+        on.noJoinToken = true;
+        on.room.standalone = true;
+        on.room.mapPath = "G\\maps\\So_LOD\\So_LOD.map";
+        on.loadRooms = 2;
+        on.loadRoomSize = 4;
+        const auto w = WaitMapPaths(on), b = BattleMapPaths(on), list = MapListFromOptions(on);
+        std::snprintf(m, sizeof(m), "⑩ 옵션 있음 — 켜짐 %d · 오류 [%s] · 대기 [%s] · 대전 [%s] · 맵 목록 %zu", (int)LoadMode(on), LoadOptionsError(on).c_str(), w.empty() ? "" : w[0].c_str(), b.empty() ? "" : b[0].c_str(), list.size());
+        Check(LoadMode(on) && LoadOptionsError(on).empty() && w.size() == 1 && w[0] == on.room.mapPath && b.size() == 1 && b[0] == "G\\maps\\Estate\\Estate.map" && list.size() == 2 && list[0] == w[0] && list[1] == b[0], m);
+        int rejected = 0;
+        ServerOptions a = on; a.loadRoomSize = 0; rejected += LoadOptionsError(a).empty() ? 0 : 1;
+        a = on; a.loadRooms = 0; rejected += LoadOptionsError(a).empty() ? 0 : 1;
+        a = on; a.noJoinToken = false; rejected += LoadOptionsError(a).empty() ? 0 : 1;
+        a = on; a.room.standalone = false; rejected += LoadOptionsError(a).empty() ? 0 : 1;
+        a = on; a.room.mapPath.clear(); rejected += LoadOptionsError(a).empty() ? 0 : 1;
+        a = on; a.lobbyAddr = "127.0.0.1"; rejected += LoadOptionsError(a).empty() ? 0 : 1;
+        std::snprintf(m, sizeof(m), "⑪ 필수 인자 빠짐 — 거절 %d / 6", rejected);
+        Check(rejected == 6, m);
+        const std::string n1 = LanMapNameOf("so_lod.map"), n2 = LanMapNameOf("abcdefgh.map"), n3 = LanMapNameOf("abcdefghi.map");
+        std::snprintf(m, sizeof(m), "⑫ 서버 찾기 맵 이름 — [%s] · 8글자 [%s] · 9글자 [%s](칸 9바이트라 8글자까지)", n1.c_str(), n2.c_str(), n3.c_str());
+        Check(n1 == "so_lod" && n2 == "abcdefgh" && n3.empty(), m);
+    }
+    std::printf("  11-10 부하 실험 3-1절 — K명씩 채우기 · 방은 접속 때 · 시도 되풀이에 방 안 늠 · 판 중 건너뜀 · 상한 거절 · 닫힌 뒤 새 방 · 틀 = 로비 틀 · 인자 검사\n");
+}
+
 void TestRooms() {
     const uint8_t conn[3] = { 0xff, 0x00, 0x00 };
     const uint8_t leave[3] = { 0x00, 0x00, static_cast<uint8_t>(nox::Op::OUTGOING_CLIENT) };
@@ -34774,6 +34951,7 @@ int main() {
     TestRankOneMap();                // ★ 매칭 손보기 3
     TestMatchRecordRoundTrip();   // ★ 7단계 조각 4
     TestLobbyMapPaths();
+    TestLoadEntry();              // ★ 11-10 부하 실험 3-1절
     TestInGameNameIsAccount();   // ★ 11-05
     TestJoinTrailer();
     TestReliableResend();

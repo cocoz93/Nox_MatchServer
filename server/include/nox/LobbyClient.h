@@ -38,6 +38,11 @@
 
 namespace nox {
 
+// ★ 11-10 부하 실험 — 로비가 새 방에 채우는 틀을 뽑았다. 실험 방도 이 함수를 지나야 잰 값이 운영 방의 부하다.
+//   대기 맵 · 채팅 모드 · 대전 맵 후보 · 아레나 · 맵을 직접 차림 · 비면 닫음 · 봇 없음.
+void ApplyLobbyRoomFrame(RoomSettings& s, const std::string& waitMap, const std::vector<std::string>& battleMaps,
+                         const std::string& battleMap, int maxPlayers);
+
 // 연결의 셈 — 갈래마다
 struct CLobbyClientStats {
     unsigned long long linksUp = 0;          // 로비에 붙음

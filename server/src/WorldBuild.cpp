@@ -919,7 +919,7 @@ namespace {
 // 로비 방식의 맵 후보 — `.map` 으로 끝나면 파일 경로 그대로, 아니면 맵 열쇠(게임 폴더의 맵). 로비 방식이 아니면 빈 것
 std::vector<std::string> LobbyMapPaths(const ServerOptions& opt, const std::vector<std::string>& given, const char* fallbackKey) {
     std::vector<std::string> r;
-    if (!LobbyMode(opt)) return r;   // ★ 10-20 v2 작업 4b — 로비에 붙기(--lobby)도
+    if (!LobbyMode(opt) && !LoadMode(opt)) return r;   // ★ 10-20 v2 작업 4b — 로비에 붙기(--lobby)도 · ★ 11-10 부하 실험 옵션도
     const std::vector<std::string> keys = given.empty() ? std::vector<std::string>{fallbackKey} : given;
     for (const std::string& k : keys) {
         std::string low = k;
@@ -933,6 +933,23 @@ std::vector<std::string> LobbyMapPaths(const ServerOptions& opt, const std::vect
 
 std::vector<std::string> WaitMapPaths(const ServerOptions& opt) { return LobbyMapPaths(opt, opt.waitMaps, "So_LOD"); }
 std::vector<std::string> BattleMapPaths(const ServerOptions& opt) { return LobbyMapPaths(opt, opt.battleMaps, "Estate"); }
+
+std::string LoadOptionsError(const ServerOptions& opt) {
+    if (opt.loadRooms == 0 && opt.loadRoomSize == 0) return std::string();
+    if (opt.loadRooms < 1 || opt.loadRoomSize < 1) return "--load-rooms 와 --load-room-size 는 같이 1 이상으로 준다";
+    if (!opt.noJoinToken) return "실험 옵션은 --no-join-token 이 있어야 한다";
+    if (!opt.room.standalone) return "실험 옵션은 --standalone 이 있어야 한다";
+    if (opt.room.mapPath.empty()) return "실험 옵션은 --map 이 있어야 한다";
+    if (LobbyMode(opt)) return "실험 옵션은 --lobby 와 같이 못 쓴다";
+    return std::string();
+}
+
+std::string LanMapNameOf(const std::string& mapFileName) {
+    std::string bare = mapFileName;
+    const size_t dot = bare.find('.');
+    if (dot != std::string::npos) bare.resize(dot);
+    return bare.size() < 9 ? bare : std::string();
+}
 
 std::shared_ptr<const MapOriginal> MapCatalog::Find(const std::string& key) const {
     for (const auto& m : maps)
@@ -2017,10 +2034,10 @@ int BuildRoomWorld(nox::Server& srv, const RoomSettings& opt, const GameFiles& f
             const std::string& nm = map->fileName;
             srv.SetStandaloneMode();
             // 소개(SERVER_INFO)의 맵 이름도 이 맵으로 — 칸이 9바이트라 확장자를 뗀다.
-            std::string bare = nm;
-            const size_t dot2 = bare.find('.');
-            if (dot2 != std::string::npos) bare.resize(dot2);
-            if (!bare.empty() && bare.size() < 9) out.lanMapName = bare;   // ★ 10-12 작업 7a — 틀에 넣는 것은 프로세스 몫
+            {
+                const std::string bare = LanMapNameOf(nm);
+                if (!bare.empty()) out.lanMapName = bare;   // ★ 10-12 작업 7a — 틀에 넣는 것은 프로세스 몫
+            }
             srv.Log("[독립 모드] 접속 묶음·USE_MAP·스냅샷을 조립으로 보냄 (%s crc=%08x)\n",
                         nm.c_str(), map->crc);
         }

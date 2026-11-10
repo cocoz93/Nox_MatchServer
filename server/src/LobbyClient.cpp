@@ -210,6 +210,20 @@ void CLobbyClient::OnCreate(const LinkLine& l, std::vector<NetworkRequest>& out)
     Send(LinkCreated(req, static_cast<uint32_t>(id)), out);
 }
 
+void ApplyLobbyRoomFrame(RoomSettings& s, const std::string& waitMap, const std::vector<std::string>& battleMaps,
+                         const std::string& battleMap, int maxPlayers) {
+    s.mapPath = waitMap;
+    s.mode = "chat";        // 대기 = 원작 채팅 모드 맵(결정 1 — 싸움 막기는 작업 13)
+    // ★ 10-16 작업 13a — 대전 맵(후보에서 무작위 · 없으면 빈 것 — `!start` 가 「대전 맵 없음」) · 아레나(「10-16 정한 것」)
+    s.battleMapChoices = battleMaps;
+    s.battleMapPath = battleMap;
+    s.battleMode = "arena";
+    s.standalone = true;    // 맵을 직접 차린다(녹음 서두 없음)
+    s.closeWhenEmpty = true;
+    s.maxPlayers = maxPlayers;   // ★ 10-16 작업 12a
+    s.bots.clear();         // 봇은 실행 인자의 방 몫(네트워크 스레드를 띄운 뒤라 세울 수도 없다)
+}
+
 // ★ 10-14 작업 10a — 새 방: 틀 + 만든 사람 · 이름 · 대기 맵(무작위) · 채팅 모드 · 비면 닫음 → 방 관리자의 만들기 입구
 // ★ 10-20 v2 작업 4b — 옛 `CChannelLobby::CreateRoomFor` 몸통 그대로(로비가 이제 다른 프로세스라 연결 줄 `CREATE` 로 묻는다).
 //   못 만든 까닭은 `CREATE_FAILED` 로 로비 기록에 실린다
@@ -225,26 +239,19 @@ int CLobbyClient::CreateRoomFor(const std::string& creator, bool ranked, const s
     s.roster = roster;
     s.rosterRatings = ratings.size() == roster.size() ? ratings : std::vector<int32_t>{};   // ★ 매칭 손보기 5
     s.roomName = RoomNameFor(creator);
-    s.mapPath = _waitMaps[std::uniform_int_distribution<size_t>(0, _waitMaps.size() - 1)(_rng)];
-    s.mode = "chat";        // 대기 = 원작 채팅 모드 맵(결정 1 — 싸움 막기는 작업 13)
-    // ★ 10-16 작업 13a — 대전 맵(후보에서 무작위 · 없으면 빈 것 — `!start` 가 「대전 맵 없음」) · 아레나(「10-16 정한 것」)
+    const std::string waitMap = _waitMaps[std::uniform_int_distribution<size_t>(0, _waitMaps.size() - 1)(_rng)];
     // ★ 11-06 플랜1 조각 6 — 무작위는 랭크 방만(방장이 없어 고를 사람이 없고 맵 유불리가 갈림). 일반 방 = 맨 앞 맵 · 방장이 `!map` 으로 바꿈
-    s.battleMapChoices = _battleMaps;
-    s.battleMapPath = _battleMaps.empty() ? std::string()
-                      : s.ranked          ? _battleMaps[std::uniform_int_distribution<size_t>(0, _battleMaps.size() - 1)(_rng)]
-                                          : _battleMaps.front();
-    s.battleMode = "arena";
+    const std::string battleMap = _battleMaps.empty() ? std::string()
+                                  : s.ranked          ? _battleMaps[std::uniform_int_distribution<size_t>(0, _battleMaps.size() - 1)(_rng)]
+                                                      : _battleMaps.front();
+    ApplyLobbyRoomFrame(s, waitMap, _battleMaps, battleMap, kRoomMaxPlayers);   // ★ 11-10 부하 실험 — 실험 방과 같은 틀
     // ★ 매칭 손보기 3(파일럿 · `--rank-one-map`) — 랭크 방은 처음부터 대전 맵 · 대전 모드(대기 맵 = 대전 맵 → 방 관리자가 제자리 판)
     if (ranked && _rooms.RankOneMap() && !s.battleMapPath.empty()) {
         s.mapPath = s.battleMapPath;
         s.mode = s.battleMode;
     }
-    s.standalone = true;    // 맵을 직접 차린다(녹음 서두 없음)
-    s.closeWhenEmpty = true;
-    s.maxPlayers = kRoomMaxPlayers;   // ★ 10-16 작업 12a
     // ★ 랭크 매칭 조각 6 — 랭크 방은 명단 전부를 받는다(일반 방 8 은 10-16 사용자 결정 · 랭크 최대는 로비 설정 — 기본 12 · 10-30 사용자)
     if (ranked && roster.size() > static_cast<size_t>(s.maxPlayers)) s.maxPlayers = static_cast<int>(roster.size());
-    s.bots.clear();         // 봇은 실행 인자의 방 몫(네트워크 스레드를 띄운 뒤라 세울 수도 없다)
     const int id = _rooms.CreateRoom(s);
     if (id == CRoomManager::kNoRoom) why = "방 차리기 실패(게임 서버 [방] 줄)";
     return id;

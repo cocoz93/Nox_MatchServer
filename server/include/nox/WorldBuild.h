@@ -186,6 +186,9 @@ struct ServerOptions {
     // ★ 10-16 작업 13a — 대전 맵 후보(`--battle-maps a,b` — 같은 꼴). 비면 로비 방식에서 `Estate` 하나(10-13 정품으로 채팅 → 대전 전환을 본 맵 ·
     //   `Docs/ROOMS_DESIGN.md` 「10-16 정한 것」)
     std::vector<std::string> battleMaps;
+    // ★ 11-10 부하 실험 — 로비 없이 방을 여러 개 연다(Docs/MO_DUMMY_PLAN_1109.md 3-1절). 둘 다 0 이면 안 켠다 — `LoadOptionsError`
+    int loadRooms = 0;          // `--load-rooms N` — 동시에 열려 있는 방 수의 상한
+    int loadRoomSize = 0;       // `--load-room-size K` — 방당 인원
     // ★ 10-19 MO 5단계 작업 3 — 판 결과 기록(`Docs/MATCH_RESULT_DESIGN.md` 「10-19 정한 것」). 기본 켜짐 — 비면 실행 파일 옆 `results\matches.jsonl`
     std::string resultsPath;    // `--results <파일>`
     bool noResults = false;     // `--no-results` — 실행 파일을 띄우는 시험(ctest)만
@@ -249,6 +252,12 @@ std::vector<std::string> MapListFromOptions(const ServerOptions& opt);
 // ★ 10-14 작업 10a — 대기 맵 후보의 파일 경로(로비 방식만 — 아니면 빈 것). 열쇠는 `<게임 폴더>\maps\<열쇠>\<열쇠>.map`
 // ★ 10-20 v2 작업 4b — 로비 방식(로비에 붙기 `--lobby` — 4b-2 부터 이것 하나) — 방 없이 시작 · 대기 · 대전 맵 후보를 차려 둔다
 inline bool LobbyMode(const ServerOptions& opt) { return !opt.lobbyAddr.empty(); }
+// ★ 11-10 부하 실험 — 방 없이 시작하고 접속 때 방을 만든다(대기 · 대전 맵 후보도 로비 방식처럼 차려 둔다)
+inline bool LoadMode(const ServerOptions& opt) { return opt.loadRooms > 0; }
+// 실험 옵션이 맞게 주어졌나 — 맞으면 빈 문자열, 아니면 까닭 한 줄
+std::string LoadOptionsError(const ServerOptions& opt);
+// 서버 찾기 답의 맵 이름 — 칸이 9바이트라 확장자를 떼고 8글자까지만 싣는다. 넘으면 빈 것(녹음 틀 그대로)
+std::string LanMapNameOf(const std::string& mapFileName);
 std::vector<std::string> WaitMapPaths(const ServerOptions& opt);
 // ★ 10-16 작업 13a — 대전 맵 후보의 파일 경로(로비 방식만 — 아니면 빈 것 · 꼴은 위와 같다)
 std::vector<std::string> BattleMapPaths(const ServerOptions& opt);
