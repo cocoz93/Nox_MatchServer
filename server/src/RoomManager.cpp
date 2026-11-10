@@ -6,6 +6,7 @@
 
 #include "nox/Messages.h"
 #include "nox/Opcode.h"
+#include "nox/TickSections.h"
 
 namespace nox {
 
@@ -26,6 +27,7 @@ const char* RoomPhaseName(RoomPhase p) {
 
 // ★ 10-14 플랜 B 작업 9d — 방 만들기 입구(옛 빈 방 만들기 + `main` 이 방 0 에만 세계를 차리던 것). 방 번호는 세계 차리기가 된 뒤에 매긴다
 int CRoomManager::CreateRoom(const RoomSettings& settings, int* buildRc) {
+    const SectionClock::time_point secStart = g_tickSections ? SectionClock::now() : SectionClock::time_point{};   // ★ 11-10 부하 실험 — 방 만들기 시간(더미 플랜 5-1절)
     const int id = _nextRoomId;
     auto room = std::make_unique<CRoom>(id);
     room->SetSettings(settings);
@@ -46,6 +48,7 @@ int CRoomManager::CreateRoom(const RoomSettings& settings, int* buildRc) {
     const bool rank = room->_rankWait == CRoom::RankWait::Arriving;   // ★ 랭크 매칭 조각 6
     _rooms.emplace(id, std::move(room));
     ++_stats.roomsCreated;
+    if (g_tickSections) g_gameSections.AddRoomCreate(MsSince(secStart));   // `[방] … 만듦` 줄과 수가 같게 — 세계 차리기에 실패한 방은 안 센다 · 출력은 뺀다
     if (rank) {
         ++_stats.rankRooms;
         if (_logRooms) {
@@ -239,7 +242,9 @@ void CRoomManager::CloseEmptyRooms(uint32_t nowMs) {
     }
     for (const int id : toClose) {
         const uint32_t emptyMs = nowMs - _rooms.at(id)->_emptySinceMs;
+        const SectionClock::time_point secStart = g_tickSections ? SectionClock::now() : SectionClock::time_point{};   // ★ 11-10 부하 실험 — 방 닫기 시간(더미 플랜 5-1절)
         CloseRoom(id);
+        if (g_tickSections) g_gameSections.AddRoomClose(MsSince(secStart));
         ++_stats.emptyRoomsClosed;
         if (_logRooms) {
             std::printf("[방] %d 닫음 — 빈 채 %u초\n", id, emptyMs / 1000);
@@ -565,6 +570,7 @@ void CRoomManager::RunTick() {
         ++room._load.tickRuns;
         room._load.tickMsSum += ms;
         if (ms > room._load.tickMsMax) room._load.tickMsMax = ms;
+        const SectionClock::time_point afterStart = g_tickSections ? SectionClock::now() : SectionClock::time_point{};   // ★ 11-10 부하 실험 — 뒷일(더미 플랜 5-1절)
         room._ticks = 0;
         PullRequests(room);
         // ★ 10-19 MO 5단계 작업 2 — 게임의 판 끝 기록을 판 상태가 바뀌기 전에(판 끝 → 대기는 아래 `OnRoundRestarted`) 꺼낸다
@@ -583,6 +589,7 @@ void CRoomManager::RunTick() {
         room.CheckMatchHeadcount();   // ★ 10-16 결함 ④ — 나감은 위 옮기기(`PullRequests`)에서 구성원에서도 빠졌다 · 돌렸으면 그 요청은 다음 옮기기 때
         if (rankLive && room._rankWait == CRoom::RankWait::None) ++_stats.rankEnded;
         PullResults(room);            // ★ 10-19 MO 5단계 작업 2 — 판 끝 · 중단 결과
+        if (g_tickSections) g_gameSections.afterMs += MsSince(afterStart);
     }
 }
 

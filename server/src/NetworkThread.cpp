@@ -13,6 +13,7 @@
 #include "nox/Clock.h"
 #include "nox/JoinToken.h"   // `Ipv4ToString`
 #include "nox/Opcode.h"
+#include "nox/TickSections.h"
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -238,9 +239,13 @@ void CNetworkThread::Run() {
         WSANETWORKEVENTS ne;
         WSAEnumNetworkEvents(s, evs[0], &ne);    // 소켓 이벤트를 되돌린다(받을 것은 아래에서 다 비운다)
         const uint32_t now = NowMs();
+        // ★ 11-10 부하 실험 — 구간 시간(더미 플랜 5-1절). 기다림 뒤부터 잰다. 끄면 시계를 안 읽는다
+        const bool sections = g_tickSections;
+        SectionClock::time_point secLast = sections ? SectionClock::now() : SectionClock::time_point{};
 
         // ① 시계 — 마감 지난 타이머(다시 보내기 · 시간 초과 알림 · 접속 전 걷기)
         if (!stopping) _network.Tick(now, out, events);
+        if (sections) AddNetworkSection(g_networkSections.resendNs, secLast);
         // ② 쌓인 요청 — 게임이 지난 틱에 만든 것이라 이번에 받은 것보다 먼저(`CSyncHost` 의 「받기 앞 요청」과 같은 차례)
         {
             std::lock_guard<std::mutex> lk(_queueMu);
@@ -269,6 +274,7 @@ void CNetworkThread::Run() {
             LobbyToEvents(tcpEvs, events);
         }
         if (!stopping) LobbyConnectTick(now, events);   // ★ 10-20 v2 작업 4a
+        if (sections) AddNetworkSection(g_networkSections.sendNs, secLast);
         // ③ 받을 것 전부(멈출 때는 안 받는다)
         unsigned long long got = 0;
         while (!stopping) {
@@ -326,6 +332,10 @@ void CNetworkThread::Run() {
             }
         }
         if (got > _threadStats.maxDatagramsPerWake) _threadStats.maxDatagramsPerWake = got;
+        if (sections) {
+            AddNetworkSection(g_networkSections.recvNs, secLast);
+            AddRelaxed(g_networkSections.recvCount, got);
+        }
         // ③.5 ★ 10-14 작업 8c — 로비 TCP — 새 접속 · 받은 줄 · 끊김(멈출 때는 안 받는다)
         if (lobbyTcp && !stopping) {
             tcpEvs.clear();
@@ -348,6 +358,7 @@ void CNetworkThread::Run() {
             // ★ 10-09 플랜 A 5d 자가검증 ② — 게임 루프를 깨운다(틱 마감 전이라도 받은 것을 바로 처리)
             if (queued) SetEvent(static_cast<HANDLE>(_eventsReady));
         }
+        if (sections) AddNetworkSection(g_networkSections.handoffNs, secLast);
         // ★ 10-09 조각 5d-2c — 닫기면 키를 준 상대마다 `SERVER_CLOSE`(쌓인 요청 뒤에)
         if (stopping && _closeOnStop.load()) _network.CloseAll(out);
         // ⑤ 나갈 것 전부(주소를 모르는 상대 — 소켓 없는 봇 — 는 건너뛴다)
@@ -359,6 +370,7 @@ void CNetworkThread::Run() {
             ++_threadStats.datagramsOut;
         }
         out.clear();
+        if (sections) AddNetworkSection(g_networkSections.sendNs, secLast);   // 플랜의 네 구간에 안 적힌 `sendto` 고리 — 뜻이 「보내기」라 같은 칸에
         if (stopping || static_cast<uint32_t>(now - _lastPublishMs) >= kMaxWaitMs) {   // 지표 사본은 기다림 설정과 따로 0.25초마다 · 멈출 때 한 번 더
             _lastPublishMs = now;
             Publish();

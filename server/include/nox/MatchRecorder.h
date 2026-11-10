@@ -47,6 +47,7 @@ public:
     // 큐를 다 쓰고 스레드를 닫는다(두 번 불러도 됨)
     void Stop();
     Stats GetStats() const;
+    void* ThreadHandle() { return _thread.joinable() ? _thread.native_handle() : nullptr; }   // ★ 11-10 부하 실험 — 스레드 CPU 읽기(`GetThreadTimes`)
     const std::string& Path() const { return _path; }
 
 private:

@@ -20,6 +20,7 @@
 #include "nox/ThingFlags.h"
 #include "nox/JoinBundle.h"
 #include "nox/SpellNames.h"
+#include "nox/TickSections.h"   // ★ 11-10 부하 실험 — 구간 시간
 #include "nox/DirVectors.h"
 #include "nox/Clock.h"   // ★ 11-03 손실 파일럿 — 중요 메시지 전달 지연(ms)
 
@@ -459,6 +460,7 @@ void Server::ImportantOverflowCheck(Session& s) {
     if (s.leaveBy != LeaveBy::None) return;
     const Session::PendingImportant& front = s.importantQ.front();
     if (!(front.sent && front.resends >= 3)) return;
+    ++g_importantOverflowTotal;   // ★ 11-10 부하 실험 — 사건 기록을 꺼도 읽는 값(변수 통제 플랜 5-3)
     Log("[중요] %s 대기열 %zu 개로 넘침 · 맨 앞 순번이 %u 번 다시 실려도 확인 없음 — 시간 초과로 끊음\n",
         AddrText(s.sessionId), s.importantQ.size(), static_cast<unsigned>(front.resends));
     MarkLeave(s, LeaveBy::Timeout);
@@ -11217,6 +11219,7 @@ void Server::CloseLeftLink(int64_t sessionId, DisconnectReason reason) {
     }
     ++leaveBy_[static_cast<size_t>(why)];
     ++closedAfterOut_;
+    ++g_leaveTotal;   // ★ 11-10 부하 실험 — 사건 기록을 꺼도 읽는 값(변수 통제 플랜 5-3)
     Log("[나감] %s — %s · 번호 %u · 게임 안 아니오 · 판에서 빠진 뒤\n", l->second.addr.c_str(), LeaveByName(why),
         static_cast<unsigned>(l->second.netCode));
     leftLinks_.erase(l);
@@ -17661,6 +17664,7 @@ int Server::BeginTick(uint32_t nowMs) {
 // ★ 10-09 조각 5d — 옛 `Tick` 뒷부분(게임 일). 옛 자리의 통신 층 일(10-08 조각 3b 다시 보내기 · 10-09 조각 5a 시간 초과 알림 →
 //   `OnNetworkEvent` → 아래 「자리 비우기」가 걷어냄)은 게임을 돌리는 쪽이 `BeginTick` 과 이것 사이에 부른다(`CSyncHost::Tick`) — 차례는 그대로다.
 void Server::RunTick(int ticks) {
+    CTickSectionClock sec;   // ★ 11-10 부하 실험 — 틱 처리 순서대로 11구간(`TickSections.h` · 더미 플랜 5-1절). 경계마다 `sec.End`
     // ★ 09-20 ⑰ — 지난 틱에 만든 물체의 **낙하 시작 알림**을 여기서 낸다.
     //   지난 틱 끝의 `a4 UPDATE_STREAM` 이 그 물체를 이미 소개했으므로 클라가 그림을 찾는다.
     FlushDeltaZStart();
@@ -17800,6 +17804,7 @@ void Server::RunTick(int ticks) {
                 ++leaveBy_[static_cast<size_t>(why)];
                 if (asked) ++closedAfterOut_;
             }
+            if (!keepLink) ++g_leaveTotal;   // ★ 11-10 부하 실험 — 아래 `[나감]` 줄과 같은 조건(변수 통제 플랜 5-3)
             if (keepLink)
                 Log("[판에서 빠짐] %s — 번호 %u · 게임 안 %s · 연결은 0a · 시간 초과(30초)까지 둠\n", AddrText(sessionId),
                     static_cast<unsigned>(netCode), wasInGame ? "예" : "아니오");
@@ -18107,12 +18112,15 @@ void Server::RunTick(int ticks) {
         }
     }
 
+    sec.End(TickSection::Front);
+
     // ── 사람을 걷게 하고 때리게 한다 (묶음 2-a · 3-a) — 걸음마다 제 프레임으로 ──
     //    그 틱의 시전 목록도 함께(spellBookReact_4FCB70 — 정답지는 유닛 갱신 뒤 · server.go:341)
     for (int step = 0; step < ticks && !frozen; ++step) {                                    // R1 — 판끝 동안 멈춤
         DoorAutoClose(frame_ - static_cast<uint32_t>(ticks - 1 - step));                    // ★ 10-02 — 문 저절로 닫힘은 걸음 적분 앞(정답지 BBB → updateCollide)
         UpdatePlayerMovement(frame_ - static_cast<uint32_t>(ticks - 1 - step));
     }
+    sec.End(TickSection::Walk);
     // ✖ 10-02 — 시전 목록·지속 주문(`spellBookReact_4FCB70`)을 여기(사람 걸음 바로 뒤)에서 돌렸다 → 아래 크리처 생각 **뒤**로 옮김.
     //   원본은 유닛 갱신(사람·몬스터 모두 — `updateUnits`) 뒤에 돈다(`server.go:335~341` · `spells.go:187~190`).
     //   앞에 두니 몬스터가 생각 중에 건 지속 주문은 다음 프레임에야 처음 봤고, 점멸(`spellBlink1_530380` — 「건 프레임 + 1 − 1 == 지금」)은
@@ -18249,12 +18257,16 @@ void Server::RunTick(int ticks) {
         HurtTarget(Target{ kNoSession, static_cast<int>(i) }, 2, kNoSession, 12, nullptr, HitterNone());
     }
 
+    sec.End(TickSection::Think);
+
     // ── 시전 목록·지속 주문(`spellBookReact_4FCB70` = `spellCastByBook_4FCB80` + `duration.spellCastByPlayer`) ──
     //   ★ 10-02 — 유닛 갱신(사람 걸음·크리처 생각·용암) **뒤**로 옮김(원본 `server.go:335~341` 차례 · 위 사람 걸음 자리의 ✖ 주석)
     for (int step = 0; step < ticks && !frozen; ++step) {                                    // R1 — 판끝 동안 멈춤
         SpellCastByBook(frame_ - static_cast<uint32_t>(ticks - 1 - step));
         SpellCastByPlayer(frame_ - static_cast<uint32_t>(ticks - 1 - step));   // 4-a3 지속 주문(spellBookReact_4FCB70)
     }
+
+    sec.End(TickSection::Cast);
 
     // ★★ **걷고 있나를 정한다** — 갱신 항목의 애니 번호(IDLE/WALK)를 가르는 데 썼다.
     //   ⚠ 2026-09-13 부터 자세는 상태에서 뽑는다(PlayerAnimByte). 이 값은 더 안 쓰인다 — 진단용으로만 남는다.
@@ -18380,6 +18392,8 @@ void Server::RunTick(int ticks) {
             RequestSendMsg(kv.first, /*reliable=*/false, /*stream=*/0, ts, sizeof(ts));
         }
     }
+
+    sec.End(TickSection::World);
 
     // 게임에 들어와 있는 사람에게만 보낸다.
     for (auto& kv : sessions_) {
@@ -18593,7 +18607,7 @@ void Server::RunTick(int ticks) {
         ++s.tickFrame;
         // R1 — 판끝 동안은 시각·갱신을 안 짠다(원본 `updateRemotePlayers` 가 안 돎) · 시계는 계속 센다(원본 프레임도 `server_E` 에서 오름) ·
         //   중요 메시지는 보낸다(원본 `sendPoll` 은 시각이 없어도 Kind1·중요를 싣는다 — `network_lists.go:185·206~224`)
-        if (frozen) { FlushImportant(s); continue; }
+        if (frozen) { FlushImportant(s); sec.End(TickSection::Self); continue; }
 
         // ① 시각 — 본문 2바이트(LE16). 클라는 이 값으로 프레임을 맞춘다.
         {
@@ -18610,7 +18624,7 @@ void Server::RunTick(int ticks) {
         //   시각(`27`)만 몇 번 보내다가 스냅샷을 첫 `a4` 로 내보낸다. 내가 먼저
         //   내 갱신을 흘리면 클라는 **세계를 모르는 채 사람 하나만 받는다**(2026-09-08 대조:
         //   정품 첫 갱신은 항목 14개, 내 첫 갱신은 1개였다).
-        if (s.snapshotIn >= 0) continue;
+        if (s.snapshotIn >= 0) { sec.End(TickSection::Self); continue; }
 
         // ② 상태 갱신 — 머리는 「보는 사람」, 항목에는 **게임에 있는 모두**를 싣는다.
         //    이것이 M 의 「서로를 본다」다. 관심영역(멀리 있는 것은 빼기)은 나중에.
@@ -18676,6 +18690,7 @@ void Server::RunTick(int ticks) {
         }
         // 상대좌표의 기준. 첫 항목은 머리 좌표에서 출발하고, 그 뒤로는 앞 항목 자리를 잇는다.
         int baseX = m.x, baseY = m.y;
+        sec.End(TickSection::Self);
         for (Session* op : order) {
             Session& o = *op;
             ++lastLoopSeen_;
@@ -18833,6 +18848,8 @@ void Server::RunTick(int ticks) {
             m.objects.push_back(e);
         }
 
+        sec.End(TickSection::People);
+
         // ★ 4-a2 날아가는 오브젝트.
         // ★★★ **정정(2026-09-16 전수조사 ⓐ) — 「SIMPLE 이라 붙는 바이트가 없다」는 틀렸다.**
         //   `Magic`(955) 하나만 보고 내린 판단을 **날아가는 것 전부에** 못 박아 두었다.
@@ -18905,6 +18922,8 @@ void Server::RunTick(int ticks) {
             Relativize(e, bb.netCode, static_cast<int>(bb.x), static_cast<int>(bb.y), baseX, baseY);
             m.objects.push_back(e);
         }
+
+        sec.End(TickSection::Objects);
 
         // 불려 나온 것도 싣는다 — 안 그러면 사람을 때리는 게 화면에 안 보인다.
         //
@@ -19015,6 +19034,8 @@ void Server::RunTick(int ticks) {
                 it = alive ? std::next(it) : s.friendsSent.erase(it);
             }
         }
+
+        sec.End(TickSection::Creatures);
 
         // ── 맵 정적 오브젝트 — **시야 반경 안만, 가까운 순 상한** (독립 서버 P4-b) ──
         //
@@ -19130,9 +19151,11 @@ void Server::RunTick(int ticks) {
             n += 5;
         }
         if (n && sendUpdates_) Emit(s, /*reliable=*/false, /*stream=*/0, body, 1 + n);
+        sec.End(TickSection::Statics);
     }
     // ★ 09-30 한 틱 한 데이터그램 — 이 틱(과 지난 틱 뒤 받는 자리)에서 담은 것을 사람마다 한 조각으로(정답지 `server.go:474~475`)
     FlushBundles();
+    sec.End(TickSection::Bundle);
 }
 
 }  // namespace nox

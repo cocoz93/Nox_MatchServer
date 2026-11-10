@@ -95,6 +95,7 @@ public:
     //   기다린다(`WaitForMultipleObjects`) — 옛 `Sleep(1)` 돌려 보기 대신. `Open` 뒤에 있다.
     void* EventsReadyHandle() const { return _eventsReady; }
     CUdpStats LatestNetworkStats() const;
+    void* ThreadHandle() { return _thread.joinable() ? _thread.native_handle() : nullptr; }   // ★ 11-10 부하 실험 — 스레드 CPU 읽기(`GetThreadTimes`)
     CNetworkThreadStats LatestThreadStats() const;
 
     // 받은 조각마다 한 줄(`[받음]`)을 찍는가 — `main` 의 `--quiet` 반대. 시작 전에.

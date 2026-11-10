@@ -40,6 +40,7 @@
 #include "nox/Server.h"
 #include "nox/NetworkThread.h"
 #include "nox/RoomManager.h"
+#include "nox/TickSections.h"   // ★ 11-10 부하 실험 — 구간 시간
 #include "nox/LobbyClient.h"    // ★ 10-20 v2 작업 4b — 로비 프로세스에 붙기
 #include "nox/MatchRecorder.h"  // ★ 10-19 MO 5단계 작업 3 — 판 결과 기록기
 #include "nox/IniFile.h"
@@ -195,6 +196,8 @@ int main(int argc, char** argv) {
             opt.loadRoomSize = std::atoi(argv[++i]);    // ★ 11-10 부하 실험 — 방당 인원
         } else if (a == "--stat-mult" && i + 1 < argc) {
             opt.statMult = std::atoi(argv[++i]);        // ★ 11-10 부하 실험 — 사람 최대 체력 · 마나 배수
+        } else if (a == "--tick-sections") {
+            opt.tickSections = true;                    // ★ 11-10 부하 실험 — 틱 안을 나눠 잰다(`TickSections.h`)
         } else if (a == "--battle-maps" && i + 1 < argc) {
             // ★ 10-16 작업 13a — 대전 맵 후보(같은 꼴) — 로비가 새 방마다 하나를 정해 두고 `!start` 때 그 맵으로 바꾼다
             const std::string list = argv[++i];
@@ -662,6 +665,8 @@ int main(int argc, char** argv) {
         return 2;
     }
     nox::SetStatMult(opt.statMult);   // 방을 만들기 전에 한 번
+    nox::g_tickSections = opt.tickSections;   // 방을 만들기 전에 한 번
+    if (opt.tickSections) std::printf("옵션: 구간 시간 켬 — 초당 [구간] 줄 · 10초마다 [틱분포] 줄\n");
     if (opt.statMult != 1) std::printf("옵션: 사람 최대 체력 · 마나 × %d (소치유 회복량은 사람 대상만 × %d)\n", opt.statMult, opt.statMult);
     if (LoadMode(opt)) {
         std::printf("입장: 실험 옵션 — 방당 %d명 · 열린 방 상한 %d · 접속 때 방을 만든다(토큰 검사 끔)\n", opt.loadRoomSize, opt.loadRooms);
@@ -899,11 +904,17 @@ int main(int argc, char** argv) {
     std::map<uint8_t, bool> told;            // ★ 10-12 작업 7c — `[처음]` 줄을 낸 오프코드(프로세스 몫 — 옛 루프 안 `static`)
     unsigned long long procMade = 0;         // ★ 10-12 작업 7c — 이 1초 동안 낸 보내기 요청(프로세스 몫 초당 줄의 문턱)
     uint32_t procLastMs = nox::NowMs();      //   그 줄을 마지막으로 찍은 때
+    // ★ 11-10 부하 실험 — 구간 시간 출력(`--tick-sections` 일 때만 만든다). `net.Start()` · 기록기 `Start()` 뒤라 스레드가 있다
+    std::unique_ptr<nox::CTickSectionReport> sectionReport;
+    if (opt.tickSections)
+        sectionReport = std::make_unique<nox::CTickSectionReport>(GetCurrentThread(), net.ThreadHandle(), recorder ? recorder->ThreadHandle() : nullptr, nox::NowMs());
     for (;;) {
         if (g_stopRequested.load() || WaitForSingleObject(stopEvent, 0) == WAIT_OBJECT_0) break;   // ★ 5d-2c — 닫기 신호
         ++loopTurns;
         net.SwapOutNetworkEvents(netEvents);
         if (!netEvents.empty()) {
+            const nox::SectionClock::time_point secEvents = sectionReport ? nox::SectionClock::now() : nox::SectionClock::time_point{};   // ★ 11-10 부하 실험 — 사건 처리(방 만들기 포함)
+            const size_t secEventCount = netEvents.size();
             const uint32_t nowEv = nox::NowMs();   // 넣은 시각(`queuedMs`)과 같은 시계(`Clock.h`)
             for (const nox::NetworkEvent& ev : netEvents) {
                 const uint32_t lat = nowEv - ev.queuedMs;
@@ -928,6 +939,10 @@ int main(int argc, char** argv) {
                     std::fflush(stdout);
                 }
             });
+            if (sectionReport) {
+                nox::g_gameSections.eventMs += nox::MsSince(secEvents);
+                nox::g_gameSections.eventCount += secEventCount;
+            }
         }
 
         // ★ 10-12 플랜 B 작업 7c — 판 차리기는 방마다(`StartModeIfReady` — 옛 이 자리의 블록을 옮김)
@@ -960,6 +975,7 @@ int main(int argc, char** argv) {
             rooms.RunTick();
             const double tickMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tickStart).count();
             tickMsSum += tickMs; ++tickRuns; if (tickMs > tickMsMax) tickMsMax = tickMs;
+            if (sectionReport) sectionReport->AddTick(tickMs);
             // 그 틱의 통신 요청을 한 묶음으로 넘긴다. `made` = 그 틱의 보내기 요청 수(옛 「나간 조각 수」 —
             //   다시 보내기는 이제 네트워크 스레드 몫이라 빠진다). 초당 줄은 전처럼 이것이 0 이 아닐 때만 찍는다
             rooms.SwapOutNetworkRequests(netRequests);
@@ -1066,6 +1082,8 @@ int main(int argc, char** argv) {
                 std::fflush(stdout);
             }
         }
+        if (sectionReport && sectionReport->Due(nox::NowMs()))   // ★ 11-10 부하 실험 — 방이 없어도 찍는다(빈 서버 기준선)
+            sectionReport->Print(nox::NowMs(), net.LatestNetworkStats().reliableQueueOverflow);
         // ★ 10-20 v2 작업 4b · 4c — 방 사실이 바뀐 방만 로비에(인원 · 방장 · 판 상태 · 맵 · 빈 방 닫힘). 틱 블록 밖 — 바퀴마다.
         //   틱 블록 안에 두었더니 마지막 방이 닫힌 뒤 틱이 안 돌아(`BeginTick` 은 방이 없으면 0) 닫힘이 로비에 안 갔다(10-20 lobby_smoke 실물)
         if (lobbyClient) {
@@ -1093,6 +1111,7 @@ int main(int argc, char** argv) {
             WaitForSingleObject(static_cast<HANDLE>(net.EventsReadyHandle()), kIdleWaitMs);
         }
     }
+    if (sectionReport) sectionReport->PrintFinal(nox::NowMs(), net.LatestNetworkStats().reliableQueueOverflow);   // `net.Stop` 이 스레드 핸들을 닫기 전에
     // ★ 10-09 조각 5d-2c — 정상 종료(`Docs/LAYERS_DESIGN.md` 「네트워크 스레드」) — 쌓인 요청을 넘기고 → 네트워크 스레드가 그것을 보낸 뒤
     //   키를 준 사람마다 `SERVER_CLOSE` 를 보내고 멈춘다 → 끝(종료 코드 0). 지금 게임에는 닫을 때 저장할 것이 없다.
     std::printf("[종료] 닫기 신호 — 쌓인 요청을 보내고 사람마다 SERVER_CLOSE 를 보낸 뒤 네트워크 스레드를 멈춘다\n");

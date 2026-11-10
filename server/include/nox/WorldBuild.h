@@ -190,6 +190,7 @@ struct ServerOptions {
     int loadRooms = 0;          // `--load-rooms N` — 동시에 열려 있는 방 수의 상한
     int loadRoomSize = 0;       // `--load-room-size K` — 방당 인원
     int statMult = 1;           // `--stat-mult N`(1~10) — 사람 최대 체력 · 마나 배수(더미 플랜 3-2절)
+    bool tickSections = false;  // `--tick-sections` — 틱 안을 11구간으로 나눠 재서 `[구간]` · `[틱분포]` 줄을 찍는다(더미 플랜 5-1절)
     // ★ 10-19 MO 5단계 작업 3 — 판 결과 기록(`Docs/MATCH_RESULT_DESIGN.md` 「10-19 정한 것」). 기본 켜짐 — 비면 실행 파일 옆 `results\matches.jsonl`
     std::string resultsPath;    // `--results <파일>`
     bool noResults = false;     // `--no-results` — 실행 파일을 띄우는 시험(ctest)만
