@@ -70,6 +70,10 @@ target_link_libraries(nox_replay PRIVATE nox_proto)
 add_executable(nox_opcount server/src/opcount.cpp)
 target_link_libraries(nox_opcount PRIVATE nox_proto)
 
+# 부하 실험 더미 — 정품 클라 대신 서버에 붙어 판을 치른다(Docs/MO_DUMMY_PLAN_1109.md).
+add_executable(nox_dummy server/src/dummy.cpp)
+target_link_libraries(nox_dummy PRIVATE nox_proto)
+
 add_executable(nox_verify server/src/verify_update.cpp)
 target_link_libraries(nox_verify PRIVATE nox_proto)
 
