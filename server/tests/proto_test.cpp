@@ -25970,6 +25970,139 @@ void TestLobbyMapPaths() {
 }
 
 // ★ 11-10 부하 실험(`Docs/MO_DUMMY_PLAN_1109.md` 3-1절) — 로비 없이 방당 K명씩 채우는 입구 · 방 틀 · 인자 검사
+// ★ 11-10 부하 실험 3-2절 — 체력 · 마나 배수(`--stat-mult`). 끝에 배수를 1 로 되돌린다(다른 시험은 표 값을 본다)
+void TestStatMult() {
+    using C = nox::CharClass;
+    const std::string a = "10.52.0.1:5201", b = "10.52.0.2:5202";
+    char m[240];
+    auto eq = [&](int got, int want, const char* what) {
+        std::snprintf(m, sizeof(m), "스탯 배수 — %s: 값 %d (기대 %d)", what, got, want);
+        Check(got == want, m);
+    };
+    struct Back { ~Back() { nox::SetStatMult(1); } } back;
+
+    // 사람 둘이 아군인 판(퀘스트)에서 b 체력을 5 깎았을 때 41 에 실린 값
+    auto health41 = [&](C cls) {
+        nox::CSyncHost srv;
+        srv.DebugEnterGame(a, 728, false, cls);
+        srv.DebugEnterGame(b, 729, false, cls);
+        srv->StartQuest(2, 5000, 5000, 100.0);
+        std::vector<nox::OutPacket> out;
+        srv->Damage(Sid(srv, b), 5, Sid(srv, a)); srv.TakeOut(out);
+        for (uint32_t ms = 0; ms <= 120; ms += 33) srv.Tick(ms, out);
+        int v = -1;
+        for (const auto& p : out) {
+            auto body = Body(p);
+            const uint8_t* msg = nullptr;
+            size_t n = 0;
+            if (body.size() >= 5 && body[0] == static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT)) { msg = body.data() + 4; n = body.size() - 4; }
+            else if (!body.empty()) { msg = body.data(); n = body.size(); }
+            if (msg && n >= 4 && msg[0] == static_cast<uint8_t>(nox::Op::REPORT_HEALTH)) v = msg[3];
+        }
+        return v;
+    };
+
+    // ① 기본 ×1 — 표 값 그대로 · 41 은 예전 값 그대로
+    eq(nox::StatMult(), 1, "기본 배수");
+    eq(nox::HealthOnline(C::Warrior), 150, "×1 전사 체력");
+    eq(nox::HealthOnline(C::Wizard), 75, "×1 위저드 체력");
+    eq(nox::HealthOnline(C::Conjurer), 100, "×1 컨저러 체력");
+    eq(nox::ManaOnline(C::Warrior), 0, "×1 전사 마나");
+    eq(nox::ManaOnline(C::Wizard), 150, "×1 위저드 마나");
+    eq(nox::ManaOnline(C::Conjurer), 125, "×1 컨저러 마나");
+    eq(health41(C::Warrior), 72, "×1 전사 41 (145 >> 1)");
+
+    nox::SetStatMult(5);
+    // ② ×5 — 세 직업
+    eq(nox::HealthOnline(C::Warrior), 750, "×5 전사 체력");
+    eq(nox::HealthOnline(C::Wizard), 375, "×5 위저드 체력");
+    eq(nox::HealthOnline(C::Conjurer), 500, "×5 컨저러 체력");
+    eq(nox::ManaOnline(C::Warrior), 0, "×5 전사 마나");
+    eq(nox::ManaOnline(C::Wizard), 750, "×5 위저드 마나");
+    eq(nox::ManaOnline(C::Conjurer), 625, "×5 컨저러 마나");
+
+    // ③ 입장 — 세션의 값 · 입장 묶음의 dd · de · 48
+    {
+        const C classes[3] = { C::Warrior, C::Wizard, C::Conjurer };
+        for (const C cls : classes) {
+            const int hp = nox::HealthOnline(cls), mp = nox::ManaOnline(cls);
+            nox::CSyncHost srv;
+            srv.DebugEnterGame(a, 728, false, cls);
+            eq(srv->HealthOf(Sid(srv, a)), hp, "×5 입장 체력");
+            eq(srv->ManaOf(Sid(srv, a)), mp, "×5 입장 마나");
+            const auto tail = nox::BuildSnapshotTail(728, cls, 0, 0);
+            const uint8_t hl = static_cast<uint8_t>(hp), hh = static_cast<uint8_t>(hp >> 8), ml = static_cast<uint8_t>(mp), mh = static_cast<uint8_t>(mp >> 8);
+            bool dd = false, de = false, st = false;
+            for (size_t i = 0; i + 7 <= tail.size(); ++i) {
+                if (tail[i + 1] != 0xd8 || tail[i + 2] != 0x02) continue;
+                if (tail[i] == 0xdd && tail[i + 3] == hl && tail[i + 4] == hh && tail[i + 5] == hl && tail[i + 6] == hh) dd = true;
+                if (tail[i] == 0xde && tail[i + 3] == ml && tail[i + 4] == mh && tail[i + 5] == ml && tail[i + 6] == mh) de = true;
+                if (tail[i] == 0x48 && tail[i + 3] == hl && tail[i + 4] == hh && tail[i + 5] == ml && tail[i + 6] == mh) st = true;
+            }
+            eq(dd ? 1 : 0, 1, "×5 입장 묶음 dd");
+            eq(de ? 1 : 0, 1, "×5 입장 묶음 de");
+            eq(st ? 1 : 0, 1, "×5 입장 묶음 48");
+        }
+    }
+
+    // ④ 부활 뒤 최대로 돌아옴
+    {
+        nox::CSyncHost srv;
+        srv.DebugEnterGame(a, 728, false, C::Wizard);
+        srv.DebugEnterGame(b, 729, false, C::Wizard);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        for (int t = 0; t < 3; ++t) { ms += 33; srv.Tick(ms, out); }
+        srv->DebugManaSub(Sid(srv, a), 30);
+        srv->Damage(Sid(srv, a), 1000); srv.TakeOut(out);
+        Check(!srv->IsAlive(Sid(srv, a)), "스탯 배수 — 안 죽었다(시험 전제)");
+        for (int t = 0; t < 60; ++t) { ms += 33; srv.Tick(ms, out); }
+        auto click = InputPacket(6);
+        srv.OnPacket(a, click.data(), click.size(), out);
+        ms += 33; srv.Tick(ms, out);
+        Check(srv->IsAlive(Sid(srv, a)), "스탯 배수 — 클릭했는데 안 되살아났다(시험 전제)");
+        eq(srv->HealthOf(Sid(srv, a)), 375, "×5 부활 뒤 체력");
+        eq(srv->ManaOf(Sid(srv, a)), 750, "×5 부활 뒤 마나");
+    }
+
+    // ⑤ 41 — 체력 745 는 372 라 1바이트를 넘어 255 로 막는다 · 370 은 185 라 안 막힌다
+    eq(health41(C::Warrior), 255, "×5 전사 41 (745 >> 1 을 255 로)");
+    eq(health41(C::Wizard), 185, "×5 위저드 41 (370 >> 1)");
+
+    auto healData = [](nox::CSyncHost& srv) {
+        nox::Gamedata g;
+        g.Parse("LesserHealAmount = 15;\n" "SummonDuration = 60, 210, 375;\n");
+        srv->SetGamedata(g);
+        srv->SetSpellDef(41, 10, 0x1000000, { 1, 2 });
+    };
+    // ⑥ 소치유 — 사람 대상은 75
+    {
+        nox::CSyncHost srv;
+        healData(srv);
+        srv.DebugEnterGame(a, 728, false, C::Wizard);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv->Damage(Sid(srv, a), 100); srv.TakeOut(out);
+        eq(srv->HealthOf(Sid(srv, a)), 275, "×5 소치유 전제");
+        CastAndWait(srv, a, 41, true, ms, out);
+        eq(srv->HealthOf(Sid(srv, a)), 350, "×5 소치유 사람 +75");
+    }
+    // ⑦ 소치유 — 소환수 대상은 15(소환수 체력은 ×N 이 아니다)
+    {
+        nox::CSyncHost srv;
+        healData(srv);
+        srv.DebugEnterGame(a, 728, false, C::Conjurer);
+        std::vector<nox::OutPacket> out;
+        SummonImp(srv, a, out);
+        Check(srv->pets() == 1, "스탯 배수 — 소환수가 안 나왔다(시험 전제)");
+        srv->DebugSetOwnedPetHealth(Sid(srv, a), 1);
+        eq(srv->DebugLesserHealPet(Sid(srv, a), 0), 1, "×5 소치유 소환수 — 함수 결과");
+        eq(srv->DebugOwnedPetHealth(Sid(srv, a)), 16, "×5 소치유 소환수 +15");
+    }
+}
+
 void TestLoadEntry() {
     using Ev = nox::NetworkEvent;
     using Rq = nox::NetworkRequest;
@@ -34952,6 +35085,7 @@ int main() {
     TestMatchRecordRoundTrip();   // ★ 7단계 조각 4
     TestLobbyMapPaths();
     TestLoadEntry();              // ★ 11-10 부하 실험 3-1절
+    TestStatMult();               // ★ 11-10 부하 실험 3-2절
     TestInGameNameIsAccount();   // ★ 11-05
     TestJoinTrailer();
     TestReliableResend();

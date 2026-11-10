@@ -2338,7 +2338,8 @@ void Server::FlushPending() {
                 static_cast<uint8_t>(Op::REPORT_HEALTH),
                 static_cast<uint8_t>(pr.netCode),
                 static_cast<uint8_t>(pr.netCode >> 8),
-                static_cast<uint8_t>(hp >> 1),
+                // ★ 11-10 부하 실험 — 체력이 510 을 넘으면 1바이트에서 값이 돌아 버려 255 로 막는다. ×1(최대 150)의 값은 안 바뀐다
+                static_cast<uint8_t>(std::min<int>(hp >> 1, 255)),
             };
             EmitSeq(s, msg, sizeof(msg));
             ++unitHealthSent_;
@@ -7202,6 +7203,8 @@ int Server::CastLesserHeal(uint8_t spell, Session& caster, const Target& targ) {
     // ⚠⚠ 여기 곱하는 것은 **직업 배수**(온라인 1.0)다 — 최대 체력이 아니다.
     //   정답지 전역 이름이 `warriorMaxHealth_587000_*` 라 최대 체력으로 읽었다가 회복량을 100배 부풀렸다(ClassHealthMult 주석).
     amount *= static_cast<double>(ClassHealthMult(caster.charClass));
+    // ★ 11-10 부하 실험 — 사람 체력이 N 배라 회복량도 N 배(15 고정이면 ×5 법사가 80% 까지 14번을 써야 한다). 소환수 체력은 그대로라 곱하지 않는다
+    if (targ.sessionId != kNoSession) amount *= static_cast<double>(StatMult());
     UnitAdjustHP(targ, static_cast<int>(amount));     // unitAdjustHP(최대 아래일 때만·최대에서 자름) · 알림은 갱신 틱(PlayerReportAnything)
     return 1;
 }

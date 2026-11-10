@@ -2874,6 +2874,15 @@ public:
         x = pets_[i].x; y = pets_[i].y;
         return true;
     }
+    // ★ 11-10 시험용 — 소치유를 소환수에게 바로 건다(커서 · 시전 시간 없이). 회복량만 보는 시험(`--stat-mult`)용
+    int DebugLesserHealPet(int64_t casterSid, size_t petIndex) {
+        auto it = sessions_.find(casterSid);
+        if (it == sessions_.end() || petIndex >= pets_.size()) return -1;
+        Target t;
+        t.sessionId = kNoSession;
+        t.pet = static_cast<int>(petIndex);
+        return CastLesserHeal(41, it->second, t);
+    }
     // ★ 시험용 — 소환수를 자리에 세운다. 소환수는 시전 9틱 사이에 걸어 나가 자리 시험이 흔들린다.
     bool DebugMovePet(size_t i, double x, double y) {
         if (i >= pets_.size()) return false;

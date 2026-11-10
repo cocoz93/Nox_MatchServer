@@ -98,8 +98,14 @@ inline const ClassStats& MaxStatsOf(CharClass c) {
 //
 // ⚠ 검산 — 녹음 속 위저드가 체력 75·마나 150 이었다. 이 규칙대로면 정확히 그 값이다
 //   (레벨을 봤다면 그 캐릭터 레벨에 따라 달랐을 것이다).
-inline int HealthOnline(CharClass c)   { return MaxStatsOf(c).maxHealth; }
-inline int ManaOnline(CharClass c)     { return MaxStatsOf(c).maxMana; }
+// ★ 11-10 부하 실험(`--stat-mult N` · `Docs/MO_DUMMY_PLAN_1109.md` 3-2절) — 사람의 최대 체력 · 마나 배수. 표(`MaxStatsOf`)는 안 고치고 여기서 곱한다.
+//   입장 칸이 아니라 함수에서 곱하는 까닭 — 이 값을 읽는 자리가 여럿이라(입장 · 꼬리 · 첫 갱신) 입장 칸만 바꾸면 입장 묶음은 ×1 을 실어 클라와 어긋난다.
+//   프로세스 전체에 하나 · 서버가 뜰 때 한 번 정하고 안 바꾼다(시험만 되돌린다).
+inline int g_statMult = 1;
+inline int StatMult() { return g_statMult; }
+inline void SetStatMult(int n) { g_statMult = n; }
+inline int HealthOnline(CharClass c)   { return MaxStatsOf(c).maxHealth * StatMult(); }
+inline int ManaOnline(CharClass c)     { return MaxStatsOf(c).maxMana * StatMult(); }
 inline int StrengthOnline(CharClass c) { return MaxStatsOf(c).maxStrength; }
 inline int SpeedOnline(CharClass c)    { return MaxStatsOf(c).maxSpeed; }
 // ★★ 10-02 — **사람의 SpeedBase(+548)는 thing.bin 이 아니라 이 값이다** ⭕ plrReadVals_4EEDC0(`GAME3_3.c:7668`):

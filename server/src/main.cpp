@@ -193,6 +193,8 @@ int main(int argc, char** argv) {
             opt.loadRooms = std::atoi(argv[++i]);       // ★ 11-10 부하 실험 — 동시에 열려 있는 방 수의 상한
         } else if (a == "--load-room-size" && i + 1 < argc) {
             opt.loadRoomSize = std::atoi(argv[++i]);    // ★ 11-10 부하 실험 — 방당 인원
+        } else if (a == "--stat-mult" && i + 1 < argc) {
+            opt.statMult = std::atoi(argv[++i]);        // ★ 11-10 부하 실험 — 사람 최대 체력 · 마나 배수
         } else if (a == "--battle-maps" && i + 1 < argc) {
             // ★ 10-16 작업 13a — 대전 맵 후보(같은 꼴) — 로비가 새 방마다 하나를 정해 두고 `!start` 때 그 맵으로 바꾼다
             const std::string list = argv[++i];
@@ -655,6 +657,12 @@ int main(int argc, char** argv) {
             return 2;
         }
     }
+    if (opt.statMult < 1 || opt.statMult > 10) {   // 범위 = 더미 플랜 3-2절 · 플랜이 실제로 쓰는 값은 5 다
+        std::printf("[멈춤] --stat-mult 는 1~10 (받은 값 %d)\n", opt.statMult);
+        return 2;
+    }
+    nox::SetStatMult(opt.statMult);   // 방을 만들기 전에 한 번
+    if (opt.statMult != 1) std::printf("옵션: 사람 최대 체력 · 마나 × %d (소치유 회복량은 사람 대상만 × %d)\n", opt.statMult, opt.statMult);
     if (LoadMode(opt)) {
         std::printf("입장: 실험 옵션 — 방당 %d명 · 열린 방 상한 %d · 접속 때 방을 만든다(토큰 검사 끔)\n", opt.loadRoomSize, opt.loadRooms);
     } else if (opt.noJoinToken) {
