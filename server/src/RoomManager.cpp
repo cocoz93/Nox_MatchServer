@@ -277,12 +277,20 @@ size_t CRoomManager::KickAccount(const std::string& account) {
     return n;
 }
 
+std::map<uint8_t, unsigned long long> CRoomManager::SeenTotals() const {
+    std::map<uint8_t, unsigned long long> all = _closedSeen;
+    for (const auto& kv : _rooms)
+        for (const auto& s : kv.second->Game().seen()) all[s.first] += s.second;
+    return all;
+}
+
 bool CRoomManager::CloseRoom(int id) {
     auto it = _rooms.find(id);
     if (it == _rooms.end()) return false;
     if (it->second->_rankWait == CRoom::RankWait::Arriving) ++_stats.rankClosedWaiting;   // ★ 랭크 매칭 조각 6
     // ★ 10-14 작업 9d — 열린 방식의 방을 닫으면 그 뒤로는 받지 않는다(받는 자리가 `HasRoom` 으로 본다 · 방 번호는 다시 안 쓴다)
     PullRequests(*it->second);   // 그 방이 이미 낸 요청이 먼저
+    for (const auto& s : it->second->Game().seen()) _closedSeen[s.first] += s.second;
     const uint8_t closeMsg[1] = { static_cast<uint8_t>(Op::SERVER_CLOSE) };
     for (auto s = _seats.begin(); s != _seats.end();) {
         if (s->second != id) { ++s; continue; }

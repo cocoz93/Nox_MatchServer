@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <random>
 #include <string>
 #include <utility>
 #include <vector>
@@ -36,6 +37,9 @@ using nox::Op;
 
 constexpr int64_t kWheelUs = 33000;      // 한 바퀴 33ms — 서버 틱과 같고 정품 입력(초당 29~32번) 안에 든다
 constexpr int kWheelSlots = 33;          // 한 바퀴를 1ms 칸으로 나눈다
+// 33ms 를 이만큼 넘긴 것까지는 밀린 것으로 안 본다 — 마지막 칸(32ms)에 든 더미는 여유가 1ms 뿐이라 타이머가 조금 늦게 깨우기만 해도 33ms 를 넘긴다.
+// 값은 칸 하나의 두 배 · 11-10 실물(더미 100명 · 300초) — 33ms 를 넘긴 200번 중 187번이 1ms 이하, 일한 시간은 바퀴당 평균 2.56ms
+constexpr int64_t kLateToleranceUs = 2000;
 constexpr int64_t kPingUs = 2000000;     // 정품 핑 간격 2초(R1 7바이트 81번 · Docs/MO_CLIENT_SELF_SEND_1109.md)
 constexpr int64_t kJoinRetryUs = 1000000;   // 접속 시도 · 연결을 다시 보내는 간격(UDP 라 한 번이 사라질 수 있다)
 constexpr size_t kMaxOutBody = 1000;     // 한 조각에 싣는 본문 상한 — 서버 받기 버퍼 2048(NetworkThread.cpp:218) 안
@@ -72,7 +76,7 @@ constexpr int64_t kStartRetryUs = 5000000;   // 대기 맵에 그대로 있으�
 
 #define NOX_DUMMY_COUNTERS(X) \
     X(sentInput) X(sentPing) X(sentAck) X(sentAlias) X(sentMouse) X(sentSpell) X(sentAbility) X(sentStart) \
-    X(recvDgram) X(recvBytes) X(decodeFail) X(dupImportant) X(lateTicks) \
+    X(recvDgram) X(recvBytes) X(decodeFail) X(dupImportant) X(lateTicks) X(sendFail) \
     X(petsAcquired) X(petsLost) X(spellSkippedNoMana) X(retreats) X(heals) \
     X(sentAttack) X(sentRevive) X(sawDeath) X(selfDeath) X(revives) X(detours)
 
@@ -97,6 +101,7 @@ struct Args {
     uint16_t port = 18590;
     int count = 1;
     int roomSize = 1;
+    int reserveSeats = 0;                // 방마다 정품 클라 몫으로 비우는 자리 — 화면 확인 때만(더미 수 = (K − R) × 방 수)
     std::vector<int> classes{0};
     int durationSec = 150;
     int joinIntervalMs = 200;
@@ -161,7 +166,8 @@ struct Dummy {
 };
 
 void SendRaw(const Dummy& d, const uint8_t* p, size_t n) {
-    send(d.sock, reinterpret_cast<const char*>(p), static_cast<int>(n), 0);
+    // 실패를 세는 까닭 — 보낸 입력 합과 서버가 받은 입력 합이 어긋날 때 더미 쪽 소켓에서 사라진 몫을 가르려고
+    if (send(d.sock, reinterpret_cast<const char*>(p), static_cast<int>(n), 0) == SOCKET_ERROR) ++g_count.sendFail;
 }
 
 // 키를 받은 뒤의 조각 — 머리 [01][다음에 받을 순번] + 메시지, 전체를 뒤집는다.
@@ -797,6 +803,7 @@ bool ParseArgs(int argc, char** argv, Args& a, std::string& err) {
             a.host = s;
         } else if (k == "--count") { if (!need(a.count)) return false; }
         else if (k == "--room-size") { if (!need(a.roomSize)) return false; }
+        else if (k == "--reserve-seats") { if (!need(a.reserveSeats)) return false; }
         else if (k == "--duration-sec") { if (!need(a.durationSec)) return false; }
         else if (k == "--join-interval-ms") { if (!need(a.joinIntervalMs)) return false; }
         else if (k == "--start-wait-ms") { if (!need(a.startWaitMs)) return false; }
@@ -835,7 +842,8 @@ bool ParseArgs(int argc, char** argv, Args& a, std::string& err) {
     }
     if (a.count < 1) { err = "--count 는 1 이상"; return false; }
     if (a.roomSize < 1) { err = "--room-size 는 1 이상"; return false; }
-    if (a.count % a.roomSize != 0) { err = "더미 수가 방당 인원의 배수가 아니다"; return false; }
+    if (a.reserveSeats < 0 || a.reserveSeats >= a.roomSize) { err = "--reserve-seats 는 0 이상 · 방당 인원 미만"; return false; }
+    if (a.count % (a.roomSize - a.reserveSeats) != 0) { err = "더미 수가 (방당 인원 - 비울 자리)의 배수가 아니다"; return false; }
     if (a.classes.empty()) { err = "--classes 가 비었다"; return false; }
     for (int c : a.classes)
         if (c < 0 || c > 2) { err = "직업은 0 전사 · 1 위저드 · 2 컨저러"; return false; }
@@ -849,7 +857,7 @@ int main(int argc, char** argv) {
     std::string err;
     if (!ParseArgs(argc, argv, a, err)) {
         std::printf("인자 오류: %s\n", err.c_str());
-        std::printf("쓰기: nox_dummy [--server 주소:포트] [--count N] [--room-size K] [--classes 0,1] [--duration-sec S] "
+        std::printf("쓰기: nox_dummy [--server 주소:포트] [--count N] [--room-size K] [--reserve-seats R] [--classes 0,1] [--duration-sec S] "
                     "[--join-interval-ms M] [--start-wait-ms M] [--behavior idle|move|fight] [--map-file 대전맵.map] [--seed S]\n");
         return 1;
     }
@@ -867,6 +875,9 @@ int main(int argc, char** argv) {
 
     std::vector<Dummy> dummies(static_cast<size_t>(a.count));
     std::vector<std::vector<int>> slots(kWheelSlots);
+    // 보내는 순간을 씨앗 난수로 흩뜨린다 — 서로 다른 PC 의 정품 클라는 같은 1ms 에 몰아 보내지 않는다.
+    // 씨앗을 고정하므로 실행마다 같은 칸에 든다.
+    std::mt19937 slotRng(a.seed);
     const int64_t t0 = NowUs();
     for (int i = 0; i < a.count; ++i) {
         Dummy& d = dummies[static_cast<size_t>(i)];
@@ -879,7 +890,7 @@ int main(int argc, char** argv) {
         u_long nonBlocking = 1;
         ioctlsocket(d.sock, FIONBIO, &nonBlocking);
         if (connect(d.sock, reinterpret_cast<const sockaddr*>(&to), sizeof(to)) != 0) { std::printf("connect 실패 %d\n", WSAGetLastError()); return 1; }
-        slots[0].push_back(i);
+        slots[slotRng() % kWheelSlots].push_back(i);
     }
 
     // 서버와 같은 고해상도 대기 타이머(main.cpp:850) — Sleep(1) 은 약 15.5ms 를 자서 보내는 간격이 흔들린다.
@@ -905,16 +916,29 @@ int main(int argc, char** argv) {
         return n;
     };
 
+    // 한 바퀴에 일한 시간과 33ms 를 넘긴 정도 — lateTicks 가 오른 까닭이 「타이머가 조금 늦게 깨움」인지 「일이 33ms 에 안 들어감」인지 가른다
+    uint64_t wheels = 0, busySumUs = 0, busyMaxUs = 0;
+    uint64_t overBuckets[5] = {};           // 1ms 이하 · 2ms 이하 · 5ms 이하 · 10ms 이하 · 그 위
+
     for (;;) {
+        int64_t busyUs = 0;
         for (int s = 0; s < kWheelSlots; ++s) {
             if (slots[static_cast<size_t>(s)].empty()) continue;
             WaitUntilUs(timer, base + static_cast<int64_t>(s) * 1000);
             const int64_t now = NowUs();
             for (int i : slots[static_cast<size_t>(s)]) Step(dummies[static_cast<size_t>(i)], now, a, recvBuf, scratch);
+            busyUs += NowUs() - now;
         }
         const int64_t after = NowUs();
         const int64_t next = base + kWheelUs;
-        if (after > next) {                      // 한 바퀴가 33ms 를 넘겼다 — 몰아 보내지 않고 지금부터 다시 센다
+        ++wheels;
+        busySumUs += static_cast<uint64_t>(busyUs);
+        busyMaxUs = std::max(busyMaxUs, static_cast<uint64_t>(busyUs));
+        if (after > next) {
+            const int64_t over = after - next;
+            ++overBuckets[over <= 1000 ? 0 : over <= 2000 ? 1 : over <= 5000 ? 2 : over <= 10000 ? 3 : 4];
+        }
+        if (after > next + kLateToleranceUs) {   // 한 바퀴가 33ms 를 넘겼다 — 몰아 보내지 않고 지금부터 다시 센다
             ++g_count.lateTicks;
             base = after;
         } else {
@@ -930,6 +954,11 @@ int main(int argc, char** argv) {
     }
 
     PrintCounters("[더미 요약]", sec, countEntered(), a.count, g_count);
+    std::printf("[더미 바퀴] %llu바퀴 · 일한 시간 평균 %.2fms · 최대 %.2fms · 33ms 넘김 1ms 이하 %llu · 2ms 이하 %llu · 5ms 이하 %llu · 10ms 이하 %llu · 그 위 %llu\n",
+                static_cast<unsigned long long>(wheels), wheels ? static_cast<double>(busySumUs) / static_cast<double>(wheels) / 1000.0 : 0.0,
+                static_cast<double>(busyMaxUs) / 1000.0, static_cast<unsigned long long>(overBuckets[0]),
+                static_cast<unsigned long long>(overBuckets[1]), static_cast<unsigned long long>(overBuckets[2]),
+                static_cast<unsigned long long>(overBuckets[3]), static_cast<unsigned long long>(overBuckets[4]));
     for (Dummy& d : dummies) closesocket(d.sock);
     WSACleanup();
     return 0;

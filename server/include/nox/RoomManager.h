@@ -379,6 +379,8 @@ public:
     // ★ 10-12 플랜 B 작업 7c — 방을 번호 차례로 돈다(판 차리기 · 진단 · `[처음]` 모으기). 도는 동안 방을 만들거나 닫지 않는다
     template <class F> void ForEachRoom(F&& f) { for (auto& kv : _rooms) f(*kv.second); }
     template <class F> void ForEachRoom(F&& f) const { for (const auto& kv : _rooms) f(static_cast<const CRoom&>(*kv.second)); }
+    // 닫힌 방까지 더한 받은 메시지 수(종류별). 방마다의 `seen` 은 방과 함께 사라져 그것만 더하면 합이 짧게 나온다
+    std::map<uint8_t, unsigned long long> SeenTotals() const;
 
     // ── 방 만들기 · 닫기(실행 중에도) ──
     // ★ 10-14 작업 9d — 읽기 전용 데이터(서버가 뜰 때 한 번 · 부르는 쪽이 든다). 받으면 `CreateRoom` 이 세계까지 차린다
@@ -468,6 +470,7 @@ private:
     std::map<int, size_t> SeatCounts() const;   // 방 → 세션표의 세션 수(한 번 훑기)
 
     std::map<int, std::unique_ptr<CRoom>> _rooms;
+    std::map<uint8_t, unsigned long long> _closedSeen;   // 닫은 방들의 받은 메시지 수(`SeenTotals`)
     int _nextRoomId = 0;
     bool _openEntry = false;
     // ★ 11-10 부하 실험 — `SetLoadEntry`

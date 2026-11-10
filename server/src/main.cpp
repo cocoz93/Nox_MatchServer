@@ -1097,6 +1097,17 @@ int main(int argc, char** argv) {
         const nox::CNetworkThreadStats ts = net.LatestThreadStats();
         std::printf("[종료] 끝 — 서버 닫힘 알림 %llu명 · 보낸 조각 %llu · 큐 버림(이벤트 %llu · 요청 %llu)\n",
                     ns.serverCloseSent, ts.datagramsOut, ts.eventsDropped, ts.requestsDropped);
+        // 부하 실험(더미 플랜 5-3) — 더미의 sentInput 합 · recvDgram 합과 견주는 값. 소켓 · 큐에서 소리 없이 사라진 몫이 여기서 드러난다
+        {
+            const auto seenAll = rooms.SeenTotals();
+            unsigned long long msgs = 0, inputs = 0;
+            for (const auto& kv : seenAll) {
+                msgs += kv.second;
+                if (kv.first == static_cast<uint8_t>(nox::Op::PLAYER_INPUT)) inputs = kv.second;
+            }
+            std::printf("[종료] 받은 것 — 입력(0x3f) %llu · 메시지 전체 %llu · 받은 조각 %llu · 한 번에 비운 조각 최대 %llu · 받기 오류 %llu\n",
+                        inputs, msgs, ts.datagramsIn, ts.maxDatagramsPerWake, ts.recvErrors);
+        }
         // ★ 10-20 v2 작업 4b — 로비 연결의 셈(0 옆에 지나간 양 — 네트워크 스레드가 센 TCP 줄 · 시도 수도)
         if (lobbyClient) {
             const nox::CLobbyClientStats& ls = lobbyClient->Stats();
