@@ -84,6 +84,22 @@ constexpr uint32_t kRetreatMinFrames = 120, kRetreatMaxFrames = 180;   // 4~6초
 constexpr uint32_t kConfuseMinFrames = 90, kConfuseMaxFrames = 900;   // 혼란은 3~30초 난수로 쉰다(원본 기준 GAME4.c:2033-2034)
 constexpr uint32_t kBlinkRestMaxFrames = 180;     // 점멸은 0~6초 난수로 쉰다(원본 기준 GAME4.c:2049-2052)
 
+// 컨저러 값 — 플랜 2-7절. 쓰는 주문은 원본 컨저러 봇 설정(원본 기준 GAME4.c:1990-2016)에서 엠버 · 체럽 · 오거 소환과 반사를 뺀 것이다.
+// 원본의 쉬는 시간은 주문이 아니라 분류마다 한 칸이다(GAME4.c:1998-2005) — 그래서 방해 둘(독 · 스턴)은 쉬는 시간을 같이 쓴다.
+constexpr SpellInfo kPixie{58, 1, 30};            // 자기 강화 — 0~6초 난수로 쉰다
+constexpr SpellInfo kPoison{60, 0, 10}, kStun{74, 0, 10};   // 방해 — 3~30초 난수로 쉬고, 둘 중 하나를 고른다
+constexpr SpellInfo kFist{29, 0, 60}, kMeteor{52, 0, 30};   // 공격 — 부활마다 반반(가정 — 원본은 분류 안에서 난수로 고른다)
+constexpr uint32_t kPixieRestMaxFrames = 180;
+// 소환수 세 크기 — 컨저러 입장 순서대로 돌린다. 크기 합 상한은 서버의 kSummonLimit(4). 크기 값은 thing.bin SUBCLASS, 부르는 시간은 SummonDuration(플랜 2-7절 표).
+struct SummonKind { SpellInfo spell; uint16_t type; int size; uint32_t frames; };
+constexpr SummonKind kSummonKinds[3] = {
+    {{82, 0, 15}, 1356, 1, 60},    // SmallAlbinoSpider
+    {{77, 0, 60}, 1365, 2, 210},   // Bear
+    {{78, 0, 60}, 1382, 4, 375},   // Beholder
+};
+constexpr int kSummonSizeLimit = 4;
+constexpr uint32_t kSummonMarginFrames = 30;      // 음소(가장 긴 것 약 24틱)가 끝나야 부르는 시간이 시작되므로 그 몫에 여유를 조금 더한 값 — 앞 소환이 끝나기 전에 다음을 안 보내려고
+
 // Estate 의 PlayerStart 14곳(서버 「[부활 자리]」 줄) — 맵이 보증하는 설 수 있는 자리라 막혔을 때 들를 곳으로 쓴다.
 struct Point { int x, y; };
 constexpr Point kWaypoints[] = {
@@ -108,7 +124,8 @@ constexpr int64_t kStartRetryUs = 5000000;   // 대기 맵에 그대로 있으�
     X(petsAcquired) X(petsLost) X(spellSkippedNoMana) X(retreats) X(heals) \
     X(sentAttack) X(sentRevive) X(sawDeath) X(selfDeath) X(revives) X(detours) \
     X(castProtect) X(castHaste) X(castInvis) X(castConfuse) X(castFireball) X(castDeathRay) X(castChain) X(castBlink) \
-    X(sentBerserk) X(sentRoar) X(sentHarpoon) X(firstBuffOk) X(firstBuffBad) X(buffOverlap) X(healedBack) X(statChecked) X(statMismatch)
+    X(sentBerserk) X(sentRoar) X(sentHarpoon) X(firstBuffOk) X(firstBuffBad) X(buffOverlap) X(healedBack) X(statChecked) X(statMismatch) \
+    X(castPixie) X(castPoison) X(castStun) X(castFist) X(castMeteor) X(castSummon) X(petTypeMismatch)
 
 struct Counters {
 #define X(n) uint64_t n = 0;
@@ -205,6 +222,11 @@ struct Dummy {
     uint32_t castHoldEndFrame = 0;       // 음소가 끝날 때까지 커서를 상대에 두는 프레임
     uint32_t confuseReadyFrame = 0;
     uint32_t blinkReadyFrame = 0;
+    uint32_t pixieReadyFrame = 0;
+    int summonKind = 0;                  // 이 컨저러가 부르는 크기(kSummonKinds 번호)
+    uint32_t summonEndFrame = 0;         // 이 프레임까지는 다음 소환을 안 보낸다
+    std::vector<uint16_t> pets;          // 지금 거느린 소환수 번호(6c 받음 · 6d 잃음)
+    int maxPetSize = 0;                  // 거느린 크기 합의 최댓값
     const SpellInfo* attackSpell = nullptr;   // 부활마다 고르는 공격 주문
     bool firstCastAfterRevive = false;   // 부활 뒤 첫 주문을 아직 안 보냈다
     bool retreating = false;
@@ -302,6 +324,7 @@ void OnImportantBody(Dummy& d, const uint8_t* p, size_t n) {
                 d.retreating = false;
                 d.backingOff = false;
                 d.castHoldEndFrame = d.frame;
+                d.summonEndFrame = d.frame;  // 죽으면 부르던 것이 끊긴다(Server.cpp DurSummonTick)
             } else {
                 for (size_t k = 0; k < d.skip.size();) {
                     const bool expired = static_cast<int32_t>(d.frame - d.skip[k].second) >= 0;
@@ -321,7 +344,7 @@ void OnImportantBody(Dummy& d, const uint8_t* p, size_t n) {
                 d.dead = false;
                 ++g_count.revives;
                 d.attackSpell = nullptr;     // 공격 주문은 부활마다 다시 고른다(원본 기준 GAME4.c:2035-2045)
-                d.firstCastAfterRevive = true;
+                d.firstCastAfterRevive = d.cls == 1;   // 「부활 뒤 첫 주문은 자기 강화」는 법사 규칙이다 — 컨저러는 소환이 먼저(플랜 2-7절)
             }
         } else if (p[i] == static_cast<uint8_t>(Op::REPORT_MANA) && msz >= 5) {
             // 45 <번호 2> <마나 2>(Server.cpp:6502)
@@ -333,6 +356,20 @@ void OnImportantBody(Dummy& d, const uint8_t* p, size_t n) {
                 if (p[i] == static_cast<uint8_t>(Op::REPORT_TOTAL_HEALTH)) CheckEntryStat(d, d.checkedDd, "dd 최대 체력", v, d.maxHp);
                 else CheckEntryStat(d, d.checkedDe, "de 최대 마나", v, d.maxMana);
             }
+        } else if (p[i] == static_cast<uint8_t>(Op::REPORT_ACQUIRE_CREATURE) && msz >= 5) {
+            // 6c <번호 2> <종류 2> — 주인에게만 온다(Server.cpp ReportAcquireCreature)
+            ++g_count.petsAcquired;
+            d.pets.push_back(static_cast<uint16_t>(p[i + 1] | (p[i + 2] << 8)));
+            const SummonKind& k = kSummonKinds[d.summonKind];
+            if (static_cast<uint16_t>(p[i + 3] | (p[i + 4] << 8)) != k.type) ++g_count.petTypeMismatch;   // 주문과 종류의 짝은 이름 맞추기라(Server.cpp SummonType) 실제로 대조한다
+            const int sum = static_cast<int>(d.pets.size()) * k.size;
+            if (sum > d.maxPetSize) d.maxPetSize = sum;
+        } else if (p[i] == static_cast<uint8_t>(Op::REPORT_LOSE_CREATURE) && msz >= 3) {
+            // 6d <번호 2>
+            ++g_count.petsLost;
+            const uint16_t net = static_cast<uint16_t>(p[i + 1] | (p[i + 2] << 8));
+            for (size_t k = 0; k < d.pets.size(); ++k)
+                if (d.pets[k] == net) { d.pets.erase(d.pets.begin() + static_cast<std::ptrdiff_t>(k)); break; }
         } else if (p[i] == static_cast<uint8_t>(Op::REPORT_ENCHANTMENT) && msz >= 7) {
             // 5A <번호 2> <비트 4>(Server.cpp:2291-2299) — 모든 사람에게 온다
             const uint16_t net = static_cast<uint16_t>(p[i + 1] | (p[i + 2] << 8));
@@ -373,6 +410,9 @@ void ResetForMap(Dummy& d) {
     d.castHoldEndFrame = d.frame;
     d.confuseReadyFrame = d.frame + kConfuseMinFrames + d.rng() % (kConfuseMaxFrames - kConfuseMinFrames + 1);
     d.blinkReadyFrame = d.frame;
+    d.pixieReadyFrame = d.frame;
+    d.summonEndFrame = d.frame;
+    d.pets.clear();
     d.attackSpell = nullptr;
     d.firstCastAfterRevive = false;
     d.retreating = false;
@@ -825,7 +865,14 @@ void CountCast(const SpellInfo& sp) {
         case 43: ++g_count.castChain; break;
         case 4: ++g_count.castBlink; break;
         case 41: ++g_count.heals; break;
-        default: break;
+        case 58: ++g_count.castPixie; break;
+        case 60: ++g_count.castPoison; break;
+        case 74: ++g_count.castStun; break;
+        case 29: ++g_count.castFist; break;
+        case 52: ++g_count.castMeteor; break;
+        default:
+            if (sp.id >= 75 && sp.id <= 114) ++g_count.castSummon;
+            break;
     }
 }
 
@@ -905,6 +952,45 @@ bool TryCast(Dummy& d, const Args& a, const OtherPlayer& t, double dist, bool in
     return false;
 }
 
+// 소환 — 크기 합에 여유가 있고 앞 소환이 끝났으면 보낸다(플랜 2-7절). 보냈으면 true.
+bool TrySummon(Dummy& d, const Args& a) {
+    const SummonKind& k = kSummonKinds[d.summonKind];
+    if (!FrameReached(d, d.summonEndFrame)) return false;
+    if (static_cast<int>(d.pets.size()) * k.size + k.size > kSummonSizeLimit || d.mana < k.spell.mana) return false;
+    CastSpell(d, a, k.spell, kCastHoldFrames);
+    d.summonEndFrame = d.frame + k.frames + kSummonMarginFrames;
+    return true;
+}
+
+// 컨저러 주문 하나를 고른다 — 소환 → 자기 강화 → 점멸(붙었을 때) → 방해 → 공격. 보냈으면 true.
+bool TryCastConjurer(Dummy& d, const Args& a, const OtherPlayer& t, double dist, bool inSight) {
+    if (TrySummon(d, a)) return true;
+    if (FrameReached(d, d.pixieReadyFrame) && d.mana >= kPixie.mana) {
+        CastSpell(d, a, kPixie, kCastHoldFrames);
+        d.pixieReadyFrame = d.frame + d.rng() % (kPixieRestMaxFrames + 1);
+        return true;
+    }
+    if (dist < kBlinkIn && FrameReached(d, d.blinkReadyFrame) && d.mana >= kBlink.mana) {
+        CastSpell(d, a, kBlink, kCastHoldFrames);
+        d.blinkReadyFrame = d.frame + d.rng() % (kBlinkRestMaxFrames + 1);
+        return true;
+    }
+    if (!inSight) return false;
+    AimAt(d, t.x, t.y);
+    if (FrameReached(d, d.confuseReadyFrame) && !EnemyInvisible(d, t.net) && d.mana >= kPoison.mana) {   // 독 · 스턴 마나는 같다
+        CastSpell(d, a, d.rng() % 2 ? kPoison : kStun, kCastHoldFrames);
+        d.confuseReadyFrame = d.frame + kConfuseMinFrames + d.rng() % (kConfuseMaxFrames - kConfuseMinFrames + 1);
+        return true;
+    }
+    if (d.attackSpell && d.mana >= d.attackSpell->mana) {
+        CastSpell(d, a, *d.attackSpell, kCastHoldFrames);
+        return true;
+    }
+    ++g_count.spellSkippedNoMana;
+    d.spellReadyFrame = d.frame + a.SpellGap();
+    return false;
+}
+
 // 법사 · 컨저러(플랜 2-6절) — 후퇴 → 주문 → 맨손 · 거리 유지 순서.
 void DecideCaster(Dummy& d, const Args& a, const OtherPlayer& t, double dist, bool clear) {
     if (!FrameReached(d, d.castHoldEndFrame)) {   // 음소가 끝날 때까지
@@ -914,7 +1000,8 @@ void DecideCaster(Dummy& d, const Args& a, const OtherPlayer& t, double dist, bo
     const bool fight = a.behavior == Behavior::Fight;
     if (fight && !d.attackSpell) {               // 부활마다 하나(원본 기준 GAME4.c:2035-2045)
         const int r = static_cast<int>(d.rng() % 100);
-        d.attackSpell = r < 33 ? &kFireball : (r < 66 ? &kDeathRay : &kChain);
+        if (d.cls == 2) d.attackSpell = r < 50 ? &kFist : &kMeteor;
+        else d.attackSpell = r < 33 ? &kFireball : (r < 66 ? &kDeathRay : &kChain);
     }
     if (fight && !d.retreating && d.hp > 0 && d.hp * 100 <= d.maxHp * kRetreatPercent) {
         d.retreating = true;
@@ -950,7 +1037,7 @@ void DecideCaster(Dummy& d, const Args& a, const OtherPlayer& t, double dist, bo
         }
     }
     const bool inSight = dist <= kSightRange && clear;
-    if (fight && FrameReached(d, d.spellReadyFrame) && TryCast(d, a, t, dist, inSight)) return;
+    if (fight && FrameReached(d, d.spellReadyFrame) && (d.cls == 2 ? TryCastConjurer(d, a, t, dist, inSight) : TryCast(d, a, t, dist, inSight))) return;
     if (fight && d.attackSpell && d.mana < d.attackSpell->mana) {   // 마나를 다 썼다 — 물러나지 않고 맨손으로
         d.backingOff = false;
         MeleeStep(d, a, t, dist, clear);
@@ -1209,6 +1296,14 @@ int main(int argc, char** argv) {
         Dummy& d = dummies[static_cast<size_t>(i)];
         d.index = i;
         d.cls = a.classes[static_cast<size_t>(i) % a.classes.size()];
+        {   // 같은 방에서 이 더미보다 먼저 든 컨저러 수 — 세 크기를 입장 순서대로 돌린다(5명이면 2 · 2 · 1 · 플랜 1-2절)
+            const int perRoom = std::max(1, a.roomSize - a.reserveSeats);
+            const int first = i - i % perRoom;
+            int before = 0;
+            for (int j = first; j < i; ++j)
+                if (a.classes[static_cast<size_t>(j) % a.classes.size()] == 2) ++before;
+            d.summonKind = before % 3;
+        }
         d.rng.seed(a.seed * 1000u + static_cast<uint32_t>(i));
         d.maxHp = nox::HealthOnline(static_cast<nox::CharClass>(d.cls));
         d.maxMana = nox::ManaOnline(static_cast<nox::CharClass>(d.cls));
@@ -1290,6 +1385,11 @@ int main(int argc, char** argv) {
                 static_cast<double>(busyMaxUs) / 1000.0, static_cast<unsigned long long>(overBuckets[0]),
                 static_cast<unsigned long long>(overBuckets[1]), static_cast<unsigned long long>(overBuckets[2]),
                 static_cast<unsigned long long>(overBuckets[3]), static_cast<unsigned long long>(overBuckets[4]));
+    for (const Dummy& d : dummies) {
+        if (d.cls != 2) continue;
+        const SummonKind& k = kSummonKinds[d.summonKind];
+        std::printf("[더미 소환] 더미 %d · 주문 %u · 크기 %d · 거느린 크기 합 최댓값 %d · 끝날 때 %zu마리\n", d.index, k.spell.id, k.size, d.maxPetSize, d.pets.size());
+    }
     for (Dummy& d : dummies) closesocket(d.sock);
     WSACleanup();
     return 0;
