@@ -1741,6 +1741,7 @@ bool Server::Damage(int64_t sessionId, int amount,
     //   respawnAtFrame 은 이제 「죽은 프레임」(DEAD 깃발 겸) — 0 이면 산 것.
     s.respawnAtFrame = frame_ ? frame_ : 1;
     PlayerSetState(s, 3, frame_);
+    ClearCastState(s);                                     // `GAME5.c:5069~5076`
     DropFlag(sessionId);   // 들고 있었으면 그 자리에 떨군다
     DropBall(sessionId);   // 8-d — 공도 같이 떨군다
     // `GAME5.c:5098~5104` — setUnitBuffFlags(0) · 능력 끄기(7-d 에서 옮김) · +3600 = 0 · playerCancelSpells · unitClearBuffs
@@ -1835,6 +1836,7 @@ void Server::RestartPlayers() {
         s.deaths = 0;
         s.matchKills = 0;
         for (int i = 0; i < 4; ++i) s.markSet[i] = false;
+        ClearCastState(s);   // 위 `castList_.clear()` 의 짝 — `GAME4.c:2383~2390` 은 관전자까지 플레이어 전부
         if (s.observer) continue;
         // `PlayerRespawn` 의 상태 몫(`Server.cpp` PlayerRespawn 머리 · `GAME4.c:1420` playerRespawn_4F7EF0) — 알림은 스냅샷 꼬리가
         s.health = s.maxHealth;
@@ -6337,6 +6339,16 @@ void Server::ForgetDrawables(Session& s) {
 // `GAME4.c:1420` playerRespawn_4F7EF0 + `GAME3_3.c:7901` playerMakeDefItems(a1, 1, 0) — 퀘스트 아닌 갈래.
 //   ⚠ 옮기지 않은 것 — 부활 소리 148(10) · 부활 이펙트 respawnPlayerImpl_53FBC0(4) · 능력·주문 끄기(7·4) · 퀘스트 목숨·되살림 자리(8)
 //   (09-28 B4b — 기본 장비 다시 만들기는 `RespawnGear` 로 옮김)
+// ★ 11-10 — 원본은 죽음(`GAME5.c:5069~5076`) · 부활(`GAME3_3.c:7946~7953`) · 맵 재시작(`GAME4.c:2383~2390`) 세 곳에서 이 칸들을 지운다.
+//   ✖ 안 옮겨서 음소 도중에 죽은 사람은 `castFrame` 이 안 지워진 채 남아, 살아난 뒤 모든 주문이 「시전중」으로 거절됐다
+//   (더미 소환수 판 실물 — 같은 조건에서 고치기 전 시전중 214 · 고친 뒤 0).
+void Server::ClearCastState(Session& s) {
+    s.castFlag = 0;
+    s.castFrame = 0;
+    std::fill(std::begin(s.glyphSpells), std::end(s.glyphSpells), 0u);
+    s.glyphCount = 0;
+}
+
 void Server::PlayerRespawn(Session& s, uint32_t frame) {
     s.health = s.maxHealth;                                // unitHPsetOnMax
     for (auto& kv : sessions_) if (kv.second.inGame) s.hpReportedTo[kv.first] = s.health;   // +12+2×i 서른둘 = 지금 체력(`GAME3_3.c:7937`) — 그 뒤 피해만 `42`
@@ -6346,6 +6358,7 @@ void Server::PlayerRespawn(Session& s, uint32_t frame) {
     s.airborne = false;                                    // ★ 3-a — 같은 마스크가 0x4000(AIRBORNE)도 끈다
     PlayerSetState(s, kPlayerStateIdle, frame);
     ClearBuffs(Target{ s.sessionId, -1 });                      // unitClearBuffs_4FF580(아래에서 23 을 다시 켠다)
+    ClearCastState(s);                                     // `GAME3_3.c:7946~7953`
     PlayerCancelSpells(s.sessionId);                       // playerCancelSpells_4FEAE0(`GAME3_3.c:8119`, 4-a3)
     s.lastHit = Session::LastHit{};                        // +520 = 0(`GAME3_3.c:7958`, 3-d)
     MarkDirty(s.netCode, PendingReport::What::UnitHealth);

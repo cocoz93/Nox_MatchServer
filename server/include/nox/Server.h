@@ -4350,6 +4350,7 @@ private:
     bool IncomingMissile(const Session& s) const;
     // ── 죽음·부활 (묶음 3-c) ──
     void PlayerRespawn(Session& s, uint32_t frame);   // playerRespawn_4F7EF0 + playerMakeDefItems(,1,0)
+    void ClearCastState(Session& s);   // ★ 11-10 — 시전 상태 지우기(+188 · +216 · +192~+208 · +212 — 죽음 · 부활 · 맵 재시작)
     bool FindPlayerStart(const Session& s, float& x, float& y);                  // mapFindPlayerStart_4F7AB0
     void ForgetDrawables(Session& s);                // unitMove 의 플레이어 몫 `ea <프레임4>`
     // ── 알림 (묶음 3-d) ──
