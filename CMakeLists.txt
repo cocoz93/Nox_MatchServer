@@ -6,6 +6,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 if (MSVC)
   add_compile_options(/W4 /permissive- /utf-8)
+  # ★ 11-11 부하 측정 M0 조각 1 — Release 에도 심볼 파일(.pdb). 함수별 시간(측정 플랜 M8 · 표본 수집 도구)이
+  #   함수 이름을 읽으려면 측정에 쓰는 바로 그 실행 파일에 짝 .pdb 가 있어야 한다. /Zi 는 최적화를 안 바꾸고(MS 문서 기준),
+  #   /DEBUG 는 링커의 /OPT:REF · /OPT:ICF 를 기본으로 꺼 버리므로 둘을 다시 켠다 — 실행 파일을 지금과 같게 두려고.
+  add_compile_options($<$<CONFIG:Release>:/Zi>)
+  add_link_options($<$<CONFIG:Release>:/DEBUG> $<$<CONFIG:Release>:/OPT:REF> $<$<CONFIG:Release>:/OPT:ICF>)
 endif()
 
 # 로비와 게임 서버가 같이 쓰는 것 — 입장 토큰 서명·검증 · 설정 파일 읽기(Docs/TOKEN_DESIGN.md) · TCP 줄 서버 부품(작업 8a).
