@@ -43,6 +43,9 @@ constexpr int kWheelSlots = 33;          // 한 바퀴를 1ms 칸으로 나눈�
 constexpr int64_t kLateToleranceUs = 2000;
 constexpr int64_t kPingUs = 2000000;     // 정품 핑 간격 2초(R1 7바이트 81번 · Docs/MO_CLIENT_SELF_SEND_1109.md)
 constexpr int64_t kJoinRetryUs = 1000000;   // 접속 시도 · 연결을 다시 보내는 간격(UDP 라 한 번이 사라질 수 있다)
+// ★ 11-11 부하 측정 M0 조각 6 — 끝날 때 `0a` 를 보낸 뒤 받기만 하는 시간. 서버가 `0a` 를 처리해 그 세션에 보내기를 멈추기 전에 이미 보낸
+//   조각까지 세려고. 한 틱(33ms) + 넘김 지연에, 한계 근처 실행에서 틱 완료가 수백 ms 밀려도 남는 값(내가 정함 · 실측 아님)
+constexpr int64_t kCloseDrainUs = 1000000;
 constexpr size_t kMaxOutBody = 1000;     // 한 조각에 싣는 본문 상한 — 서버 받기 버퍼 2048(NetworkThread.cpp:219) 안
 // 싸움 값 — 프레임은 서버 프레임(33ms). 근거는 Docs/MO_DUMMY_PLAN_1109.md 2-4 · 2-5절.
 constexpr double kMeleeReach = 50.0;              // 이 안이면 때린다 — 닿는 거리 55(몸 10 + 롱소드 45 · Server.cpp:17157)보다 조금 안쪽
@@ -120,7 +123,7 @@ constexpr int64_t kStartRetryUs = 5000000;   // 대기 맵에 그대로 있으�
 
 #define NOX_DUMMY_COUNTERS(X) \
     X(sentInput) X(sentPing) X(sentAck) X(sentAlias) X(sentMouse) X(sentSpell) X(sentAbility) X(sentStart) \
-    X(recvDgram) X(recvBytes) X(decodeFail) X(dupImportant) X(lateTicks) X(sendFail) \
+    X(recvDgram) X(recvBytes) X(decodeFail) X(dupImportant) X(lateTicks) X(sendFail) X(sentClose) X(closeSkipped) \
     X(petsAcquired) X(petsLost) X(spellSkippedNoMana) X(retreats) X(heals) \
     X(sentAttack) X(sentRevive) X(sawDeath) X(selfDeath) X(revives) X(detours) \
     X(castProtect) X(castHaste) X(castInvis) X(castConfuse) X(castFireball) X(castDeathRay) X(castChain) X(castBlink) \
@@ -1390,6 +1393,24 @@ int main(int argc, char** argv) {
             nextStat += 1000000;
         }
         if (after >= endAt) break;
+    }
+
+    // ★ 11-11 부하 측정 M0 조각 6 — 끝날 때 접속 닫기(`0a`). 원본 클라 `SendClientClose`(`third_party/opennox-src/src/internal/netstr/conn.go:187-197`)처럼
+    //   1바이트 `0a` 를 비신뢰로 보낸다 — 머리는 다른 게임 조각과 같다(`SendGame`). 서버는 접속 제어 조각 맨 앞의 `0a` 를 접속 닫기로 읽는다(`UdpServer.cpp` `CLIENT_CLOSE`).
+    //   옛 꼴은 소켓만 닫아 판 안 사람이 90초 뒤 시간 초과로 빠졌다(`Server.h` `kSessionTimeoutMsInGame`) — 방 여닫기(측정 플랜 M7)가 안 되고,
+    //   닫은 뒤 서버가 보낸 몫이 「서버가 보낸 조각 대 더미가 받은 조각」 대조에 섞였다.
+    //   키를 받기 전(접속 중) 더미는 XOR 키가 없어 못 보낸다 — `closeSkipped` 로 센다(그 몫은 서버에서 30초 뒤 시간 초과).
+    for (Dummy& d : dummies) {
+        if (d.phase != Phase::Game) { ++g_count.closeSkipped; continue; }
+        const uint8_t closeMsg[1] = {static_cast<uint8_t>(Op::CLIENT_CLOSE)};
+        SendGame(d, closeMsg, sizeof(closeMsg));
+        ++g_count.sentClose;
+    }
+    // 그 뒤 받기만 한다(`kCloseDrainUs`). 받은 조각에 대한 답은 `d.out` 에 쌓일 뿐 나가지 않는다 — `FlushOut` 을 안 부른다
+    const int64_t drainEnd = NowUs() + kCloseDrainUs;
+    for (int64_t at = NowUs(); at < drainEnd; at += 5000) {
+        WaitUntilUs(timer, at);
+        for (Dummy& d : dummies) DrainSocket(d, recvBuf);
     }
 
     PrintCounters("[더미 요약]", sec, countEntered(), a.count, g_count);
