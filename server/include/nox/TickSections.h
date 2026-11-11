@@ -72,8 +72,33 @@ struct alignas(64) CNetworkSectionTotals {
     std::atomic<uint64_t> recvNs{0};       // 받기
     std::atomic<uint64_t> recvCount{0};    // 받은 데이터그램(지나간 양)
     std::atomic<uint64_t> handoffNs{0};    // 넘기기 — 사건을 큐로
+    // ★ 11-11 부하 측정 M0 조각 4 — 기다림(`NetworkThread.cpp` 의 `WSAWaitForMultipleEvents`). 통신 바쁜 비율 = (지난 시간 − 이것) ÷ 지난 시간.
+    //   네 구간의 합은 깬 직후의 일이 빠져 쓰지 않는다(측정 플랜 2-2절). 기다림이 끝나야 더하므로 `[구간]` 줄을 찍는 순간 기다리던 몫은
+    //   다음 줄로 넘어간다 — 줄 하나는 최대 0.25초(`kMaxWaitMs`)만큼 흔들리고, 측정 구간 합으로 읽으면 맞는다
+    std::atomic<uint64_t> waitNs{0};
 };
 inline CNetworkSectionTotals g_networkSections;
+
+// ★ 11-11 부하 측정 M0 조각 4 — 서버 보내기 실패(`sendto` 가 `SOCKET_ERROR`). 통신 스레드만 쓴다. 스위치와 상관없이 센다 —
+//   드문 길의 정수 더하기이고 판정 값이라서다(측정 플랜 2-2절 넘음 넷째 — 소켓 버퍼가 넘치면 조각이 소리 없이 사라져 부하가 낮게 잡힌다).
+//   `datagramsOut` 은 전처럼 시도한 수다(실패 포함)
+struct alignas(64) CSendFailTotals {
+    std::atomic<uint64_t> count{0};
+    std::atomic<int> lastError{0};   // 마지막 실패의 `WSAGetLastError` — 10035(`WSAEWOULDBLOCK`)면 보내기 버퍼가 꽉 찬 것
+};
+inline CSendFailTotals g_sendFail;
+
+// ★ 11-11 부하 측정 M0 조각 4 — 보내는 쪽 지연(측정 플랜 2-2절 · 한계 판정 값). 게임 스레드가 보내기 요청을 큐에 넣은 시각
+//   (`CNetworkThread::PushRequests` · `NetworkRequest::queuedMs`)부터 통신 스레드가 그 깸의 `sendto` 고리를 다 돈 시각까지(ms 정수 · 1ms 칸).
+//   보내기 요청은 그 깸 안에서 곧바로 나갈 조각이 된다(`CUdpServer::SendOn`). 한 깸에 나간 요청은 고리 끝 시각 하나로 재므로
+//   고리 앞쪽 조각은 고리 길이만큼 크게 잡힌다 — 넘음 쪽으로 기우는 쪽이라 그대로 둔다. 요청 하나 = 표본 하나(`SEND_MSG` 만 · 다시 보내기는 요청이 아니라 뺀다).
+//   통신 스레드만 쓰고 게임 스레드가 10초마다 읽어 앞 값과 뺀다(`[틱분포]` 와 같은 때 `[보내기분포]` 줄). 전역이라 0 으로 시작한다.
+//   표본 수는 따로 세지 않고 칸의 합으로 낸다 — 따로 세면 읽는 순간 쓰는 중인 몫 때문에 줄 하나에서 분포 합과 어긋날 수 있다
+struct alignas(64) CSendDelayTotals {
+    static constexpr size_t kSlots = 100;   // 1ms 칸 0~99 + 「100이상」 — `[틱분포]` 와 같은 칸
+    std::atomic<uint64_t> histogram[kSlots + 1];
+};
+inline CSendDelayTotals g_sendDelay;
 
 // 쓰는 스레드가 하나뿐이라 잠금 더하기가 필요 없다 — 읽어서 더해 쓴다
 inline void AddRelaxed(std::atomic<uint64_t>& total, uint64_t v) {
@@ -167,6 +192,8 @@ private:
     unsigned long long _histogramTicks = 0;
 
     uint64_t _resendNsLast = 0, _sendNsLast = 0, _recvNsLast = 0, _recvCountLast = 0, _handoffNsLast = 0;
+    uint64_t _netWaitNsLast = 0, _sendFailLast = 0;                          // ★ 11-11 M0 조각 4
+    uint64_t _sendDelayLast[CSendDelayTotals::kSlots + 1] = {}, _sendSamplesLast = 0;   // ★ 11-11 M0 조각 4 — `[보내기분포]` 앞 값
     unsigned long long _leaveLast = 0, _overflowLast = 0;
     unsigned long long _leaveTimeoutLast = 0, _leaveCloseLast = 0, _eventsDroppedLast = 0, _requestsDroppedLast = 0;   // ★ 11-11 M0 조각 3
 };

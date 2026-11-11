@@ -75,6 +75,12 @@ void CTickSectionReport::Print(uint32_t nowMs, const CSectionNetTotals& net) {
     const uint64_t recv = g_networkSections.recvNs.load(std::memory_order_relaxed);
     const uint64_t recvCount = g_networkSections.recvCount.load(std::memory_order_relaxed);
     const uint64_t handoff = g_networkSections.handoffNs.load(std::memory_order_relaxed);
+    // ★ 11-11 부하 측정 M0 조각 4 — 통신 바쁜 비율 · 보내기 실패(머리 주석은 `TickSections.h`)
+    const uint64_t netWait = g_networkSections.waitNs.load(std::memory_order_relaxed);
+    const double netWaitMs = NsToMs(netWait - _netWaitNsLast);
+    const double netBusyPct = elapsedMs > 0.0 ? 100.0 * (elapsedMs > netWaitMs ? elapsedMs - netWaitMs : 0.0) / elapsedMs : 0.0;
+    const uint64_t sendFail = g_sendFail.count.load(std::memory_order_relaxed);
+    const int sendFailError = g_sendFail.lastError.load(std::memory_order_relaxed);
 
     double cpuNow[3];
     for (int i = 0; i < 3; ++i) cpuNow[i] = ThreadCpuMs(_threads[i]);
@@ -87,7 +93,8 @@ void CTickSectionReport::Print(uint32_t nowMs, const CSectionNetTotals& net) {
                 " · 통신 재전송 %.1f · 보내기 %.1f · 받기 %.1f(수 %llu) · 넘기기 %.1f"
                 " · CPU 게임 %.0f 통신 %.0f 기록 %.0f · 끊김 %llu(시간 초과 %llu · 0a %llu) · 넘침 %llu"
                 " · 지난 %.1f · 기다림 %.1f · 바쁨 %.1f%% · 고리 나머지 %.1f · 넘김 지연 평균 %.2f 최대 %u"
-                " · 큐 버림 사건 %llu 요청 %llu · 메모리 개인 %.1fMB 작업 %.1fMB\n",
+                " · 큐 버림 사건 %llu 요청 %llu · 메모리 개인 %.1fMB 작업 %.1fMB"
+                " · 통신 기다림 %.1f 바쁨 %.1f%% · 보내기 실패 %llu(마지막 오류 %d)\n",
                 static_cast<uint32_t>(nowMs - _startMs) / 1000u, _ticks, _tickSumMs, _tickMaxMs, g.eventMs, g.eventCount,
                 g.roomCreateMs, g.roomCreates, g.roomCreateMaxMs, g.roomCloseMs, g.roomCloses, g.roomCloseMaxMs, g.afterMs,
                 sec(TickSection::Front), sec(TickSection::Walk), sec(TickSection::Think), sec(TickSection::Cast), sec(TickSection::World),
@@ -99,8 +106,11 @@ void CTickSectionReport::Print(uint32_t nowMs, const CSectionNetTotals& net) {
                 g_leaveTotal - _leaveLast, g_leaveTimeoutTotal - _leaveTimeoutLast, g_leaveCloseTotal - _leaveCloseLast,
                 overflowTotal - _overflowLast,
                 elapsedMs, g.waitMs, busyPct, restMs, handoffAvgMs, g.handoffLatMaxMs,
-                net.eventsDropped - _eventsDroppedLast, net.requestsDropped - _requestsDroppedLast, privateMb, workingMb);
+                net.eventsDropped - _eventsDroppedLast, net.requestsDropped - _requestsDroppedLast, privateMb, workingMb,
+                netWaitMs, netBusyPct, static_cast<unsigned long long>(sendFail - _sendFailLast), sendFailError);
     std::fflush(stdout);
+    _netWaitNsLast = netWait;
+    _sendFailLast = sendFail;
 
     _resendNsLast = resend; _sendNsLast = send; _recvNsLast = recv; _recvCountLast = recvCount; _handoffNsLast = handoff;
     for (int i = 0; i < 3; ++i) _cpuMsLast[i] = cpuNow[i];
@@ -119,7 +129,10 @@ void CTickSectionReport::Print(uint32_t nowMs, const CSectionNetTotals& net) {
 
 void CTickSectionReport::PrintFinal(uint32_t nowMs, const CSectionNetTotals& net) {
     Print(nowMs, net);
-    if (_histogramTicks > 0 || g_tickCompletion.samples > 0) PrintHistogram(nowMs);   // ★ 11-11 M0 조각 2 — 완료 표본만 남아도
+    uint64_t sendSamples = 0;   // ★ 11-11 M0 조각 4 — 보내기 표본만 남아도(표본 = 칸의 합)
+    for (const std::atomic<uint64_t>& n : g_sendDelay.histogram) sendSamples += n.load(std::memory_order_relaxed);
+    if (_histogramTicks > 0 || g_tickCompletion.samples > 0 || sendSamples != _sendSamplesLast)   // ★ 11-11 M0 조각 2 — 완료 표본만 남아도
+        PrintHistogram(nowMs);
 }
 
 void CTickSectionReport::PrintHistogram(uint32_t nowMs) {
@@ -156,6 +169,30 @@ void CTickSectionReport::PrintHistogram(uint32_t nowMs) {
     std::printf("%s\n", line.c_str());
     std::fflush(stdout);
     c.Reset();
+
+    // ★ 11-11 부하 측정 M0 조각 4 — 보내는 쪽 지연 분포(머리 주석은 `TickSections.h` `CSendDelayTotals`). 통신 스레드가 쓰는 누계를 읽어 앞 값과 뺀다
+    uint64_t sendNow[CSendDelayTotals::kSlots + 1];
+    uint64_t sendSamples = 0;   // 표본 = 칸의 합(머리 주석)
+    for (size_t i = 0; i <= CSendDelayTotals::kSlots; ++i) {
+        sendNow[i] = g_sendDelay.histogram[i].load(std::memory_order_relaxed);
+        sendSamples += sendNow[i];
+    }
+    std::snprintf(head, sizeof(head), "[보내기분포] 초 %u · 칸 1ms · 표본 %llu ·",
+                  static_cast<uint32_t>(nowMs - _startMs) / 1000u, static_cast<unsigned long long>(sendSamples - _sendSamplesLast));
+    line = head;
+    for (size_t i = 0; i < CSendDelayTotals::kSlots; ++i) {
+        const uint64_t n = sendNow[i] - _sendDelayLast[i];
+        if (!n) continue;
+        std::snprintf(b, sizeof(b), " %zu:%llu", i, static_cast<unsigned long long>(n));
+        line += b;
+    }
+    std::snprintf(b, sizeof(b), " %zu이상:%llu", CSendDelayTotals::kSlots,
+                  static_cast<unsigned long long>(sendNow[CSendDelayTotals::kSlots] - _sendDelayLast[CSendDelayTotals::kSlots]));
+    line += b;
+    std::printf("%s\n", line.c_str());
+    std::fflush(stdout);
+    for (size_t i = 0; i <= CSendDelayTotals::kSlots; ++i) _sendDelayLast[i] = sendNow[i];
+    _sendSamplesLast = sendSamples;
 }
 
 }  // namespace nox

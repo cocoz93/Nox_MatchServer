@@ -162,10 +162,14 @@ void CNetworkThread::Stop(bool closeSessions) {
 
 void CNetworkThread::PushRequests(std::vector<NetworkRequest>& reqs) {
     if (reqs.empty()) return;
+    // ★ 11-11 부하 측정 M0 조각 4 — 보내는 쪽 지연의 시작 시각(`TickSections.h` `CSendDelayTotals`). 끄면 시계를 안 읽는다
+    const bool stampQueued = g_tickSections;
+    const uint32_t queuedMs = stampQueued ? NowMs() : 0;
     {
         std::lock_guard<std::mutex> lk(_queueMu);
         for (NetworkRequest& r : reqs) {
             if (_requests.size() >= _queueMax) { ++_requestsDropped; continue; }
+            if (stampQueued) r.queuedMs = queuedMs;
             _requests.push_back(std::move(r));
         }
     }
@@ -214,6 +218,7 @@ void CNetworkThread::Run() {
     std::vector<OutPacket> out;
     std::vector<NetworkEvent> events;
     std::vector<NetworkRequest> reqs;
+    std::vector<uint32_t> sendQueuedMs;          // ★ 11-11 M0 조각 4 — 이 깸에 처리한 보내기 요청의 큐에 넣은 시각(`--tick-sections` 일 때만)
     std::vector<TcpLineEvent> tcpEvs;
     std::set<uint8_t> told;                      // `[처음]` — 접속 제어 오프코드(게임 오프코드는 게임 스레드가 찍는다)
     uint8_t in[2048];
@@ -232,7 +237,10 @@ void CNetworkThread::Run() {
             const int32_t d = static_cast<int32_t>(at - NowMs());
             wait = d <= 0 ? 0 : std::min<DWORD>(static_cast<DWORD>(d), wait);
         }
+        // ★ 11-11 부하 측정 M0 조각 4 — 기다린 시간(통신 바쁜 비율 · `TickSections.h` `CNetworkSectionTotals::waitNs`). 끄면 시계를 안 읽는다
+        SectionClock::time_point waitStart = g_tickSections ? SectionClock::now() : SectionClock::time_point{};
         WSAWaitForMultipleEvents(nEvs, evs, FALSE, wait, FALSE);
+        if (g_tickSections) AddNetworkSection(g_networkSections.waitNs, waitStart);
         // ★ 10-09 조각 5d-2c — 멈추라면 마지막으로 한 번 — 쌓인 요청을 보내고(닫기면 `SERVER_CLOSE` 까지) 끝낸다. 받기 · 타이머는 안 한다
         const bool stopping = _stop.load();
         ++_threadStats.wakes;
@@ -251,7 +259,9 @@ void CNetworkThread::Run() {
             std::lock_guard<std::mutex> lk(_queueMu);
             reqs.swap(_requests);
         }
+        sendQueuedMs.clear();
         for (const NetworkRequest& r : reqs) {
+            if (sections && r.type == NetworkRequest::Type::SEND_MSG) sendQueuedMs.push_back(r.queuedMs);   // ★ 11-11 M0 조각 4 — 아래 ⑤ 뒤에 잰다
             if (r.type == NetworkRequest::Type::LOBBY_SEND) {   // ★ 10-14 작업 8c — 로비 줄은 TCP 로(통신 층 몫이 아니다)
                 if (_lobby.Send(r.lobbyConn, r.lobbyLine)) ++_threadStats.lobbyLinesOut;
                 else ++_threadStats.lobbySendNoConn;
@@ -367,11 +377,23 @@ void CNetworkThread::Run() {
         for (const OutPacket& p : out) {
             auto it = addrOf.find(p.to);
             if (it == addrOf.end()) continue;
-            sendto(s, reinterpret_cast<const char*>(p.data.data()), static_cast<int>(p.data.size()), 0,
-                   reinterpret_cast<sockaddr*>(&it->second), sizeof(it->second));
+            if (sendto(s, reinterpret_cast<const char*>(p.data.data()), static_cast<int>(p.data.size()), 0,
+                       reinterpret_cast<sockaddr*>(&it->second), sizeof(it->second)) == SOCKET_ERROR) {
+                // ★ 11-11 부하 측정 M0 조각 4 — 보내기 실패를 센다(`TickSections.h` `CSendFailTotals` · 옛 꼴은 결과를 안 봤다)
+                AddRelaxed(g_sendFail.count, 1);
+                g_sendFail.lastError.store(WSAGetLastError(), std::memory_order_relaxed);
+            }
             ++_threadStats.datagramsOut;
         }
         out.clear();
+        // ★ 11-11 부하 측정 M0 조각 4 — 보내는 쪽 지연(`TickSections.h` `CSendDelayTotals`). 이 깸에 처리한 보내기 요청마다 하나씩
+        if (sections && !sendQueuedMs.empty()) {
+            const uint32_t sentMs = NowMs();
+            for (const uint32_t q : sendQueuedMs) {
+                const uint32_t d = sentMs - q;
+                AddRelaxed(g_sendDelay.histogram[d >= CSendDelayTotals::kSlots ? CSendDelayTotals::kSlots : d], 1);
+            }
+        }
         if (sections) AddNetworkSection(g_networkSections.sendNs, secLast);   // 플랜의 네 구간에 안 적힌 `sendto` 고리 — 뜻이 「보내기」라 같은 칸에
         if (stopping || static_cast<uint32_t>(now - _lastPublishMs) >= kMaxWaitMs) {   // 지표 사본은 기다림 설정과 따로 0.25초마다 · 멈출 때 한 번 더
             _lastPublishMs = now;

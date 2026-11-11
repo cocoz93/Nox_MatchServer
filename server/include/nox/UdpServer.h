@@ -152,6 +152,7 @@ struct NetworkRequest {
     uint32_t timeoutMs = 0;          // SET_SESSION_TIMEOUT
     int lobbyConn = 0;               // LOBBY_SEND — TCP 접속 번호
     std::string lobbyLine;           // LOBBY_SEND
+    uint32_t queuedMs = 0;           // ★ 11-11 부하 측정 M0 조각 4 — 큐에 넣은 시각(`CNetworkThread::PushRequests` · `--tick-sections` 일 때만 · 보내는 쪽 지연)
 };
 
 // ★ 10-09 조각 5a — 게임이 한도를 알리기 전의 시간 초과 한도(ms). 한도는 게임 규칙이라 게임이 정한다(`RequestSetSessionTimeout`).
