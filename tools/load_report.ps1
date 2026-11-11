@@ -111,6 +111,8 @@ function Window-Stats($secs, $bounds, [int]$ka, [int]$kb) {
     completionP99Ms = (P99 $doneHist); sendP99Ms = (P99 $sendHist)
     lateRuns = $late; lateExtraTicks = $lateExtra
     gameBusyPct = $(if ($elapsed -gt 0) { [math]::Round(100.0 * ($elapsed - $wait) / $elapsed, 2) } else { $null })
+    # 통신 기다림은 기다림이 끝난 줄에 통째로 든다 — 한 번 기다림(최대 250ms · NetworkThread.h kMaxWaitMs)만큼 양끝이 어긋나
+    #   빈 서버 60초면 ±0.4%p 쯤의 음수가 나온다(M2 시험 실행 −0.35% · 실행 전체 합은 지난 118,215 대 기다림 118,143ms). 부하가 있으면 기다림이 짧아 거의 0
     netBusyPct = $(if ($elapsed -gt 0) { [math]::Round(100.0 * ($elapsed - $netWait) / $elapsed, 2) } else { $null })
     loopRestMsPerSec = $(if ($sec -gt 0) { [math]::Round($rest / $sec, 2) } else { $null })
     partMsPerSec = $perSec; handoffMaxMs = $handoffMax

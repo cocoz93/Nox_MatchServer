@@ -23,6 +23,7 @@ param(
   [double]$FreqMult = 1.0,
   [int]$DummyThreads = 4,                # 더미 내부 스레드(측정 플랜 4절 — 1,280명이면 한 바퀴 최대 약 94ms 라 3스레드가 필요하고 하나 더)
   [int]$CycleSec = 0,                    # 방 여닫기(측정 플랜 M7) — 더미 --cycle-sec 로 넘긴다. 마지막 방이 이 초마다 닫히고 새로 열린다 · 0 = 끔
+  [switch]$NoDummy,                      # 빈 서버(측정 플랜 M2) — 더미를 안 띄우고 서버만 Sec 초 돌린다. 방은 더미가 들어와야 생겨 0개다
   [string]$ExtraServerArgs = '',
   [string]$ExtraDummyArgs = '',
   [string]$GameDir = 'C:\Program Files\GOG Galaxy\Games\Nox',
@@ -247,7 +248,7 @@ $dummyArgs = "--server 127.0.0.1:$Port --count $($Rooms * $RoomSize) --room-size
 if ($CycleSec -gt 0) { $dummyArgs += " --cycle-sec $CycleSec" }
 if ($ExtraDummyArgs) { $dummyArgs += " $ExtraDummyArgs" }
 Note '서버 명령줄' "$serverExe $serverArgs"
-Note '더미 명령줄' "$dummyExe $dummyArgs"
+Note '더미 명령줄' $(if ($NoDummy) { '없음(-NoDummy)' } else { "$dummyExe $dummyArgs" })
 
 function Stop-Server($Proc) {
   # 멈춤 이벤트 먼저(콘솔 프로그램은 창 닫기 신호를 못 받는다) — 강제 종료는 응답이 없을 때만
@@ -296,30 +297,35 @@ if ($sv.HasExited) {
   exit 4
 }
 
-$du = Start-Process -FilePath $dummyExe -ArgumentList $dummyArgs -WorkingDirectory $repo -PassThru -WindowStyle Hidden `
-  -RedirectStandardOutput (Join-Path $runDir 'dummy.txt') -RedirectStandardError (Join-Path $runDir 'dummy_err.txt')
-$null = $du.Handle
-if (-not (Set-Affinity $du $dummyMask '더미')) {
-  $du.Kill()
-  [void](Stop-Server $sv)
-  Write-Host '[멈춤] 더미 코어 지정이 다르다'
-  Save-Env
-  exit 3
+$du = $null
+if (-not $NoDummy) {
+  $du = Start-Process -FilePath $dummyExe -ArgumentList $dummyArgs -WorkingDirectory $repo -PassThru -WindowStyle Hidden `
+    -RedirectStandardOutput (Join-Path $runDir 'dummy.txt') -RedirectStandardError (Join-Path $runDir 'dummy_err.txt')
+  $null = $du.Handle
+  if (-not (Set-Affinity $du $dummyMask '더미')) {
+    $du.Kill()
+    [void](Stop-Server $sv)
+    Write-Host '[멈춤] 더미 코어 지정이 다르다'
+    Save-Env
+    exit 3
+  }
 }
 Save-Env   # 실행 중 끊겨도 지문은 남긴다
 
 # 더미가 끝나기를 기다리며 CPU 속도를 10초마다 적는다(측정 플랜 3절 — 검사 문턱이 아니라 결과 옆에 적는 값)
 #   cpu_speed.txt 한 줄 = 더미를 띄운 뒤 지난 초 · 실제 MHz · 성능 % · 기준 MHz (지난 줄부터 이 줄까지의 평균)
+#   -NoDummy 면 Sec 초를 채우거나 서버가 먼저 끝날 때까지
 $cpuLines = New-Object System.Collections.ArrayList
 $cpuMhz = New-Object System.Collections.ArrayList
 $pdhErr = [NoxLoadRunPdh]::Open()
 if ($pdhErr) { [void]$cpuLines.Add("못 읽음 — $pdhErr") }
 $duStart = Get-Date
-$deadline = $duStart.AddSeconds($Sec + 30)
-while (-not $du.HasExited) {
+$deadline = $duStart.AddSeconds($(if ($NoDummy) { $Sec } else { $Sec + 30 }))
+while ($(if ($NoDummy) { -not $sv.HasExited } else { -not $du.HasExited })) {
   $left = ($deadline - (Get-Date)).TotalMilliseconds
   if ($left -le 0) { break }
-  [void]$du.WaitForExit([int][math]::Min(10000, $left))
+  $waitMs = [int][math]::Min(10000, $left)
+  if ($NoDummy) { [void]$sv.WaitForExit($waitMs) } else { [void]$du.WaitForExit($waitMs) }
   if ($pdhErr) { continue }
   $perf = 0.0; $base = 0.0
   if ([NoxLoadRunPdh]::Read([ref]$perf, [ref]$base)) {
@@ -330,7 +336,7 @@ while (-not $du.HasExited) {
     [void]$cpuLines.Add(('{0:F0} · 못 읽음' -f ((Get-Date) - $duStart).TotalSeconds))
   }
 }
-if (-not $du.HasExited) {
+if ($du -and -not $du.HasExited) {
   Write-Host '[주의] 더미가 시간 안에 안 끝나 강제 종료'
   $du.Kill()
 }
@@ -346,8 +352,9 @@ $clean = Stop-Server $sv
 [IO.File]::WriteAllText($stamp, ((Get-Date).ToUniversalTime().Ticks).ToString())
 
 Note '서버 종료 코드' "$($sv.ExitCode)"
-Note '더미 종료 코드' "$($du.ExitCode)"
+$duCode = if ($du) { "$($du.ExitCode)" } else { '없음' }
+Note '더미 종료 코드' $duCode
 Note '서버가 멈춤 이벤트로 끝남' "$clean"
 Save-Env
-Write-Host "[끝] $runDir · 서버 종료 코드 $($sv.ExitCode) · 더미 종료 코드 $($du.ExitCode)"
+Write-Host "[끝] $runDir · 서버 종료 코드 $($sv.ExitCode) · 더미 종료 코드 $duCode"
 exit 0
