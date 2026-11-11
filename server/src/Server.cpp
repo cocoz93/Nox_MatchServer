@@ -3272,6 +3272,7 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
         //   ✖ 우리는 클라 중요 메시지(`aa`) 뒤의 **0 채움 바이트 하나하나**를 「접속 요청 재전송」으로 읽고 매번 `0x04`(「이미 접속함」
         //     `codeAlreadyJoined4`)로 답했다 — 2분 판에 **47,082건**(패킷 하나에 7개 안팎 · 대조군 0건 · `_evidence/_runs/wc0929_*.cap.txt`)
         if (endsAtZero(count, it.op())) { ++connectTailStops_; break; }
+        if (it.op() == static_cast<uint8_t>(Op::PLAYER_INPUT)) ++g_inputTotal;   // ★ 11-11 M0 조각 5 — 스위치와 상관없이(`TickSections.h`)
         if (!g_noOpCount) {   // ★ 11-10 부하 실험 — `--no-op-count`(더미 플랜 5-2절)
             ++seen_[it.op()];
             if (lastFragOps_.size() < 16) lastFragOps_.push_back(it.op());

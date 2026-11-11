@@ -119,6 +119,10 @@ inline unsigned long long g_importantOverflowTotal = 0;    // 중요 메시지 �
 //   전송 층 넘침 셈은 끊은 사람 수가 아니라 넘친 횟수라 빼서 「순수 시간 초과」를 낼 수 없다. 판정에서는 둘 다 넘음이라 가를 필요가 없다
 inline unsigned long long g_leaveTimeoutTotal = 0;   // 시간 초과(조용함 · 넘침)
 inline unsigned long long g_leaveCloseTotal = 0;     // 접속 닫기 `0a`
+// ★ 11-11 부하 측정 M0 조각 5 — 받은 입력(`0x3f PLAYER_INPUT`) 수. 메시지 종류별 셈(`Server::seen_`)과 떼어 `--no-op-count` 여도 센다 —
+//   그 셈에서 읽던 때는 끄면 0 이 찍혀(실측 `s9_op` 더미 13,336 · 서버 0) 입력 손실 판정(측정 플랜 2-2절 넘음 넷째)이 늘 넘음이 됐다.
+//   종류별 셈과 같은 자리(`0x00` 에서 끊기 뒤)에서 센다. 게임 스레드만 쓴다. 방 밖에 두어 닫힌 방 몫도 남는다
+inline unsigned long long g_inputTotal = 0;
 
 // ★ 11-11 M0 조각 3 — `Print` 에 넘기는 통신 층 누계. 지표 사본(`CNetworkThread::LatestNetworkStats` · `LatestThreadStats`, 0.25초마다 갱신)에서 읽는다
 struct CSectionNetTotals {

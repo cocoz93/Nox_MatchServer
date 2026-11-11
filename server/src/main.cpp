@@ -679,7 +679,7 @@ int main(int argc, char** argv) {
     nox::g_noOpCount = opt.noOpCount;
     if (opt.noEventLog) std::printf("옵션: 사건 기록 끔 — Server::Log 줄이 안 나온다\n");
     if (opt.noFirstSeen) std::printf("옵션: 처음 본 종류 알림 끔 — [처음] 줄이 안 나온다\n");
-    if (opt.noOpCount) std::printf("옵션: 메시지 종류별 셈 끔 — [종료] 받은 것의 입력 · 메시지 전체가 0 이다\n");
+    if (opt.noOpCount) std::printf("옵션: 메시지 종류별 셈 끔 — [종료] 받은 것의 메시지 전체가 0 이다(입력은 따로 세어 남는다)\n");   // ★ 11-11 M0 조각 5
     if (opt.statMult != 1) std::printf("옵션: 사람 최대 체력 · 마나 × %d (소치유 회복량은 사람 대상만 × %d)\n", opt.statMult, opt.statMult);
     if (LoadMode(opt)) {
         std::printf("입장: 실험 옵션 — 방당 %d명 · 열린 방 상한 %d · 접속 때 방을 만든다(토큰 검사 끔)\n", opt.loadRoomSize, opt.loadRooms);
@@ -1160,11 +1160,10 @@ int main(int argc, char** argv) {
         // 부하 실험(더미 플랜 5-3) — 더미의 sentInput 합 · recvDgram 합과 견주는 값. 소켓 · 큐에서 소리 없이 사라진 몫이 여기서 드러난다
         {
             const auto seenAll = rooms.SeenTotals();
-            unsigned long long msgs = 0, inputs = 0;
-            for (const auto& kv : seenAll) {
-                msgs += kv.second;
-                if (kv.first == static_cast<uint8_t>(nox::Op::PLAYER_INPUT)) inputs = kv.second;
-            }
+            // ★ 11-11 부하 측정 M0 조각 5 — 입력은 스위치와 상관없이 센 값(`TickSections.h` `g_inputTotal`). 메시지 전체는 종류별 셈이라 `--no-op-count` 면 0
+            unsigned long long msgs = 0;
+            const unsigned long long inputs = nox::g_inputTotal;
+            for (const auto& kv : seenAll) msgs += kv.second;
             std::printf("[종료] 받은 것 — 입력(0x3f) %llu · 메시지 전체 %llu · 받은 조각 %llu · 한 번에 비운 조각 최대 %llu · 받기 오류 %llu\n",
                         inputs, msgs, ts.datagramsIn, ts.maxDatagramsPerWake, ts.recvErrors);
         }
