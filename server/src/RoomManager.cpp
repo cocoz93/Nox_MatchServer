@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdio>
 
+#include "nox/Clock.h"
 #include "nox/Messages.h"
 #include "nox/Opcode.h"
 #include "nox/TickSections.h"
@@ -564,6 +565,7 @@ void CRoomManager::RunTick() {
     for (auto& kv : _rooms) {
         CRoom& room = *kv.second;
         if (room._ticks <= 0) continue;
+        const int ticks = room._ticks;   // ★ 11-11 부하 측정 M0 조각 2 — 아래에서 0 으로 지우기 전에(틱 완료 시간)
         const auto start = std::chrono::steady_clock::now();
         room._game.RunTick(room._ticks);
         const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
@@ -589,7 +591,19 @@ void CRoomManager::RunTick() {
         room.CheckMatchHeadcount();   // ★ 10-16 결함 ④ — 나감은 위 옮기기(`PullRequests`)에서 구성원에서도 빠졌다 · 돌렸으면 그 요청은 다음 옮기기 때
         if (rankLive && room._rankWait == CRoom::RankWait::None) ++_stats.rankEnded;
         PullResults(room);            // ★ 10-19 MO 5단계 작업 2 — 판 끝 · 중단 결과
-        if (g_tickSections) g_gameSections.afterMs += MsSince(afterStart);
+        if (g_tickSections) {
+            g_gameSections.afterMs += MsSince(afterStart);
+            // ★ 11-11 부하 측정 M0 조각 2 — 틱 완료 시간(머리 주석은 `TickSections.h` `CTickCompletion`). 몰아 돈 틱은 틱마다 자기 예정 시각으로
+            const uint32_t endMs = NowMs();
+            const uint32_t lastDue = room._game.LastTickDue();
+            const uint32_t step = room._game.TickMs();
+            for (int i = 0; i < ticks; ++i)
+                g_tickCompletion.Add(endMs - (lastDue - static_cast<uint32_t>(ticks - 1 - i) * step));
+            if (ticks >= 2) {
+                ++g_tickCompletion.lateRuns;
+                g_tickCompletion.lateExtraTicks += static_cast<unsigned long long>(ticks - 1);
+            }
+        }
     }
 }
 

@@ -3863,6 +3863,10 @@ public:
         due = lastTickMs_ + tickMs_;
         return true;
     }
+    // ★ 11-11 부하 측정 M0 조각 2 — 이번 `BeginTick` 이 돈 마지막 틱의 예정 시각과 틱 간격(틱 완료 시간 · `TickSections.h` `CTickCompletion`).
+    //   몰아 돈 틱 k(0부터 · 모두 n개)의 예정 시각 = `LastTickDue() − (n − 1 − k) × TickMs()`
+    uint32_t LastTickDue() const { return lastTickMs_; }
+    uint32_t TickMs() const { return tickMs_; }
 
     uint32_t frame() const { return frame_; }
     // ★ 게임에 들어와 있는 사람 수. **「서로 보임」이 안 될 때 여기부터 본다** —

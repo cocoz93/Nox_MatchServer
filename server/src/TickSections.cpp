@@ -85,7 +85,7 @@ void CTickSectionReport::Print(uint32_t nowMs, unsigned long long reliableOverfl
 
 void CTickSectionReport::PrintFinal(uint32_t nowMs, unsigned long long reliableOverflowTotal) {
     Print(nowMs, reliableOverflowTotal);
-    if (_histogramTicks > 0) PrintHistogram(nowMs);
+    if (_histogramTicks > 0 || g_tickCompletion.samples > 0) PrintHistogram(nowMs);   // ★ 11-11 M0 조각 2 — 완료 표본만 남아도
 }
 
 void CTickSectionReport::PrintHistogram(uint32_t nowMs) {
@@ -104,6 +104,24 @@ void CTickSectionReport::PrintHistogram(uint32_t nowMs) {
     std::fflush(stdout);
     for (unsigned long long& n : _histogram) n = 0;
     _histogramTicks = 0;
+
+    // ★ 11-11 부하 측정 M0 조각 2 — 틱 완료 시간 분포(머리 주석은 `TickSections.h` `CTickCompletion`). `[틱분포]` 와 같은 10초 · 같은 칸.
+    //   표본 = 방별 틱 수 합 · 밀림 = 2틱 이상 몰아 돈 횟수(괄호 안은 그때 더 돈 틱 수)
+    CTickCompletion& c = g_tickCompletion;
+    char head[160];   // 한글 한 자 3바이트 + 숫자 넷(최대 20자리씩) — 위 `b`(64)로는 잘린다
+    std::snprintf(head, sizeof(head), "[완료분포] 초 %u · 칸 1ms · 표본 %llu · 밀림 %llu(틱 %llu) ·",
+                  static_cast<uint32_t>(nowMs - _startMs) / 1000u, c.samples, c.lateRuns, c.lateExtraTicks);
+    line = head;
+    for (size_t i = 0; i < CTickCompletion::kSlots; ++i) {
+        if (!c.histogram[i]) continue;
+        std::snprintf(b, sizeof(b), " %zu:%llu", i, c.histogram[i]);
+        line += b;
+    }
+    std::snprintf(b, sizeof(b), " %zu이상:%llu", CTickCompletion::kSlots, c.histogram[CTickCompletion::kSlots]);
+    line += b;
+    std::printf("%s\n", line.c_str());
+    std::fflush(stdout);
+    c.Reset();
 }
 
 }  // namespace nox

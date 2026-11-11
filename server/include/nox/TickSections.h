@@ -83,6 +83,25 @@ inline void AddNetworkSection(std::atomic<uint64_t>& total, SectionClock::time_p
 inline unsigned long long g_leaveTotal = 0;                // 끊김 = `[나감]` 줄을 내는 두 자리(서버 종료 답 0xc8 은 끊김이 아니라 뺀다)
 inline unsigned long long g_importantOverflowTotal = 0;    // 중요 메시지 대기열 넘침으로 끊은 수
 
+// ★ 11-11 부하 측정 M0 조각 2 — 틱 완료 시간(`Docs/MO_MEASURE_PLAN_1111.md` 2-1절 · 한계 판정 값). 방의 틱이 돌기로 예정된 시각
+//   (`Server::BeginTick` 이 `lastTickMs_` 를 `tickMs_` 씩 올린 값)부터 그 방의 틱 일(`CRoomManager::RunTick` 의 방 하나 몫 · 뒷일까지)이
+//   끝난 시각까지. 게임 스레드 하나가 방을 차례로 도니 앞선 사건 처리 · 앞 차례 방의 틱 · 방 만들기로 늦어진 몫이 저절로 들어간다 —
+//   `[틱분포]`(`rooms.RunTick()` 한 번의 길이)는 방이 여럿이면 이 몫을 못 본다.
+//   몰아 돈 틱(`BeginTick` 이 2 이상)은 틱마다 자기 예정 시각으로 하나씩 넣는다 — 묶음에 하나만 넣으면 늦은 틱이 빠져 가장 느린 1%가 낮게 나온다.
+//   시계는 `NowMs`(ms 정수). 예정 시각은 정수라 잰 값은 실제보다 1ms 미만 작다 — 칸이 1ms · 문턱이 33ms라 가르기엔 넉넉하다.
+//   방의 보내기 요청은 모든 방이 끝난 뒤 한 번에 넘기므로(`main.cpp` 의 `net.PushRequests`) 앞 차례 방은 넘긴 시각보다 일찍 끝난 것으로 잡힌다.
+//   가장 느린 1%는 뒤 차례 방에서 나오므로 그 차이는 작다고 본다(어림 · 안 잼). 게임 스레드만 쓰고 읽는다.
+struct CTickCompletion {
+    static constexpr size_t kSlots = 100;   // 1ms 칸 0~99 + 「100이상」 — `[틱분포]` 와 같은 칸
+    unsigned long long histogram[kSlots + 1] = {};
+    unsigned long long samples = 0;          // 지나간 양 — 방별 틱 수 합(몰아 돈 틱 포함)과 같아야 한다
+    unsigned long long lateRuns = 0;         // 한 번에 2틱 이상 몰아 돈 횟수(`Server::BeginTick` 의 while)
+    unsigned long long lateExtraTicks = 0;   // 그때 더 돈 틱 수(틱 수 − 1 의 합)
+    void Add(uint32_t ms) { ++histogram[ms >= kSlots ? kSlots : ms]; ++samples; }
+    void Reset() { *this = CTickCompletion{}; }
+};
+inline CTickCompletion g_tickCompletion;
+
 // 경계마다 `End(이 구간)` 을 부른다. 꺼져 있으면 시계를 안 읽는다
 class CTickSectionClock {
 public:
@@ -98,7 +117,7 @@ private:
     SectionClock::time_point _last;
 };
 
-// `[구간]` 줄(초당) · `[틱분포]` 줄(10초마다). `--quiet` 와 상관없이 찍는다. 게임 스레드에서만 부른다.
+// `[구간]` 줄(초당) · `[틱분포]` 줄(10초마다) · `[완료분포]` 줄(`[틱분포]` 바로 뒤 · 11-11 M0 조각 2). `--quiet` 와 상관없이 찍는다. 게임 스레드에서만 부른다.
 class CTickSectionReport {
 public:
     // 핸들 — 게임 · 네트워크 · 판 기록 스레드(판 기록을 꺼서 없으면 nullptr)
