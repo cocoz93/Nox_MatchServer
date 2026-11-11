@@ -117,7 +117,8 @@ function Window-Stats($secs, $bounds, [int]$ka, [int]$kb) {
     loopRestMsPerSec = $(if ($sec -gt 0) { [math]::Round($rest / $sec, 2) } else { $null })
     partMsPerSec = $perSec; handoffMaxMs = $handoffMax
     memPrivMaxMb = $memMax; memPrivFirstMb = $secs[$ka].memPriv; memPrivLastMb = $secs[$kb - 1].memPriv
-    completionHist = $doneHist; sendHist = $sendHist; tickHistSum = (Sum-Hist $tickHist)
+    # @() — New-Object 로 만든 배열은 감싼 꼴이라 ConvertTo-Json(5.1)이 {"value":[…],"Count":101} 로 쓴다. 맨 배열로 풀어 report.json 에 숫자 101개로
+    completionHist = @($doneHist); sendHist = @($sendHist); tickHistSum = (Sum-Hist $tickHist)
   }
 }
 function Edge-Of($w, [double]$fromMs, [double]$toMs) {
