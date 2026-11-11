@@ -168,6 +168,10 @@ if (Test-Path -LiteralPath $stamp) {
 }
 
 # ── 게이트 ────────────────────────────────────────────────────
+# 이번 실행의 문턱 — load_report.ps1 이 이 대본의 기본값과 견줘 다르면 그 실행을 버린다(측정 플랜 2-3절 · `final4` 는 유휴 문턱을 풀고 돌렸다)
+foreach ($n in @('UptimeMaxHours', 'IdleMaxPercent', 'ResidualMaxPercent', 'ResidualMaxReads', 'PowerPlanGuid', 'UpdateServiceStatus')) {
+  Note "문턱 $n" ([string](Get-Variable -Name $n -ValueOnly))
+}
 $boot = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime
 $uptime = [math]::Round(((Get-Date) - $boot).TotalHours, 2)
 Gate '가동 시간' ($uptime -le $UptimeMaxHours) "$uptime 시간 · 문턱 $UptimeMaxHours 시간 이하"
