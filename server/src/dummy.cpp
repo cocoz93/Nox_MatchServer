@@ -13,14 +13,17 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <random>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -136,8 +139,31 @@ struct Counters {
 #undef X
 };
 
-Counters g_count;
-int g_decodeFailShown = 0;
+// ★ 11-11 부하 측정 M0 조각 7 — 더미를 스레드 여럿으로 돌린다(`--threads`). 셈은 스레드마다 따로 세고, 주 스레드가 1초마다 읽어 더한다.
+//   한 칸을 쓰는 스레드는 하나뿐이라 읽고 · 더하고 · 쓰기를 relaxed 로 나눠도 잃는 몫이 없다(x64 에선 잠금 없는 mov · add · mov).
+//   주 스레드는 도는 중에 읽으니 1초 줄은 그 순간의 값이고, [더미 요약]은 스레드를 다 기다린 뒤라 정확하다.
+struct RelaxedCount {
+    std::atomic<uint64_t> v{0};
+    RelaxedCount& operator++() { v.store(v.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed); return *this; }
+    RelaxedCount& operator+=(uint64_t n) { v.store(v.load(std::memory_order_relaxed) + n, std::memory_order_relaxed); return *this; }
+    uint64_t Get() const { return v.load(std::memory_order_relaxed); }
+};
+
+// 스레드마다 한 벌 — 64바이트로 맞춰 옆 스레드 몫과 같은 캐시 줄에 안 놓이게 한다.
+struct alignas(64) LiveCounters {
+#define X(n) RelaxedCount n;
+    NOX_DUMMY_COUNTERS(X)
+#undef X
+    RelaxedCount entered;                // 판에 든 더미 수 — 1초 줄의 「입장」. 주 스레드가 남의 스레드 더미의 phase 를 읽지 않게 따로 센다
+    void AddTo(Counters& c) const {
+#define X(n) c.n += n.Get();
+        NOX_DUMMY_COUNTERS(X)
+#undef X
+    }
+};
+
+thread_local LiveCounters* t_count = nullptr;   // 더미 스레드가 시작할 때 제 몫을 건다(RunWorker)
+std::atomic<int> g_decodeFailShown{0};
 
 int64_t NowUs() {
     using namespace std::chrono;
@@ -163,6 +189,8 @@ struct Args {
     uint32_t AttackGap() const { return std::max<uint32_t>(1, static_cast<uint32_t>(std::lround(kAttackGapFrames / freqMult))); }
     Behavior behavior = Behavior::Fight;   // 빠뜨렸을 때 조용히 가벼운 부하를 재지 않게 기본을 fight 로 둔다
     std::string mapFile = kDefaultMapFile;   // 벽을 돌아가려고 읽는 대전 맵
+    // 더미를 돌리는 스레드 수(M0 조각 7) — 더미 i 는 스레드 i % N 이 맡는다. 측정은 4(측정 플랜 4절: 전투 40명 한 바퀴 최대 2.94ms 라 1스레드는 약 450명부터 33ms 에 닿는다)
+    int threads = 1;
 };
 
 enum class Phase { WaitTurn, TryJoin, Connect, Game };
@@ -172,7 +200,8 @@ struct OtherPlayer {
     int x = 0, y = 0;
 };
 
-struct Dummy {
+// 64바이트로 맞춘다(M0 조각 7) — 이웃한 더미 i · i+1 은 다른 스레드가 맡아서, 한 캐시 줄에 걸치면 서로 쓸 때마다 줄을 빼앗는다.
+struct alignas(64) Dummy {
     int index = 0;
     int cls = 0;
     SOCKET sock = INVALID_SOCKET;
@@ -244,7 +273,7 @@ struct Dummy {
 
 void SendRaw(const Dummy& d, const uint8_t* p, size_t n) {
     // 실패를 세는 까닭 — 보낸 입력 합과 서버가 받은 입력 합이 어긋날 때 더미 쪽 소켓에서 사라진 몫을 가르려고
-    if (send(d.sock, reinterpret_cast<const char*>(p), static_cast<int>(n), 0) == SOCKET_ERROR) ++g_count.sendFail;
+    if (send(d.sock, reinterpret_cast<const char*>(p), static_cast<int>(n), 0) == SOCKET_ERROR) ++t_count->sendFail;
 }
 
 // 키를 받은 뒤의 조각 — 머리 [01][다음에 받을 순번] + 메시지, 전체를 뒤집는다.
@@ -278,7 +307,7 @@ void RegisterAlias(Dummy& d, uint16_t netCode, uint16_t type, bool head) {
     Put16(d.out, netCode);
     Put16(d.out, type);
     Put32(d.out, deadline);
-    ++g_count.sentAlias;
+    ++t_count->sentAlias;
 }
 
 void OnUpdate(Dummy& d, const nox::UpdateMsg& m) {
@@ -300,9 +329,9 @@ void OnUpdate(Dummy& d, const nox::UpdateMsg& m) {
 void CheckEntryStat(Dummy& d, bool& done, const char* what, int got, int want) {
     if (done) return;
     done = true;
-    ++g_count.statChecked;
+    ++t_count->statChecked;
     if (got == want) return;
-    ++g_count.statMismatch;
+    ++t_count->statMismatch;
     std::printf("[더미 %d] 입장 값 다름 — %s 받음 %d · 기대 %d\n", d.index, what, got, want);
     std::fflush(stdout);
 }
@@ -316,9 +345,9 @@ void OnImportantBody(Dummy& d, const uint8_t* p, size_t n) {
         if (msz == 0 || i + msz > n) return;
         if (p[i] == static_cast<uint8_t>(Op::PLAYER_DIED) && msz >= 3) {
             const uint16_t net = static_cast<uint16_t>(p[i + 1] | (p[i + 2] << 8));
-            ++g_count.sawDeath;
+            ++t_count->sawDeath;
             if (net == d.selfNet) {
-                ++g_count.selfDeath;
+                ++t_count->selfDeath;
                 d.dead = true;
                 d.reviveClickFrame = d.frame + kReviveFirstFrames;
                 d.detourIndex = -1;
@@ -345,7 +374,7 @@ void OnImportantBody(Dummy& d, const uint8_t* p, size_t n) {
             d.hp = hp;
             if (d.dead && hp > 0) {
                 d.dead = false;
-                ++g_count.revives;
+                ++t_count->revives;
                 d.attackSpell = nullptr;     // 공격 주문은 부활마다 다시 고른다(원본 기준 GAME4.c:2035-2045)
                 d.firstCastAfterRevive = d.cls == 1;   // 「부활 뒤 첫 주문은 자기 강화」는 법사 규칙이다 — 컨저러는 소환이 먼저(플랜 2-7절)
             }
@@ -361,15 +390,15 @@ void OnImportantBody(Dummy& d, const uint8_t* p, size_t n) {
             }
         } else if (p[i] == static_cast<uint8_t>(Op::REPORT_ACQUIRE_CREATURE) && msz >= 5) {
             // 6c <번호 2> <종류 2> — 주인에게만 온다(Server.cpp ReportAcquireCreature)
-            ++g_count.petsAcquired;
+            ++t_count->petsAcquired;
             d.pets.push_back(static_cast<uint16_t>(p[i + 1] | (p[i + 2] << 8)));
             const SummonKind& k = kSummonKinds[d.summonKind];
-            if (static_cast<uint16_t>(p[i + 3] | (p[i + 4] << 8)) != k.type) ++g_count.petTypeMismatch;   // 주문과 종류의 짝은 이름 맞추기라(Server.cpp SummonType) 실제로 대조한다
+            if (static_cast<uint16_t>(p[i + 3] | (p[i + 4] << 8)) != k.type) ++t_count->petTypeMismatch;   // 주문과 종류의 짝은 이름 맞추기라(Server.cpp SummonType) 실제로 대조한다
             const int sum = static_cast<int>(d.pets.size()) * k.size;
             if (sum > d.maxPetSize) d.maxPetSize = sum;
         } else if (p[i] == static_cast<uint8_t>(Op::REPORT_LOSE_CREATURE) && msz >= 3) {
             // 6d <번호 2>
-            ++g_count.petsLost;
+            ++t_count->petsLost;
             const uint16_t net = static_cast<uint16_t>(p[i + 1] | (p[i + 2] << 8));
             for (size_t k = 0; k < d.pets.size(); ++k)
                 if (d.pets[k] == net) { d.pets.erase(d.pets.begin() + static_cast<std::ptrdiff_t>(k)); break; }
@@ -381,7 +410,7 @@ void OnImportantBody(Dummy& d, const uint8_t* p, size_t n) {
             if (net == d.selfNet) {
                 d.selfBits = bits;
                 const int on = ((bits & kBuffBitProtect) != 0) + ((bits & kBuffBitHaste) != 0) + ((bits & kBuffBitInvis) != 0);
-                if (on >= 2) ++g_count.buffOverlap;
+                if (on >= 2) ++t_count->buffOverlap;
             } else {
                 bool found = false;
                 for (auto& e : d.enchants)
@@ -398,9 +427,9 @@ constexpr size_t kDecodeFailBefore = 48;
 
 // before · prevOp · prevSize 는 받은 묶음을 나누다 실패했을 때만 준다 — 실패 지점 뒤만 찍으면 어디서 어긋났는지 모른다(`d6_10c` 의 `op=ff 남은 583` 1건).
 void ReportDecodeFail(const Dummy& d, const uint8_t* b, size_t n, const char* why, size_t before = 0, uint8_t prevOp = 0, size_t prevSize = 0) {
-    ++g_count.decodeFail;
-    if (g_decodeFailShown >= 20) return;
-    ++g_decodeFailShown;
+    ++t_count->decodeFail;
+    // 스레드 여럿이 함께 쓰는 값이라 원자적으로 — 먼저 읽어 보고 더해 20 넘긴 뒤로는 값을 더 올리지 않는다
+    if (g_decodeFailShown.load(std::memory_order_relaxed) >= 20 || g_decodeFailShown.fetch_add(1, std::memory_order_relaxed) >= 20) return;
     std::printf("[더미 %d] 못 읽음(%s) op=%02x 남은 %zu:", d.index, why, n ? b[0] : 0, n);
     for (size_t i = 0; i < n && i < 16; ++i) std::printf(" %02x", b[i]);
     if (before != 0) {
@@ -457,12 +486,12 @@ void WalkMessages(Dummy& d, const uint8_t* b, size_t all) {
             // 정품은 aa 를 받을 때마다 같은 묶음 27 의 프레임으로 답한다(원본 기준 network_client.go:397-415).
             d.out.push_back(static_cast<uint8_t>(Op::IMPORTANT_ACK));
             Put32(d.out, d.frame);
-            ++g_count.sentAck;
+            ++t_count->sentAck;
         } else if (op == static_cast<uint8_t>(Op::SEQ_IMPORTANT)) {
             if (eaten + 4 > all || eaten + 4 + b[eaten + 3] > all) { ReportDecodeFail(d, b + eaten, all - eaten, "봉투", eaten, prevOp, prevSize); return; }
             const size_t inner = b[eaten + 3];
             const uint16_t id = static_cast<uint16_t>(b[eaten + 1] | (b[eaten + 2] << 8));
-            if (d.seenImportant[id]) ++g_count.dupImportant;
+            if (d.seenImportant[id]) ++t_count->dupImportant;
             else OnImportantBody(d, b + eaten + 4, inner);
             d.seenImportant[id] = true;
             d.seenImportant[static_cast<uint16_t>(id + 0x8000)] = false;   // 번호가 한 바퀴 돌 때를 대비해 반대쪽을 비운다
@@ -515,8 +544,8 @@ void WalkMessages(Dummy& d, const uint8_t* b, size_t all) {
 }
 
 void OnDatagram(Dummy& d, uint8_t* p, size_t n) {
-    ++g_count.recvDgram;
-    g_count.recvBytes += n;
+    ++t_count->recvDgram;
+    t_count->recvBytes += n;
     if (n < nox::kWireHeaderSize) return;
 
     if (d.phase == Phase::TryJoin) {             // 키를 받기 전 — 평문
@@ -538,6 +567,7 @@ void OnDatagram(Dummy& d, uint8_t* p, size_t n) {
             accept[1 + 66] = static_cast<uint8_t>(d.cls);
             SendGame(d, accept, sizeof(accept));
             d.phase = Phase::Game;
+            ++t_count->entered;                  // Connect → Game 은 한 번뿐이다(되돌아가는 길이 없다)
             d.pingAtUs = NowUs() + kPingUs;
         }
         return;
@@ -611,7 +641,7 @@ void MaybeStart(Dummy& d, int64_t nowUs, const Args& a) {
     }
     if (nowUs < d.startAtUs) return;
     PutChat(d.out, "!start");
-    ++g_count.sentStart;
+    ++t_count->sentStart;
     d.startAtUs = nowUs + kStartRetryUs;
 }
 
@@ -653,20 +683,26 @@ void MoveToward(Dummy& d, int tx, int ty) {
     d.out.push_back(static_cast<uint8_t>(Op::MOUSE));
     Put16(d.out, static_cast<uint16_t>(static_cast<int16_t>(d.x + std::lround(dx * kCursorAhead / len))));
     Put16(d.out, static_cast<uint16_t>(static_cast<int16_t>(d.y + std::lround(dy * kCursorAhead / len))));
-    ++g_count.sentMouse;
+    ++t_count->sentMouse;
 }
 
 // 벽 격자 — 더미가 벽을 돌아가는 데만 쓴다. 서버 물리와 별개이고, 벽이 있는 칸 전체를 막힌 것으로 본다.
 // 왜 필요한가 — Estate 는 벽이 456칸인 저택이라 곧장 쫓으면 벽 양쪽에 서서 만나지 못한다(11-10 실물 — 300초 중 약 240초).
+// 격자는 맵을 읽은 뒤 읽기만 하므로 스레드끼리 함께 쓴다.
 struct NavGrid {
     bool ok = false;
     std::vector<uint8_t> blocked;
+};
+NavGrid g_nav;
+
+// 훑기에 쓰는 버퍼는 훑을 때마다 고쳐 쓰므로 스레드마다 한 벌(M0 조각 7) — 처음 길을 찾을 때 잡는다(약 0.5MB).
+struct NavSearch {
     std::vector<uint32_t> seen;          // 이번 훑기에 가 봤나(훑을 때마다 지우지 않게 세대 번호로)
     std::vector<int32_t> from;           // 어느 칸에서 왔나
     std::vector<int32_t> queue;
     uint32_t stamp = 0;
 };
-NavGrid g_nav;
+thread_local NavSearch t_navSearch;
 
 bool CellBlocked(int cx, int cy) {
     return cx < 0 || cy < 0 || cx >= kNavSize || cy >= kNavSize || g_nav.blocked[static_cast<size_t>(cy * kNavSize + cx)] != 0;
@@ -697,28 +733,33 @@ bool FindPath(int fromX, int fromY, int toX, int toY, std::vector<Point>& out) {
     const int start = sy * kNavSize + sx, goal = gy * kNavSize + gx;
     static const int kDx[8] = {1, -1, 0, 0, 1, 1, -1, -1};
     static const int kDy[8] = {0, 0, 1, -1, 1, -1, 1, -1};
-    const uint32_t stamp = ++g_nav.stamp;
-    g_nav.queue.clear();
-    g_nav.queue.push_back(start);
-    g_nav.seen[static_cast<size_t>(start)] = stamp;
-    g_nav.from[static_cast<size_t>(start)] = -1;
-    for (size_t head = 0; head < g_nav.queue.size() && g_nav.seen[static_cast<size_t>(goal)] != stamp; ++head) {
-        const int c = g_nav.queue[head];
+    NavSearch& s = t_navSearch;
+    if (s.seen.empty()) {
+        s.seen.assign(static_cast<size_t>(kNavSize) * kNavSize, 0);
+        s.from.assign(static_cast<size_t>(kNavSize) * kNavSize, -1);
+    }
+    const uint32_t stamp = ++s.stamp;
+    s.queue.clear();
+    s.queue.push_back(start);
+    s.seen[static_cast<size_t>(start)] = stamp;
+    s.from[static_cast<size_t>(start)] = -1;
+    for (size_t head = 0; head < s.queue.size() && s.seen[static_cast<size_t>(goal)] != stamp; ++head) {
+        const int c = s.queue[head];
         const int cx = c % kNavSize, cy = c / kNavSize;
         for (int k = 0; k < 8; ++k) {
             const int nx = cx + kDx[k], ny = cy + kDy[k];
             if (nx < 0 || ny < 0 || nx >= kNavSize || ny >= kNavSize) continue;
             const int n = ny * kNavSize + nx;
-            if (g_nav.seen[static_cast<size_t>(n)] == stamp) continue;
+            if (s.seen[static_cast<size_t>(n)] == stamp) continue;
             if (n != goal && CellBlocked(nx, ny)) continue;
             if (k >= 4 && (CellBlocked(cx + kDx[k], cy) || CellBlocked(cx, cy + kDy[k]))) continue;
-            g_nav.seen[static_cast<size_t>(n)] = stamp;
-            g_nav.from[static_cast<size_t>(n)] = c;
-            g_nav.queue.push_back(n);
+            s.seen[static_cast<size_t>(n)] = stamp;
+            s.from[static_cast<size_t>(n)] = c;
+            s.queue.push_back(n);
         }
     }
-    if (g_nav.seen[static_cast<size_t>(goal)] != stamp) return false;
-    for (int c = goal; c != -1; c = g_nav.from[static_cast<size_t>(c)])
+    if (s.seen[static_cast<size_t>(goal)] != stamp) return false;
+    for (int c = goal; c != -1; c = s.from[static_cast<size_t>(c)])
         out.push_back(Point{(c % kNavSize) * kNavCell + kNavCell / 2, (c / kNavSize) * kNavCell + kNavCell / 2});
     std::reverse(out.begin(), out.end());
     return true;
@@ -730,8 +771,6 @@ bool LoadNav(const std::string& path) {
     if (!mf.Load(path)) return false;
     const auto cells = mf.ReadWalls();
     g_nav.blocked.assign(static_cast<size_t>(kNavSize) * kNavSize, 0);
-    g_nav.seen.assign(static_cast<size_t>(kNavSize) * kNavSize, 0);
-    g_nav.from.assign(static_cast<size_t>(kNavSize) * kNavSize, -1);
     for (const auto& w : cells) g_nav.blocked[static_cast<size_t>(w.y) * kNavSize + w.x] = 1;
     g_nav.ok = true;
     int free = 0, linked = 0, pairs = 0;
@@ -790,7 +829,7 @@ void StartDetour(Dummy& d, int tx, int ty) {
     d.detourIndex = w;
     d.detourEndFrame = d.frame + kDetourMaxFrames;
     d.path.clear();
-    ++g_count.detours;
+    ++t_count->detours;
     FollowPath(d, kWaypoints[w].x, kWaypoints[w].y);
 }
 
@@ -800,7 +839,7 @@ void AimAt(Dummy& d, int x, int y) {
     d.out.push_back(static_cast<uint8_t>(Op::MOUSE));
     Put16(d.out, static_cast<uint16_t>(static_cast<int16_t>(x)));
     Put16(d.out, static_cast<uint16_t>(static_cast<int16_t>(y)));
-    ++g_count.sentMouse;
+    ++t_count->sentMouse;
 }
 
 // 쫓아간다 — 벽이 없으면 곧장, 있으면 길 따라. 3초에 몸이 못 움직였으면 지점을 들른다.
@@ -847,7 +886,7 @@ void MeleeStep(Dummy& d, const Args& a, const OtherPlayer& t, double dist, bool 
     }
     if (a.behavior == Behavior::Fight && FrameReached(d, d.attackReadyFrame)) {
         d.wantClick = true;
-        ++g_count.sentAttack;
+        ++t_count->sentAttack;
         d.attackReadyFrame = d.frame + a.AttackGap();
     }
 }
@@ -860,10 +899,10 @@ void MaybeAbility(Dummy& d, const OtherPlayer& t, double dist, bool clear) {
         d.facing = FacingTo(t.x - d.x, t.y - d.y);   // 입력이 메시지보다 먼저 실려 이 방향을 본 뒤에 능력이 들어간다
         d.out.push_back(static_cast<uint8_t>(Op::TRY_ABILITY));
         d.out.push_back(ab.id);
-        ++g_count.sentAbility;
-        if (ab.id == 1) ++g_count.sentBerserk;
-        else if (ab.id == 2) ++g_count.sentRoar;
-        else ++g_count.sentHarpoon;
+        ++t_count->sentAbility;
+        if (ab.id == 1) ++t_count->sentBerserk;
+        else if (ab.id == 2) ++t_count->sentRoar;
+        else ++t_count->sentHarpoon;
         d.abilReadyFrame[ab.id] = d.frame + ab.delay + kAbilityMargin;
         d.abilGapEndFrame = d.frame + kAbilityGapFrames;
         return;
@@ -872,22 +911,22 @@ void MaybeAbility(Dummy& d, const OtherPlayer& t, double dist, bool clear) {
 
 void CountCast(const SpellInfo& sp) {
     switch (sp.id) {
-        case 51: ++g_count.castProtect; break;
-        case 36: ++g_count.castHaste; break;
-        case 39: ++g_count.castInvis; break;
-        case 12: ++g_count.castConfuse; break;
-        case 27: ++g_count.castFireball; break;
-        case 16: ++g_count.castDeathRay; break;
-        case 43: ++g_count.castChain; break;
-        case 4: ++g_count.castBlink; break;
-        case 41: ++g_count.heals; break;
-        case 58: ++g_count.castPixie; break;
-        case 60: ++g_count.castPoison; break;
-        case 74: ++g_count.castStun; break;
-        case 29: ++g_count.castFist; break;
-        case 52: ++g_count.castMeteor; break;
+        case 51: ++t_count->castProtect; break;
+        case 36: ++t_count->castHaste; break;
+        case 39: ++t_count->castInvis; break;
+        case 12: ++t_count->castConfuse; break;
+        case 27: ++t_count->castFireball; break;
+        case 16: ++t_count->castDeathRay; break;
+        case 43: ++t_count->castChain; break;
+        case 4: ++t_count->castBlink; break;
+        case 41: ++t_count->heals; break;
+        case 58: ++t_count->castPixie; break;
+        case 60: ++t_count->castPoison; break;
+        case 74: ++t_count->castStun; break;
+        case 29: ++t_count->castFist; break;
+        case 52: ++t_count->castMeteor; break;
         default:
-            if (sp.id >= 75 && sp.id <= 114) ++g_count.castSummon;
+            if (sp.id >= 75 && sp.id <= 114) ++t_count->castSummon;
             break;
     }
 }
@@ -899,12 +938,12 @@ void CastSpell(Dummy& d, const Args& a, const SpellInfo& sp, uint32_t holdFrames
     d.out[at] = static_cast<uint8_t>(Op::TRY_SPELL);
     d.out[at + 1] = static_cast<uint8_t>(sp.id);
     d.out[at + 21] = sp.selfFlag;
-    ++g_count.sentSpell;
+    ++t_count->sentSpell;
     CountCast(sp);
     if (d.firstCastAfterRevive) {
         d.firstCastAfterRevive = false;
-        if (&sp == &kProtect || &sp == &kHaste || &sp == &kInvis) ++g_count.firstBuffOk;
-        else ++g_count.firstBuffBad;
+        if (&sp == &kProtect || &sp == &kHaste || &sp == &kInvis) ++t_count->firstBuffOk;
+        else ++t_count->firstBuffBad;
     }
     d.spellReadyFrame = d.frame + a.SpellGap();
     d.castHoldEndFrame = d.frame + holdFrames;
@@ -963,7 +1002,7 @@ bool TryCast(Dummy& d, const Args& a, const OtherPlayer& t, double dist, bool in
         CastSpell(d, a, *d.attackSpell, d.attackSpell == &kChain ? kChainHoldFrames : kCastHoldFrames);
         return true;
     }
-    ++g_count.spellSkippedNoMana;
+    ++t_count->spellSkippedNoMana;
     d.spellReadyFrame = d.frame + a.SpellGap();
     return false;
 }
@@ -1002,7 +1041,7 @@ bool TryCastConjurer(Dummy& d, const Args& a, const OtherPlayer& t, double dist,
         CastSpell(d, a, *d.attackSpell, kCastHoldFrames);
         return true;
     }
-    ++g_count.spellSkippedNoMana;
+    ++t_count->spellSkippedNoMana;
     d.spellReadyFrame = d.frame + a.SpellGap();
     return false;
 }
@@ -1025,7 +1064,7 @@ void DecideCaster(Dummy& d, const Args& a, const OtherPlayer& t, double dist, bo
         d.retreatPoint = -1;
         d.backingOff = false;
         d.path.clear();
-        ++g_count.retreats;
+        ++t_count->retreats;
     }
     if (d.retreating) {
         if (!FrameReached(d, d.retreatRunEndFrame)) {
@@ -1044,7 +1083,7 @@ void DecideCaster(Dummy& d, const Args& a, const OtherPlayer& t, double dist, bo
         }
         if (d.hp * 100 >= d.maxHp * kRecoverPercent) {
             d.retreating = false;
-            ++g_count.healedBack;
+            ++t_count->healedBack;
         } else if (d.mana < kHeal.mana) {
             d.retreating = false;                // 치유할 마나가 없다 — 맨손으로 돌아간다
         } else {
@@ -1081,7 +1120,7 @@ void Decide(Dummy& d, const Args& a) {
     if (d.dead) {
         if (FrameReached(d, d.reviveClickFrame)) {
             d.wantClick = true;
-            ++g_count.sentRevive;
+            ++t_count->sentRevive;
             d.reviveClickFrame = d.frame + kReviveGapFrames;
         }
         return;
@@ -1113,7 +1152,7 @@ void Decide(Dummy& d, const Args& a) {
 void FlushOut(Dummy& d, std::vector<uint8_t>& scratch) {
     scratch.clear();
     PutInput(scratch, d.facing, d.wantMove, d.wantClick);
-    ++g_count.sentInput;
+    ++t_count->sentInput;
     // 입력을 맨 앞에 두고 쌓인 메시지를 잇는다. 상한을 넘으면 나눠 보낸다(메시지 경계에서).
     size_t pos = 0;
     while (pos < d.out.size()) {
@@ -1166,7 +1205,7 @@ void Step(Dummy& d, int64_t nowUs, const Args& a, std::vector<uint8_t>& recvBuf,
         const uint8_t ping[5] = {static_cast<uint8_t>(Op::CLIENT_PING), static_cast<uint8_t>(t), static_cast<uint8_t>(t >> 8),
                                  static_cast<uint8_t>(t >> 16), static_cast<uint8_t>(t >> 24)};
         SendGame(d, ping, sizeof(ping));
-        ++g_count.sentPing;
+        ++t_count->sentPing;
         d.pingAtUs += kPingUs;
     }
     MaybeStart(d, nowUs, a);
@@ -1200,6 +1239,85 @@ Counters Delta(const Counters& now, const Counters& before) {
     return d;
 }
 
+// ★ 11-11 부하 측정 M0 조각 7 — 더미 스레드 하나의 몫. 스레드끼리 함께 쓰는 것은 읽기만 하는 Args · 벽 격자와,
+//   더미 배열(저마다 맡은 칸만 만진다)뿐이다. 주 스레드는 셈(count)만 1초마다 읽는다.
+struct Worker {
+    int index = 0;
+    int owned = 0;                                       // 맡은 더미 수
+    std::vector<std::vector<int>> slots = std::vector<std::vector<int>>(kWheelSlots);   // 맡은 더미만 1ms 칸에
+    LiveCounters count;
+    // 한 바퀴에 일한 시간과 33ms 를 넘긴 정도 — lateTicks 가 오른 까닭이 「타이머가 조금 늦게 깨움」인지 「일이 33ms 에 안 들어감」인지 가른다
+    uint64_t wheels = 0, busySumUs = 0, busyMaxUs = 0;
+    uint64_t overBuckets[5] = {};           // 1ms 이하 · 2ms 이하 · 5ms 이하 · 10ms 이하 · 그 위
+};
+
+// 더미 스레드 — 옛 단일 스레드 고리를 그대로 옮겼다. 시작 시각 t0 와 더미마다의 칸은 스레드 수와 상관없이 같다(--threads 1 이면 옛 꼴).
+void RunWorker(Worker& w, std::vector<Dummy>& dummies, const Args& a, int64_t t0, int64_t endAt) {
+    t_count = &w.count;
+    // 서버와 같은 고해상도 대기 타이머(main.cpp:905) — Sleep(1) 은 약 15.5ms 를 자서 보내는 간격이 흔들린다.
+    HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    if (!timer) {
+        timer = CreateWaitableTimerW(nullptr, FALSE, nullptr);
+        std::printf("[더미] 스레드 %d 정밀 타이머를 못 만들어 보통 타이머로 기다린다 — 간격이 약 15.6ms 단위로 흔들린다\n", w.index);
+    }
+
+    std::vector<uint8_t> recvBuf(65536);
+    std::vector<uint8_t> scratch;
+    scratch.reserve(2048);
+    int64_t base = t0;
+
+    for (;;) {
+        int64_t busyUs = 0;
+        for (int s = 0; s < kWheelSlots; ++s) {
+            if (w.slots[static_cast<size_t>(s)].empty()) continue;
+            WaitUntilUs(timer, base + static_cast<int64_t>(s) * 1000);
+            const int64_t now = NowUs();
+            for (int i : w.slots[static_cast<size_t>(s)]) Step(dummies[static_cast<size_t>(i)], now, a, recvBuf, scratch);
+            busyUs += NowUs() - now;
+        }
+        const int64_t after = NowUs();
+        const int64_t next = base + kWheelUs;
+        ++w.wheels;
+        w.busySumUs += static_cast<uint64_t>(busyUs);
+        w.busyMaxUs = std::max(w.busyMaxUs, static_cast<uint64_t>(busyUs));
+        if (after > next) {
+            const int64_t over = after - next;
+            ++w.overBuckets[over <= 1000 ? 0 : over <= 2000 ? 1 : over <= 5000 ? 2 : over <= 10000 ? 3 : 4];
+        }
+        if (after > next + kLateToleranceUs) {   // 한 바퀴가 33ms 를 넘겼다 — 몰아 보내지 않고 지금부터 다시 센다
+            ++t_count->lateTicks;
+            base = after;
+        } else {
+            base = next;
+        }
+        if (after >= endAt) break;
+    }
+
+    // ★ 11-11 부하 측정 M0 조각 6 — 끝날 때 접속 닫기(`0a`). 원본 클라 `SendClientClose`(`third_party/opennox-src/src/internal/netstr/conn.go:187-197`)처럼
+    //   1바이트 `0a` 를 비신뢰로 보낸다 — 머리는 다른 게임 조각과 같다(`SendGame`). 서버는 접속 제어 조각 맨 앞의 `0a` 를 접속 닫기로 읽는다(`UdpServer.cpp` `CLIENT_CLOSE`).
+    //   옛 꼴은 소켓만 닫아 판 안 사람이 90초 뒤 시간 초과로 빠졌다(`Server.h` `kSessionTimeoutMsInGame`) — 방 여닫기(측정 플랜 M7)가 안 되고,
+    //   닫은 뒤 서버가 보낸 몫이 「서버가 보낸 조각 대 더미가 받은 조각」 대조에 섞였다.
+    //   키를 받기 전(접속 중) 더미는 XOR 키가 없어 못 보낸다 — `closeSkipped` 로 센다(그 몫은 서버에서 30초 뒤 시간 초과).
+    //   스레드마다 제 더미만 닫는다(M0 조각 7).
+    for (const std::vector<int>& slot : w.slots) {
+        for (int i : slot) {
+            Dummy& d = dummies[static_cast<size_t>(i)];
+            if (d.phase != Phase::Game) { ++t_count->closeSkipped; continue; }
+            const uint8_t closeMsg[1] = {static_cast<uint8_t>(Op::CLIENT_CLOSE)};
+            SendGame(d, closeMsg, sizeof(closeMsg));
+            ++t_count->sentClose;
+        }
+    }
+    // 그 뒤 받기만 한다(`kCloseDrainUs`). 받은 조각에 대한 답은 `d.out` 에 쌓일 뿐 나가지 않는다 — `FlushOut` 을 안 부른다
+    const int64_t drainEnd = NowUs() + kCloseDrainUs;
+    for (int64_t at = NowUs(); at < drainEnd; at += 5000) {
+        WaitUntilUs(timer, at);
+        for (const std::vector<int>& slot : w.slots)
+            for (int i : slot) DrainSocket(dummies[static_cast<size_t>(i)], recvBuf);
+    }
+    CloseHandle(timer);
+}
+
 bool ParseArgs(int argc, char** argv, Args& a, std::string& err) {
     for (int i = 1; i < argc; ++i) {
         const std::string k = argv[i];
@@ -1227,6 +1345,7 @@ bool ParseArgs(int argc, char** argv, Args& a, std::string& err) {
         else if (k == "--join-interval-ms") { if (!need(a.joinIntervalMs)) return false; }
         else if (k == "--start-wait-ms") { if (!need(a.startWaitMs)) return false; }
         else if (k == "--stat-mult") { if (!need(a.statMult)) return false; }
+        else if (k == "--threads") { if (!need(a.threads)) return false; }
         else if (k == "--freq-mult") {
             if (!v) { err = "--freq-mult 값 없음"; return false; }
             a.freqMult = std::atof(v);
@@ -1271,6 +1390,8 @@ bool ParseArgs(int argc, char** argv, Args& a, std::string& err) {
     if (a.count % (a.roomSize - a.reserveSeats) != 0) { err = "더미 수가 (방당 인원 - 비울 자리)의 배수가 아니다"; return false; }
     if (a.statMult < 1 || a.statMult > 10) { err = "--stat-mult 는 1~10(서버와 같은 값)"; return false; }
     if (!(a.freqMult > 0.0) || a.freqMult > 4.0) { err = "--freq-mult 는 0 초과 4 이하"; return false; }
+    // 맡은 더미가 없는 스레드는 바퀴에서 기다릴 칸이 없어 쉬지 않고 돈다 — 더미 수를 넘지 못하게 막는다
+    if (a.threads < 1 || a.threads > 64 || a.threads > a.count) { err = "--threads 는 1~64 · 더미 수 이하"; return false; }
     if (a.classes.empty()) { err = "--classes 가 비었다"; return false; }
     for (int c : a.classes)
         if (c < 0 || c > 2) { err = "직업은 0 전사 · 1 위저드 · 2 컨저러"; return false; }
@@ -1286,7 +1407,7 @@ int main(int argc, char** argv) {
         std::printf("인자 오류: %s\n", err.c_str());
         std::printf("쓰기: nox_dummy [--server 주소:포트] [--count N] [--room-size K] [--reserve-seats R] [--classes 0,1] [--duration-sec S] "
                     "[--join-interval-ms M] [--start-wait-ms M] [--behavior idle|move|fight] [--map-file 대전맵.map] [--seed S] "
-                    "[--stat-mult N] [--freq-mult X]\n");
+                    "[--stat-mult N] [--freq-mult X] [--threads N]\n");
         return 1;
     }
 
@@ -1303,7 +1424,11 @@ int main(int argc, char** argv) {
     if (inet_pton(AF_INET, a.host.c_str(), &to.sin_addr) != 1) { std::printf("주소를 못 읽음: %s\n", a.host.c_str()); return 1; }
 
     std::vector<Dummy> dummies(static_cast<size_t>(a.count));
-    std::vector<std::vector<int>> slots(kWheelSlots);
+    std::vector<std::unique_ptr<Worker>> workers;
+    for (int t = 0; t < a.threads; ++t) {
+        workers.push_back(std::make_unique<Worker>());
+        workers.back()->index = t;
+    }
     // 보내는 순간을 씨앗 난수로 흩뜨린다 — 서로 다른 PC 의 정품 클라는 같은 1ms 에 몰아 보내지 않는다.
     // 씨앗을 고정하므로 실행마다 같은 칸에 든다.
     std::mt19937 slotRng(a.seed);
@@ -1332,24 +1457,41 @@ int main(int argc, char** argv) {
         u_long nonBlocking = 1;
         ioctlsocket(d.sock, FIONBIO, &nonBlocking);
         if (connect(d.sock, reinterpret_cast<const sockaddr*>(&to), sizeof(to)) != 0) { std::printf("connect 실패 %d\n", WSAGetLastError()); return 1; }
-        slots[slotRng() % kWheelSlots].push_back(i);
+        // 칸은 옛 꼴과 같은 난수 순서로 고르고, 스레드는 번호를 돌려 맡긴다 — 방이 차례로 들어와도 스레드마다 일이 고르다
+        Worker& w = *workers[static_cast<size_t>(i % a.threads)];
+        w.slots[slotRng() % kWheelSlots].push_back(i);
+        ++w.owned;
     }
 
-    // 서버와 같은 고해상도 대기 타이머(main.cpp:905) — Sleep(1) 은 약 15.5ms 를 자서 보내는 간격이 흔들린다.
-    HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
-    if (!timer) {
-        timer = CreateWaitableTimerW(nullptr, FALSE, nullptr);
-        std::printf("[더미] 정밀 타이머를 못 만들어 보통 타이머로 기다린다 — 간격이 약 15.6ms 단위로 흔들린다\n");
-    }
-
-    std::vector<uint8_t> recvBuf(65536);
-    std::vector<uint8_t> scratch;
-    scratch.reserve(2048);
-    Counters printed;
-    int64_t base = t0;
-    int64_t nextStat = t0 + 1000000;
     const int64_t endAt = t0 + static_cast<int64_t>(a.durationSec) * 1000000;
+    std::vector<std::thread> threads;
+    threads.reserve(workers.size());
+    for (const std::unique_ptr<Worker>& w : workers)
+        threads.emplace_back(RunWorker, std::ref(*w), std::ref(dummies), std::cref(a), t0, endAt);
+
+    // 주 스레드는 1초 줄만 찍는다 — 셈을 스레드마다 읽어 더한다. 보통 타이머로 충분하다(15.6ms 흔들림은 1초 줄에 상관없다)
+    HANDLE statTimer = CreateWaitableTimerW(nullptr, FALSE, nullptr);
+    const auto sumCounters = [&] {
+        Counters c;
+        for (const std::unique_ptr<Worker>& w : workers) w->count.AddTo(c);
+        return c;
+    };
+    const auto sumEntered = [&] {
+        uint64_t n = 0;
+        for (const std::unique_ptr<Worker>& w : workers) n += w->count.entered.Get();
+        return static_cast<int>(n);
+    };
+    Counters printed;
     int sec = 0;
+    for (int64_t nextStat = t0 + 1000000; nextStat <= endAt; nextStat += 1000000) {
+        WaitUntilUs(statTimer, nextStat);
+        ++sec;
+        const Counters now = sumCounters();
+        PrintCounters("[더미]", sec, sumEntered(), a.count, Delta(now, printed));
+        printed = now;
+    }
+    for (std::thread& t : threads) t.join();      // 스레드마다 0a 를 보내고 1초 받기까지 끝낸 뒤
+    CloseHandle(statTimer);
 
     const auto countEntered = [&] {
         int n = 0;
@@ -1357,68 +1499,28 @@ int main(int argc, char** argv) {
             if (d.phase == Phase::Game) ++n;
         return n;
     };
-
-    // 한 바퀴에 일한 시간과 33ms 를 넘긴 정도 — lateTicks 가 오른 까닭이 「타이머가 조금 늦게 깨움」인지 「일이 33ms 에 안 들어감」인지 가른다
+    // 바퀴 값은 스레드마다 센 것을 더한다 — 바퀴 수 · 33ms 넘김은 합, 평균은 (스레드 하나의) 한 바퀴당, 최대는 스레드 중 가장 큰 것
     uint64_t wheels = 0, busySumUs = 0, busyMaxUs = 0;
-    uint64_t overBuckets[5] = {};           // 1ms 이하 · 2ms 이하 · 5ms 이하 · 10ms 이하 · 그 위
-
-    for (;;) {
-        int64_t busyUs = 0;
-        for (int s = 0; s < kWheelSlots; ++s) {
-            if (slots[static_cast<size_t>(s)].empty()) continue;
-            WaitUntilUs(timer, base + static_cast<int64_t>(s) * 1000);
-            const int64_t now = NowUs();
-            for (int i : slots[static_cast<size_t>(s)]) Step(dummies[static_cast<size_t>(i)], now, a, recvBuf, scratch);
-            busyUs += NowUs() - now;
-        }
-        const int64_t after = NowUs();
-        const int64_t next = base + kWheelUs;
-        ++wheels;
-        busySumUs += static_cast<uint64_t>(busyUs);
-        busyMaxUs = std::max(busyMaxUs, static_cast<uint64_t>(busyUs));
-        if (after > next) {
-            const int64_t over = after - next;
-            ++overBuckets[over <= 1000 ? 0 : over <= 2000 ? 1 : over <= 5000 ? 2 : over <= 10000 ? 3 : 4];
-        }
-        if (after > next + kLateToleranceUs) {   // 한 바퀴가 33ms 를 넘겼다 — 몰아 보내지 않고 지금부터 다시 센다
-            ++g_count.lateTicks;
-            base = after;
-        } else {
-            base = next;
-        }
-        if (after >= nextStat) {
-            ++sec;
-            PrintCounters("[더미]", sec, countEntered(), a.count, Delta(g_count, printed));
-            printed = g_count;
-            nextStat += 1000000;
-        }
-        if (after >= endAt) break;
+    uint64_t overBuckets[5] = {};
+    for (const std::unique_ptr<Worker>& w : workers) {
+        wheels += w->wheels;
+        busySumUs += w->busySumUs;
+        busyMaxUs = std::max(busyMaxUs, w->busyMaxUs);
+        for (int b = 0; b < 5; ++b) overBuckets[b] += w->overBuckets[b];
     }
-
-    // ★ 11-11 부하 측정 M0 조각 6 — 끝날 때 접속 닫기(`0a`). 원본 클라 `SendClientClose`(`third_party/opennox-src/src/internal/netstr/conn.go:187-197`)처럼
-    //   1바이트 `0a` 를 비신뢰로 보낸다 — 머리는 다른 게임 조각과 같다(`SendGame`). 서버는 접속 제어 조각 맨 앞의 `0a` 를 접속 닫기로 읽는다(`UdpServer.cpp` `CLIENT_CLOSE`).
-    //   옛 꼴은 소켓만 닫아 판 안 사람이 90초 뒤 시간 초과로 빠졌다(`Server.h` `kSessionTimeoutMsInGame`) — 방 여닫기(측정 플랜 M7)가 안 되고,
-    //   닫은 뒤 서버가 보낸 몫이 「서버가 보낸 조각 대 더미가 받은 조각」 대조에 섞였다.
-    //   키를 받기 전(접속 중) 더미는 XOR 키가 없어 못 보낸다 — `closeSkipped` 로 센다(그 몫은 서버에서 30초 뒤 시간 초과).
-    for (Dummy& d : dummies) {
-        if (d.phase != Phase::Game) { ++g_count.closeSkipped; continue; }
-        const uint8_t closeMsg[1] = {static_cast<uint8_t>(Op::CLIENT_CLOSE)};
-        SendGame(d, closeMsg, sizeof(closeMsg));
-        ++g_count.sentClose;
-    }
-    // 그 뒤 받기만 한다(`kCloseDrainUs`). 받은 조각에 대한 답은 `d.out` 에 쌓일 뿐 나가지 않는다 — `FlushOut` 을 안 부른다
-    const int64_t drainEnd = NowUs() + kCloseDrainUs;
-    for (int64_t at = NowUs(); at < drainEnd; at += 5000) {
-        WaitUntilUs(timer, at);
-        for (Dummy& d : dummies) DrainSocket(d, recvBuf);
-    }
-
-    PrintCounters("[더미 요약]", sec, countEntered(), a.count, g_count);
-    std::printf("[더미 바퀴] %llu바퀴 · 일한 시간 평균 %.2fms · 최대 %.2fms · 33ms 넘김 1ms 이하 %llu · 2ms 이하 %llu · 5ms 이하 %llu · 10ms 이하 %llu · 그 위 %llu\n",
-                static_cast<unsigned long long>(wheels), wheels ? static_cast<double>(busySumUs) / static_cast<double>(wheels) / 1000.0 : 0.0,
+    PrintCounters("[더미 요약]", sec, countEntered(), a.count, sumCounters());
+    std::printf("[더미 바퀴] 스레드 %d · %llu바퀴 · 일한 시간 평균 %.2fms · 최대 %.2fms · 33ms 넘김 1ms 이하 %llu · 2ms 이하 %llu · 5ms 이하 %llu · 10ms 이하 %llu · 그 위 %llu\n",
+                a.threads, static_cast<unsigned long long>(wheels), wheels ? static_cast<double>(busySumUs) / static_cast<double>(wheels) / 1000.0 : 0.0,
                 static_cast<double>(busyMaxUs) / 1000.0, static_cast<unsigned long long>(overBuckets[0]),
                 static_cast<unsigned long long>(overBuckets[1]), static_cast<unsigned long long>(overBuckets[2]),
                 static_cast<unsigned long long>(overBuckets[3]), static_cast<unsigned long long>(overBuckets[4]));
+    if (a.threads > 1) {   // 스레드끼리 일이 고른지 — 한 스레드만 밀리면 그 스레드가 맡은 방만 입력이 늦는다
+        for (const std::unique_ptr<Worker>& w : workers)
+            std::printf("[더미 스레드] %d · 맡은 더미 %d · %llu바퀴 · 일한 시간 평균 %.2fms · 최대 %.2fms · lateTicks %llu\n",
+                        w->index, w->owned, static_cast<unsigned long long>(w->wheels),
+                        w->wheels ? static_cast<double>(w->busySumUs) / static_cast<double>(w->wheels) / 1000.0 : 0.0,
+                        static_cast<double>(w->busyMaxUs) / 1000.0, static_cast<unsigned long long>(w->count.lateTicks.Get()));
+    }
     for (const Dummy& d : dummies) {
         if (d.cls != 2) continue;
         const SummonKind& k = kSummonKinds[d.summonKind];
