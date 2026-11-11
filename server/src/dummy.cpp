@@ -49,6 +49,10 @@ constexpr int64_t kJoinRetryUs = 1000000;   // 접속 시도 · 연결을 다시
 // ★ 11-11 부하 측정 M0 조각 6 — 끝날 때 `0a` 를 보낸 뒤 받기만 하는 시간. 서버가 `0a` 를 처리해 그 세션에 보내기를 멈추기 전에 이미 보낸
 //   조각까지 세려고. 한 틱(33ms) + 넘김 지연에, 한계 근처 실행에서 틱 완료가 수백 ms 밀려도 남는 값(내가 정함 · 실측 아님)
 constexpr int64_t kCloseDrainUs = 1000000;
+// ★ 11-11 M0 조각 8 — 방 여닫기(--cycle-sec)에서 `0a` 를 보낸 뒤 다시 들어오기 시작할 때까지. 서버는 빈 부하 방을 2초 뒤 닫는다
+//   (부하 방 틀도 로비 방과 같은 `ApplyLobbyRoomFrame` 이라 `closeWhenEmpty` · `RoomManager.h` `kEmptyUsedRoomCloseMs`). 그 전에 들어오면
+//   방 수가 상한이라 거절된다 — 거절돼도 1초마다 다시 시도해 스스로 풀리지만, 2초에 서버가 밀릴 몫을 더한 값(내가 정함 · 실측 아님)
+constexpr int64_t kCycleRejoinUs = 5000000;
 constexpr size_t kMaxOutBody = 1000;     // 한 조각에 싣는 본문 상한 — 서버 받기 버퍼 2048(NetworkThread.cpp:219) 안
 // 싸움 값 — 프레임은 서버 프레임(33ms). 근거는 Docs/MO_DUMMY_PLAN_1109.md 2-4 · 2-5절.
 constexpr double kMeleeReach = 50.0;              // 이 안이면 때린다 — 닿는 거리 55(몸 10 + 롱소드 45 · Server.cpp:17157)보다 조금 안쪽
@@ -126,7 +130,7 @@ constexpr int64_t kStartRetryUs = 5000000;   // 대기 맵에 그대로 있으�
 
 #define NOX_DUMMY_COUNTERS(X) \
     X(sentInput) X(sentPing) X(sentAck) X(sentAlias) X(sentMouse) X(sentSpell) X(sentAbility) X(sentStart) \
-    X(recvDgram) X(recvBytes) X(decodeFail) X(dupImportant) X(lateTicks) X(sendFail) X(sentClose) X(closeSkipped) \
+    X(recvDgram) X(recvBytes) X(decodeFail) X(dupImportant) X(lateTicks) X(sendFail) X(sentClose) X(closeSkipped) X(cycleLeave) X(cycleSkipped) \
     X(petsAcquired) X(petsLost) X(spellSkippedNoMana) X(retreats) X(heals) \
     X(sentAttack) X(sentRevive) X(sawDeath) X(selfDeath) X(revives) X(detours) \
     X(castProtect) X(castHaste) X(castInvis) X(castConfuse) X(castFireball) X(castDeathRay) X(castChain) X(castBlink) \
@@ -146,6 +150,7 @@ struct RelaxedCount {
     std::atomic<uint64_t> v{0};
     RelaxedCount& operator++() { v.store(v.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed); return *this; }
     RelaxedCount& operator+=(uint64_t n) { v.store(v.load(std::memory_order_relaxed) + n, std::memory_order_relaxed); return *this; }
+    RelaxedCount& operator--() { v.store(v.load(std::memory_order_relaxed) - 1, std::memory_order_relaxed); return *this; }   // entered 만 쓴다(방 여닫기로 나갈 때)
     uint64_t Get() const { return v.load(std::memory_order_relaxed); }
 };
 
@@ -154,7 +159,7 @@ struct alignas(64) LiveCounters {
 #define X(n) RelaxedCount n;
     NOX_DUMMY_COUNTERS(X)
 #undef X
-    RelaxedCount entered;                // 판에 든 더미 수 — 1초 줄의 「입장」. 주 스레드가 남의 스레드 더미의 phase 를 읽지 않게 따로 센다
+    RelaxedCount entered;                // 판에 든 더미 수 — 1초 줄의 「입장」. 주 스레드가 남의 스레드 더미의 phase 를 읽지 않게 따로 센다(방 여닫기로 나가면 뺀다)
     void AddTo(Counters& c) const {
 #define X(n) c.n += n.Get();
         NOX_DUMMY_COUNTERS(X)
@@ -191,9 +196,13 @@ struct Args {
     std::string mapFile = kDefaultMapFile;   // 벽을 돌아가려고 읽는 대전 맵
     // 더미를 돌리는 스레드 수(M0 조각 7) — 더미 i 는 스레드 i % N 이 맡는다. 측정은 4(측정 플랜 4절: 전투 40명 한 바퀴 최대 2.94ms 라 1스레드는 약 450명부터 33ms 에 닿는다)
     int threads = 1;
+    // 방 여닫기(측정 플랜 M7 · M0 조각 8) — 마지막 방 몫 더미가 이 초마다 `0a` 로 나가고 kCycleRejoinUs 뒤 다시 들어온다(0 = 끔).
+    // 첫 나감은 마지막 더미가 입장을 시작한 때 + 이 초. 다시 들어온 방은 새 방 번호다(서버가 빈 방을 닫고 새로 만든다)
+    int cycleSec = 0;
 };
 
-enum class Phase { WaitTurn, TryJoin, Connect, Game };
+// Leaving = 방 여닫기(--cycle-sec)로 `0a` 를 보낸 뒤 받기만 하는 동안(M0 조각 8) — 끝나면 WaitTurn 으로 돌아가 다시 들어온다
+enum class Phase { WaitTurn, TryJoin, Connect, Game, Leaving };
 
 struct OtherPlayer {
     uint16_t net = 0;
@@ -269,6 +278,11 @@ struct alignas(64) Dummy {
     uint32_t abilGapEndFrame = 0;
     std::vector<bool> seenImportant;     // 번호 65536칸 — 같은 번호를 두 번 받으면 서버의 다시 싣기다
     std::vector<uint8_t> out;            // 이번 바퀴에 실을 메시지(입력 뒤에 붙인다)
+    // 방 여닫기(M0 조각 8) — 0 이면 이 더미는 안 나간다
+    int64_t cycleAtUs = 0;               // 다음에 나갈 때
+    int cyclePos = 0;                    // 방 안 차례 — 다시 들어올 때 입장 간격만큼 벌린다
+    int64_t leaveDoneUs = 0;             // Leaving 이 끝나는 때(받기만 하는 1초)
+    int64_t rejoinAtUs = 0;              // 다시 들어오기 시작할 때
 };
 
 void SendRaw(const Dummy& d, const uint8_t* p, size_t n) {
@@ -1173,8 +1187,51 @@ void FlushOut(Dummy& d, std::vector<uint8_t>& scratch) {
     if (!scratch.empty()) SendGame(d, scratch.data(), scratch.size());
 }
 
+// ★ 11-11 부하 측정 M0 조각 8 — 방 여닫기(측정 플랜 M7). 끝날 때 닫기(RunWorker)와 같은 꼴로 `0a` 를 보내고 1초 받기만 한 뒤,
+//   판 상태를 처음으로 되돌려 다시 들어온다. 소켓은 그대로 쓴다 — 서버는 `0a` 로 나간 세션을 주소 표에서 지워서
+//   (`UdpServer.cpp` `RequestDisconnectSession`) 같은 주소의 다음 접속 시도는 새 세션이다. 정품 클라도 판을 나갔다 다시 들어올 때 프로그램은 그대로다.
+void LeaveForCycle(Dummy& d, int64_t nowUs, const Args& a) {
+    const uint8_t closeMsg[1] = {static_cast<uint8_t>(Op::CLIENT_CLOSE)};
+    SendGame(d, closeMsg, sizeof(closeMsg));
+    ++t_count->cycleLeave;
+    --t_count->entered;
+    d.phase = Phase::Leaving;
+    d.leaveDoneUs = nowUs + kCloseDrainUs;
+    d.rejoinAtUs = d.cycleAtUs + kCycleRejoinUs + static_cast<int64_t>(d.cyclePos) * a.joinIntervalMs * 1000;
+    d.cycleAtUs += static_cast<int64_t>(a.cycleSec) * 1000000;
+}
+
+// 판 상태를 처음으로 — main 이 차린 값(직업 · 소환 크기 · 최대 체력)과 소켓 · 방 여닫기 값은 그대로 둔다. 난수는 이어서 쓴다(실행끼리 같다)
+void ResetForRejoin(Dummy& d) {
+    Dummy fresh;
+    fresh.index = d.index;
+    fresh.cls = d.cls;
+    fresh.sock = d.sock;
+    fresh.summonKind = d.summonKind;
+    fresh.rng = d.rng;
+    fresh.maxHp = d.maxHp;
+    fresh.maxMana = d.maxMana;
+    fresh.hp = d.maxHp;
+    fresh.mana = d.maxMana;
+    fresh.maxPetSize = d.maxPetSize;     // [더미 소환] 줄은 실행 전체의 최댓값
+    fresh.cycleAtUs = d.cycleAtUs;
+    fresh.cyclePos = d.cyclePos;
+    fresh.joinAtUs = d.rejoinAtUs;
+    fresh.seenImportant.assign(65536, false);
+    d = std::move(fresh);
+}
+
 void Step(Dummy& d, int64_t nowUs, const Args& a, std::vector<uint8_t>& recvBuf, std::vector<uint8_t>& scratch) {
+    if (d.cycleAtUs != 0 && nowUs >= d.cycleAtUs) {   // 방 여닫기 — 판 안이면 나간다. 아직 다시 못 들어왔으면 이번 차례는 건너뛰고 센다
+        if (d.phase == Phase::Game) { LeaveForCycle(d, nowUs, a); return; }
+        ++t_count->cycleSkipped;
+        d.cycleAtUs += static_cast<int64_t>(a.cycleSec) * 1000000;
+    }
     switch (d.phase) {
+        case Phase::Leaving:
+            DrainSocket(d, recvBuf);             // 받은 조각에 대한 답은 `d.out` 에 쌓일 뿐 나가지 않는다(끝날 때 닫기와 같다)
+            if (nowUs >= d.leaveDoneUs) ResetForRejoin(d);
+            return;
         case Phase::WaitTurn:
             if (nowUs < d.joinAtUs) return;
             SendTryJoin(d);
@@ -1302,6 +1359,8 @@ void RunWorker(Worker& w, std::vector<Dummy>& dummies, const Args& a, int64_t t0
     for (const std::vector<int>& slot : w.slots) {
         for (int i : slot) {
             Dummy& d = dummies[static_cast<size_t>(i)];
+            // 방 여닫기로 이미 `0a` 를 보냈거나(Leaving) 서버에 세션이 아직 없다(WaitTurn) — 닫을 것이 없다(M0 조각 8)
+            if (d.phase == Phase::Leaving || d.phase == Phase::WaitTurn) continue;
             if (d.phase != Phase::Game) { ++t_count->closeSkipped; continue; }
             const uint8_t closeMsg[1] = {static_cast<uint8_t>(Op::CLIENT_CLOSE)};
             SendGame(d, closeMsg, sizeof(closeMsg));
@@ -1346,6 +1405,7 @@ bool ParseArgs(int argc, char** argv, Args& a, std::string& err) {
         else if (k == "--start-wait-ms") { if (!need(a.startWaitMs)) return false; }
         else if (k == "--stat-mult") { if (!need(a.statMult)) return false; }
         else if (k == "--threads") { if (!need(a.threads)) return false; }
+        else if (k == "--cycle-sec") { if (!need(a.cycleSec)) return false; }
         else if (k == "--freq-mult") {
             if (!v) { err = "--freq-mult 값 없음"; return false; }
             a.freqMult = std::atof(v);
@@ -1392,6 +1452,17 @@ bool ParseArgs(int argc, char** argv, Args& a, std::string& err) {
     if (!(a.freqMult > 0.0) || a.freqMult > 4.0) { err = "--freq-mult 는 0 초과 4 이하"; return false; }
     // 맡은 더미가 없는 스레드는 바퀴에서 기다릴 칸이 없어 쉬지 않고 돈다 — 더미 수를 넘지 못하게 막는다
     if (a.threads < 1 || a.threads > 64 || a.threads > a.count) { err = "--threads 는 1~64 · 더미 수 이하"; return false; }
+    if (a.cycleSec != 0) {
+        // 비운 자리가 있으면 더미 무리가 서버 방 하나와 맞지 않는다 — 마지막 무리가 나가도 방이 안 빈다
+        if (a.reserveSeats != 0) { err = "--cycle-sec 는 --reserve-seats 0 일 때만"; return false; }
+        // 한 번 돌기 = 다시 들어오기까지(kCycleRejoinUs) + 입장 간격 × 방 인원 + !start 기다림 — 다음 나감 전에 판이 열려 있게 5초를 더한다
+        const int64_t minMs = kCycleRejoinUs / 1000 + static_cast<int64_t>(a.roomSize) * a.joinIntervalMs + a.startWaitMs + 5000;
+        if (a.cycleSec < 0 || static_cast<int64_t>(a.cycleSec) * 1000 < minMs) {
+            err = "--cycle-sec 는 0(끔) 또는 " + std::to_string((minMs + 999) / 1000) + "초 이상";
+            return false;
+        }
+        if (a.count / a.roomSize < 2) { err = "--cycle-sec 는 방이 2개 이상일 때만(나머지 방이 받는 영향을 잰다)"; return false; }
+    }
     if (a.classes.empty()) { err = "--classes 가 비었다"; return false; }
     for (int c : a.classes)
         if (c < 0 || c > 2) { err = "직업은 0 전사 · 1 위저드 · 2 컨저러"; return false; }
@@ -1407,7 +1478,7 @@ int main(int argc, char** argv) {
         std::printf("인자 오류: %s\n", err.c_str());
         std::printf("쓰기: nox_dummy [--server 주소:포트] [--count N] [--room-size K] [--reserve-seats R] [--classes 0,1] [--duration-sec S] "
                     "[--join-interval-ms M] [--start-wait-ms M] [--behavior idle|move|fight] [--map-file 대전맵.map] [--seed S] "
-                    "[--stat-mult N] [--freq-mult X] [--threads N]\n");
+                    "[--stat-mult N] [--freq-mult X] [--threads N] [--cycle-sec S]\n");
         return 1;
     }
 
@@ -1451,6 +1522,10 @@ int main(int argc, char** argv) {
         d.hp = d.maxHp;
         d.mana = d.maxMana;
         d.joinAtUs = t0 + static_cast<int64_t>(i) * a.joinIntervalMs * 1000;
+        if (a.cycleSec > 0 && i >= a.count - a.roomSize) {   // 방 여닫기 — 마지막 방 몫만(비운 자리 0 이라 방 인원 = 무리 크기)
+            d.cyclePos = i - (a.count - a.roomSize);
+            d.cycleAtUs = t0 + static_cast<int64_t>(a.count - 1) * a.joinIntervalMs * 1000 + static_cast<int64_t>(a.cycleSec) * 1000000;
+        }
         d.seenImportant.assign(65536, false);
         d.sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
         if (d.sock == INVALID_SOCKET) { std::printf("소켓 실패 %d\n", WSAGetLastError()); return 1; }

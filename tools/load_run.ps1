@@ -21,6 +21,8 @@ param(
   [string]$Behavior = 'fight',
   [int]$StatMult = 5,
   [double]$FreqMult = 1.0,
+  [int]$DummyThreads = 4,                # 더미 내부 스레드(측정 플랜 4절 — 1,280명이면 한 바퀴 최대 약 94ms 라 3스레드가 필요하고 하나 더)
+  [int]$CycleSec = 0,                    # 방 여닫기(측정 플랜 M7) — 더미 --cycle-sec 로 넘긴다. 마지막 방이 이 초마다 닫히고 새로 열린다 · 0 = 끔
   [string]$ExtraServerArgs = '',
   [string]$ExtraDummyArgs = '',
   [string]$GameDir = 'C:\Program Files\GOG Galaxy\Games\Nox',
@@ -61,6 +63,45 @@ using System.Runtime.InteropServices;
 public static class NoxLoadRunCpu {
     [DllImport("kernel32.dll", SetLastError = true)]
     public static extern bool GetSystemTimes(out long idle, out long kernel, out long user);
+}
+'@
+
+# CPU 속도(측정 플랜 3절) — 성능 카운터를 영어 이름으로 연다(PdhAddEnglishCounter 는 윈도 언어와 상관없다).
+#   실제 MHz = 기준 MHz(Processor Frequency) × 성능 %(% Processor Performance · 터보면 100 을 넘어 NOCAP100 으로 읽는다) ÷ 100.
+#   값은 지난번 읽은 때부터 이번까지의 평균이다. 대본 안에서 읽어 따로 프로세스를 안 띄운다(WMI 는 WmiPrvSE 가 서버 코어에서 돌 수 있다)
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class NoxLoadRunPdh {
+    [StructLayout(LayoutKind.Explicit)]
+    struct FmtValue { [FieldOffset(0)] public uint CStatus; [FieldOffset(8)] public double Value; }
+    [DllImport("pdh.dll", CharSet = CharSet.Unicode)] static extern uint PdhOpenQueryW(string src, IntPtr user, out IntPtr query);
+    [DllImport("pdh.dll", CharSet = CharSet.Unicode)] static extern uint PdhAddEnglishCounterW(IntPtr query, string path, IntPtr user, out IntPtr counter);
+    [DllImport("pdh.dll")] static extern uint PdhCollectQueryData(IntPtr query);
+    [DllImport("pdh.dll")] static extern uint PdhGetFormattedCounterValue(IntPtr counter, uint format, IntPtr type, out FmtValue value);
+    const uint FmtDoubleNoCap = 0x200 | 0x8000;   // PDH_FMT_DOUBLE | PDH_FMT_NOCAP100
+    static IntPtr q, perf, freq;
+    public static string Open() {
+        uint r = PdhOpenQueryW(null, IntPtr.Zero, out q);
+        if (r != 0) return "PdhOpenQuery 0x" + r.ToString("X");
+        r = PdhAddEnglishCounterW(q, @"\Processor Information(_Total)\% Processor Performance", IntPtr.Zero, out perf);
+        if (r != 0) return "% Processor Performance 0x" + r.ToString("X");
+        r = PdhAddEnglishCounterW(q, @"\Processor Information(_Total)\Processor Frequency", IntPtr.Zero, out freq);
+        if (r != 0) return "Processor Frequency 0x" + r.ToString("X");
+        r = PdhCollectQueryData(q);
+        if (r != 0) return "PdhCollectQueryData 0x" + r.ToString("X");
+        return "";
+    }
+    public static bool Read(out double perfPct, out double baseMhz) {
+        perfPct = 0; baseMhz = 0;
+        if (PdhCollectQueryData(q) != 0) return false;
+        FmtValue v;
+        if (PdhGetFormattedCounterValue(perf, FmtDoubleNoCap, IntPtr.Zero, out v) != 0) return false;
+        perfPct = v.Value;
+        if (PdhGetFormattedCounterValue(freq, FmtDoubleNoCap, IntPtr.Zero, out v) != 0) return false;
+        baseMhz = v.Value;
+        return true;
+    }
 }
 '@
 
@@ -198,7 +239,8 @@ $results = Join-Path $runDir 'matches.jsonl'
 $serverArgs = "--quiet --aoi --friends --battle-maps Estate --no-join-token --standalone --map `"$map`" --load-rooms $Rooms --load-room-size $RoomSize --stat-mult $StatMult --tick-sections --results `"$results`""
 if ($Port -ne 18590) { $serverArgs += " --port $Port" }
 if ($ExtraServerArgs) { $serverArgs += " $ExtraServerArgs" }
-$dummyArgs = "--server 127.0.0.1:$Port --count $($Rooms * $RoomSize) --room-size $RoomSize --classes $Classes --behavior $Behavior --stat-mult $StatMult --freq-mult $FreqMult --duration-sec $Sec"
+$dummyArgs = "--server 127.0.0.1:$Port --count $($Rooms * $RoomSize) --room-size $RoomSize --classes $Classes --behavior $Behavior --stat-mult $StatMult --freq-mult $FreqMult --duration-sec $Sec --threads $DummyThreads"
+if ($CycleSec -gt 0) { $dummyArgs += " --cycle-sec $CycleSec" }
 if ($ExtraDummyArgs) { $dummyArgs += " $ExtraDummyArgs" }
 Note '서버 명령줄' "$serverExe $serverArgs"
 Note '더미 명령줄' "$dummyExe $dummyArgs"
@@ -230,6 +272,10 @@ function Set-Affinity($Proc, [int64]$Mask, [string]$Who) {
   return ($got -eq $Mask)
 }
 
+# 시작 때 메모리 여유(측정 플랜 2-2절) — 서버 메모리가 늘 때 PC 쪽 여유가 얼마였나를 같이 적는다
+$os = Get-CimInstance Win32_OperatingSystem
+Note '메모리 여유 — 시작 때(MB)' ('{0:F0} / 전체 {1:F0}' -f ($os.FreePhysicalMemory / 1024.0), ($os.TotalVisibleMemorySize / 1024.0))
+
 $sv = Start-Process -FilePath $serverExe -ArgumentList $serverArgs -WorkingDirectory $repo -PassThru -WindowStyle Hidden `
   -RedirectStandardOutput (Join-Path $runDir 'server.txt') -RedirectStandardError (Join-Path $runDir 'server_err.txt')
 $null = $sv.Handle   # 끝난 뒤 종료 코드를 읽으려면 핸들을 잡아 둬야 한다
@@ -258,9 +304,38 @@ if (-not (Set-Affinity $du $dummyMask '더미')) {
 }
 Save-Env   # 실행 중 끊겨도 지문은 남긴다
 
-if (-not $du.WaitForExit(($Sec + 30) * 1000)) {
+# 더미가 끝나기를 기다리며 CPU 속도를 10초마다 적는다(측정 플랜 3절 — 검사 문턱이 아니라 결과 옆에 적는 값)
+#   cpu_speed.txt 한 줄 = 더미를 띄운 뒤 지난 초 · 실제 MHz · 성능 % · 기준 MHz (지난 줄부터 이 줄까지의 평균)
+$cpuLines = New-Object System.Collections.ArrayList
+$cpuMhz = New-Object System.Collections.ArrayList
+$pdhErr = [NoxLoadRunPdh]::Open()
+if ($pdhErr) { [void]$cpuLines.Add("못 읽음 — $pdhErr") }
+$duStart = Get-Date
+$deadline = $duStart.AddSeconds($Sec + 30)
+while (-not $du.HasExited) {
+  $left = ($deadline - (Get-Date)).TotalMilliseconds
+  if ($left -le 0) { break }
+  [void]$du.WaitForExit([int][math]::Min(10000, $left))
+  if ($pdhErr) { continue }
+  $perf = 0.0; $base = 0.0
+  if ([NoxLoadRunPdh]::Read([ref]$perf, [ref]$base)) {
+    $mhz = $base * $perf / 100.0
+    [void]$cpuMhz.Add($mhz)
+    [void]$cpuLines.Add(('{0:F0} · {1:F0} · {2:F1} · {3:F0}' -f ((Get-Date) - $duStart).TotalSeconds, $mhz, $perf, $base))
+  } else {
+    [void]$cpuLines.Add(('{0:F0} · 못 읽음' -f ((Get-Date) - $duStart).TotalSeconds))
+  }
+}
+if (-not $du.HasExited) {
   Write-Host '[주의] 더미가 시간 안에 안 끝나 강제 종료'
   $du.Kill()
+}
+[IO.File]::WriteAllLines((Join-Path $runDir 'cpu_speed.txt'), [string[]]$cpuLines, (New-Object Text.UTF8Encoding($true)))
+if ($cpuMhz.Count -gt 0) {
+  $m = $cpuMhz | Measure-Object -Minimum -Maximum -Average
+  Note 'CPU 속도(MHz) — 실행 중 10초 평균의' ('최소 {0:F0} · 평균 {1:F0} · 최대 {2:F0} · {3}줄(cpu_speed.txt)' -f $m.Minimum, $m.Average, $m.Maximum, $cpuMhz.Count)
+} else {
+  Note 'CPU 속도(MHz) — 실행 중 10초 평균의' $(if ($pdhErr) { "못 읽음 — $pdhErr" } else { '줄 없음' })
 }
 Start-Sleep -Seconds 1   # 더미가 끝난 뒤 서버가 마지막 입력을 다 받도록
 $clean = Stop-Server $sv
