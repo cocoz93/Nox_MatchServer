@@ -921,6 +921,15 @@ int main(int argc, char** argv) {
     std::unique_ptr<nox::CTickSectionReport> sectionReport;
     if (opt.tickSections)
         sectionReport = std::make_unique<nox::CTickSectionReport>(GetCurrentThread(), net.ThreadHandle(), recorder ? recorder->ThreadHandle() : nullptr, nox::NowMs());
+    // ★ 11-11 부하 측정 M0 조각 3 — `[구간]` 에 넘길 통신 층 누계(넘침 · 큐 버림)
+    const auto sectionNet = [&net]() {
+        nox::CSectionNetTotals t;
+        t.reliableOverflow = net.LatestNetworkStats().reliableQueueOverflow;
+        const nox::CNetworkThreadStats ts = net.LatestThreadStats();
+        t.eventsDropped = ts.eventsDropped;
+        t.requestsDropped = ts.requestsDropped;
+        return t;
+    };
     for (;;) {
         if (g_stopRequested.load() || WaitForSingleObject(stopEvent, 0) == WAIT_OBJECT_0) break;   // ★ 5d-2c — 닫기 신호
         ++loopTurns;
@@ -932,6 +941,10 @@ int main(int argc, char** argv) {
             for (const nox::NetworkEvent& ev : netEvents) {
                 const uint32_t lat = nowEv - ev.queuedMs;
                 ++evCount; evLatSum += lat; if (lat > evLatMax) evLatMax = lat;
+                if (sectionReport) {   // ★ 11-11 부하 측정 M0 조각 3 — 넘김 지연을 `[구간]` 에도(위 셈은 `--quiet` 면 안 찍히는 줄 몫)
+                    nox::g_gameSections.handoffLatSumMs += lat;
+                    if (lat > nox::g_gameSections.handoffLatMaxMs) nox::g_gameSections.handoffLatMaxMs = lat;
+                }
                 // ★ 10-14 작업 8d — 로비 TCP 사건은 로비로, 나머지는 방 관리자로(같은 큐로 오는 것을 여기서 나눈다)
                 if (nox::IsLobbyEvent(ev.type)) {
                     if (lobbyClient) lobbyClient->OnNetworkEvent(ev, lobbyRequests);   // ★ 10-20 v2 작업 4b(옛 채널 안 로비 자리)
@@ -1098,7 +1111,7 @@ int main(int argc, char** argv) {
             }
         }
         if (sectionReport && sectionReport->Due(nox::NowMs()))   // ★ 11-10 부하 실험 — 방이 없어도 찍는다(빈 서버 기준선)
-            sectionReport->Print(nox::NowMs(), net.LatestNetworkStats().reliableQueueOverflow);
+            sectionReport->Print(nox::NowMs(), sectionNet());
         // ★ 10-20 v2 작업 4b · 4c — 방 사실이 바뀐 방만 로비에(인원 · 방장 · 판 상태 · 맵 · 빈 방 닫힘). 틱 블록 밖 — 바퀴마다.
         //   틱 블록 안에 두었더니 마지막 방이 닫힌 뒤 틱이 안 돌아(`BeginTick` 은 방이 없으면 0) 닫힘이 로비에 안 갔다(10-20 lobby_smoke 실물)
         if (lobbyClient) {
@@ -1114,19 +1127,24 @@ int main(int argc, char** argv) {
                 LARGE_INTEGER rel;
                 rel.QuadPart = -static_cast<LONGLONG>(left) * 10000;   // 100ns 단위 · 음수 = 지금부터
                 const HANDLE waits[2] = { static_cast<HANDLE>(net.EventsReadyHandle()), tickTimer };
+                // ★ 11-11 부하 측정 M0 조각 3 — 기다린 시간(바쁜 비율 · `TickSections.h` `CGameSectionTotals::waitMs`). 이 두 자리와 아래 방 없을 때 한 자리
+                const nox::SectionClock::time_point waitStart = sectionReport ? nox::SectionClock::now() : nox::SectionClock::time_point{};
                 if (tickTimer && SetWaitableTimer(tickTimer, &rel, 0, nullptr, nullptr, FALSE))
                     WaitForMultipleObjects(2, waits, FALSE, INFINITE);
                 else
                     WaitForSingleObject(waits[0], static_cast<DWORD>(left));   // 타이머가 없으면 이벤트만 시간 한도로(헛돌지 않게)
+                if (sectionReport) nox::g_gameSections.waitMs += nox::MsSince(waitStart);
             }
         } else {
             // ★ 10-20 v2 작업 4c — 방이 하나도 없으면 틱 마감이 없다 — 이벤트(로비 줄 · 접속 시도)나 한 틱 길이까지 기다린다(닫기 신호도 그 안에).
             //   옛 꼴은 기다리지 않고 헛돌았다(10-20 실측 — 방 없는 게임 서버가 5초에 CPU 4.8초). 로비 방식은 방 없이 시작해 늘 이 꼴로 쉰다
             constexpr DWORD kIdleWaitMs = 33;   // 한 틱(30Hz)
+            const nox::SectionClock::time_point waitStart = sectionReport ? nox::SectionClock::now() : nox::SectionClock::time_point{};   // ★ 11-11 M0 조각 3
             WaitForSingleObject(static_cast<HANDLE>(net.EventsReadyHandle()), kIdleWaitMs);
+            if (sectionReport) nox::g_gameSections.waitMs += nox::MsSince(waitStart);
         }
     }
-    if (sectionReport) sectionReport->PrintFinal(nox::NowMs(), net.LatestNetworkStats().reliableQueueOverflow);   // `net.Stop` 이 스레드 핸들을 닫기 전에
+    if (sectionReport) sectionReport->PrintFinal(nox::NowMs(), sectionNet());   // `net.Stop` 이 스레드 핸들을 닫기 전에
     // ★ 10-09 조각 5d-2c — 정상 종료(`Docs/LAYERS_DESIGN.md` 「네트워크 스레드」) — 쌓인 요청을 넘기고 → 네트워크 스레드가 그것을 보낸 뒤
     //   키를 준 사람마다 `SERVER_CLOSE` 를 보내고 멈춘다 → 끝(종료 코드 0). 지금 게임에는 닫을 때 저장할 것이 없다.
     std::printf("[종료] 닫기 신호 — 쌓인 요청을 보내고 사람마다 SERVER_CLOSE 를 보낸 뒤 네트워크 스레드를 멈춘다\n");

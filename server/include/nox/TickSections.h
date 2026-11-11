@@ -51,6 +51,12 @@ struct alignas(64) CGameSectionTotals {
     unsigned long long roomCreates = 0;
     double roomCloseMs = 0.0, roomCloseMaxMs = 0.0;     // 방 닫기 — 틱 앞 `BeginTick` 안이라 틱 시간에도 사건 처리에도 안 들어간다
     unsigned long long roomCloses = 0;
+    // ★ 11-11 부하 측정 M0 조각 3 — 게임 고리가 기다린 시간(`main.cpp` 의 세 대기 자리 — 틱 마감 타이머 · 타이머 없을 때 · 방 없을 때).
+    //   바쁜 비율 = (지난 시간 − 이것) ÷ 지난 시간. 한 자리만 재면 나머지 두 자리에서 쉰 시간이 바쁨으로 잡힌다(측정 플랜 2-2절)
+    double waitMs = 0.0;
+    // ★ 11-11 M0 조각 3 — 넘김 지연(통신 스레드가 이벤트를 큐에 넣은 시각 → 게임 스레드가 꺼내 처리하기 시작한 시각, ms 정수). 수는 `eventCount`
+    unsigned long long handoffLatSumMs = 0;
+    uint32_t handoffLatMaxMs = 0;
 
     void AddRoomCreate(double ms) { roomCreateMs += ms; ++roomCreates; if (ms > roomCreateMaxMs) roomCreateMaxMs = ms; }
     void AddRoomClose(double ms) { roomCloseMs += ms; ++roomCloses; if (ms > roomCloseMaxMs) roomCloseMaxMs = ms; }
@@ -82,6 +88,19 @@ inline void AddNetworkSection(std::atomic<uint64_t>& total, SectionClock::time_p
 // 프로세스 몫 누계 — 게임 스레드만 쓴다. 방이 닫혀도 안 사라지게 방 밖에 둔다.
 inline unsigned long long g_leaveTotal = 0;                // 끊김 = `[나감]` 줄을 내는 두 자리(서버 종료 답 0xc8 은 끊김이 아니라 뺀다)
 inline unsigned long long g_importantOverflowTotal = 0;    // 중요 메시지 대기열 넘침으로 끊은 수
+// ★ 11-11 부하 측정 M0 조각 3 — 끊김을 까닭으로 나눈다(합 = `g_leaveTotal`). `g_leaveTotal` 은 더미가 스스로 나간 `0a` 도 세어
+//   「시간 초과로 끊긴 사람」 판정(측정 플랜 2-2절 넘음 셋째)에 그대로 못 쓴다.
+//   ⚠ 시간 초과 칸에는 두 넘침으로 끊은 것도 든다 — 둘 다 시간 초과와 같은 길로 끊는다(`Server.cpp` `ImportantOverflowCheck` · `UdpServer.cpp` 신뢰 대기열).
+//   전송 층 넘침 셈은 끊은 사람 수가 아니라 넘친 횟수라 빼서 「순수 시간 초과」를 낼 수 없다. 판정에서는 둘 다 넘음이라 가를 필요가 없다
+inline unsigned long long g_leaveTimeoutTotal = 0;   // 시간 초과(조용함 · 넘침)
+inline unsigned long long g_leaveCloseTotal = 0;     // 접속 닫기 `0a`
+
+// ★ 11-11 M0 조각 3 — `Print` 에 넘기는 통신 층 누계. 지표 사본(`CNetworkThread::LatestNetworkStats` · `LatestThreadStats`, 0.25초마다 갱신)에서 읽는다
+struct CSectionNetTotals {
+    unsigned long long reliableOverflow = 0;   // 전송 층 신뢰 대기열 넘침(횟수)
+    unsigned long long eventsDropped = 0;      // 이벤트 큐 한도를 넘어 버린 수
+    unsigned long long requestsDropped = 0;    // 요청 큐 한도를 넘어 버린 수
+};
 
 // ★ 11-11 부하 측정 M0 조각 2 — 틱 완료 시간(`Docs/MO_MEASURE_PLAN_1111.md` 2-1절 · 한계 판정 값). 방의 틱이 돌기로 예정된 시각
 //   (`Server::BeginTick` 이 `lastTickMs_` 를 `tickMs_` 씩 올린 값)부터 그 방의 틱 일(`CRoomManager::RunTick` 의 방 하나 몫 · 뒷일까지)이
@@ -124,9 +143,9 @@ public:
     CTickSectionReport(void* gameThread, void* networkThread, void* recorderThread, uint32_t nowMs);
     void AddTick(double tickMs);
     bool Due(uint32_t nowMs) const { return static_cast<uint32_t>(nowMs - _lastPrintMs) >= kPrintEveryMs; }
-    void Print(uint32_t nowMs, unsigned long long reliableOverflowTotal);
+    void Print(uint32_t nowMs, const CSectionNetTotals& net);
     // 끝날 때 — 10초를 못 채운 나머지 틱까지 찍는다(분포 총합 = 틱 수가 실행 전체에서 맞게). 스레드를 join 하면 핸들이 닫히므로 그 전에 부른다
-    void PrintFinal(uint32_t nowMs, unsigned long long reliableOverflowTotal);
+    void PrintFinal(uint32_t nowMs, const CSectionNetTotals& net);
 
 private:
     static constexpr uint32_t kPrintEveryMs = 1000;
@@ -139,6 +158,7 @@ private:
     double _cpuMsLast[3] = {};
     uint32_t _startMs;
     uint32_t _lastPrintMs;
+    SectionClock::time_point _lastPrintAt;   // ★ 11-11 M0 조각 3 — 줄마다 실제로 지난 ms(서버가 밀리면 줄 간격이 1초보다 벌어진다 · 측정 플랜 2-3절)
     uint32_t _linesSinceHistogram = 0;
 
     unsigned long long _ticks = 0;
@@ -148,6 +168,7 @@ private:
 
     uint64_t _resendNsLast = 0, _sendNsLast = 0, _recvNsLast = 0, _recvCountLast = 0, _handoffNsLast = 0;
     unsigned long long _leaveLast = 0, _overflowLast = 0;
+    unsigned long long _leaveTimeoutLast = 0, _leaveCloseLast = 0, _eventsDroppedLast = 0, _requestsDroppedLast = 0;   // ★ 11-11 M0 조각 3
 };
 
 }  // namespace nox

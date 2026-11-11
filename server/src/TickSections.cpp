@@ -8,12 +8,26 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <psapi.h>   // ★ 11-11 M0 조각 3 — 서버 메모리(`GetProcessMemoryInfo` · 윈도 7 이후 kernel32 의 `K32` 판으로 이어진다)
 
 namespace nox {
 
 namespace {
 
 double NsToMs(uint64_t ns) { return static_cast<double>(ns) / 1000000.0; }
+
+// ★ 11-11 부하 측정 M0 조각 3 — 서버 프로세스 메모리(MB). 개인 = 이 프로세스만 쓰는 확정 메모리(오래 돌 때 느는지 볼 값) ·
+//   작업 = 지금 실제 메모리에 올라 있는 몫(윈도가 덜어 낼 수 있어 늘어남 판단엔 개인을 쓴다). 못 읽으면 0
+void ProcessMemoryMb(double& privateMb, double& workingMb) {
+    PROCESS_MEMORY_COUNTERS_EX pmc{};
+    pmc.cb = sizeof(pmc);
+    if (!GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc), sizeof(pmc))) {
+        privateMb = workingMb = 0.0;
+        return;
+    }
+    privateMb = static_cast<double>(pmc.PrivateUsage) / (1024.0 * 1024.0);
+    workingMb = static_cast<double>(pmc.WorkingSetSize) / (1024.0 * 1024.0);
+}
 
 double ThreadCpuMs(void* thread) {
     if (!thread) return 0.0;
@@ -28,7 +42,7 @@ double ThreadCpuMs(void* thread) {
 }  // namespace
 
 CTickSectionReport::CTickSectionReport(void* gameThread, void* networkThread, void* recorderThread, uint32_t nowMs)
-    : _threads{gameThread, networkThread, recorderThread}, _startMs(nowMs), _lastPrintMs(nowMs) {
+    : _threads{gameThread, networkThread, recorderThread}, _startMs(nowMs), _lastPrintMs(nowMs), _lastPrintAt(SectionClock::now()) {
     for (int i = 0; i < 3; ++i) _cpuMsLast[i] = ThreadCpuMs(_threads[i]);   // 첫 줄에 시작 비용이 안 들어가게
 }
 
@@ -41,9 +55,19 @@ void CTickSectionReport::AddTick(double tickMs) {
     ++_histogramTicks;
 }
 
-void CTickSectionReport::Print(uint32_t nowMs, unsigned long long reliableOverflowTotal) {
+void CTickSectionReport::Print(uint32_t nowMs, const CSectionNetTotals& net) {
     _lastPrintMs = nowMs;
+    // ★ 11-11 부하 측정 M0 조각 3 — 실제로 지난 ms · 게임 스레드 바쁜 비율 · 고리 나머지(측정 플랜 2-2절)
+    const SectionClock::time_point at = SectionClock::now();
+    const double elapsedMs = std::chrono::duration<double, std::milli>(at - _lastPrintAt).count();
+    _lastPrintAt = at;
     const CGameSectionTotals& g = g_gameSections;
+    const double busyMs = elapsedMs > g.waitMs ? elapsedMs - g.waitMs : 0.0;
+    const double busyPct = elapsedMs > 0.0 ? 100.0 * busyMs / elapsedMs : 0.0;
+    const double restMs = busyMs - (_tickSumMs + g.eventMs + g.roomCloseMs);   // 틱 · 사건(방 만들기 포함) · 방 닫기 밖 — 방 전체를 도는 고리 자리 · 줄 찍기 등
+    const double handoffAvgMs = g.eventCount ? static_cast<double>(g.handoffLatSumMs) / static_cast<double>(g.eventCount) : 0.0;
+    double privateMb = 0.0, workingMb = 0.0;
+    ProcessMemoryMb(privateMb, workingMb);
     const auto sec = [&g](TickSection s) { return g.sectionMs[static_cast<size_t>(s)]; };
 
     const uint64_t resend = g_networkSections.resendNs.load(std::memory_order_relaxed);
@@ -55,12 +79,15 @@ void CTickSectionReport::Print(uint32_t nowMs, unsigned long long reliableOverfl
     double cpuNow[3];
     for (int i = 0; i < 3; ++i) cpuNow[i] = ThreadCpuMs(_threads[i]);
 
-    const unsigned long long overflowTotal = g_importantOverflowTotal + reliableOverflowTotal;
+    const unsigned long long overflowTotal = g_importantOverflowTotal + net.reliableOverflow;
+    // ★ 11-11 M0 조각 3 — 끝에 덧붙임(앞 칸 차례는 그대로): 끊김 까닭 · 지난 · 기다림 · 바쁨 · 고리 나머지 · 넘김 지연 · 큐 버림 · 메모리
     std::printf("[구간] 초 %u · 틱 %llu · 틱합 %.1f · 틱최대 %.1f · 사건 %.1f(수 %llu)"
                 " · 방 만들기 %.1f(수 %llu · 최대 %.1f) · 방 닫기 %.1f(수 %llu · 최대 %.1f) · 뒷일 %.1f"
                 " · 앞 %.1f · 걸음 %.1f · 생각 %.1f · 시전 %.1f · 세계 %.1f · 자기 %.1f · 사람 %.1f · 물체 %.1f · 소환수 %.1f · 정적 %.1f · 묶음 %.1f"
                 " · 통신 재전송 %.1f · 보내기 %.1f · 받기 %.1f(수 %llu) · 넘기기 %.1f"
-                " · CPU 게임 %.0f 통신 %.0f 기록 %.0f · 끊김 %llu · 넘침 %llu\n",
+                " · CPU 게임 %.0f 통신 %.0f 기록 %.0f · 끊김 %llu(시간 초과 %llu · 0a %llu) · 넘침 %llu"
+                " · 지난 %.1f · 기다림 %.1f · 바쁨 %.1f%% · 고리 나머지 %.1f · 넘김 지연 평균 %.2f 최대 %u"
+                " · 큐 버림 사건 %llu 요청 %llu · 메모리 개인 %.1fMB 작업 %.1fMB\n",
                 static_cast<uint32_t>(nowMs - _startMs) / 1000u, _ticks, _tickSumMs, _tickMaxMs, g.eventMs, g.eventCount,
                 g.roomCreateMs, g.roomCreates, g.roomCreateMaxMs, g.roomCloseMs, g.roomCloses, g.roomCloseMaxMs, g.afterMs,
                 sec(TickSection::Front), sec(TickSection::Walk), sec(TickSection::Think), sec(TickSection::Cast), sec(TickSection::World),
@@ -69,12 +96,19 @@ void CTickSectionReport::Print(uint32_t nowMs, unsigned long long reliableOverfl
                 NsToMs(resend - _resendNsLast), NsToMs(send - _sendNsLast), NsToMs(recv - _recvNsLast),
                 static_cast<unsigned long long>(recvCount - _recvCountLast), NsToMs(handoff - _handoffNsLast),
                 cpuNow[0] - _cpuMsLast[0], cpuNow[1] - _cpuMsLast[1], cpuNow[2] - _cpuMsLast[2],
-                g_leaveTotal - _leaveLast, overflowTotal - _overflowLast);
+                g_leaveTotal - _leaveLast, g_leaveTimeoutTotal - _leaveTimeoutLast, g_leaveCloseTotal - _leaveCloseLast,
+                overflowTotal - _overflowLast,
+                elapsedMs, g.waitMs, busyPct, restMs, handoffAvgMs, g.handoffLatMaxMs,
+                net.eventsDropped - _eventsDroppedLast, net.requestsDropped - _requestsDroppedLast, privateMb, workingMb);
     std::fflush(stdout);
 
     _resendNsLast = resend; _sendNsLast = send; _recvNsLast = recv; _recvCountLast = recvCount; _handoffNsLast = handoff;
     for (int i = 0; i < 3; ++i) _cpuMsLast[i] = cpuNow[i];
     _leaveLast = g_leaveTotal;
+    _leaveTimeoutLast = g_leaveTimeoutTotal;
+    _leaveCloseLast = g_leaveCloseTotal;
+    _eventsDroppedLast = net.eventsDropped;
+    _requestsDroppedLast = net.requestsDropped;
     _overflowLast = overflowTotal;
     g_gameSections.Reset();
     _ticks = 0;
@@ -83,8 +117,8 @@ void CTickSectionReport::Print(uint32_t nowMs, unsigned long long reliableOverfl
     if (++_linesSinceHistogram >= kLinesPerHistogram) PrintHistogram(nowMs);
 }
 
-void CTickSectionReport::PrintFinal(uint32_t nowMs, unsigned long long reliableOverflowTotal) {
-    Print(nowMs, reliableOverflowTotal);
+void CTickSectionReport::PrintFinal(uint32_t nowMs, const CSectionNetTotals& net) {
+    Print(nowMs, net);
     if (_histogramTicks > 0 || g_tickCompletion.samples > 0) PrintHistogram(nowMs);   // ★ 11-11 M0 조각 2 — 완료 표본만 남아도
 }
 

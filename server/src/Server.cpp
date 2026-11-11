@@ -11223,6 +11223,7 @@ void Server::CloseLeftLink(int64_t sessionId, DisconnectReason reason) {
     ++leaveBy_[static_cast<size_t>(why)];
     ++closedAfterOut_;
     ++g_leaveTotal;   // ★ 11-10 부하 실험 — 사건 기록을 꺼도 읽는 값(변수 통제 플랜 5-3)
+    ++(why == LeaveBy::Timeout ? g_leaveTimeoutTotal : g_leaveCloseTotal);   // ★ 11-11 M0 조각 3 — 까닭으로 나눔(`TickSections.h`)
     Log("[나감] %s — %s · 번호 %u · 게임 안 아니오 · 판에서 빠진 뒤\n", l->second.addr.c_str(), LeaveByName(why),
         static_cast<unsigned>(l->second.netCode));
     leftLinks_.erase(l);
@@ -17808,6 +17809,8 @@ void Server::RunTick(int ticks) {
                 if (asked) ++closedAfterOut_;
             }
             if (!keepLink) ++g_leaveTotal;   // ★ 11-10 부하 실험 — 아래 `[나감]` 줄과 같은 조건(변수 통제 플랜 5-3)
+            // ★ 11-11 M0 조각 3 — 까닭으로 나눔(`TickSections.h`). 여기 `why` 는 `CloseMsg` · `Timeout` 둘뿐이다(`MarkLeave` 는 `Outgoing` 을 `exitAsked` 에만 적는다)
+            if (!keepLink) ++(why == LeaveBy::Timeout ? g_leaveTimeoutTotal : g_leaveCloseTotal);
             if (keepLink)
                 Log("[판에서 빠짐] %s — 번호 %u · 게임 안 %s · 연결은 0a · 시간 초과(30초)까지 둠\n", AddrText(sessionId),
                     static_cast<unsigned>(netCode), wasInGame ? "예" : "아니오");
