@@ -76,7 +76,7 @@ constexpr int kDetourRunShowMax = 200;            // 5 · 20번째 자리 줄의
 // ★ 11-12 — 우회 없이 멈추는 꼴도 센다(`quiet60`). 고친 뒤 회귀 런 641초 판(`_out/obst/fix1` 방 2)은 5분 동안 칼질 0 · 서버 「사람 벽 짝」이
 //   요약 줄 사이마다 약 230(앞뒤는 0~28)인데 그 런의 detourRun5 는 0 이었다(막힘 확인에 안 걸린 것으로 보임 · 까닭 미확인)
 //   — 세는 자리가 우회 하나뿐이면 그 0 은 「멈춤 없음」이 아니다.
-//   60초 = 킬로 끝난 판의 킬 사이(가운데 4분 ÷ 10킬 ≈ 24초)의 두 배 넘게 42 도 죽음도 없음
+//   60초 = 킬로 끝난 판의 킬 사이(가운데 4분 ÷ 10킬 ≈ 24초)의 두 배 넘게 남이 맞은 42 도 죽음도 없음
 constexpr uint32_t kQuietFrames = 1800;
 constexpr int kQuietShowMax = 300;
 
@@ -412,7 +412,9 @@ void OnImportantBody(Dummy& d, const uint8_t* p, size_t n) {
             d.hurtNet = static_cast<uint16_t>(p[i + 1] | (p[i + 2] << 8));   // 42 <번호 2> <증감 2> — 음수만 온다(Server.cpp:6711)
             d.hurtFrame = d.frame;
             d.detourRun = 0;                 // 누가 맞았으면 싸움이 있었다
-            MarkFight(d);
+            // 싸움 끊김 시계는 남이 맞았을 때만 새로 연다 — 42 는 자기 몫도 온다(갱신 순서에 자기도 든다 · Server.cpp:18692-18696).
+            //   나만 맞는 동안(쫓는 쪽이 못 닿고 주문만 맞음)도 끊김으로 세려고
+            if (d.hurtNet != d.selfNet) MarkFight(d);
         } else if (p[i] == static_cast<uint8_t>(Op::REPORT_PLAYER_HEALTH) && msz >= 3) {
             const int hp = p[i + 1] | (p[i + 2] << 8);
             CheckEntryStat(d, d.checkedHp43, "43 체력", hp, d.maxHp);
