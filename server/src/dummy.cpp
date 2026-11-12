@@ -66,6 +66,12 @@ constexpr double kStuckMinGain = 20.0;            // 3초에 몸이 이만큼도
 constexpr uint32_t kDetourMaxFrames = 150;        // 지점으로 가는 시간의 상한 — 지점 앞에서도 막힐 수 있다
 constexpr double kDetourArrive = 40.0;            // 지점에 이만큼 다가가면 다시 쫓는다
 constexpr uint32_t kNoHurtFrames = 200;           // 거리 안인데 이만큼 상대 체력이 안 줄면 벽 너머로 본다 — 부활 무적 150틱(Server.cpp:6416)보다 길게
+// ★ 11-12 판 멈춤 조사 — 체력이 줄었다는 42 도 죽음도 없이 이어진 우회가 5번 · 20번에 닿은 횟수를 센다(`detourRun5` · `detourRun20`).
+//   멈춘 판은 150판에 1번꼴(×3 약 300판 중 2판)이라 판 수로는 고친 효과를 못 가린다 — 멈춤 전 단계를 센다.
+//   우회 한 번 = 막힘 확인 3초(kStuckCheckFrames) + 지점 가기 최대 5초(kDetourMaxFrames).
+//   5번 = 15~40초 싸움 없이 쫓기만 함 · 20번 = 1~2.7분 — 킬로 끝난 판은 10킬에 가운데 4분이라 이만큼 싸움이 끊기면 멈춤이다
+constexpr int kDetourRunWarn = 5, kDetourRunStall = 20;
+constexpr int kDetourRunShowMax = 200;            // 5 · 20번째 자리 줄의 상한 — 멈춘 더미가 많아도 줄이 끝없이 늘지 않게
 
 // 전사 능력 — 플랜 2-5절. 재사용은 서버 값(GameBalance.h kAbilityDelay) · 거리는 잠정(플랜 「돌려 보고 D6 에서 정한다」).
 struct AbilityInfo { uint8_t id; uint32_t delay; double minDist, maxDist; };
@@ -132,7 +138,7 @@ constexpr int64_t kStartRetryUs = 5000000;   // 대기 맵에 그대로 있으�
     X(sentInput) X(sentPing) X(sentAck) X(sentAlias) X(sentMouse) X(sentSpell) X(sentAbility) X(sentStart) \
     X(recvDgram) X(recvBytes) X(decodeFail) X(dupImportant) X(lateTicks) X(sendFail) X(sentClose) X(closeSkipped) X(cycleLeave) X(cycleSkipped) \
     X(petsAcquired) X(petsLost) X(spellSkippedNoMana) X(retreats) X(heals) \
-    X(sentAttack) X(sentRevive) X(sawDeath) X(selfDeath) X(revives) X(detours) \
+    X(sentAttack) X(sentRevive) X(sawDeath) X(selfDeath) X(revives) X(detours) X(detourRun5) X(detourRun20) \
     X(castProtect) X(castHaste) X(castInvis) X(castConfuse) X(castFireball) X(castDeathRay) X(castChain) X(castBlink) \
     X(sentBerserk) X(sentRoar) X(sentHarpoon) X(firstBuffOk) X(firstBuffBad) X(buffOverlap) X(healedBack) X(statChecked) X(statMismatch) \
     X(castPixie) X(castPoison) X(castStun) X(castFist) X(castMeteor) X(castSummon) X(petTypeMismatch)
@@ -169,6 +175,7 @@ struct alignas(64) LiveCounters {
 
 thread_local LiveCounters* t_count = nullptr;   // 더미 스레드가 시작할 때 제 몫을 건다(RunWorker)
 std::atomic<int> g_decodeFailShown{0};
+std::atomic<int> g_detourRunShown{0};             // [더미 우회 연속] 줄 수(kDetourRunShowMax)
 
 int64_t NowUs() {
     using namespace std::chrono;
@@ -248,6 +255,7 @@ struct alignas(64) Dummy {
     uint32_t pathReplanFrame = 0;        // 다음에 길을 다시 찾을 프레임
     int detourIndex = -1;                // 들르는 지점(-1 = 안 들름)
     int lastDetour = -1;                 // 바로 전에 들른 지점 — 같은 곳을 되풀이하지 않게
+    int detourRun = 0;                   // 42 · 죽음 · 맵 옮김 없이 이어진 우회 수(kDetourRunWarn)
     uint32_t detourEndFrame = 0;
     uint16_t reachTarget = 0;            // 거리 안에 붙어 있는 상대(0 = 없음)
     uint32_t reachSinceFrame = 0;        // 붙은 때 · 그 상대 체력이 마지막으로 준 때
@@ -360,6 +368,7 @@ void OnImportantBody(Dummy& d, const uint8_t* p, size_t n) {
         if (p[i] == static_cast<uint8_t>(Op::PLAYER_DIED) && msz >= 3) {
             const uint16_t net = static_cast<uint16_t>(p[i + 1] | (p[i + 2] << 8));
             ++t_count->sawDeath;
+            d.detourRun = 0;                 // 누가 죽었으면 싸움이 있었다
             if (net == d.selfNet) {
                 ++t_count->selfDeath;
                 d.dead = true;
@@ -382,6 +391,7 @@ void OnImportantBody(Dummy& d, const uint8_t* p, size_t n) {
         } else if (p[i] == static_cast<uint8_t>(Op::REPORT_HEALTH_DELTA) && msz >= 5) {
             d.hurtNet = static_cast<uint16_t>(p[i + 1] | (p[i + 2] << 8));   // 42 <번호 2> <증감 2> — 음수만 온다(Server.cpp:6711)
             d.hurtFrame = d.frame;
+            d.detourRun = 0;                 // 누가 맞았으면 싸움이 있었다
         } else if (p[i] == static_cast<uint8_t>(Op::REPORT_PLAYER_HEALTH) && msz >= 3) {
             const int hp = p[i + 1] | (p[i + 2] << 8);
             CheckEntryStat(d, d.checkedHp43, "43 체력", hp, d.maxHp);
@@ -540,6 +550,7 @@ void WalkMessages(Dummy& d, const uint8_t* b, size_t all) {
             d.dead = false;                 // 맵을 옮기면 서버가 다시 세운다(RejoinReset)
             d.detourIndex = -1;
             d.lastDetour = -1;
+            d.detourRun = 0;
             d.path.clear();
             d.stuckHave = false;
             d.aliases.Clear();
@@ -854,6 +865,16 @@ void StartDetour(Dummy& d, int tx, int ty) {
     d.detourEndFrame = d.frame + kDetourMaxFrames;
     d.path.clear();
     ++t_count->detours;
+    ++d.detourRun;
+    if (d.detourRun == kDetourRunWarn) ++t_count->detourRun5;
+    if (d.detourRun == kDetourRunStall) ++t_count->detourRun20;
+    // 자리를 같이 찍는다 — 고친 뒤에도 남는 것이 한 자리에 몰리는지(맵 물체 · 벽 모양) 흩어지는지 가르려고
+    if ((d.detourRun == kDetourRunWarn || d.detourRun == kDetourRunStall) &&
+        g_detourRunShown.fetch_add(1, std::memory_order_relaxed) < kDetourRunShowMax) {
+        std::printf("[더미 우회 연속] 더미 %d · %d번째 · 자리 (%d,%d) · 상대 (%d,%d) · 지점 %d\n",
+                    d.index, d.detourRun, d.x, d.y, tx, ty, w);
+        std::fflush(stdout);
+    }
     FollowPath(d, kWaypoints[w].x, kWaypoints[w].y);
 }
 
