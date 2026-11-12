@@ -579,6 +579,16 @@ void OnDatagram(Dummy& d, uint8_t* p, size_t n) {
             uint8_t accept[154] = {};
             accept[0] = static_cast<uint8_t>(Op::CLIENT_ACCEPT);
             accept[1 + 66] = static_cast<uint8_t>(d.cls);
+            // ★ 11-12 정품 화면 확인(표 118~120) — 이름 · 색을 0 으로 두면 서버가 그 97바이트를 남에게 그대로 소개해(Server.cpp:4351)
+            //   정품 화면에 더미가 검은 피부 · 점수판 빈 이름으로 나왔다. 짜임은 원본 PlayerInfo(player.go:971-995):
+            //   이름 +0(UTF-16 50바이트) · 여자 +67 · 색 +68~+87(머리 · 피부 · 콧수염 · 염소수염 · 턱수염 RGB 셋씩 · 바지 · 윗옷 둘 · 신발 둘 한 바이트씩).
+            //   색은 정품 R1 실행의 접속 정보 그대로(`_out/bb_block/R1/server.log` `[접속정보97]` 줄 · git 밖) — 수염 셋이 피부와 같으면 수염 없음
+            static constexpr uint8_t kRetailColors[20] = {0x73, 0x4d, 0x22, 0xda, 0x9a, 0x6e, 0xda, 0x9a, 0x6e, 0xda, 0x9a, 0x6e,
+                                                          0xda, 0x9a, 0x6e, 0x0c, 0x07, 0x13, 0x17, 0x06};
+            std::memcpy(accept + 1 + 68, kRetailColors, sizeof(kRetailColors));
+            char name[16];
+            const int nameLen = std::snprintf(name, sizeof(name), "Dummy%d", d.index + 1);   // 24글자 + 끝 0 안
+            for (int i = 0; i < nameLen && i < 24; ++i) accept[1 + 2 * i] = static_cast<uint8_t>(name[i]);
             SendGame(d, accept, sizeof(accept));
             d.phase = Phase::Game;
             ++t_count->entered;                  // Connect → Game 은 한 번뿐이다(되돌아가는 길이 없다)
