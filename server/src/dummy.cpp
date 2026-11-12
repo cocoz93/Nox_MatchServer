@@ -31,6 +31,7 @@
 #include "nox/GameBalance.h"
 #include "nox/MapFile.h"
 #include "nox/Opcode.h"
+#include "nox/Server.h"
 #include "nox/ThingDb.h"
 #include "nox/ThingFlags.h"
 #include "nox/UpdateStream.h"
@@ -755,6 +756,13 @@ struct NavGrid {
 };
 NavGrid g_nav;
 
+// ★ 11-12 — 서버 벽 모양(칸 안 대각선 선분)을 그대로 싣는다. 칸 격자는 벽 칸 전체를 막을 뿐 「몸이 벽 선에 닿나」를 못 본다 —
+//   벽 모서리를 질러가다 벽 선 9.2~9.9 에 붙어 멈췄다(nox-dummy-obstacle-progress.md 미결 1 A). 서버 판정 코드를 그대로 부르려고
+//   `nox::Server` 하나에 벽만 넣는다(nox_datadump --walls 와 같은 길). 맵을 읽은 뒤 읽기만 하므로 스레드끼리 함께 쓴다.
+std::unique_ptr<nox::Server> g_wallShape;
+
+bool BodyClear(double x0, double y0, double x1, double y1);   // 아래 BakeNavObstacles 뒤 — 맵 물체 몸을 같이 본다
+
 // 훑기에 쓰는 버퍼는 훑을 때마다 고쳐 쓰므로 스레드마다 한 벌(M0 조각 7) — 처음 길을 찾을 때 잡는다(약 0.5MB).
 struct NavSearch {
     std::vector<uint32_t> seen;          // 이번 훑기에 가 봤나(훑을 때마다 지우지 않게 세대 번호로)
@@ -847,6 +855,13 @@ bool NavBodyContains(const NavBody& o, float qx, float qy) {
     return false;
 }
 
+// 찍은 맵 물체 몸 — 몸 폭 판정(BodyClear)이 물체를 비켜 가는지 본다. 네 값은 몸을 두르는 사각형(BodyRect)
+struct NavBodyBox {
+    NavBody body;
+    float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+};
+std::vector<NavBodyBox> g_navBodies;
+
 // ★ 11-12 판 멈춤 까닭 하나 — 맵 물체(돌기둥 · 나무)도 막힌 칸으로 찍는다. 벽만 찍던 때 법사가 격자에선 빈칸인 자리에서
 //   동쪽 20 의 돌기둥 `CaveRockPillarShort2`(2565,1889) 쪽으로 13분 넘게 달렸다(`_out/stuck/b` 방 3 · nox_datadump --walls).
 //   두 더미를 그 판의 두 자리에 세운 재현 시험(8방 10분): 벽만이면 죽음 0 · 공격 0 · 물체를 찍으면 처음 4분 죽음 102.
@@ -884,6 +899,7 @@ int BakeNavObstacles(nox::MapFile& mf, const std::string& thingPath, int& objCou
         // 몸을 두르는 사각형(`BodyRect` Server.cpp:5316) 안의 칸만 본다
         const float x0 = b.shape == 3 ? b.x + b.lb : b.x - b.r, y0 = b.shape == 3 ? b.y + b.lb : b.y - b.r;
         const float x1 = b.shape == 3 ? b.x + b.rt : b.x + b.r, y1 = b.shape == 3 ? b.y + b.rt : b.y + b.r;
+        g_navBodies.push_back(NavBodyBox{b, x0, y0, x1, y1});
         const int gx0 = std::max(0, static_cast<int>(x0 / kNavCell)), gx1 = std::min(kNavSize - 1, static_cast<int>(x1 / kNavCell));
         const int gy0 = std::max(0, static_cast<int>(y0 / kNavCell)), gy1 = std::min(kNavSize - 1, static_cast<int>(y1 / kNavCell));
         for (int gy = gy0; gy <= gy1; ++gy)
@@ -901,6 +917,41 @@ int BakeNavObstacles(nox::MapFile& mf, const std::string& thingPath, int& objCou
     return added;
 }
 
+// 몸 폭으로 곧장 갈 수 있나 — 가운데 줄과 좌우로 몸 반지름(10)만큼 비킨 두 줄이 서버 벽 선과 사람을 미는 맵 물체에 안 걸리면 참.
+//   벽은 서버 걸음 추적과 같은 `MapTraceRay` 깃발 0x1(Server.cpp:5127 주석)이고, 물체는 정품 `BodyContains` 와 같은 식(NavBodyContains)으로
+//   줄 위를 kBodyStep 간격으로 찍는다 — Estate 의 사람을 미는 물체 159개 중 가장 작은 것이 반지름 8 · 상자 한 변 12 라
+//   3 간격 · 줄 사이 10 이면 줄 사이로 빠지지 않는다(_out/obst/estate_obstacles.txt).
+//   좌우 두 줄은 몸 반지름만큼 나아간 뒤부터 본다 — 벽 · 물체에 붙어 선 몸(벽 선까지 9.2 · 8.5)은 떨어지는 쪽으로 가도
+//   비킨 줄의 첫머리가 벽 너머 · 물체 안에서 시작해 늘 「막힘」이 된다. 가운데 줄은 처음부터 본다(몸 가운데는 서버가 밖으로 밀어 둔다)
+constexpr double kBodyStep = 3.0;
+bool BodyClear(double x0, double y0, double x1, double y1) {
+    const double dx = x1 - x0, dy = y1 - y0, len = std::sqrt(dx * dx + dy * dy);
+    if (len < 1.0) return true;
+    const double r = nox::kPlayerRadius, ux = dx / len, uy = dy / len, nx = -uy * r, ny = ux * r;
+    auto wallOk = [](double ax, double ay, double bx, double by) {
+        return g_wallShape->DebugTraceRayFlags(static_cast<float>(ax), static_cast<float>(ay), static_cast<float>(bx), static_cast<float>(by), 0x1);
+    };
+    if (g_wallShape) {
+        if (!wallOk(x0, y0, x1, y1)) return false;
+        if (len > r) {
+            const double sx = x0 + ux * r, sy = y0 + uy * r;
+            if (!wallOk(sx + nx, sy + ny, x1 + nx, y1 + ny) || !wallOk(sx - nx, sy - ny, x1 - nx, y1 - ny)) return false;
+        }
+    }
+    const double bx0 = std::min(x0, x1) - r, bx1 = std::max(x0, x1) + r, by0 = std::min(y0, y1) - r, by1 = std::max(y0, y1) + r;
+    const int steps = std::max(1, static_cast<int>(std::ceil(len / kBodyStep)));
+    for (const NavBodyBox& o : g_navBodies) {
+        if (o.x1 < bx0 || o.x0 > bx1 || o.y1 < by0 || o.y0 > by1) continue;
+        for (int i = 0; i <= steps; ++i) {
+            const double s = len * i / steps, px = x0 + ux * s, py = y0 + uy * s;
+            if (NavBodyContains(o.body, static_cast<float>(px), static_cast<float>(py))) return false;
+            if (s >= r && (NavBodyContains(o.body, static_cast<float>(px + nx), static_cast<float>(py + ny)) ||
+                           NavBodyContains(o.body, static_cast<float>(px - nx), static_cast<float>(py - ny)))) return false;
+        }
+    }
+    return true;
+}
+
 // 맵을 읽어 격자를 채운다. 시작 지점끼리 길이 이어지는지 세어 함께 찍는다 — 격자가 잘못 깔리면 이 값이 무너진다.
 bool LoadNav(const std::string& path, const std::string& thingPath, bool objects) {
     nox::MapFile mf;
@@ -908,6 +959,16 @@ bool LoadNav(const std::string& path, const std::string& thingPath, bool objects
     const auto cells = mf.ReadWalls();
     g_nav.blocked.assign(static_cast<size_t>(kNavSize) * kNavSize, 0);
     for (const auto& w : cells) g_nav.blocked[static_cast<size_t>(w.y) * kNavSize + w.x] = 1;
+    std::vector<nox::Server::WallTileIn> tiles;
+    tiles.reserve(cells.size());
+    for (const auto& w : cells) {
+        nox::Server::WallTileIn c;
+        c.x = w.x; c.y = w.y; c.dir = w.dir; c.tile = w.tile; c.flag80 = w.flag80;
+        tiles.push_back(c);
+    }
+    g_wallShape = std::make_unique<nox::Server>();
+    g_wallShape->SetWallTiles(tiles);
+    g_navBodies.clear();
     int objCount = 0;
     const int objCells = objects ? BakeNavObstacles(mf, thingPath, objCount) : 0;
     if (!objects)
@@ -931,6 +992,24 @@ bool LoadNav(const std::string& path, const std::string& thingPath, bool objects
     return true;
 }
 
+// 길 위에서 지금 향할 점 — 다다른 점은 넘기고, 앞 몇 칸 안에서 곧장 갈 수 있는 가장 먼 점. FollowPath 와 --nav-probe 가 같이 쓴다.
+int PickPathPoint(const std::vector<Point>& path, int& pathPos, int x, int y) {
+    const int last = static_cast<int>(path.size()) - 1;
+    auto distTo = [&](int k) {
+        const double dx = static_cast<double>(path[static_cast<size_t>(k)].x - x), dy = static_cast<double>(path[static_cast<size_t>(k)].y - y);
+        return std::sqrt(dx * dx + dy * dy);
+    };
+    while (pathPos < last && distTo(pathPos) < kPathStepArrive) ++pathPos;
+    int pick = pathPos;
+    for (int k = std::min(pathPos + kLookAheadCells, last); k > pathPos; --k) {
+        if (GridClear(x, y, path[static_cast<size_t>(k)].x, path[static_cast<size_t>(k)].y)) {
+            pick = k;
+            break;
+        }
+    }
+    return pick;
+}
+
 // 길을 따라 달린다 — 찾은 길에서 곧장 갈 수 있는 가장 먼 점을 향한다(칸을 하나씩 밟으면 지그재그가 된다).
 // 길을 못 찾으면 곧장 간다.
 void FollowPath(Dummy& d, int tx, int ty) {
@@ -940,15 +1019,7 @@ void FollowPath(Dummy& d, int tx, int ty) {
         d.pathPos = 0;
         d.pathReplanFrame = d.frame + kReplanFrames;
     }
-    const int last = static_cast<int>(d.path.size()) - 1;
-    while (d.pathPos < last && DistTo(d, d.path[static_cast<size_t>(d.pathPos)].x, d.path[static_cast<size_t>(d.pathPos)].y) < kPathStepArrive) ++d.pathPos;
-    int pick = d.pathPos;
-    for (int k = std::min(d.pathPos + kLookAheadCells, last); k > d.pathPos; --k) {
-        if (GridClear(d.x, d.y, d.path[static_cast<size_t>(k)].x, d.path[static_cast<size_t>(k)].y)) {
-            pick = k;
-            break;
-        }
-    }
+    const int pick = PickPathPoint(d.path, d.pathPos, d.x, d.y);
     MoveToward(d, d.path[static_cast<size_t>(pick)].x, d.path[static_cast<size_t>(pick)].y);
 }
 
@@ -1629,14 +1700,43 @@ bool ParseArgs(int argc, char** argv, Args& a, std::string& err) {
 
 }  // namespace
 
+// ★ 11-12 확인 도구 — 한 자리에서 더미가 무엇을 고르는지 찍는다(서버 없이 몇 초). 길을 새로 찾은 직후의 선택은 「선 자리 + 상대 자리」로
+//   정해지므로 멈춘 자리(`[더미 싸움 끊김]` 줄)를 넣으면 그 판의 선택이 다시 나온다. 쓰기: nox_dummy --nav-probe X Y TX TY [--no-nav-objects]
+int NavProbe(int argc, char** argv) {
+    const int x = std::atoi(argv[2]), y = std::atoi(argv[3]), tx = std::atoi(argv[4]), ty = std::atoi(argv[5]);
+    const bool objects = !(argc >= 7 && std::string(argv[6]) == "--no-nav-objects");
+    if (!LoadNav(kDefaultMapFile, kDefaultThingFile, objects)) return 1;
+    std::printf("[길 확인] 자리 (%d,%d) 칸 (%d,%d) 막힘 %d · 벽 선까지 %.1f · 상대 (%d,%d) · 곧장(칸) %d · 서버 가운데 줄 %d · 몸 폭 %d\n",
+                x, y, x / kNavCell, y / kNavCell, CellBlocked(x / kNavCell, y / kNavCell) ? 1 : 0, g_wallShape->DebugWallDistance(x, y), tx, ty,
+                GridClear(x, y, tx, ty) ? 1 : 0,
+                g_wallShape->DebugTraceRayFlags(static_cast<float>(x), static_cast<float>(y), static_cast<float>(tx), static_cast<float>(ty), 0x5) ? 1 : 0,
+                BodyClear(x, y, tx, ty) ? 1 : 0);
+    std::vector<Point> path;
+    const bool ok = FindPath(x, y, tx, ty, path);
+    std::printf("[길 확인] 길 %d · %zu점\n", ok ? 1 : 0, path.size());
+    for (size_t i = 0; i < path.size() && i < 4; ++i)
+        std::printf("[길 확인]   점 %zu (%d,%d) 칸 막힘 %d · 벽 선까지 %.1f\n", i, path[i].x, path[i].y,
+                    CellBlocked(path[i].x / kNavCell, path[i].y / kNavCell) ? 1 : 0, g_wallShape->DebugWallDistance(path[i].x, path[i].y));
+    if (path.empty()) return 0;
+    int pos = 0;
+    const int pick = PickPathPoint(path, pos, x, y);
+    const Point q = path[static_cast<size_t>(pick)];
+    std::printf("[길 확인] 넘긴 끝 %d · 고른 점 %d (%d,%d) · 서버 가운데 줄 %d · 몸 폭 %d\n", pos, pick, q.x, q.y,
+                g_wallShape->DebugTraceRayFlags(static_cast<float>(x), static_cast<float>(y), static_cast<float>(q.x), static_cast<float>(q.y), 0x1) ? 1 : 0,
+                BodyClear(x, y, q.x, q.y) ? 1 : 0);
+    return 0;
+}
+
 int main(int argc, char** argv) {
+    if (argc >= 6 && std::string(argv[1]) == "--nav-probe") return NavProbe(argc, argv);
     Args a;
     std::string err;
     if (!ParseArgs(argc, argv, a, err)) {
         std::printf("인자 오류: %s\n", err.c_str());
         std::printf("쓰기: nox_dummy [--server 주소:포트] [--count N] [--room-size K] [--reserve-seats R] [--classes 0,1] [--duration-sec S] "
                     "[--join-interval-ms M] [--start-wait-ms M] [--behavior idle|move|fight] [--map-file 대전맵.map] [--thing-file thing.bin] [--no-nav-objects] [--seed S] "
-                    "[--stat-mult N] [--freq-mult X] [--threads N] [--cycle-sec S]\n");
+                    "[--stat-mult N] [--freq-mult X] [--threads N] [--cycle-sec S]\n"
+                    "     nox_dummy --nav-probe X Y TX TY [--no-nav-objects]   (한 자리의 길 선택만 찍는다)\n");
         return 1;
     }
 
