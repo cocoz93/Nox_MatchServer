@@ -19,7 +19,7 @@ param(
   [int]$Port = 18590,
   [string]$Classes = '0,1',
   [string]$Behavior = 'fight',
-  [int]$StatMult = 5,
+  [int]$StatMult = 3,                    # 체력 · 마나 배수 — 11-12 사용자 ×5 → ×3(전사 450 이라 체력 알림 41 의 510 막힘이 안 걸림)
   [double]$FreqMult = 1.0,
   [int]$DummyThreads = 4,                # 더미 내부 스레드(측정 플랜 4절 — 1,280명이면 한 바퀴 최대 약 94ms 라 3스레드가 필요하고 하나 더)
   [int]$CycleSec = 0,                    # 방 여닫기(측정 플랜 M7) — 더미 --cycle-sec 로 넘긴다. 마지막 방이 이 초마다 닫히고 새로 열린다 · 0 = 끔
