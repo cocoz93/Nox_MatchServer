@@ -31,6 +31,7 @@
 #include "nox/GameBalance.h"
 #include "nox/MapFile.h"
 #include "nox/Opcode.h"
+#include "nox/ThingDb.h"
 #include "nox/ThingFlags.h"
 #include "nox/UpdateStream.h"
 #include "nox/Wire.h"
@@ -131,6 +132,7 @@ constexpr uint32_t kReplanFrames = 30;            // 1초에 한 번 길을 다�
 constexpr int kLookAheadCells = 6;                // 길 위에서 곧장 갈 수 있는 먼 점을 고를 때 앞을 볼 칸 수
 constexpr double kPathStepArrive = 23.0;          // 길의 점에 한 칸만큼 다가가면 다음 점으로
 constexpr const char* kDefaultMapFile = "C:\\Program Files\\GOG Galaxy\\Games\\Nox\\maps\\Estate\\Estate.map";
+constexpr const char* kDefaultThingFile = "C:\\Program Files\\GOG Galaxy\\Games\\Nox\\thing.bin";   // 서버 --game-dir 기본과 같은 폴더(WorldBuild.h:170)
 
 constexpr int64_t kStartRetryUs = 5000000;   // 대기 맵에 그대로 있으면 !start 를 다시 보내는 간격 — 채팅은 비신뢰라 방장 것이 사라지면 그 방이 영영 안 열린다
 
@@ -201,6 +203,7 @@ struct Args {
     uint32_t AttackGap() const { return std::max<uint32_t>(1, static_cast<uint32_t>(std::lround(kAttackGapFrames / freqMult))); }
     Behavior behavior = Behavior::Fight;   // 빠뜨렸을 때 조용히 가벼운 부하를 재지 않게 기본을 fight 로 둔다
     std::string mapFile = kDefaultMapFile;   // 벽을 돌아가려고 읽는 대전 맵
+    std::string thingFile = kDefaultThingFile;   // 맵 물체의 모양 · 깃발(BakeNavObstacles)
     // 더미를 돌리는 스레드 수(M0 조각 7) — 더미 i 는 스레드 i % N 이 맡는다. 측정은 4(측정 플랜 4절: 전투 40명 한 바퀴 최대 2.94ms 라 1스레드는 약 450명부터 33ms 에 닿는다)
     int threads = 1;
     // 방 여닫기(측정 플랜 M7 · M0 조각 8) — 마지막 방 몫 더미가 이 초마다 `0a` 로 나가고 kCycleRejoinUs 뒤 다시 들어온다(0 = 끔).
@@ -722,6 +725,7 @@ void MoveToward(Dummy& d, int tx, int ty) {
 }
 
 // 벽 격자 — 더미가 벽을 돌아가는 데만 쓴다. 서버 물리와 별개이고, 벽이 있는 칸 전체를 막힌 것으로 본다.
+// (11-12부터 사람을 미는 맵 물체가 걸친 칸도 막힌 칸이다 — BakeNavObstacles)
 // 왜 필요한가 — Estate 는 벽이 456칸인 저택이라 곧장 쫓으면 벽 양쪽에 서서 만나지 못한다(11-10 실물 — 300초 중 약 240초).
 // 격자는 맵을 읽은 뒤 읽기만 하므로 스레드끼리 함께 쓴다.
 struct NavGrid {
@@ -800,13 +804,95 @@ bool FindPath(int fromX, int fromY, int toX, int toY, std::vector<Point>& out) {
     return true;
 }
 
+// 맵 물체의 몸 — 서버 `Server::PhysBody` 의 모양 칸만 옮겼다. 상자 네 값은 `Server::CalcBox`(Server.h:1755)와 같다.
+struct NavBody {
+    float x = 0, y = 0;
+    int shape = 0;                       // 2 원 · 3 상자
+    float r = 0;
+    float lt = 0, lb = 0, rt = 0, rb = 0;
+};
+
+// 점이 몸 안에 드는가 — `Server::BodyContains`(Server.cpp:9319 · 정품 sub_547DB0)와 같은 식. 원은 거리제곱, 상자는 마름모 네 변.
+bool NavBodyContains(const NavBody& o, float qx, float qy) {
+    if (o.shape == 2) {
+        const float dx = o.x - qx, dy = o.y - qy;
+        return dy * dy + dx * dx <= o.r * o.r;
+    }
+    const float v5 = o.lt + o.x, v6 = o.lb + o.y;
+    if ((v6 - v5 + qx - qy) * 0.70709997f < 0.0f && (o.rb + o.y - (o.rt + o.x) + qx - qy) * 0.70709997f > 0.0f) {
+        const float v7 = o.rt + o.x, v8 = o.rb + o.y;
+        return (v8 + v7 - qx - qy) * 0.70709997f > 0.0f && (v6 + v5 - qx - qy) * 0.70709997f < 0.0f;
+    }
+    return false;
+}
+
+// ★ 11-12 판 멈춤 까닭 하나 — 맵 물체(돌기둥 · 나무)도 막힌 칸으로 찍는다. 벽만 찍던 때 법사가 격자에선 빈칸인 자리에서
+//   동쪽 20 의 돌기둥 `CaveRockPillarShort2`(2565,1889) 쪽으로 13분 넘게 달렸다(`_out/stuck/b` 방 3 · nox_datadump --walls).
+//   두 더미를 그 판의 두 자리에 세운 재현 시험(8방 10분): 벽만이면 죽음 0 · 공격 0 · 물체를 찍으면 처음 4분 죽음 102.
+//   ⚠ 몸 반지름(10)은 안 더한다(정품 규칙 그대로) — 반지름 8 덤불 둘 사이 · 사선 벽 홈처럼 몸이 못 지나는 틈은 빈칸으로 남아
+//     같은 시험에서 끝날 때 8방 중 7방이 다시 멈췄다(미결 · nox-dummy-obstacle-progress.md)
+//   ① 고르기 — 서버가 사람과 부딪히게 싣는 장애물(`WorldBuild.cpp:1655-1664` 거르기 그대로) 가운데 **사람을 미는 것만**.
+//      ALLOW_OVERLAP(0x8)이면 겹쳐도 안 밀고(`Server.cpp:5401` · `:5427`), NO_PUSH_CHARACTERS(0x2000)이면 사람(클래스 0x4)은 안 민다(`:5402` · `:5428`).
+//      밀지 않는 것(`FlowersYellowSparse` · `FoliageDense1` 같은 BELOW+ALLOW_OVERLAP)까지 찍으면 지나갈 수 있는 길을 더미가 스스로 막는다
+//   ② 찍기 — 서버 몬스터 길 격자와 같은 정품 규칙(`AIPathBakeObstacles` Server.cpp:9343 · object_ai_path.go:545) —
+//      칸 안 아홉 점({2.3 · 11.5 · 20.7} 의 3×3) 가운데 하나라도 몸 안이면 막힌 칸
+//   돌려주는 값 = 새로 막은 칸 수(벽 칸과 겹친 것은 빼고) · thing.bin 을 못 읽으면 −1(벽만 쓴다)
+int BakeNavObstacles(nox::MapFile& mf, const std::string& thingPath, int& objCount) {
+    objCount = 0;
+    nox::ThingDb tdb;
+    if (!tdb.Load(thingPath)) return -1;
+    static const float kS[3] = {2.3f, 11.5f, 20.7f};
+    int added = 0;
+    for (const auto& o : mf.ReadObjects()) {
+        const uint16_t w = tdb.WireByName(o.type);
+        const nox::ThingInfo* t = w ? tdb.ByWire(w) : nullptr;
+        if (!t || !t->hasCollide) continue;
+        const uint32_t fl = nox::ParseObjectFlags(t->flagsRaw), cl = nox::ParseObjectClass(t->classRaw);
+        if ((fl & 0x40) || !(cl & 0x400000) || (cl & 0x80) || (t->shapeKind != 2 && t->shapeKind != 3)) continue;   // WorldBuild.cpp:1661-1664
+        if (fl & (0x8 | 0x2000)) continue;                                                                      // 사람을 안 민다
+        NavBody b;
+        b.x = o.x;
+        b.y = o.y;
+        b.shape = t->shapeKind;
+        b.r = t->radius;
+        if (b.shape == 3) {
+            const float px = t->boxW * 0.35354999f, py = t->boxH * 0.35354999f;
+            b.lt = -px + py; b.lb = -px - py; b.rt = px + py; b.rb = px - py;
+        }
+        ++objCount;
+        // 몸을 두르는 사각형(`BodyRect` Server.cpp:5316) 안의 칸만 본다
+        const float x0 = b.shape == 3 ? b.x + b.lb : b.x - b.r, y0 = b.shape == 3 ? b.y + b.lb : b.y - b.r;
+        const float x1 = b.shape == 3 ? b.x + b.rt : b.x + b.r, y1 = b.shape == 3 ? b.y + b.rt : b.y + b.r;
+        const int gx0 = std::max(0, static_cast<int>(x0 / kNavCell)), gx1 = std::min(kNavSize - 1, static_cast<int>(x1 / kNavCell));
+        const int gy0 = std::max(0, static_cast<int>(y0 / kNavCell)), gy1 = std::min(kNavSize - 1, static_cast<int>(y1 / kNavCell));
+        for (int gy = gy0; gy <= gy1; ++gy)
+            for (int gx = gx0; gx <= gx1; ++gx) {
+                bool hit = false;
+                for (int a = 0; a < 3 && !hit; ++a)
+                    for (int c = 0; c < 3 && !hit; ++c)
+                        if (NavBodyContains(b, gx * static_cast<float>(kNavCell) + kS[c], gy * static_cast<float>(kNavCell) + kS[a])) hit = true;
+                if (!hit) continue;
+                uint8_t& cell = g_nav.blocked[static_cast<size_t>(gy) * kNavSize + gx];
+                if (cell == 0) ++added;
+                cell = 1;
+            }
+    }
+    return added;
+}
+
 // 맵을 읽어 격자를 채운다. 시작 지점끼리 길이 이어지는지 세어 함께 찍는다 — 격자가 잘못 깔리면 이 값이 무너진다.
-bool LoadNav(const std::string& path) {
+bool LoadNav(const std::string& path, const std::string& thingPath) {
     nox::MapFile mf;
     if (!mf.Load(path)) return false;
     const auto cells = mf.ReadWalls();
     g_nav.blocked.assign(static_cast<size_t>(kNavSize) * kNavSize, 0);
     for (const auto& w : cells) g_nav.blocked[static_cast<size_t>(w.y) * kNavSize + w.x] = 1;
+    int objCount = 0;
+    const int objCells = BakeNavObstacles(mf, thingPath, objCount);
+    if (objCells < 0)
+        std::printf("[더미] thing.bin 을 못 읽음(%s) — 맵 물체 없이 벽만 돌아간다\n", thingPath.c_str());
+    else
+        std::printf("[더미] 맵 물체 %d개 · 새로 막은 칸 %d칸\n", objCount, objCells);
     g_nav.ok = true;
     int free = 0, linked = 0, pairs = 0;
     std::vector<Point> tmp;
@@ -1447,6 +1533,11 @@ bool ParseArgs(int argc, char** argv, Args& a, std::string& err) {
             a.mapFile = v;
             ++i;
         }
+        else if (k == "--thing-file") {
+            if (!v) { err = "--thing-file 값 없음"; return false; }
+            a.thingFile = v;
+            ++i;
+        }
         else if (k == "--behavior") {
             if (!v) { err = "--behavior 값 없음"; return false; }
             const std::string b = v;
@@ -1508,13 +1599,13 @@ int main(int argc, char** argv) {
     if (!ParseArgs(argc, argv, a, err)) {
         std::printf("인자 오류: %s\n", err.c_str());
         std::printf("쓰기: nox_dummy [--server 주소:포트] [--count N] [--room-size K] [--reserve-seats R] [--classes 0,1] [--duration-sec S] "
-                    "[--join-interval-ms M] [--start-wait-ms M] [--behavior idle|move|fight] [--map-file 대전맵.map] [--seed S] "
+                    "[--join-interval-ms M] [--start-wait-ms M] [--behavior idle|move|fight] [--map-file 대전맵.map] [--thing-file thing.bin] [--seed S] "
                     "[--stat-mult N] [--freq-mult X] [--threads N] [--cycle-sec S]\n");
         return 1;
     }
 
     nox::SetStatMult(a.statMult);                // 최대 체력은 표에 서버와 같은 배수를 곱한 값이다
-    if (a.behavior != Behavior::Idle && !LoadNav(a.mapFile))
+    if (a.behavior != Behavior::Idle && !LoadNav(a.mapFile, a.thingFile))
         std::printf("[더미] 벽 격자를 못 읽음(%s) — 벽을 돌아가지 못하고 곧장 쫓기만 한다\n", a.mapFile.c_str());
 
     WSADATA wsa;
