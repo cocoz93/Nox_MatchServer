@@ -137,7 +137,8 @@ constexpr int kNavSize = 256;
 constexpr int kNavCell = 23;
 constexpr uint32_t kReplanFrames = 30;            // 1초에 한 번 길을 다시 찾는다 — 상대가 움직이고, 더미가 많아도 한 프레임에 몰리지 않게
 constexpr int kLookAheadCells = 6;                // 길 위에서 곧장 갈 수 있는 먼 점을 고를 때 앞을 볼 칸 수
-constexpr double kPathStepArrive = 23.0;          // 길의 점에 한 칸만큼 다가가면 다음 점으로
+constexpr double kPathStepArrive = 23.0;          // 길의 점에 한 칸만큼 다가가면 다음 점으로 — 단 다음 점까지 몸 폭으로 트였을 때만(PickPathPoint)
+constexpr double kPathPointReached = 8.0;         // 점에 이만큼 붙으면 몸 폭을 안 보고 넘긴다 — 칸 가운데끼리 잇는 줄은 벽 선과 11.5 이상 떨어져 있고, 붙고도 못 넘기면 그 점에 선 채 멈춘다
 constexpr const char* kDefaultMapFile = "C:\\Program Files\\GOG Galaxy\\Games\\Nox\\maps\\Estate\\Estate.map";
 constexpr const char* kDefaultThingFile = "C:\\Program Files\\GOG Galaxy\\Games\\Nox\\thing.bin";   // 서버 --game-dir 기본과 같은 폴더(WorldBuild.h:170)
 
@@ -993,16 +994,25 @@ bool LoadNav(const std::string& path, const std::string& thingPath, bool objects
 }
 
 // 길 위에서 지금 향할 점 — 다다른 점은 넘기고, 앞 몇 칸 안에서 곧장 갈 수 있는 가장 먼 점. FollowPath 와 --nav-probe 가 같이 쓴다.
+// ★ 11-12 A — 23 안의 점을 무조건 넘기던 때, 벽 모서리에 몸이 붙으면 꺾이는 점(20.2 거리)을 넘기고 그 너머 점을 노려
+//   벽 선을 가로지르는 줄로 달렸다(대조군 벽 멈춤 셋 모두 · --nav-probe 「넘긴 끝 2 · 서버 가운데 줄 0」). 그래서 넘기기 · 앞 점 고르기 둘 다
+//   다음 점까지 몸 폭(BodyClear)으로 트였을 때만 한다. 꺾이는 점에 먼저 가서 돌아 나간다.
 int PickPathPoint(const std::vector<Point>& path, int& pathPos, int x, int y) {
     const int last = static_cast<int>(path.size()) - 1;
     auto distTo = [&](int k) {
         const double dx = static_cast<double>(path[static_cast<size_t>(k)].x - x), dy = static_cast<double>(path[static_cast<size_t>(k)].y - y);
         return std::sqrt(dx * dx + dy * dy);
     };
-    while (pathPos < last && distTo(pathPos) < kPathStepArrive) ++pathPos;
+    while (pathPos < last) {
+        const double dd = distTo(pathPos);
+        if (dd >= kPathStepArrive) break;
+        if (dd >= kPathPointReached && !BodyClear(x, y, path[static_cast<size_t>(pathPos + 1)].x, path[static_cast<size_t>(pathPos + 1)].y)) break;
+        ++pathPos;
+    }
     int pick = pathPos;
     for (int k = std::min(pathPos + kLookAheadCells, last); k > pathPos; --k) {
-        if (GridClear(x, y, path[static_cast<size_t>(k)].x, path[static_cast<size_t>(k)].y)) {
+        if (GridClear(x, y, path[static_cast<size_t>(k)].x, path[static_cast<size_t>(k)].y) &&
+            BodyClear(x, y, path[static_cast<size_t>(k)].x, path[static_cast<size_t>(k)].y)) {
             pick = k;
             break;
         }
@@ -1068,6 +1078,7 @@ void AimAt(Dummy& d, int x, int y) {
 }
 
 // 쫓아간다 — 벽이 없으면 곧장, 있으면 길 따라. 3초에 몸이 못 움직였으면 지점을 들른다.
+// 곧장은 몸 폭으로도 트였을 때만(11-12 A — 칸 격자만 보면 벽 모서리 · 물체를 스치는 줄로 달려 걸린다)
 void ChaseStep(Dummy& d, const OtherPlayer& t, bool clear) {
     d.reachTarget = 0;
     if (FrameReached(d, d.stuckCheckFrame)) {
@@ -1082,7 +1093,7 @@ void ChaseStep(Dummy& d, const OtherPlayer& t, bool clear) {
         d.stuckY = d.y;
         d.stuckCheckFrame = d.frame + kStuckCheckFrames;
     }
-    if (clear) {
+    if (clear && BodyClear(d.x, d.y, t.x, t.y)) {
         d.path.clear();
         MoveToward(d, t.x, t.y);
     } else {
