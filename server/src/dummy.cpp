@@ -764,10 +764,11 @@ std::unique_ptr<nox::Server> g_wallShape;
 
 bool BodyClear(double x0, double y0, double x1, double y1);   // 아래 BakeNavObstacles 뒤 — 맵 물체 몸을 같이 본다
 
-// 훑기에 쓰는 버퍼는 훑을 때마다 고쳐 쓰므로 스레드마다 한 벌(M0 조각 7) — 처음 길을 찾을 때 잡는다(약 0.5MB).
+// 훑기에 쓰는 버퍼는 훑을 때마다 고쳐 쓰므로 스레드마다 한 벌(M0 조각 7) — 처음 길을 찾을 때 잡는다(약 0.75MB).
 struct NavSearch {
     std::vector<uint32_t> seen;          // 이번 훑기에 가 봤나(훑을 때마다 지우지 않게 세대 번호로)
     std::vector<int32_t> from;           // 어느 칸에서 왔나
+    std::vector<uint32_t> nearGoal;      // 도착 칸이 막혔을 때 도착으로 보는 둘레 칸(세대 번호)
     std::vector<int32_t> queue;
     uint32_t stamp = 0;
 };
@@ -794,44 +795,113 @@ bool GridClear(int x0, int y0, int x1, int y1) {
 
 // 너비 우선으로 칸을 훑어 길을 찾는다. 대각선은 옆 두 칸이 다 비었을 때만 — 벽 모서리를 뚫지 않게.
 // 출발 · 도착 칸은 막혀 있어도 된다(몸이 벽 칸 귀퉁이에 걸쳐 설 수 있다).
+// ★ 11-12 B — 막힌 칸에 선 몸은 둘레 칸이 다 막혀 길이 0점이 되고, 그러면 상대를 곧장 향해 같은 물체에 다시 걸렸다
+//   (고친 지도의 멈춘 자리 넷 (3514,1788) · (2545,1892) · (2485,2397) · (3223,1724) 모두 길 0점 · 벽만이면 44 · 44 · 23점 · --nav-probe).
+//   막힌 칸에 걸쳐 섰거나 막힌 칸의 상대를 쫓을 때, 그 칸 가운데는 벽 선 위 · 물체 안일 수 있다(벽 선까지 0.0).
+//   ① 출발 칸이 막혔으면 둘레 kNavEscapeRing 칸 안의 빈칸 가운데 몸 폭으로 곧장 갈 수 있는 칸들에서 훑고,
+//      도착 칸이 막혔으면 둘레 빈칸 가운데 도착 자리까지 몸 폭으로 트인 칸에 닿으면 도착으로 본다. 마지막 점은 도착 자리 그대로
+//   ② 그래도 길이 없으면 막힌 쪽(도착만 → 출발만 → 둘 다 차례로) 칸 둘레 kNavEscapeRing 칸 안의 **물체 칸**(벽 칸은 아님)도
+//      지나갈 수 있게 다시 훑는다 — 칸마다 9점으로 찍으면 몸이 지나는 틈도 닫힌다: 벽 홈 (3514,1788)의 출구는 소나무
+//      `TreePine04` r12 · `TreePine08` r15 사이 35 폭인데 출구 칸이 모두 물체 칸이었다. 둥근 물체는 서버가 몸을 옆으로 밀어 비켜 가게 한다.
+//      한쪽씩 여는 까닭 — 여는 물체 칸을 줄인다. 빈칸으로 빠져나갈 수 있는 쪽까지 열면 물체 칸을 지나는 더 짧은 길이 날 수 있다.
+//      ② 에서도 출발은 ① 처럼 둘레의 트인 빈칸에서 훑는다 — 막힌 출발 칸에서 훑으면 길 첫 점이 그 칸 가운데가 되는데
+//      (3473,1788) → (3504,1775)는 그 점이 벽 선 위(벽 선까지 0.0)였다 · --nav-probe.
+//      둘 다 한꺼번에 열고 막힌 출발 칸에서 훑던 앞 판은 (2545,1892) · (3223,1724)에서도 고른 점의 몸 폭이 0이었다(지금 1)
+//   ② 는 ① 로 길이 없고 출발 · 도착 칸이 막혔을 때만 — 빈칸에서 빈칸으로 가는 길은 전과 같다
+constexpr int kNavEscapeRing = 2;   // 몸이 선 쪽 빈칸은 대개 바로 옆 칸이다 — 두 칸이면 큰 물체(반지름 18 · 상자 45x30)가 걸친 칸 하나를 건너도 닿는다
+bool FindPathPass(int fromX, int fromY, int toX, int toY, bool relaxStart, bool relaxGoal, std::vector<Point>& out) {
+    out.clear();
+    const int sx = fromX / kNavCell, sy = fromY / kNavCell, gx = toX / kNavCell, gy = toY / kNavCell;
+    const int start = sy * kNavSize + sx, goal = gy * kNavSize + gx;
+    static const int kDx[8] = {1, -1, 0, 0, 1, 1, -1, -1};
+    static const int kDy[8] = {0, 0, 1, -1, 1, -1, 1, -1};
+    const bool startBlocked = start != goal && CellBlocked(sx, sy), goalBlocked = start != goal && CellBlocked(gx, gy);
+    // 지나갈 수 있는 칸 — ② 에서는 연 쪽(막힌 출발 · 도착 칸) 둘레의 물체 칸도
+    auto open = [&](int cx, int cy) {
+        if (!CellBlocked(cx, cy)) return true;
+        if (g_nav.blocked[static_cast<size_t>(cy) * kNavSize + cx] != 2) return false;
+        return (relaxStart && startBlocked && std::abs(cx - sx) <= kNavEscapeRing && std::abs(cy - sy) <= kNavEscapeRing) ||
+               (relaxGoal && goalBlocked && std::abs(cx - gx) <= kNavEscapeRing && std::abs(cy - gy) <= kNavEscapeRing);
+    };
+    NavSearch& s = t_navSearch;
+    if (s.seen.empty()) {
+        s.seen.assign(static_cast<size_t>(kNavSize) * kNavSize, 0);
+        s.from.assign(static_cast<size_t>(kNavSize) * kNavSize, -1);
+        s.nearGoal.assign(static_cast<size_t>(kNavSize) * kNavSize, 0);
+    }
+    const uint32_t stamp = ++s.stamp;
+    auto mid = [](int c) { return c * kNavCell + kNavCell / 2; };
+    s.queue.clear();
+    s.seen[static_cast<size_t>(start)] = stamp;
+    s.from[static_cast<size_t>(start)] = -1;
+    if (startBlocked) {
+        for (int ry = -kNavEscapeRing; ry <= kNavEscapeRing; ++ry)
+            for (int rx = -kNavEscapeRing; rx <= kNavEscapeRing; ++rx) {
+                const int cx = sx + rx, cy = sy + ry;
+                if ((rx == 0 && ry == 0) || CellBlocked(cx, cy) || !BodyClear(fromX, fromY, mid(cx), mid(cy))) continue;
+                const int c = cy * kNavSize + cx;
+                s.seen[static_cast<size_t>(c)] = stamp;
+                s.from[static_cast<size_t>(c)] = -1;
+                s.queue.push_back(c);
+            }
+    }
+    const bool fromStartCell = s.queue.empty();   // 트인 둘레 빈칸이 없어 막힌 출발 칸 그대로에서 훑나
+    if (fromStartCell) s.queue.push_back(start);
+    bool goalNear = false;   // 막힌 도착 칸 대신 도착으로 볼 둘레 칸이 있나
+    if (goalBlocked) {
+        for (int ry = -kNavEscapeRing; ry <= kNavEscapeRing; ++ry)
+            for (int rx = -kNavEscapeRing; rx <= kNavEscapeRing; ++rx) {
+                const int cx = gx + rx, cy = gy + ry;
+                if ((rx == 0 && ry == 0) || CellBlocked(cx, cy) || !BodyClear(mid(cx), mid(cy), toX, toY)) continue;
+                s.nearGoal[static_cast<size_t>(cy * kNavSize + cx)] = stamp;
+                goalNear = true;
+            }
+    }
+    const bool goalEnter = !goalNear || relaxGoal;   // 막힌 도착 칸에 바로 들어가도 되나 — ① 에서 둘레 칸이 있으면 그 칸으로만 도착
+    auto arrived = [&](int c) { return (goalNear && s.nearGoal[static_cast<size_t>(c)] == stamp) || (goalEnter && c == goal); };
+    int found = start == goal ? goal : -1;
+    for (int c : s.queue)
+        if (found < 0 && arrived(c)) found = c;
+    for (size_t head = 0; head < s.queue.size() && found < 0; ++head) {
+        const int c = s.queue[head];
+        const int cx = c % kNavSize, cy = c / kNavSize;
+        for (int k = 0; k < 8 && found < 0; ++k) {
+            const int nx = cx + kDx[k], ny = cy + kDy[k];
+            if (nx < 0 || ny < 0 || nx >= kNavSize || ny >= kNavSize) continue;
+            const int n = ny * kNavSize + nx;
+            if (s.seen[static_cast<size_t>(n)] == stamp) continue;
+            if (!(n == goal && goalEnter) && !open(nx, ny)) continue;
+            if (k >= 4 && (!open(cx + kDx[k], cy) || !open(cx, cy + kDy[k]))) continue;
+            s.seen[static_cast<size_t>(n)] = stamp;
+            s.from[static_cast<size_t>(n)] = c;
+            s.queue.push_back(n);
+            if (arrived(n)) found = n;
+        }
+    }
+    if (found < 0) return false;
+    for (int c = found; c != -1; c = s.from[static_cast<size_t>(c)])
+        out.push_back(Point{mid(c % kNavSize), mid(c / kNavSize)});
+    std::reverse(out.begin(), out.end());
+    // 막힌 출발 칸 그대로에서 훑었으면 그 칸 가운데(벽 선 위 · 물체 안일 수 있다)는 빼고 다음 칸부터
+    if (startBlocked && fromStartCell && out.size() > 1) out.erase(out.begin());
+    // 막힌 도착 칸의 가운데(벽 선 위 · 물체 안일 수 있다) 대신 도착 자리 그대로
+    if (goalBlocked) {
+        if (found == goal) out.back() = Point{toX, toY};
+        else out.push_back(Point{toX, toY});
+    }
+    return true;
+}
+
 bool FindPath(int fromX, int fromY, int toX, int toY, std::vector<Point>& out) {
     out.clear();
     if (!g_nav.ok) return false;
     const int sx = fromX / kNavCell, sy = fromY / kNavCell, gx = toX / kNavCell, gy = toY / kNavCell;
     if (sx < 0 || sy < 0 || gx < 0 || gy < 0 || sx >= kNavSize || sy >= kNavSize || gx >= kNavSize || gy >= kNavSize) return false;
-    const int start = sy * kNavSize + sx, goal = gy * kNavSize + gx;
-    static const int kDx[8] = {1, -1, 0, 0, 1, 1, -1, -1};
-    static const int kDy[8] = {0, 0, 1, -1, 1, -1, 1, -1};
-    NavSearch& s = t_navSearch;
-    if (s.seen.empty()) {
-        s.seen.assign(static_cast<size_t>(kNavSize) * kNavSize, 0);
-        s.from.assign(static_cast<size_t>(kNavSize) * kNavSize, -1);
-    }
-    const uint32_t stamp = ++s.stamp;
-    s.queue.clear();
-    s.queue.push_back(start);
-    s.seen[static_cast<size_t>(start)] = stamp;
-    s.from[static_cast<size_t>(start)] = -1;
-    for (size_t head = 0; head < s.queue.size() && s.seen[static_cast<size_t>(goal)] != stamp; ++head) {
-        const int c = s.queue[head];
-        const int cx = c % kNavSize, cy = c / kNavSize;
-        for (int k = 0; k < 8; ++k) {
-            const int nx = cx + kDx[k], ny = cy + kDy[k];
-            if (nx < 0 || ny < 0 || nx >= kNavSize || ny >= kNavSize) continue;
-            const int n = ny * kNavSize + nx;
-            if (s.seen[static_cast<size_t>(n)] == stamp) continue;
-            if (n != goal && CellBlocked(nx, ny)) continue;
-            if (k >= 4 && (CellBlocked(cx + kDx[k], cy) || CellBlocked(cx, cy + kDy[k]))) continue;
-            s.seen[static_cast<size_t>(n)] = stamp;
-            s.from[static_cast<size_t>(n)] = c;
-            s.queue.push_back(n);
-        }
-    }
-    if (s.seen[static_cast<size_t>(goal)] != stamp) return false;
-    for (int c = goal; c != -1; c = s.from[static_cast<size_t>(c)])
-        out.push_back(Point{(c % kNavSize) * kNavCell + kNavCell / 2, (c / kNavSize) * kNavCell + kNavCell / 2});
-    std::reverse(out.begin(), out.end());
-    return true;
+    if (FindPathPass(fromX, fromY, toX, toY, false, false, out)) return true;
+    const bool sb = CellBlocked(sx, sy), gb = CellBlocked(gx, gy);
+    if (gb && FindPathPass(fromX, fromY, toX, toY, false, true, out)) return true;
+    if (sb && FindPathPass(fromX, fromY, toX, toY, true, false, out)) return true;
+    return sb && gb && FindPathPass(fromX, fromY, toX, toY, true, true, out);
 }
 
 // 맵 물체의 몸 — 서버 `Server::PhysBody` 의 모양 칸만 옮겼다. 상자 네 값은 `Server::CalcBox`(Server.h:1755)와 같다.
@@ -911,8 +981,10 @@ int BakeNavObstacles(nox::MapFile& mf, const std::string& thingPath, int& objCou
                         if (NavBodyContains(b, gx * static_cast<float>(kNavCell) + kS[c], gy * static_cast<float>(kNavCell) + kS[a])) hit = true;
                 if (!hit) continue;
                 uint8_t& cell = g_nav.blocked[static_cast<size_t>(gy) * kNavSize + gx];
-                if (cell == 0) ++added;
-                cell = 1;
+                if (cell == 0) {
+                    ++added;
+                    cell = 2;   // 물체 칸(벽 칸은 1) — 막힌 칸이라는 뜻은 같고, --nav-probe 칸 지도가 가른다
+                }
             }
     }
     return added;
@@ -922,8 +994,11 @@ int BakeNavObstacles(nox::MapFile& mf, const std::string& thingPath, int& objCou
 //   벽은 서버 걸음 추적과 같은 `MapTraceRay` 깃발 0x1(Server.cpp:5127 주석)이고, 물체는 정품 `BodyContains` 와 같은 식(NavBodyContains)으로
 //   줄 위를 kBodyStep 간격으로 찍는다 — Estate 의 사람을 미는 물체 159개 중 가장 작은 것이 반지름 8 · 상자 한 변 12 라
 //   3 간격 · 줄 사이 10 이면 줄 사이로 빠지지 않는다(_out/obst/estate_obstacles.txt).
-//   좌우 두 줄은 몸 반지름만큼 나아간 뒤부터 본다 — 벽 · 물체에 붙어 선 몸(벽 선까지 9.2 · 8.5)은 떨어지는 쪽으로 가도
-//   비킨 줄의 첫머리가 벽 너머 · 물체 안에서 시작해 늘 「막힘」이 된다. 가운데 줄은 처음부터 본다(몸 가운데는 서버가 밖으로 밀어 둔다)
+//   좌우 두 줄은 양 끝 몸 반지름만큼을 빼고 본다 — 벽 · 물체에 붙어 선 몸(벽 선까지 9.2 · 8.5)은 떨어지는 쪽으로 가도
+//   비킨 줄의 첫머리가 벽 너머 · 물체 안에서 시작해 늘 「막힘」이 되고, 붙어 선 상대에게 가는 줄은 끝머리가 그렇다
+//   (끝머리를 빼자 둘레 빈칸 가운데 트인 칸이 (2485,2397) 도착 쪽 11 → 15 · (3223,1724) 출발 쪽 3 → 4 · --nav-probe.
+//   소나무 · 벽 홈 자리 (3504,1775)에 선 상대는 그래도 14 가운데 0이라 FindPath ② 가 맡는다).
+//   가운데 줄은 처음부터 끝까지 본다(몸 가운데는 서버가 밖으로 밀어 둔다)
 constexpr double kBodyStep = 3.0;
 bool BodyClear(double x0, double y0, double x1, double y1) {
     const double dx = x1 - x0, dy = y1 - y0, len = std::sqrt(dx * dx + dy * dy);
@@ -934,9 +1009,9 @@ bool BodyClear(double x0, double y0, double x1, double y1) {
     };
     if (g_wallShape) {
         if (!wallOk(x0, y0, x1, y1)) return false;
-        if (len > r) {
-            const double sx = x0 + ux * r, sy = y0 + uy * r;
-            if (!wallOk(sx + nx, sy + ny, x1 + nx, y1 + ny) || !wallOk(sx - nx, sy - ny, x1 - nx, y1 - ny)) return false;
+        if (len > 2 * r) {
+            const double sx = x0 + ux * r, sy = y0 + uy * r, ex = x1 - ux * r, ey = y1 - uy * r;
+            if (!wallOk(sx + nx, sy + ny, ex + nx, ey + ny) || !wallOk(sx - nx, sy - ny, ex - nx, ey - ny)) return false;
         }
     }
     const double bx0 = std::min(x0, x1) - r, bx1 = std::max(x0, x1) + r, by0 = std::min(y0, y1) - r, by1 = std::max(y0, y1) + r;
@@ -946,7 +1021,7 @@ bool BodyClear(double x0, double y0, double x1, double y1) {
         for (int i = 0; i <= steps; ++i) {
             const double s = len * i / steps, px = x0 + ux * s, py = y0 + uy * s;
             if (NavBodyContains(o.body, static_cast<float>(px), static_cast<float>(py))) return false;
-            if (s >= r && (NavBodyContains(o.body, static_cast<float>(px + nx), static_cast<float>(py + ny)) ||
+            if (s >= r && s <= len - r && (NavBodyContains(o.body, static_cast<float>(px + nx), static_cast<float>(py + ny)) ||
                            NavBodyContains(o.body, static_cast<float>(px - nx), static_cast<float>(py - ny)))) return false;
         }
     }
@@ -1722,6 +1797,37 @@ int NavProbe(int argc, char** argv) {
                 GridClear(x, y, tx, ty) ? 1 : 0,
                 g_wallShape->DebugTraceRayFlags(static_cast<float>(x), static_cast<float>(y), static_cast<float>(tx), static_cast<float>(ty), 0x5) ? 1 : 0,
                 BodyClear(x, y, tx, ty) ? 1 : 0);
+    // 막힌 칸이면 둘레 kNavEscapeRing 칸 안의 빈칸 수와 그 가운데 몸 폭으로 트인 칸 수(FindPath 가 쓰는 것과 같은 판정)
+    auto ring = [&](int px, int py, bool fromSide, int& freeN, int& clearN) {
+        freeN = clearN = 0;
+        const int cx0 = px / kNavCell, cy0 = py / kNavCell;
+        for (int ry = -kNavEscapeRing; ry <= kNavEscapeRing; ++ry)
+            for (int rx = -kNavEscapeRing; rx <= kNavEscapeRing; ++rx) {
+                const int cx = cx0 + rx, cy = cy0 + ry;
+                if ((rx == 0 && ry == 0) || CellBlocked(cx, cy)) continue;
+                ++freeN;
+                const int mx = cx * kNavCell + kNavCell / 2, my = cy * kNavCell + kNavCell / 2;
+                if (fromSide ? BodyClear(px, py, mx, my) : BodyClear(mx, my, px, py)) ++clearN;
+            }
+    };
+    int sf = 0, sc = 0, gf = 0, gc = 0;
+    ring(x, y, true, sf, sc);
+    ring(tx, ty, false, gf, gc);
+    // 둘레 칸 지도 — # 벽 칸 · x 물체 칸 · . 빈칸 · o 빈칸이고 몸 폭으로 곧장 가는 칸 · 가운데는 대문자(# → @ · x → X · . → +)
+    for (int ry = -3; ry <= 3; ++ry) {
+        std::string row;
+        for (int rx = -3; rx <= 3; ++rx) {
+            const int cx = x / kNavCell + rx, cy = y / kNavCell + ry;
+            const uint8_t v = (cx < 0 || cy < 0 || cx >= kNavSize || cy >= kNavSize) ? 1 : g_nav.blocked[static_cast<size_t>(cy) * kNavSize + cx];
+            char c = v == 1 ? '#' : (v == 2 ? 'x' : '.');
+            if (v == 0 && BodyClear(x, y, cx * kNavCell + kNavCell / 2, cy * kNavCell + kNavCell / 2)) c = 'o';
+            if (rx == 0 && ry == 0) c = v == 1 ? '@' : (v == 2 ? 'X' : '+');
+            row += c;
+        }
+        std::printf("[길 확인]   칸 지도 %4d  %s\n", (y / kNavCell + ry) * kNavCell, row.c_str());
+    }
+    std::printf("[길 확인] 출발 둘레 빈칸 %d · 몸 폭 트임 %d / 도착 칸 막힘 %d · 둘레 빈칸 %d · 트임 %d\n", sf, sc,
+                CellBlocked(tx / kNavCell, ty / kNavCell) ? 1 : 0, gf, gc);
     std::vector<Point> path;
     const bool ok = FindPath(x, y, tx, ty, path);
     std::printf("[길 확인] 길 %d · %zu점\n", ok ? 1 : 0, path.size());
