@@ -73,6 +73,12 @@ constexpr uint32_t kNoHurtFrames = 200;           // 거리 안인데 이만큼 
 //   5번 = 15~40초 싸움 없이 쫓기만 함 · 20번 = 1~2.7분 — 킬로 끝난 판은 10킬에 가운데 4분이라 이만큼 싸움이 끊기면 멈춤이다
 constexpr int kDetourRunWarn = 5, kDetourRunStall = 20;
 constexpr int kDetourRunShowMax = 200;            // 5 · 20번째 자리 줄의 상한 — 멈춘 더미가 많아도 줄이 끝없이 늘지 않게
+// ★ 11-12 — 우회 없이 멈추는 꼴도 센다(`quiet60`). 고친 뒤 회귀 런 641초 판(`_out/obst/fix1` 방 2)은 5분 동안 칼질 0 · 서버 「사람 벽 짝」이
+//   요약 줄 사이마다 약 230(앞뒤는 0~28)인데 그 런의 detourRun5 는 0 이었다(막힘 확인에 안 걸린 것으로 보임 · 까닭 미확인)
+//   — 세는 자리가 우회 하나뿐이면 그 0 은 「멈춤 없음」이 아니다.
+//   60초 = 킬로 끝난 판의 킬 사이(가운데 4분 ÷ 10킬 ≈ 24초)의 두 배 넘게 42 도 죽음도 없음
+constexpr uint32_t kQuietFrames = 1800;
+constexpr int kQuietShowMax = 300;
 
 // 전사 능력 — 플랜 2-5절. 재사용은 서버 값(GameBalance.h kAbilityDelay) · 거리는 잠정(플랜 「돌려 보고 D6 에서 정한다」).
 struct AbilityInfo { uint8_t id; uint32_t delay; double minDist, maxDist; };
@@ -140,7 +146,7 @@ constexpr int64_t kStartRetryUs = 5000000;   // 대기 맵에 그대로 있으�
     X(sentInput) X(sentPing) X(sentAck) X(sentAlias) X(sentMouse) X(sentSpell) X(sentAbility) X(sentStart) \
     X(recvDgram) X(recvBytes) X(decodeFail) X(dupImportant) X(lateTicks) X(sendFail) X(sentClose) X(closeSkipped) X(cycleLeave) X(cycleSkipped) \
     X(petsAcquired) X(petsLost) X(spellSkippedNoMana) X(retreats) X(heals) \
-    X(sentAttack) X(sentRevive) X(sawDeath) X(selfDeath) X(revives) X(detours) X(detourRun5) X(detourRun20) \
+    X(sentAttack) X(sentRevive) X(sawDeath) X(selfDeath) X(revives) X(detours) X(detourRun5) X(detourRun20) X(quiet60) \
     X(castProtect) X(castHaste) X(castInvis) X(castConfuse) X(castFireball) X(castDeathRay) X(castChain) X(castBlink) \
     X(sentBerserk) X(sentRoar) X(sentHarpoon) X(firstBuffOk) X(firstBuffBad) X(buffOverlap) X(healedBack) X(statChecked) X(statMismatch) \
     X(castPixie) X(castPoison) X(castStun) X(castFist) X(castMeteor) X(castSummon) X(petTypeMismatch)
@@ -178,6 +184,7 @@ struct alignas(64) LiveCounters {
 thread_local LiveCounters* t_count = nullptr;   // 더미 스레드가 시작할 때 제 몫을 건다(RunWorker)
 std::atomic<int> g_decodeFailShown{0};
 std::atomic<int> g_detourRunShown{0};             // [더미 우회 연속] 줄 수(kDetourRunShowMax)
+std::atomic<int> g_quietShown{0};                 // [더미 싸움 끊김] 줄 수(kQuietShowMax)
 
 int64_t NowUs() {
     using namespace std::chrono;
@@ -204,6 +211,7 @@ struct Args {
     Behavior behavior = Behavior::Fight;   // 빠뜨렸을 때 조용히 가벼운 부하를 재지 않게 기본을 fight 로 둔다
     std::string mapFile = kDefaultMapFile;   // 벽을 돌아가려고 읽는 대전 맵
     std::string thingFile = kDefaultThingFile;   // 맵 물체의 모양 · 깃발(BakeNavObstacles)
+    bool navObjects = true;                  // false(--no-nav-objects) = 맵 물체를 안 찍는 대조군 — 11-12 이전 지도(벽만)
     // 더미를 돌리는 스레드 수(M0 조각 7) — 더미 i 는 스레드 i % N 이 맡는다. 측정은 4(측정 플랜 4절: 전투 40명 한 바퀴 최대 2.94ms 라 1스레드는 약 450명부터 33ms 에 닿는다)
     int threads = 1;
     // 방 여닫기(측정 플랜 M7 · M0 조각 8) — 마지막 방 몫 더미가 이 초마다 `0a` 로 나가고 kCycleRejoinUs 뒤 다시 들어온다(0 = 끔).
@@ -259,6 +267,8 @@ struct alignas(64) Dummy {
     int detourIndex = -1;                // 들르는 지점(-1 = 안 들름)
     int lastDetour = -1;                 // 바로 전에 들른 지점 — 같은 곳을 되풀이하지 않게
     int detourRun = 0;                   // 42 · 죽음 · 맵 옮김 없이 이어진 우회 수(kDetourRunWarn)
+    uint32_t fightFrame = 0;             // 마지막으로 42 · 죽음 · 맵 옮김을 본 프레임(kQuietFrames)
+    uint32_t quietNextFrame = 0;         // 다음 「싸움 끊김」을 셀 프레임
     uint32_t detourEndFrame = 0;
     uint16_t reachTarget = 0;            // 거리 안에 붙어 있는 상대(0 = 없음)
     uint32_t reachSinceFrame = 0;        // 붙은 때 · 그 상대 체력이 마지막으로 준 때
@@ -361,6 +371,12 @@ void CheckEntryStat(Dummy& d, bool& done, const char* what, int got, int want) {
     std::fflush(stdout);
 }
 
+// 싸움이 있었다(42 · 죽음) 또는 맵을 옮겼다 — 싸움 끊김 시계를 새로 연다(kQuietFrames).
+void MarkFight(Dummy& d) {
+    d.fightFrame = d.frame;
+    d.quietNextFrame = d.frame + kQuietFrames;
+}
+
 // 중요 메시지 봉투 하나의 내용 — 죽음 e8 <번호2> · 자기 체력 43 <체력2> · 마나 45 · 최대치 dd de · 강화 5A.
 // 표에 없는 메시지를 만나면 그 뒤는 못 읽어 멈춘다(봉투 하나에 대개 메시지 하나라 잃는 것이 없다).
 void OnImportantBody(Dummy& d, const uint8_t* p, size_t n) {
@@ -372,6 +388,7 @@ void OnImportantBody(Dummy& d, const uint8_t* p, size_t n) {
             const uint16_t net = static_cast<uint16_t>(p[i + 1] | (p[i + 2] << 8));
             ++t_count->sawDeath;
             d.detourRun = 0;                 // 누가 죽었으면 싸움이 있었다
+            MarkFight(d);
             if (net == d.selfNet) {
                 ++t_count->selfDeath;
                 d.dead = true;
@@ -395,6 +412,7 @@ void OnImportantBody(Dummy& d, const uint8_t* p, size_t n) {
             d.hurtNet = static_cast<uint16_t>(p[i + 1] | (p[i + 2] << 8));   // 42 <번호 2> <증감 2> — 음수만 온다(Server.cpp:6711)
             d.hurtFrame = d.frame;
             d.detourRun = 0;                 // 누가 맞았으면 싸움이 있었다
+            MarkFight(d);
         } else if (p[i] == static_cast<uint8_t>(Op::REPORT_PLAYER_HEALTH) && msz >= 3) {
             const int hp = p[i + 1] | (p[i + 2] << 8);
             CheckEntryStat(d, d.checkedHp43, "43 체력", hp, d.maxHp);
@@ -470,6 +488,7 @@ void ReportDecodeFail(const Dummy& d, const uint8_t* b, size_t n, const char* wh
 
 // 맵이 바뀌면 서버가 다시 세운다(RejoinReset) — 체력 · 마나가 차고 강화 · 재사용이 풀린다.
 void ResetForMap(Dummy& d) {
+    MarkFight(d);                        // 맵을 옮기면 싸움 끊김 시계를 새로 연다
     d.hp = d.maxHp;
     d.mana = d.maxMana;
     d.selfBits = 0;
@@ -881,15 +900,17 @@ int BakeNavObstacles(nox::MapFile& mf, const std::string& thingPath, int& objCou
 }
 
 // 맵을 읽어 격자를 채운다. 시작 지점끼리 길이 이어지는지 세어 함께 찍는다 — 격자가 잘못 깔리면 이 값이 무너진다.
-bool LoadNav(const std::string& path, const std::string& thingPath) {
+bool LoadNav(const std::string& path, const std::string& thingPath, bool objects) {
     nox::MapFile mf;
     if (!mf.Load(path)) return false;
     const auto cells = mf.ReadWalls();
     g_nav.blocked.assign(static_cast<size_t>(kNavSize) * kNavSize, 0);
     for (const auto& w : cells) g_nav.blocked[static_cast<size_t>(w.y) * kNavSize + w.x] = 1;
     int objCount = 0;
-    const int objCells = BakeNavObstacles(mf, thingPath, objCount);
-    if (objCells < 0)
+    const int objCells = objects ? BakeNavObstacles(mf, thingPath, objCount) : 0;
+    if (!objects)
+        std::printf("[더미] 맵 물체 안 찍음(--no-nav-objects · 대조군) — 벽만 돌아간다\n");
+    else if (objCells < 0)
         std::printf("[더미] thing.bin 을 못 읽음(%s) — 맵 물체 없이 벽만 돌아간다\n", thingPath.c_str());
     else
         std::printf("[더미] 맵 물체 %d개 · 새로 막은 칸 %d칸\n", objCount, objCells);
@@ -1257,6 +1278,18 @@ void Decide(Dummy& d, const Args& a) {
         return;
     }
     const OtherPlayer* t = NearestTarget(d);
+    if (FrameReached(d, d.quietNextFrame)) {
+        // 60초마다 한 번 — 자리 · 상대 · 그때 하던 일을 같이 찍어 「어디서 무엇을 하다」 끊겼는지 가른다
+        ++t_count->quiet60;
+        d.quietNextFrame = d.frame + kQuietFrames;
+        if (g_quietShown.fetch_add(1, std::memory_order_relaxed) < kQuietShowMax) {
+            std::printf("[더미 싸움 끊김] 더미 %d(직업 %d) · %u초째 · 자리 (%d,%d) · 상대 %s(%d,%d) 거리 %.0f · 곧장 %d · 길 %zu점 · 우회 지점 %d · 연속 %d · 후퇴 %d · 물러남 %d\n",
+                        d.index, d.cls, (d.frame - d.fightFrame) / 30, d.x, d.y, t ? "" : "없음", t ? t->x : 0, t ? t->y : 0,
+                        t ? DistTo(d, t->x, t->y) : 0.0, t ? (GridClear(d.x, d.y, t->x, t->y) ? 1 : 0) : -1, d.path.size(),
+                        d.detourIndex, d.detourRun, d.retreating ? 1 : 0, d.backingOff ? 1 : 0);
+            std::fflush(stdout);
+        }
+    }
     if (!t) return;
     if (d.detourIndex >= 0) {
         const Point w = kWaypoints[d.detourIndex];
@@ -1538,6 +1571,7 @@ bool ParseArgs(int argc, char** argv, Args& a, std::string& err) {
             a.thingFile = v;
             ++i;
         }
+        else if (k == "--no-nav-objects") a.navObjects = false;
         else if (k == "--behavior") {
             if (!v) { err = "--behavior 값 없음"; return false; }
             const std::string b = v;
@@ -1599,13 +1633,13 @@ int main(int argc, char** argv) {
     if (!ParseArgs(argc, argv, a, err)) {
         std::printf("인자 오류: %s\n", err.c_str());
         std::printf("쓰기: nox_dummy [--server 주소:포트] [--count N] [--room-size K] [--reserve-seats R] [--classes 0,1] [--duration-sec S] "
-                    "[--join-interval-ms M] [--start-wait-ms M] [--behavior idle|move|fight] [--map-file 대전맵.map] [--thing-file thing.bin] [--seed S] "
+                    "[--join-interval-ms M] [--start-wait-ms M] [--behavior idle|move|fight] [--map-file 대전맵.map] [--thing-file thing.bin] [--no-nav-objects] [--seed S] "
                     "[--stat-mult N] [--freq-mult X] [--threads N] [--cycle-sec S]\n");
         return 1;
     }
 
     nox::SetStatMult(a.statMult);                // 최대 체력은 표에 서버와 같은 배수를 곱한 값이다
-    if (a.behavior != Behavior::Idle && !LoadNav(a.mapFile, a.thingFile))
+    if (a.behavior != Behavior::Idle && !LoadNav(a.mapFile, a.thingFile, a.navObjects))
         std::printf("[더미] 벽 격자를 못 읽음(%s) — 벽을 돌아가지 못하고 곧장 쫓기만 한다\n", a.mapFile.c_str());
 
     WSADATA wsa;
