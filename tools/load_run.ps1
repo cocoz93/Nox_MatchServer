@@ -34,7 +34,10 @@ param(
   [double]$ResidualMaxPercent = 2.5,     # 25초마다 읽어 2연속 이 값 미만
   [int]$ResidualMaxReads = 14,           # 25초 × 14 = 350초 — MMO_Zone 실측 잔열 약 4.5분(270초)에 두 번 연속 읽을 몫 50초와 조금을 더한 값
   [string]$PowerPlanGuid = '8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c',   # 고성능
-  [string]$UpdateServiceStatus = 'Stopped'
+  [string]$UpdateServiceStatus = 'Stopped',
+  # 유휴 CPU 를 못 넘었을 때 다시 재기 — 문턱이 아니라 기다리는 방법이라 load_report 의 문턱 비교에 안 넣는다
+  [int]$IdleRetrySec = 30,               # 다시 재기 전에 쉬는 초
+  [int]$IdleRetryMax = 0                 # 다시 재는 최대 횟수 · 0 = 넘을 때까지 끝없이(사용자 11-13) · 시험 때만 준다
 )
 
 $ErrorActionPreference = 'Stop'
@@ -196,9 +199,32 @@ try {
 }
 
 Start-Sleep -Seconds 3   # 대본이 방금 부른 것(컴파일 · git · WMI 조회)이 식기를 기다린다 — 안 그러면 첫 읽기에 대본 자신의 몫이 섞인다
-$idleReads = @(1..3 | ForEach-Object { Read-CpuPercent 1000 })
-$idleOk = @($idleReads | Where-Object { $_ -ge $IdleMaxPercent }).Count -eq 0
-Gate '유휴 CPU' $idleOk "$($idleReads -join ' · ')% · 문턱 $IdleMaxPercent% 미만(1초씩 3번 전부)"
+# ★ 11-14 — 못 넘으면 $IdleRetrySec 초 쉬고 다시 잰다 · $IdleRetryMax 0 이면 넘을 때까지 끝없이(사용자 11-13 「계속 무한으로」).
+#   1초 순간값 셋이라 한 번 튄 것에도 실패하고, load_series 는 게이트 실패면 묶음을 멈춘다 — 11-13 23:40 첫째 묶음이 5.2 · 0.31 · 0.54% 로 멈췄다.
+#   문턱(1%)은 그대로다 — 계속 무거운 것이 있으면 여기서 기다리고, 그것이 끝나면 이어 간다.
+#   못 넘을 때마다 **같은 3초 동안** CPU 를 쓴 상위 프로세스를 적는다(아래 Get-TopCpu 는 유휴를 다 잰 뒤 3.5초를 따로 재서
+#   튄 그 1초의 범인을 못 봤다 · 그사이 끝난 프로세스는 여기서도 안 보인다)
+$idleTries = 0
+while ($true) {
+  $idleTries++
+  $idleBefore = @{}
+  foreach ($p in Get-Process) { if ($p.CPU -ne $null) { $idleBefore[$p.Id] = $p.CPU } }
+  $idleReads = @(1..3 | ForEach-Object { Read-CpuPercent 1000 })
+  $idleOk = @($idleReads | Where-Object { $_ -ge $IdleMaxPercent }).Count -eq 0
+  if ($idleOk) { break }
+  $idleTop = @(foreach ($p in Get-Process) {
+      if ($p.CPU -eq $null) { continue }
+      $old = 0.0
+      if ($idleBefore.ContainsKey($p.Id)) { $old = $idleBefore[$p.Id] }
+      [pscustomobject]@{ Name = $p.ProcessName; Id = $p.Id; Delta = [math]::Round($p.CPU - $old, 2) }
+    }) | Sort-Object Delta -Descending | Select-Object -First 5
+  $idleTopText = ($idleTop | ForEach-Object { "$($_.Name)($($_.Id)) $($_.Delta)" }) -join ' ; '
+  Write-Host "[게이트] 유휴 CPU — $idleTries 번째 못 넘음 · $($idleReads -join ' · ')% · 같은 3초 상위: $idleTopText"
+  Note "유휴 CPU 못 넘음 $idleTries" "$($idleReads -join ' ')% · 같은 3초 상위: $idleTopText"
+  if ($IdleRetryMax -gt 0 -and $idleTries -gt $IdleRetryMax) { break }
+  Start-Sleep -Seconds $IdleRetrySec
+}
+Gate '유휴 CPU' $idleOk "$($idleReads -join ' · ')% · 문턱 $IdleMaxPercent% 미만(1초씩 3번 전부) · 잰 횟수 $idleTries"
 Note '유휴 CPU(%)' ($idleReads -join ' ')
 
 # 잔열 — 직전 실행이 없으면 볼 것이 없고, 유휴가 이미 못 넘었으면 읽어도 못 넘으니 기다리지 않는다
