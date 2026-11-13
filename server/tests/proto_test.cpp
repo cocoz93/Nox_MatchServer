@@ -3772,10 +3772,13 @@ void TestUpdateFitsWithTimestamp() {
         std::vector<nox::OutPacket> w;
         s.Tick(t, w);
         t += 34; s.Tick(t, w);
+        // ★ 11-13 — 기한은 클라처럼 「지금 프레임 + 60」을 싣는다. 서버가 이제 그 기한을 따르므로 0 이면 별칭이 곧장 끝나 훑기가 안 된다
+        const uint32_t dl = s->DebugTickFrame(Sid(s, c)) + nox::kAliasTTL;
         for (int i = 0; i < aliased; ++i) {                    // 클라가 앞 몬스터 몇에 별칭을 정해 알려 준다(`a5` 별칭1·번호2·종류2·기한4)
             const uint16_t nc = s->DebugPetNetCode(static_cast<size_t>(i));
             const std::vector<uint8_t> pkt = { 0x01, 0x04, static_cast<uint8_t>(nox::Op::NEW_ALIAS), static_cast<uint8_t>(0x20 + i),
-                                               static_cast<uint8_t>(nc), static_cast<uint8_t>(nc >> 8), 0x30, 0x05, 0, 0, 0, 0 };
+                                               static_cast<uint8_t>(nc), static_cast<uint8_t>(nc >> 8), 0x30, 0x05,
+                                               static_cast<uint8_t>(dl), static_cast<uint8_t>(dl >> 8), static_cast<uint8_t>(dl >> 16), static_cast<uint8_t>(dl >> 24) };
             s.OnPacket(c, pkt.data(), pkt.size(), w);
         }
         const unsigned long long sz0 = s->bundleStat(BS::OverSize);
@@ -3819,6 +3822,86 @@ void TestUpdateFitsWithTimestamp() {
     std::snprintf(msg, sizeof(msg), "훑기가 한도 밑까지 못 감 — 2045~2048 조각 %d · 가장 큰 조각 %zu(시험이 넘침 자리를 안 봄)", nearFull, worst);
     Check(nearFull > 0, msg);
     std::printf("  갱신은 27 뒤 남은 자리에 — 판 %d · 가장 큰 조각 %zu · 2045~2048 %d\n", runs, worst, nearFull);
+}
+
+// ★ 11-13 — 별칭 기한은 **클라가 `a5` 에 적어 준 것**이고 서버는 **쓸 때 늘리지 않는다**(원본 `sdecode.c:278-279` · `sub_57B930`).
+//   서버만 기한을 밀면 클라가 끝난 칸을 새 물체에 주는 사이 서버가 옛 뜻으로 보내 클라가 못 읽는다(256방 더미 decodeFail).
+//   ① 옮겨 적기(클라 프레임은 아래 16비트만 서버와 같다) ② 표가 기한을 안 늘림 ③ 서버가 a5 의 기한이 지나면 전체 번호로 돌아감
+void TestAliasClientDeadline() {
+    Check(nox::ClientDeadlineToServer(1060, 1000) == 1060, "① 윗자리가 같으면 그대로여야 하는데 아님");
+    Check(nox::ClientDeadlineToServer((70000u & 0xFFFFu) + 60, 70000) == 70060,
+          "① 클라 윗자리 0 · 서버 70000 — 70060 으로 옮겨야 하는데 아님(그대로 적으면 별칭을 영영 못 씀)");
+    Check(nox::ClientDeadlineToServer(1060, 1100) == 1060, "① 늦게 읽은 a5 — 이미 지난 1060 이어야 하는데 아님");
+    Check(nox::ClientDeadlineToServer(65530, 10) == 0, "① 서버 프레임 0 밑으로 가면 0(지남)이어야 하는데 아님");
+    Check(nox::ClientDeadlineToServer(0xFFFFFFFFu, 70000) == 0xFFFFFFFFu, "① 머리 별칭(−1)은 기한 없음이어야 하는데 아님");
+
+    nox::AliasTable tbl;
+    tbl.Set(7, 900, 1328, 1060);
+    Check(tbl.FindByObject(900, 1328, 1030) == 7 && tbl.FindByObject(900, 1328, 1060) == 7, "② 기한 안인데 별칭을 못 찾음");
+    Check(tbl.FindByObject(900, 1328, 1061) == -1, "② 기한 1060 이 지난 1061 에도 별칭을 씀 — 쓸 때 기한을 늘림");
+
+    // ③ 서버 — 사람 A 가 몬스터 하나에 별칭 0x30 을 붙이고 「지금 + 10」을 기한으로 알린다
+    //   ⚠ 사람 항목은 안 된다 — 둘 이상이면 서버가 사람을 늘 전체 번호로 보낸다(`introEveryTick_` 기본 켬 · Server.cpp 남 항목 자리)
+    nox::CSyncHost s;
+    const std::string a = "10.11.13.1:41001";
+    const uint16_t petType = 1328;
+    s.DebugEnterGame(a, 740);
+    s->DebugMoveTo(Sid(s, a), 2000, 2000);
+    s->DebugImportantReal(Sid(s, a), /*ready=*/true);
+    s->DebugSetAutoFight(false);
+    nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
+    s->SetTypeBody(petType, body);
+    s->DebugSpawnPet(petType, 2040.0f, 2000.0f, Sid(s, std::string()));
+    const uint16_t pnc = s->DebugPetNetCode(0);
+    uint32_t t = 0;
+    std::vector<nox::OutPacket> w;
+    s.Tick(t, w);
+    t += 34; s.Tick(t, w);
+    nox::AliasTable mirror;                                   // 읽기용 — Lookup 은 기한을 안 본다
+    mirror.Set(0x30, pnc, petType, 0xFFFFFFFFu);
+    // A 에게 간 갱신에서 몬스터를 어떤 이름으로 불렀나 — 0x30 · 0xff(전체 번호) · 0(못 찾음)
+    auto nameOfPet = [&](const std::vector<nox::OutPacket>& out) -> int {
+        int got = 0;
+        for (const auto& p : out) {
+            if (p.to != a) continue;
+            const auto bb = Body(p);
+            size_t q = 0;
+            while (q < bb.size()) {
+                if (bb[q] == 0xa4) {
+                    const nox::UpdateMsg um = nox::DecodeUpdate(bb.data() + q + 1, bb.size() - q - 1, &mirror);
+                    if (!um.ok || um.consumed == 0) break;
+                    for (const auto& e : um.objects) {
+                        if (e.alias == 0x30) got = 0x30;
+                        else if (e.alias == 0xff && e.netCode == pnc) got = 0xff;
+                    }
+                    q += 1 + um.consumed;
+                    continue;
+                }
+                const size_t sz = nox::MessageSize(bb.data() + q, bb.size() - q, false);
+                if (sz == 0) break;
+                q += sz;
+            }
+        }
+        return got;
+    };
+    const uint32_t dl = s->DebugTickFrame(Sid(s, a)) + 10;
+    const std::vector<uint8_t> pkt = { 0x01, 0x04, static_cast<uint8_t>(nox::Op::NEW_ALIAS), 0x30,
+                                       static_cast<uint8_t>(pnc), static_cast<uint8_t>(pnc >> 8),
+                                       static_cast<uint8_t>(petType), static_cast<uint8_t>(petType >> 8),
+                                       static_cast<uint8_t>(dl), static_cast<uint8_t>(dl >> 8), static_cast<uint8_t>(dl >> 16), static_cast<uint8_t>(dl >> 24) };
+    s.OnPacket(a, pkt.data(), pkt.size(), w);
+    std::vector<nox::OutPacket> out1;
+    t += 34; s.Tick(t, out1);
+    const int first = nameOfPet(out1);
+    std::vector<nox::OutPacket> outN;
+    for (int i = 0; i < 15; ++i) { outN.clear(); t += 34; s.Tick(t, outN); }   // 기한(+10)을 넉넉히 넘긴다 — 옛 「받은 틱 + 60」·「쓸 때 연장」이면 아직 0x30
+    const int later = nameOfPet(outN);
+    char msg[200];
+    std::snprintf(msg, sizeof(msg), "③ a5 직후 몬스터를 별칭 0x30 으로 불러야 하는데 0x%02x", first);
+    Check(first == 0x30, msg);
+    std::snprintf(msg, sizeof(msg), "③ 클라 기한(+10)이 지난 15틱 뒤엔 전체 번호(0xff)여야 하는데 0x%02x", later);
+    Check(later == 0xff, msg);
+    std::printf("  별칭 기한 — 옮겨 적기 5 · 표 안 늘림 · 서버 a5 직후 0x%02x → 기한 뒤 0x%02x\n", first, later);
 }
 
 void TestImportantQueue() {
@@ -34891,6 +34974,7 @@ int main() {
     TestImportantQueue();
     TestBundleOneDatagram();
     TestUpdateFitsWithTimestamp();
+    TestAliasClientDeadline();
     TestKillArmorCollide();
     TestCastPipeline();
     TestSpellFly();

@@ -454,7 +454,7 @@ void nox::CRoom::TickDiagnostics(size_t made) {
         }
         srv.Log("[틱] snapIn=%d 루프본것=%zu/%zu · 프레임 %u · 조각 %zu개 · 사람 %zu(갱신에 %zu) · "
                     "걸음 %llu · 근접 %llu(클릭 %llu) · "
-                    "주문 %llu(마나막힘 %llu) · 나는것 %zu(만든 %llu · 사라짐 %llu · 갱신에 %llu) · 피해 %llu · 별칭받음 %llu%s"
+                    "주문 %llu(마나막힘 %llu) · 나는것 %zu(만든 %llu · 사라짐 %llu · 갱신에 %llu) · 피해 %llu · 별칭받음 %llu(나간 항목 별칭 %llu·긴이름 %llu·클라프레임앞섬 %lld~%lld)%s"
                     " · 악수(수락 %llu·맵지정 %llu·준비 %llu·무적건 %llu)"
                     " · 시전거절(죽음 %llu·범위 %llu·안배움 %llu·시전중 %llu·직업 %llu·못씀 %llu→받음 %llu)"
                     // ★ 시전 뒷단 갈래 — 「받음은 있는데 발사가 0」일 때 어디서 새는지 가른다
@@ -478,7 +478,7 @@ void nox::CRoom::TickDiagnostics(size_t made) {
                     srv.firstSnapshotIn(), srv.lastLoopSeen(), srv.lastSessions(),
                     srv.frame(), made, srv.inGameCount(), srv.lastUpdateObjects(),
                     srv.moves(), srv.melees(), srv.code6Seen(),
-                    nSpell, srv.spellsNoMana(), srv.missiles(), srv.missilesMade(), srv.missilesGone(), srv.missileEntriesSent(), srv.hurts(), srv.aliasHeard(), modeInfo,
+                    nSpell, srv.spellsNoMana(), srv.missiles(), srv.missilesMade(), srv.missilesGone(), srv.missileEntriesSent(), srv.hurts(), srv.aliasHeard(), srv.updEntryAlias(), srv.updEntryFull(), srv.aliasLeadMin(), srv.aliasLeadMax(), modeInfo,
                     srv.acceptHeard(), srv.useMapSent(), srv.readyHeard(), srv.spawnInvulnApplied(),
                     srv.castRejDead(), srv.castRejRange(), srv.castRejUnknown(),
                     srv.castRejBusy(), srv.castRejClass(), srv.castRejCant(), srv.castAccepted(),

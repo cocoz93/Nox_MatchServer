@@ -27,6 +27,25 @@ constexpr int kAliasMin = 1;
 constexpr int kAliasMax = 254;   // 255 는 「전체 번호로 보낸다」는 표시라 못 쓴다
 constexpr uint32_t kAliasTTL = 60;   // 프레임. 30Hz 기준 2초
 
+// ★ 11-13 — 클라가 `a5` 에 적어 준 기한(클라 프레임)을 **서버 프레임으로 옮긴다.**
+//   서버는 클라에 프레임의 아래 16비트만 보낸다(`27 TIMESTAMP` · Server.cpp 「① 시각」).
+//   클라는 그 16비트에 제 윗자리를 붙여 프레임을 만든다(`network_client.go:188-211`) — 그래서
+//   클라 프레임은 **아래 16비트만 서버와 같고 윗자리는 다를 수 있다**(서버가 오래 돌아 65536 을 넘었을 때).
+//   기한을 그대로 적으면 그 차이만큼 이미 지난 값이 되어 별칭을 한 번도 못 쓰고,
+//   매 틱 전체 번호로 다시 소개하게 된다 — 09-10 사고(FindByObject 주석)의 까닭 후보.
+//   그래서 아래 16비트 차이(±32768 프레임 ≈ ±18분)만 서버 프레임에 더한다.
+//   `0xFFFFFFFF` 는 머리(자기 카메라) 별칭이라 기한이 없다(`GAME2_3.c:1526-1531`).
+//   11-13 자동 클라 2분 실측(Server.h `aliasLeadMin_`) — 독립 모드(`--standalone`)는 클라 프레임 앞섬 0~0 ·
+//   긴 이름 102번에 `a5` 102번(갱신당 0.033). 녹음 스냅샷 모드(`wirecmp` 기본)는 스냅샷 속 `27`(녹음 프레임 19,233)을
+//   클라가 받아 앞섬 ~18,000 이 되고, 그보다 작은 우리 `27` 은 버린다(`network_client.go:212`) — 그래도 옮겨 적으면
+//   양쪽 기한이 같은 값(19,293)이 되어 어긋나지 않는다.
+inline uint32_t ClientDeadlineToServer(uint32_t clientDeadline, uint32_t serverFrame) {
+    if (clientDeadline == 0xFFFFFFFFu) return 0xFFFFFFFFu;
+    const int d = static_cast<int16_t>(static_cast<uint16_t>(clientDeadline - serverFrame));
+    if (d < 0 && static_cast<uint32_t>(-d) > serverFrame) return 0;   // 서버 프레임 0 밑 — 이미 지났다
+    return serverFrame + static_cast<uint32_t>(d);                     // d < 0 이면 부호 없는 덧셈이 빼기가 된다
+}
+
 struct AliasSlot {
     uint16_t netCode = 0;
     uint16_t type = 0;
@@ -68,7 +87,20 @@ public:
         return a;
     }
 
-    // ★★ **클라가 알려 준 별칭을 오브젝트로 되찾는다 — 그리고 쓰는 동안 임대를 민다.**
+    // ★★ **클라가 알려 준 별칭을 오브젝트로 되찾는다 — 클라가 적어 준 기한 안에서만, 늘리지 않고.**
+    //
+    //   ★★ 11-13 정정 — 쓸 때마다 임대를 밀던 것(아래 09-10)을 뺐다.
+    //   원본 서버는 클라가 적어 준 기한을 그대로 두고 살아 있을 때만 쓴다(`sdecode.c:278-279` 적기 ·
+    //   `network_lists.go:119-132` `sub_57B930` 쓰기 — 늘리는 줄이 없다). 클라도 별칭 항목을 받을 때
+    //   기한을 안 늘린다(`GAME2_3.c:1634-1639`). 서버만 밀면 클라 쪽 칸은 2초에 끝나 새 물체에 넘어가는데
+    //   서버는 옛 뜻으로 그 별칭을 보낸다 → 종류가 달라 덧붙이 길이가 어긋나 클라가 그 뒤를 못 읽는다
+    //   (11-13 첫째 묶음 256방 — 더미 decodeFail 판마다 5~6 · 세 판 버림으로 묶음 멈춤).
+    //   기한이 지나면 전체 번호로 다시 소개하고, 클라는 그걸 받을 때마다 같은 (번호,종류) 칸으로
+    //   `a5` 를 다시 보낸다(`GAME2_3.c:1624-1632` · `GAME5_2.c:1621-1631`).
+    //   ⚠ 아래 09-10 기록의 「클라가 a5 를 또 안 보낸다」는 원본 클라 코드와 어긋나고, 같은 주석의
+    //     09-09 기록(매 틱 재소개에 a5 3,073 — 재소개마다 a5 가 왔다)과도 어긋난다. 그때 죽은 까닭은 미상 —
+    //     후보는 클라 기한과 서버 프레임의 윗자리 어긋남(`ClientDeadlineToServer` 주석 · 이제 옮겨 적는다).
+    //     11-13 독립 모드 자동 클라 2분에서는 긴 이름 102번에 `a5` 102번 — 같은 (번호,종류)여도 다시 보냈다.
     //
     //   왜 필요한가 — 별칭은 클라가 굴리고 `0xa5 NEW_ALIAS` 로 서버에 알려 준다.
     //   서버가 같은 규칙으로 따라 굴리게 해 뒀지만 실제로는 어긋났다 —
@@ -77,7 +109,7 @@ public:
     //   1분쯤에 끊겼다(`a5` 3,073 대 갱신 2,129 · 정품은 갱신당 0.03).
     //   **따라 굴리지 말고 클라가 말해 준 것을 그대로 쓴다.**
     //
-    //   ★★ 임대 연장(2026-09-10 ao2 실측) — 연장 없이는 **2초 만에 별칭을 버리고
+    //   ★★ [11-13 에 뺀 옛 설계 — 기록으로 둔다] 임대 연장(2026-09-10 ao2 실측) — 연장 없이는 **2초 만에 별칭을 버리고
     //   전체번호 재소개로 돌아간다**(별칭 사용 60틱 → 그 뒤 소개 1,482건). 클라는
     //   같은 (번호,종류)가 계속 보이면 **같은 칸을 다시 쓰고 `a5` 를 또 보내지 않으니**
     //   서버는 영영 별칭을 못 되찾고, 매 틱 21개 재소개에 클라가 ~20초 만에 죽었다.
@@ -87,10 +119,8 @@ public:
     int FindByObject(uint16_t netCode, uint16_t type, uint32_t frame) {
         for (int a = kAliasMin; a <= kAliasMax; ++a) {
             AliasSlot& s = slots_[a];
-            if (s.used && s.netCode == netCode && s.type == type && s.deadline >= frame) {
-                s.deadline = frame + kAliasTTL;
-                return a;
-            }
+            if (s.used && s.netCode == netCode && s.type == type && s.deadline >= frame)
+                return a;   // ★ 11-13 — 기한을 늘리지 않는다(위 정정)
         }
         return -1;
     }

@@ -3290,13 +3290,24 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
             //   같은 규칙으로 따라 굴리기만 했는데, 실제로는 어긋나서 별칭으로 보내면
             //   아무것도 안 그려졌다. 받아서 그대로 쓰면 그럴 일이 없다.
             case Op::NEW_ALIAS: {
-                if (it.bodyLen() < 5) break;
+                if (it.bodyLen() < 9) break;   // 별칭1 · 번호2 · 종류2 · 기한4(MsgLen 0xA5 = 9)
                 const uint8_t* b = it.body();
                 const uint8_t alias = b[0];
                 const uint16_t nc = static_cast<uint16_t>(b[1] | (b[2] << 8));
                 const uint16_t ty = static_cast<uint16_t>(b[3] | (b[4] << 8));
+                const uint32_t clientDeadline = static_cast<uint32_t>(b[5]) | (static_cast<uint32_t>(b[6]) << 8) |
+                                                (static_cast<uint32_t>(b[7]) << 16) | (static_cast<uint32_t>(b[8]) << 24);
                 if (s.aliasStale) { ++g_aliasStaleDropped; break; }   // ★ 11-13 — 판을 다시 연 뒤 준비 전 = 옛 판 별칭(Session::aliasStale)
-                s.aliases.Set(alias, nc, ty, s.tickFrame + kAliasTTL);
+                // ★ 11-13 — 기한은 **클라가 적어 준 것**을 쓴다(원본 `sdecode.c:278-279`). 전에는 받은 틱 + 60 을 적어
+                //   클라보다 늦게 끝났다 — 서버가 밀려 `a5` 를 늦게 읽을수록 틈이 길었다(Alias.h `FindByObject` 정정).
+                //   클라 프레임은 윗자리가 다를 수 있어 서버 프레임으로 옮겨 적는다(`ClientDeadlineToServer`).
+                s.aliases.Set(alias, nc, ty, ClientDeadlineToServer(clientDeadline, s.tickFrame));
+                if (clientDeadline != 0xFFFFFFFFu) {   // ★ 11-13 진단 — 클라 프레임이 서버보다 앞선 수(Server.h `aliasLeadMin_`)
+                    const long long lead = static_cast<int32_t>(clientDeadline - kAliasTTL - s.tickFrame);
+                    if (!aliasLeadSeen_ || lead < aliasLeadMin_) aliasLeadMin_ = lead;
+                    if (!aliasLeadSeen_ || lead > aliasLeadMax_) aliasLeadMax_ = lead;
+                    aliasLeadSeen_ = true;
+                }
                 ++aliasHeard_;
                 ++g_aliasTaken;
                 break;
@@ -19105,6 +19116,12 @@ void Server::RunTick(int ticks) {
         if (n) {
             ++updateEncOk_;
             if (m.objects.size() > updateEncOkObjsMax_) updateEncOkObjsMax_ = m.objects.size();
+            // ★ 11-13 — 나간 항목을 별칭 / 긴 이름으로 가른다(Server.h `updEntryAlias_`). 잘린 항목은 안 나갔으니 뺀다
+            const size_t sent = m.objects.size() > droppedObjs ? m.objects.size() - droppedObjs : 0;
+            for (size_t i = 0; i < sent; ++i) {
+                if (m.objects[i].alias == 0xff) ++updEntryFull_;
+                else ++updEntryAlias_;
+            }
         } else {
             ++updateEncFail_;
             if (m.objects.size() > updateEncFailObjsMax_) updateEncFailObjsMax_ = m.objects.size();

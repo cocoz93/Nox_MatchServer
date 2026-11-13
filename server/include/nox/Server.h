@@ -2320,6 +2320,11 @@ public:
     void SetIntroEveryTick(bool v) { introEveryTick_ = v; }
     // 클라에게서 받은 별칭 알림 수. 틱 로그에 찍어 「받고 있나」를 바로 본다.
     unsigned long long aliasHeard() const { return aliasHeard_; }
+    // ★ 11-13 — 와이어에 나간 갱신 항목을 별칭 / 긴 이름(`ff`)으로 갈라 센 수(`updEntryAlias_` 주석).
+    unsigned long long updEntryAlias() const { return updEntryAlias_; }
+    unsigned long long updEntryFull() const { return updEntryFull_; }
+    long long aliasLeadMin() const { return aliasLeadSeen_ ? aliasLeadMin_ : 0; }
+    long long aliasLeadMax() const { return aliasLeadSeen_ ? aliasLeadMax_ : 0; }
     // 접속 악수 계수기 셋 — 무적 사슬의 어느 고리가 되풀이되는지 가른다(페이즈 B 1-a).
     unsigned long long readyHeard() const { return readyHeard_; }
     unsigned long long useMapSent() const { return useMapSent_; }
@@ -5919,6 +5924,17 @@ private:
     bool introEveryTick_ = true;
     // 클라가 알려 준 별칭을 몇 번 받았나. 0 이면 NEW_ALIAS 를 못 받고 있는 것이다.
     unsigned long long aliasHeard_ = 0;
+    // ★ 11-13 — 와이어에 나간 갱신(`EncodeUpdate` 성공) 항목을 별칭 / 긴 이름으로 갈라 센다.
+    //   `aliasHeard_` 하나로는 「클라가 `a5` 를 안 보낸다」와 「서버가 긴 이름을 안 보내 `a5` 를 부를 일이 없다」를 못 가른다
+    //   (11-13 자동 클라 2분 — 별칭받음이 프레임 1500 뒤로 76 에 멈춤). 긴 이름이 늘는데 `a5` 가 멈추면 앞의 것이다.
+    unsigned long long updEntryAlias_ = 0;
+    unsigned long long updEntryFull_ = 0;
+    // ★ 11-13 — `a5` 기한 − 60 − 받은 사람의 서버 프레임(`tickFrame`) = 클라 프레임이 서버보다 앞선 프레임 수(뒤지면 음수). 머리 별칭(-1)은 뺀다.
+    //   0 근처면 기한을 옮겨 적어도 클라와 같은 때 끝난다. 크게 앞서면 서버는 클라보다 그만큼 늦게 별칭을 버린다
+    //   (11-13 자동 클라 2분 — 프레임 1500 뒤 2,400프레임 동안 긴 이름 0). 0 옆에 `aliasHeard_` 를 같이 읽는다
+    long long aliasLeadMin_ = 0;
+    long long aliasLeadMax_ = 0;
+    bool aliasLeadSeen_ = false;
 
     // ── 접속 악수 계수기 셋 (2026-09-18, 페이즈 B 1-a) ─────────────────
     //
