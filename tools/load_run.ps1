@@ -37,7 +37,7 @@ param(
   [string]$UpdateServiceStatus = 'Stopped',
   # 유휴 CPU 를 못 넘었을 때 다시 재기 — 문턱이 아니라 기다리는 방법이라 load_report 의 문턱 비교에 안 넣는다
   [int]$IdleRetrySec = 30,               # 다시 재기 전에 쉬는 초
-  [int]$IdleRetryMax = 0                 # 다시 재는 최대 횟수 · 0 = 넘을 때까지 끝없이(사용자 11-13) · 시험 때만 준다
+  [int]$IdleRetryMax = 0                 # 다시 재는 최대 횟수 · 0 = 넘을 때까지 끝없이(사용자 11-13 · 가동 시간 문턱 안에서) · 시험 때만 준다 · 업데이트 서비스 기다리기도 같은 두 값
 )
 
 $ErrorActionPreference = 'Stop'
@@ -187,8 +187,22 @@ if ($active -match '([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}
 Gate '전원 계획' ($guid -eq $PowerPlanGuid.ToLower()) "지금 $guid · 기대 $PowerPlanGuid"
 Note '전원 계획' $active.Trim()
 
+# 기다리는 동안 가동 시간 문턱을 넘으면 그만 기다린다 — 그 뒤에 돌면 가동 시간 게이트가 막았을 실행이다
+function Over-Uptime { return ([math]::Round(((Get-Date) - $boot).TotalHours, 2) -gt $UptimeMaxHours) }
+
+# ★ 11-14 — 기대와 다르면 $IdleRetrySec 초마다 다시 본다(유휴 다시 재기와 같은 값 · 가동 시간 문턱 안에서).
+#   업데이트 서비스는 「요청 시 시작」이라 SYSTEM 이 켜고 일이 끝나면 스스로 멈춘다 — 측정 전 PC 정리에서 「사용 안 함」으로 둬도
+#   약 24분마다 되돌린다. 11-14 03:02 첫째 묶음이 「지금 Running」으로 멈췄다(02:51 검사 땐 Stopped). 끄려면 관리자 권한이라 대본은 기다리기만 한다
 $wu = (Get-Service wuauserv).Status.ToString()
-Gate '업데이트 서비스' ($wu -eq $UpdateServiceStatus) "지금 $wu · 기대 $UpdateServiceStatus"
+$wuTries = 1
+while ($wu -ne $UpdateServiceStatus -and ($IdleRetryMax -le 0 -or $wuTries -le $IdleRetryMax) -and -not (Over-Uptime)) {
+  Write-Host "[게이트] 업데이트 서비스 — $wuTries 번째 다름 · 지금 $wu · $IdleRetrySec 초 뒤 다시"
+  Note "업데이트 서비스 다름 $wuTries" "$wu · $(Get-Date -Format 'HH:mm:ss')"
+  Start-Sleep -Seconds $IdleRetrySec
+  $wu = (Get-Service wuauserv).Status.ToString()
+  $wuTries++
+}
+Gate '업데이트 서비스' ($wu -eq $UpdateServiceStatus) "지금 $wu · 기대 $UpdateServiceStatus · 본 횟수 $wuTries"
 Note '업데이트 서비스' $wu
 
 try {
@@ -222,6 +236,7 @@ while ($true) {
   Write-Host "[게이트] 유휴 CPU — $idleTries 번째 못 넘음 · $($idleReads -join ' · ')% · 같은 3초 상위: $idleTopText"
   Note "유휴 CPU 못 넘음 $idleTries" "$($idleReads -join ' ')% · 같은 3초 상위: $idleTopText"
   if ($IdleRetryMax -gt 0 -and $idleTries -gt $IdleRetryMax) { break }
+  if (Over-Uptime) { Write-Host "[게이트] 유휴 CPU — 기다리는 동안 가동 시간 $UptimeMaxHours 시간을 넘어 그만 기다림"; break }
   Start-Sleep -Seconds $IdleRetrySec
 }
 Gate '유휴 CPU' $idleOk "$($idleReads -join ' · ')% · 문턱 $IdleMaxPercent% 미만(1초씩 3번 전부) · 잰 횟수 $idleTries"
