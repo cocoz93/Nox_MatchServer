@@ -1,7 +1,7 @@
 ﻿# 부하 측정 시리즈 — 측정 플랜(Docs/MO_MEASURE_PLAN_1111.md) 5절 단계를 차례대로 load_run → load_report 로 돌리고,
 #   3절 반복 순서 · 9절 멈춤 규칙 · 지점 판정(2-2절 — 가장 느린 1% 는 3회 중앙값, 끊김 · 사라짐은 한 번이라도)을 맡는다.
 #
-#   왜 이 대본이 있나: 80회 안팎 · 13~21시간을 사람 없이 돈다. 지점마다 3회 · 1회차는 처음 넘은 지점의 한 칸 위까지 ·
+#   왜 이 대본이 있나: 60회 안팎 · 11~16시간(계산 · 11-13 줄이기 뒤)을 사람 없이 돈다. 지점마다 3회 · 1회차는 처음 넘은 지점의 한 칸 위까지 ·
 #   버리면 다시 · 같은 지점 3번 버리면 멈춤을 손으로 하면 차례가 틀어진다. 실행마다 판정 근거는 그 폴더 report.json 에 남고,
 #   이 대본은 그것을 series.jsonl 에 모아 다음 차례를 정한다. 「먼저 찬 곳」 고르기(5절)는 사람이 summary.txt 를 읽고 한다.
 #
@@ -36,6 +36,7 @@ $JoinSec = 0.2            # 더미 입장 간격 기본 200ms(3절)
 $TailSec = 60             # 실행 길이 = 입장 + 측정 구간 + 이 값. 측정 구간 시작은 마지막 방 + 30초를 다음 분포 경계(≤10초)로,
                           #   끝도 경계(≤10초)로 맞추고, 더미 시각은 서버보다 최대 약 3초 앞설 수 있다 — 30+10+10+3 = 53 에 여유. 플랜 6절 어림 45초보다 15초 길다
 $MaxRooms = 1024          # 5절 「128방도 안 넘으면 2배를 계속」의 상한 — 더미 10,240명은 이 PC 에서 못 띄운다(4스레드 · 계산)
+$M4StartRooms = 16        # M4 첫 지점 — 1 · 2 · 4 · 8방은 빼고(16방까지 게임 스레드 약 13% 이하) 이 지점은 1회만 돈다(측정 플랜 8절 7 · 11-13 사용자 결정)
 $M3Floor = 0.1            # M3 — 구간 몫 차이가 이 ms/초 밑이면 흔들림으로 본다(report 의 반올림이 0.01 · 거의 0 인 구간이 우연히 걸리지 않게 · 내가 정함)
 $M1RisePct = 5            # M1 — 측정 구간을 셋으로 나눠 틱합이 차례로 오르고 마지막이 처음보다 이 % 넘게 크면 「계속 오름」(내가 정함)
 $M1SettlePct = 10         # M1 — 측정 구간 처음 60초의 틱합이 나머지와 이 % 넘게 다르면 버리는 구간 30초가 모자람(내가 정함)
@@ -260,13 +261,15 @@ if ($want -contains 'M2') {
 #   기본 3회의 흔들림 폭(최대 − 최소)을 넘게 틱합이나 어느 구간의 몫(중앙값)이 달라지는 계측만 뒤 단계에서 끈다(5절)
 if ($want -contains 'M3') {
   $conds = [ordered]@{ base = ''; noevlog = '--no-event-log'; nofirst = '--no-first-seen'; noop = '--no-op-count' }
-  for ($p = 1; $p -le 3; $p++) { foreach ($k in $conds.Keys) { [void](Run-Point 'M3' "r64_$k" $p (Cfg 64 @{ serverExtra = $conds[$k] })) } }
+  #   끈 조건 셋은 1회씩 · 기본만 3회(측정 플랜 8절 7 안 ② · 11-13 사용자 결정). 끈 조건마다 바로 앞에 기본 1회가 오게 번갈아 — 시간에 따른 변화가 한쪽에 몰리지 않게
+  $order = @(@('base', 1), @('noevlog', 1), @('base', 2), @('nofirst', 1), @('base', 3), @('noop', 1))
+  foreach ($o in $order) { [void](Run-Point 'M3' "r64_$($o[0])" $o[1] (Cfg 64 @{ serverExtra = $conds[$o[0]] })) }
   $base = Point-Records 'M3' 'r64_base' @(1, 2, 3)
   $names = @{}; foreach ($r in $records | Where-Object { $_.stage -eq 'M3' -and $_.usable }) { foreach ($p in $r.partMsPerSec.PSObject.Properties) { if ($p.Name -ne '방 만들기') { $names[$p.Name] = 1 } } }
   $off = New-Object System.Collections.ArrayList
   Summary (Point-Line 'M3 기본 r64' $base)
   foreach ($k in @('noevlog', 'nofirst', 'noop')) {
-    $fr = Point-Records 'M3' "r64_$k" @(1, 2, 3)
+    $fr = Point-Records 'M3' "r64_$k" @(1)
     Summary (Point-Line "M3 $($conds[$k]) r64" $fr)
     $hits = @()
     foreach ($n in $names.Keys) {
@@ -283,9 +286,11 @@ if ($Batch -eq 1 -and ($want -contains 'M4') -and -not $state.ContainsKey('m3Off
 
 # ── M4 방 늘리기 · 사이 좁히기 · 확인 ─────────────────────────────
 function M4-Verdict([int]$rooms, [int[]]$passes = @(1, 2, 3)) { return Verdict (Point-Records 'M4' "r$rooms" $passes) }
+# 첫 지점(1회만 돈 곳)이 M4 확인에 오르면 견줄 3회 흔들림 폭이 없다(1회면 폭 0 이라 앞뒤 5분이 조금만 달라도 멈춘다) — 그때만 2 · 3회차를 채운다
+function Fill-StartPoint([int]$x) { if ($x -eq $M4StartRooms) { for ($p = 2; $p -le 3; $p++) { [void](Run-Point 'M4' "r$x" $p (Cfg $x)) } } }
 if ($want -contains 'M4') {
   # 1회차 — 올리다 처음 넘은 지점의 한 칸 위까지(3절)
-  $pts = New-Object System.Collections.ArrayList; $rooms = 1; $firstOverP1 = $null
+  $pts = New-Object System.Collections.ArrayList; $rooms = $M4StartRooms; $firstOverP1 = $null
   while ($true) {
     if ($rooms -gt $MaxRooms) { Stop-Series "M4 — $MaxRooms 방까지 1회차에서 안 넘음" }
     $r = Run-Point 'M4' "r$rooms" 1 (Cfg $rooms)
@@ -294,8 +299,8 @@ if ($want -contains 'M4') {
     if (@($r.over).Count) { $firstOverP1 = $rooms; $script:simAboveRooms = $rooms * 2 }
     $rooms *= 2
   }
-  # 2 · 3회차 — 1회차에 돈 지점만 한 번씩(같은 지점을 연달아 안 돈다)
-  for ($p = 2; $p -le 3; $p++) { foreach ($x in $pts) { [void](Run-Point 'M4' "r$x" $p (Cfg $x)) } }
+  # 2 · 3회차 — 1회차에 돈 지점만 한 번씩(같은 지점을 연달아 안 돈다). 첫 지점은 1회만이라 뺀다 — 판정은 그 1회로(Point-Records 가 있는 회차만 모은다)
+  for ($p = 2; $p -le 3; $p++) { foreach ($x in @($pts | Where-Object { $_ -ne $M4StartRooms })) { [void](Run-Point 'M4' "r$x" $p (Cfg $x)) } }
   # 중앙값으로 처음 넘은 지점 — 없으면 위로 2배씩 3회를 더 돈다
   $firstOver = $null
   foreach ($x in $pts) { if ((M4-Verdict $x).isOver) { $firstOver = $x; break } }
@@ -306,7 +311,7 @@ if ($want -contains 'M4') {
     [void]$pts.Add($x)
     if ((M4-Verdict $x).isOver) { $firstOver = $x }
   }
-  if ($firstOver -eq 1) { Stop-Series 'M4 — 방 1개부터 넘음' }
+  if ($firstOver -eq $M4StartRooms) { Stop-Series "M4 — 첫 지점 $M4StartRooms 방부터 넘음(그 아래는 안 돌아 좁힐 아래 지점이 없다)" }
   # 처음 넘은 지점보다 위에서 통과가 나오면 이상 결과 — 두 지점을 3회씩 다시 돌고(4~6회차) 그것으로 다시 본다(5절 L 정의)
   foreach ($x in @($pts | Where-Object { $_ -gt $firstOver })) {
     if ((M4-Verdict $x).isOver) { continue }
@@ -344,6 +349,7 @@ if ($want -contains 'M4C') {
   # 처음 5분과 마지막 5분이 같은가 — 틱합 차이가 그 지점 M4 3회의 흔들림 폭 안이고, 가장 느린 1% 의 넘음 여부가 같으면 같다(내가 정함)
   $edgeCheck = {
     param($rec, [int]$x)
+    Fill-StartPoint $x
     $v = M4-Verdict $x (& $passOf $x)
     $d = [math]::Abs([double]$rec.edgeLast.tickSumMsPerSec - [double]$rec.edgeFirst.tickSumMsPerSec)
     $flip = (([double]$rec.edgeFirst.completionP99Ms -gt $OverMs) -ne ([double]$rec.edgeLast.completionP99Ms -gt $OverMs)) -or
@@ -401,9 +407,10 @@ if ($want -contains 'M5') {
 }
 
 if ($want -contains 'M6') {
-  # 빈도 확인 — 10명 방 1개 · 60초로 절반 · 2배 각 1회. sentSpell 의 초당 수를 M4 r1(빈도 1) 중앙값과 견준다(5절)
+  # 빈도 확인 — 10명 방 1개 · 60초로 절반 · 2배 각 1회. sentSpell 의 초당 수를 같은 꼴의 빈도 1 실행 1회와 견준다(5절)
+  #   기준은 M4 r1(빈도 1) 중앙값이었으나 11-13 M4 가 16방부터라 r1 이 없다 — 방 수 · 길이가 같은 빈도 1 실행을 하나 더 돈다
   $rate = { param($r) if ($r.dummyDurationSec -gt 0) { [double]$r.dummySummary.sentSpell / [double]$r.dummyDurationSec } else { $null } }
-  $baseRate = Median (Point-Records 'M4' 'r1' @(1, 2, 3) | ForEach-Object { & $rate $_ })
+  $baseRate = & $rate (Run-Point 'M6' 'f1_check' 1 (Cfg 1 @{ window = 60; freq = 1.0 }))
   foreach ($f in @(0.5, 2.0)) {
     $r = Run-Point 'M6' "f$($f.ToString($inv))_check" 1 (Cfg 1 @{ window = 60; freq = $f })
     $ratio = if ($baseRate) { (& $rate $r) / $baseRate } else { $null }
