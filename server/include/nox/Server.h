@@ -1125,6 +1125,12 @@ struct Session {
     // 정답지는 CLIENT_READY 를 받아 상태 비트 0x10 을 세운 뒤에만 중요 메시지를 싣는다
     //   (`GAME3_2.c:5602` gameServerReadyMB → `GAME3_3.c:1966` 의 `v3[3680] & 0x10`).
     bool importantReady = false;
+    // ★ 11-13 — 판을 다시 연 뒤(`RejoinReset`) 첫 `CLIENT_READY` 까지 받은 `a5 NEW_ALIAS` 는 버린다.
+    //   클라는 `USE_MAP` 에서 별칭 표를 다 지우고 준비를 보내므로 그 앞에 보낸 `a5` 는 옛 판 것이다. 서버는 준비 전에 새 소개를
+    //   안 보낸다(스냅샷이 준비를 기다리고 그 전 갱신은 참는다) — 그러니 이 사이의 `a5` 는 전부 옛 것이다.
+    //   받아 두면 첫 갱신(스냅샷)의 자기 항목이 클라가 모르는 별칭으로 나가 클라가 덧붙이 길이를 몰라 그 뒤를 잘못 읽는다
+    //   (128방 점검 `20261113_165122_chk128_t4` 더미 못 읽음 18건 중 17건 — 전부 스냅샷 머리 `ff 00 00 00 00` 뒤 자기 항목이 별칭 `00 f6 …`)
+    bool aliasStale = false;
     // ★ 11-03 — 판을 연 뒤 첫 `CLIENT_READY`(맵을 다 읽음)에 점수 한도 공지(`Server::ArmLimitNotice`)
     bool limitNoticeOnReady = false;
     // ★ 11-07 판 시간 제한 T3 — 점수판 켜기(`f0 14`)를 보낸 판 번호(`Server::roundTimerSerial_` · 0 = 아직) — 판마다 한 번(`Server::SendScoreboardOn`)

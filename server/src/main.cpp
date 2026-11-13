@@ -1166,6 +1166,8 @@ int main(int argc, char** argv) {
             for (const auto& kv : seenAll) msgs += kv.second;
             std::printf("[종료] 받은 것 — 입력(0x3f) %llu · 메시지 전체 %llu · 받은 조각 %llu · 한 번에 비운 조각 최대 %llu · 받기 오류 %llu\n",
                         inputs, msgs, ts.datagramsIn, ts.maxDatagramsPerWake, ts.recvErrors);
+            // ★ 11-13 — 판을 다시 연 뒤 준비 전이라 버린 별칭 알림(`Session::aliasStale`) · 받아 쓴 수를 같이(0 이 「없었다」인지 가른다)
+            std::printf("[종료] 별칭 알림(a5) — 받아 씀 %llu · 판 다시 연 뒤 준비 전이라 버림 %llu\n", nox::g_aliasTaken, nox::g_aliasStaleDropped);
         }
         // ★ 10-20 v2 작업 4b — 로비 연결의 셈(0 옆에 지나간 양 — 네트워크 스레드가 센 TCP 줄 · 시도 수도)
         if (lobbyClient) {

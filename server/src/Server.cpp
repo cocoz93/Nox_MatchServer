@@ -1918,6 +1918,7 @@ void Server::RejoinReset(Session& s) {
     s.pendingIntro = false;
     s.introGot.clear();   // ★ 10-31 — 새 맵에서는 옛 길대로 스냅샷 자리에서 다시 한 번씩 소개
     s.aliases = AliasTable{};
+    s.aliasStale = true;   // ★ 11-13 — 준비 전에 오는 `a5` 는 옛 판 것(Session::aliasStale)
     s.staticIntroAt.clear();
     s.secretSeen.clear();
     s.visibleCreatures.clear();
@@ -3294,8 +3295,10 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
                 const uint8_t alias = b[0];
                 const uint16_t nc = static_cast<uint16_t>(b[1] | (b[2] << 8));
                 const uint16_t ty = static_cast<uint16_t>(b[3] | (b[4] << 8));
+                if (s.aliasStale) { ++g_aliasStaleDropped; break; }   // ★ 11-13 — 판을 다시 연 뒤 준비 전 = 옛 판 별칭(Session::aliasStale)
                 s.aliases.Set(alias, nc, ty, s.tickFrame + kAliasTTL);
                 ++aliasHeard_;
+                ++g_aliasTaken;
                 break;
             }
 
@@ -3314,6 +3317,7 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
                 break;
             case Op::CLIENT_READY:
                 ++readyHeard_;                             // 1-a — 갈래 셋 중 하나(삼키지 않게 따로)
+                s.aliasStale = false;                      // ★ 11-13 — 이 뒤 `a5` 는 새 판 것(Session::aliasStale)
                 if (!s.importantReady) {
                     s.importantReady = true;
                     Log("[중요] 프레임 %u %s 준비 — 대기 %zu 개를 싣기 시작\n",
