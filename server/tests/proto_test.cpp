@@ -20869,7 +20869,8 @@ void TestStaticGridSameAsFullScan() {
     nox::Server::StaticGrid g;
     nox::Server::BuildStaticGrid(st, g);
 
-    auto refEnter = [&](const std::vector<WS>& list, const std::map<uint16_t, uint32_t>& introAt, int sx, int sy,
+    // ★ 11-15 5차 — 기준은 std::set(전의 std::map 과 같은 「있나 · 번호 차례」) · 고친 쪽은 nox::IntroSet
+    auto refEnter = [&](const std::vector<WS>& list, const std::set<uint16_t>& introAt, int sx, int sy,
                         const std::set<uint16_t>* only, std::vector<std::pair<double, uint32_t>>& out) {
         out.clear();
         for (size_t i = 0; i < list.size(); ++i) {
@@ -20882,7 +20883,7 @@ void TestStaticGridSameAsFullScan() {
             out.push_back({ d2, static_cast<uint32_t>(i) });
         }
     };
-    auto refLeave = [&](std::map<uint16_t, uint32_t>& introAt, int sx, int sy, std::vector<uint16_t>& gone) {
+    auto refLeave = [&](std::set<uint16_t>& introAt, int sx, int sy, std::vector<uint16_t>& gone) {
         for (const auto& w : st) {
             auto it = introAt.find(w.netCode);
             if (it == introAt.end()) continue;
@@ -20898,23 +20899,26 @@ void TestStaticGridSameAsFullScan() {
     std::vector<uint16_t> goneRef, goneNew;
     auto one = [&](int sx, int sy, bool withOnly) {
         ++queries;
-        std::map<uint16_t, uint32_t> intro;
-        for (const auto& w : st) if (rndi(0, 2) == 0) intro[w.netCode] = 1;
-        intro[60000] = 1; intro[5] = 1;                    // 목록에 없는 번호(사라진 물건)
+        std::set<uint16_t> intro;
+        nox::IntroSet introSet;   // 같은 차례로 넣는다 — 겹친 번호 · 앞에 끼우기(5)도 밟는다
+        for (const auto& w : st) if (rndi(0, 2) == 0) { intro.insert(w.netCode); introSet.insert(w.netCode); }
+        intro.insert(60000); intro.insert(5);              // 목록에 없는 번호(사라진 물건)
+        introSet.insert(60000); introSet.insert(5);
         std::set<uint16_t> onlySet;
         const std::set<uint16_t>* only = nullptr;
         if (withOnly) { ++onlyRuns; for (const auto& w : st) if (rndi(0, 3) == 0) onlySet.insert(w.netCode); only = &onlySet; }
         refEnter(st, intro, sx, sy, only, a);
-        nox::Server::AoiStaticsEntering(st, g, intro, sx, sy, only, b);
+        nox::Server::AoiStaticsEntering(st, g, introSet, sx, sy, only, b);
         if (a != b) ++mismatchE;
         if (!a.empty()) ++enterHit;
         if (a.size() >= 2) ++enterMany;
-        std::map<uint16_t, uint32_t> introRef = intro, introNew = intro;
+        std::set<uint16_t> introRef = intro;
+        nox::IntroSet introNew = introSet;
         goneRef.clear(); goneNew.clear();
         refLeave(introRef, sx, sy, goneRef);
         nox::Server::AoiStaticsLeaving(st, g, introNew, sx, sy, lv);
         for (const auto& l : lv) { goneNew.push_back(l.second); introNew.erase(l.second); }
-        if (goneRef != goneNew || introRef != introNew) ++mismatchL;
+        if (goneRef != goneNew || std::vector<uint16_t>(introRef.begin(), introRef.end()) != std::vector<uint16_t>(introNew.begin(), introNew.end())) ++mismatchL;
         if (!goneRef.empty()) ++leaveHit;
         if (goneRef.size() >= 2) ++leaveMany;
     };
@@ -20928,12 +20932,14 @@ void TestStaticGridSameAsFullScan() {
     Check(enterMany > 1000 && leaveMany > 1000 && onlyRuns > 500, "들어옴 · 나감이 둘 이상인 자리가 너무 적다 — 이 시험이 차례를 못 본다");
 
     // 정확히 반경 위 · 같은 번호 갈림 — 무작위가 못 밟을 수 있어 따로
-    std::map<uint16_t, uint32_t> none;
+    nox::IntroSet none;
+    const std::set<uint16_t> noneRef;
     nox::Server::AoiStaticsEntering(st, g, none, 2000, 1500, nullptr, b);
     bool edgeIn = false;
     for (const auto& e2 : b) if (st[e2.second].netCode == 9001) edgeIn = true;
     Check(edgeIn, "정확히 반경 700 인 물건이 들어옴에서 빠졌다");
-    std::map<uint16_t, uint32_t> dupIntro{ { 9000, 1 } };
+    nox::IntroSet dupIntro;
+    dupIntro.insert(9000);
     nox::Server::AoiStaticsLeaving(st, g, dupIntro, 3000, 3000, lv);
     Check(lv.size() == 1 && lv[0].first == dupBIndex && lv[0].second == 9000, "같은 번호 셋 중 목록에서 처음 먼 것(둘째)을 안 골랐다");
 
@@ -20941,7 +20947,7 @@ void TestStaticGridSameAsFullScan() {
     std::vector<WS> st2 = st;
     WS late; late.netCode = 9100; late.x = 400; late.y = 400;
     st2.push_back(late);
-    refEnter(st2, none, 400, 400, nullptr, a);
+    refEnter(st2, noneRef, 400, 400, nullptr, a);
     nox::Server::AoiStaticsEntering(st2, g, none, 400, 400, nullptr, b);
     Check(std::any_of(b.begin(), b.end(), [&](const std::pair<double, uint32_t>& p) { return st2[p.second].netCode == 9100; }),
           "개수가 다른 색인에서 새 물건을 못 봤다");
@@ -20962,7 +20968,7 @@ void TestStaticGridSameAsFullScan() {
     late.netCode = 9101; late.x = 5200; late.y = 700;
     L.push_back(late);                                   // 빼고 넣어 개수는 그대로 — 내용으로 본다
     const std::vector<WS>& lv2 = L;
-    refEnter(lv2, none, 5200, 700, nullptr, a);
+    refEnter(lv2, noneRef, 5200, 700, nullptr, a);
     nox::Server::AoiStaticsEntering(lv2, L.grid(), none, 5200, 700, nullptr, b);
     bool lateIn = false;
     for (const auto& e2 : b) if (lv2[e2.second].netCode == 9101) lateIn = true;
@@ -21031,6 +21037,54 @@ void TestAliasBucketSameAsLinear() {
     Check(mismatch == 0, "별칭 묶음 찾기가 1번부터 훑기와 다른 칸을 돌려줬다");
     Check(hits > 10000 && deepHits > 1000 && dupFirstExpired > 100 && clears > 100,
           "찾음 · 깊은 칸 · 앞 칸 지남 · 비우기가 너무 적다 — 이 시험이 차례와 묶음 고치기를 못 본다");
+}
+
+// ★ 11-15 최적화 5차 개선 — 정적 소개 기록(`nox::IntroSet` · 번호 오름차순 배열)이 **전의 std::map 과 같은가**.
+//   기준은 std::set<uint16_t>(전 std::map 의 「있나 · 번호 차례」와 같다). 넣기 · 빼기 · 있나 · 비우기를 무작위로 섞고
+//   매번 있나 · 빼기가 돌려준 값 · 개수 · 도는 차례 전부를 맞춘다. 번호는 좁은 범위(겹친 넣기 · 빼기 맞음이 잦게)에 양 끝(0 · 65535)을 섞는다.
+void TestIntroSetSameAsSet() {
+    std::printf("\n[정적 소개 기록 배열 = 번호 차례 집합]\n");
+    uint32_t seed = 515;
+    auto rnd = [&](uint32_t n) { seed = seed * 1103515245u + 12345u; return ((seed >> 8) & 0xFFFFFFu) % n; };
+    auto pick = [&]() -> uint16_t {
+        const uint32_t r = rnd(100);
+        if (r == 0) return 0;
+        if (r == 1) return 65535;
+        return static_cast<uint16_t>(rnd(300));
+    };
+    nox::IntroSet s;
+    std::set<uint16_t> ref;
+    size_t insNew = 0, insMid = 0, insDup = 0, erHit = 0, erMiss = 0, cntHit = 0, cntMiss = 0, clears = 0, maxSize = 0, mismatch = 0;
+    for (int i = 0; i < 200000; ++i) {
+        const uint32_t op = rnd(1000);
+        const uint16_t nc = pick();
+        if (op < 450) {
+            if (ref.count(nc)) ++insDup;
+            else { ++insNew; if (!ref.empty() && nc < *ref.rbegin()) ++insMid; }   // 끝이 아닌 자리에 끼우기
+            ref.insert(nc);
+            s.insert(nc);
+        } else if (op < 800) {
+            const size_t want = ref.erase(nc), got = s.erase(nc);
+            if (want != got) ++mismatch;
+            if (want) ++erHit; else ++erMiss;
+        } else if (op < 999) {
+            const size_t want = ref.count(nc), got = s.count(nc);
+            if (want != got) ++mismatch;
+            if (want) ++cntHit; else ++cntMiss;
+        } else {
+            ref.clear();
+            s.clear();
+            ++clears;
+        }
+        if (s.size() != ref.size() || s.empty() != ref.empty() || !std::equal(s.begin(), s.end(), ref.begin(), ref.end())) ++mismatch;
+        maxSize = std::max(maxSize, ref.size());
+    }
+    std::printf("  새로 넣기 %zu(끝 아닌 자리 %zu) · 겹친 넣기 %zu · 빼기 맞음 %zu 없음 %zu · 있나 맞음 %zu 없음 %zu · 비우기 %zu · 가장 클 때 %zu개 · 다름 %zu\n",
+                insNew, insMid, insDup, erHit, erMiss, cntHit, cntMiss, clears, maxSize, mismatch);
+    Check(mismatch == 0, "정적 소개 기록 배열이 번호 차례 집합과 다르다(있나 · 빼기 · 개수 · 차례)");
+    Check(insNew > 10000 && insMid > 5000 && insDup > 10000 && erHit > 10000 && erMiss > 10000 && cntHit > 10000 && cntMiss > 10000
+              && clears > 50 && maxSize > 100,
+          "넣기 · 끼우기 · 겹침 · 빼기 · 있나 · 비우기가 너무 적다 — 이 시험이 차례와 겹침을 못 본다");
 }
 
 // ── 조각 I(09-16) 장애물이 소환수로 둔갑하던 것 ──────────────────────
@@ -35358,6 +35412,7 @@ int main() {
     TestObstacleGridSameAsFullScan();
     TestStaticGridSameAsFullScan();
     TestAliasBucketSameAsLinear();
+    TestIntroSetSameAsSet();
     TestPetDamageStops();
     TestReportKindsMatchSource();
     TestMsgLenSiblings();

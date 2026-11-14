@@ -952,7 +952,7 @@ void Server::BuildStaticGrid(const std::vector<WorldStatic>& st, StaticGrid& g) 
 }
 
 void Server::AoiStaticsEntering(const std::vector<WorldStatic>& st, const StaticGrid& g,
-                                const std::map<uint16_t, uint32_t>& introAt, int sx, int sy,
+                                const IntroSet& introAt, int sx, int sy,
                                 const std::set<uint16_t>* only, std::vector<std::pair<double, uint32_t>>& out) {
     out.clear();
     if (g.count != st.size()) {   // 색인이 목록과 안 맞는다(StaticList 를 거치면 없는 일) — 이 자리에서 만들어 쓴다
@@ -989,7 +989,7 @@ void Server::AoiStaticsEntering(const std::vector<WorldStatic>& st, const Static
 }
 
 void Server::AoiStaticsLeaving(const std::vector<WorldStatic>& st, const StaticGrid& g,
-                               const std::map<uint16_t, uint32_t>& introAt, int sx, int sy,
+                               const IntroSet& introAt, int sx, int sy,
                                std::vector<std::pair<uint32_t, uint16_t>>& out) {
     out.clear();
     if (introAt.empty()) return;
@@ -1001,13 +1001,13 @@ void Server::AoiStaticsLeaving(const std::vector<WorldStatic>& st, const StaticG
     }
     // ★ 3차 — 바닥 물건 전부 대신 **소개해 둔 번호만** 본다. introAt 도 byNet 도 번호 오름차순이라 찾는 자리가 앞으로만 간다
     auto lo = g.byNet.begin();
-    for (const auto& kv : introAt) {
-        lo = std::lower_bound(lo, g.byNet.end(), kv.first,
+    for (const uint16_t code : introAt) {
+        lo = std::lower_bound(lo, g.byNet.end(), code,
                               [](const StaticGrid::Item& a, uint16_t nc) { return a.netCode < nc; });
-        for (auto p = lo; p != g.byNet.end() && p->netCode == kv.first; ++p) {
+        for (auto p = lo; p != g.byNet.end() && p->netCode == code; ++p) {
             const double dx = p->x - sx, dy = p->y - sy;
             if (dx * dx + dy * dy <= kAoiDropRadius * kAoiDropRadius) continue;
-            out.push_back({ p->index, kv.first });
+            out.push_back({ p->index, code });
             break;   // 전의 훑기는 처음 먼 것에서 그 번호를 introAt 에서 지워, 뒤의 같은 번호는 안 봤다
         }
     }
@@ -1016,7 +1016,7 @@ void Server::AoiStaticsLeaving(const std::vector<WorldStatic>& st, const StaticG
 
 // ★ 09-28 — `only` 가 있으면 그 번호들만(시야 반경이 꺼진 판에서 게임 중 새로 놓인 물건 — 버리기·되돌리기)
 static void AppendAoiStatics(const std::vector<Server::WorldStatic>& statics, const Server::StaticGrid& grid,
-                             AliasTable& tbl, std::map<uint16_t, uint32_t>& introAt,
+                             AliasTable& tbl, IntroSet& introAt,
                              uint32_t frame, int sx, int sy,
                              int& baseX, int& baseY, UpdateMsg& m,
                              const std::set<uint16_t>* only = nullptr) {
@@ -1039,7 +1039,7 @@ static void AppendAoiStatics(const std::vector<Server::WorldStatic>& statics, co
         e.alias = 0xff;                    // 소개는 늘 전체번호+절대 — 별칭이 있어도
         e.netCode = nr.w->netCode;         // (별칭 재사용은 「움직이는 것」의 규약이다)
         e.absolute = true;
-        introAt[nr.w->netCode] = frame;
+        introAt.insert(nr.w->netCode);
         baseX = nr.w->x;
         baseY = nr.w->y;
         m.objects.push_back(e);
@@ -1056,7 +1056,7 @@ static void AppendAoiStatics(const std::vector<Server::WorldStatic>& statics, co
 // ⚠ 골라낸 것은 `introAt` 에서 지운다. 그래야 되돌아왔을 때 다시 소개된다.
 // ★ 11-14 최적화 3차 개선 — 바닥 물건 전부를 훑던 것을 소개해 둔 번호만 보게(`Server::AoiStaticsLeaving`).
 //   고르는 것 · 차례는 전과 같다 — 목록 차례로 돌려받아 그 차례로 담고 지운다.
-static void CollectAoiExits(std::map<uint16_t, uint32_t>& introAt,
+static void CollectAoiExits(IntroSet& introAt,
                             const std::vector<Server::WorldStatic>& statics, const Server::StaticGrid& grid,
                             int sx, int sy, std::vector<uint16_t>& gone) {
     static thread_local std::vector<std::pair<uint32_t, uint16_t>> leave;

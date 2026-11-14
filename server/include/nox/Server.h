@@ -13,6 +13,7 @@
 // 지금 답하는 것은 접속 절차 세 자리뿐이다. 그 밖의 오프코드는 세기만 한다.
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdio>
@@ -803,6 +804,39 @@ struct LeftLink {
     std::string addr;         // 기록용(`Session::addrText`)
 };
 
+// ★ 11-15 최적화 5차 개선 — 정적 소개 기록(`Session::staticIntroAt`)을 **번호 오름차순으로 붙여 둔 배열**로.
+//   전에는 `std::map<uint16_t, uint32_t>` 였다 — 272방 표본(관리자 없이 함수별 시간 · `_out/opt/sample_20261115_041818_r272`)에서
+//   들어옴(`AoiStaticsEntering`)의 `introAt.count` 가 std::map 찾기로 게임 스레드 표본의 20.4% 였다(실측).
+//   값(소개한 프레임)은 적기만 하고 읽는 곳이 없어(grep `staticIntroAt`) 번호만 둔다.
+//   왜 빨라지나(짐작 · 안 잼): std::map 은 마디마다 따로 할당된 나무라 찾기 한 번이 흩어진 메모리를 여러 번 밟는다 — 배열은 번호가 이어 붙어 있다.
+//   넣기 · 빼기는 뒤를 한 칸씩 밀지만 소개 · 나감 때만 일어나고, 찾기는 틱마다 · 받는 사람마다 · 반경 안 물건마다 일어난다.
+//   돌기는 전과 같이 번호 오름차순이다 — `AoiStaticsLeaving` 이 byNet 과 나란히 앞으로만 가는 찾기가 여기에 기댄다.
+//   다른 길을 안 쓴 까닭 — 65536 비트 표(사람당 8KB)는 찾기는 더 빠르나 나감이 번호 차례로 돌 때 표 전체를 훑어야 하고,
+//   unordered_set 은 차례가 없어 위의 앞으로만 가는 찾기가 깨진다.
+class IntroSet {
+public:
+    using const_iterator = std::vector<uint16_t>::const_iterator;
+    size_t count(uint16_t netCode) const { return std::binary_search(v_.begin(), v_.end(), netCode) ? 1u : 0u; }
+    void insert(uint16_t netCode) {
+        const auto it = std::lower_bound(v_.begin(), v_.end(), netCode);
+        if (it == v_.end() || *it != netCode) v_.insert(it, netCode);
+    }
+    size_t erase(uint16_t netCode) {
+        const auto it = std::lower_bound(v_.begin(), v_.end(), netCode);
+        if (it == v_.end() || *it != netCode) return 0;
+        v_.erase(it);
+        return 1;
+    }
+    void clear() { v_.clear(); }
+    bool empty() const { return v_.empty(); }
+    size_t size() const { return v_.size(); }
+    const_iterator begin() const { return v_.begin(); }
+    const_iterator end() const { return v_.end(); }
+
+private:
+    std::vector<uint16_t> v_;   // 번호 오름차순 · 겹침 없음
+};
+
 struct Session {
     int64_t sessionId = 0;        // 세션 번호(10-08 조각 4 — 전에는 주소 글자)
     std::string addrText;    // 그 세션의 주소 — 기록용
@@ -1187,7 +1221,8 @@ struct Session {
     //   입력이 1,499B 로 한 번에 토해지고 침묵·화면 검정). 클라는 스냅샷 소개만으로
     //   별칭을 각 1번 알려 주므로(pa2 실측: 정적 20개 a5 각 ×1) 재소개가 필요 없다 —
     //   별칭이 아직/다시 없을 때만, 물체당 2초에 1번으로 눌러 소개한다.
-    std::map<uint16_t, uint32_t> staticIntroAt;
+    // ★ 11-15 최적화 5차 — 값(프레임)은 읽는 곳이 없어 이제 **소개한 번호만** 둔다(`IntroSet` 주석).
+    IntroSet staticIntroAt;
 
     // 이 사람에게 **지금 보이는 중인** 크리처 번호 (2026-09-13, `--creature-aoi` 일 때만 쓴다).
     // 정답지는 오브젝트 쪽에 플레이어별 비트(+148)로 든다(`GAME4_1.c:4488`). 여기선 사람 수가 적어
@@ -1870,12 +1905,12 @@ public:
     // 들어옴 — 반경 kAoiRadius 안 · 아직 소개 안 한(introAt 에 없는) · only 가 있으면 그 번호인 물건의 (거리², 목록 차례)를
     //   **목록 차례로**(= 전의 전부 훑기 차례 — 뒤의 가까운 순 고르기가 같은 것을 고르게).
     static void AoiStaticsEntering(const std::vector<WorldStatic>& st, const StaticGrid& g,
-                                   const std::map<uint16_t, uint32_t>& introAt, int sx, int sy,
+                                   const IntroSet& introAt, int sx, int sy,
                                    const std::set<uint16_t>* only, std::vector<std::pair<double, uint32_t>>& out);
     // 나감 — 소개해 둔 번호 중 kAoiDropRadius 밖인 물건의 (목록 차례, 번호)를 목록 차례로. 같은 번호가 여럿이면 목록에서 처음 먼 것 하나.
     //   introAt 에서 지우기는 부르는 쪽(`CollectAoiExits`).
     static void AoiStaticsLeaving(const std::vector<WorldStatic>& st, const StaticGrid& g,
-                                  const std::map<uint16_t, uint32_t>& introAt, int sx, int sy,
+                                  const IntroSet& introAt, int sx, int sy,
                                   std::vector<std::pair<uint32_t, uint16_t>>& out);
     // 바닥 물건 목록 — **바꾸는 길을 여기로만** 모아 칸 색인이 늘 목록과 맞게 한다.
     //   읽기는 std::vector 그대로(const) · 바꾸기(넣기 · 빼기 · 통째 바꾸기)는 표시만 하고 색인은 다음에 꺼낼 때 다시 만든다.
