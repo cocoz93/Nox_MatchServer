@@ -20974,6 +20974,65 @@ void TestStaticGridSameAsFullScan() {
     Check(b.empty(), "빈 목록에서 들어옴이 나왔다");
 }
 
+// ★ 11-15 최적화 4차 개선 — 별칭 묶음(`AliasTable::head_` · `next_`)으로 찾은 칸이 **전의 1번부터 훑기와 같은가**.
+//   기준은 시험 안에 둔 그림자 칸 표(Set · Clear 를 똑같이 따라 함)와 고치기 전 `FindByObject` 고리 그대로.
+//   번호를 아래 바이트가 같은 몇 개로 몰아 묶음을 길게 하고, 같은 (번호, 종류)가 두 칸에 들어 앞 칸이 지난 경우를 일부러 만든다.
+void TestAliasBucketSameAsLinear() {
+    std::printf("\n[별칭 묶음 찾기 = 1번부터 훑기]\n");
+    struct Shadow { uint16_t netCode = 0, type = 0; uint32_t deadline = 0; bool used = false; };
+    Shadow sh[256];
+    nox::AliasTable t;
+    t.Clear();
+    uint32_t seed = 4242;
+    auto rnd = [&](uint32_t n) { seed = seed * 1103515245u + 12345u; return ((seed >> 8) & 0xFFFFu) % n; };
+    const uint16_t pool[] = { 0x0105, 0x0205, 0x0305, 0x0405, 0x0106, 0x0206, 0x01FF, 0x0100, 0x0001, 0x00FE, 0x1234, 0x0034 };
+    const size_t poolN = sizeof(pool) / sizeof(pool[0]);
+    auto refFind = [&](uint16_t nc, uint16_t ty, uint32_t frame) {
+        for (int a = nox::kAliasMin; a <= nox::kAliasMax; ++a)
+            if (sh[a].used && sh[a].netCode == nc && sh[a].type == ty && sh[a].deadline >= frame) return a;
+        return -1;
+    };
+    auto set = [&](int a, uint16_t nc, uint16_t ty, uint32_t dl) {
+        t.Set(a, nc, ty, dl);
+        if (a >= nox::kAliasMin && a <= nox::kAliasMax) sh[a] = Shadow{ nc, ty, dl, true };
+    };
+    size_t queries = 0, hits = 0, deepHits = 0, dupFirstExpired = 0, mismatch = 0, clears = 0;
+    uint32_t frame = 1000;
+    for (int step = 0; step < 200000; ++step) {
+        const uint32_t op = rnd(100);
+        if (op < 40) {                                      // 클라가 알려 준 칸 그대로 적기(a5) — 아무 칸 · 범위 밖도 가끔
+            int a = static_cast<int>(rnd(258)) - 1;         // -1 ~ 256
+            set(a, pool[rnd(poolN)], static_cast<uint16_t>(rnd(3)), frame - 30 + rnd(120));
+        } else if (op < 55) {                               // 서버 배정(Assign — Generate + Set)
+            const uint16_t nc = pool[rnd(poolN)], ty = static_cast<uint16_t>(rnd(3));
+            const int a = t.Assign(nc, ty, frame);
+            if (a > 0) sh[a] = Shadow{ nc, ty, frame + nox::kAliasTTL, true };
+        } else if (op < 56) {
+            t.Clear();
+            for (auto& s : sh) s = Shadow{};
+            ++clears;
+        } else {
+            const uint16_t nc = (rnd(10) == 0) ? static_cast<uint16_t>(rnd(65536)) : pool[rnd(poolN)];
+            const uint16_t ty = static_cast<uint16_t>(rnd(3));
+            ++queries;
+            const int want = refFind(nc, ty, frame), got = t.FindByObject(nc, ty, frame);
+            if (want != got) ++mismatch;
+            if (want > 0) {
+                ++hits;
+                if (want != static_cast<uint8_t>(nc) && static_cast<uint8_t>(nc) >= nox::kAliasMin) ++deepHits;
+                for (int a = nox::kAliasMin; a < want; ++a)   // 앞 칸에 같은 (번호, 종류)가 있는데 기한이 지났다 — 지나쳐야 한다
+                    if (sh[a].used && sh[a].netCode == nc && sh[a].type == ty) { ++dupFirstExpired; break; }
+            }
+        }
+        if (rnd(4) == 0) ++frame;
+    }
+    std::printf("  찾기 %zu번 · 찾음 %zu(제 아래 바이트 칸이 아닌 것 %zu · 앞 칸 같은 것이 지나 지나친 것 %zu) · 비우기 %zu · 다름 %zu\n",
+                queries, hits, deepHits, dupFirstExpired, clears, mismatch);
+    Check(mismatch == 0, "별칭 묶음 찾기가 1번부터 훑기와 다른 칸을 돌려줬다");
+    Check(hits > 10000 && deepHits > 1000 && dupFirstExpired > 100 && clears > 100,
+          "찾음 · 깊은 칸 · 앞 칸 지남 · 비우기가 너무 적다 — 이 시험이 차례와 묶음 고치기를 못 본다");
+}
+
 // ── 조각 I(09-16) 장애물이 소환수로 둔갑하던 것 ──────────────────────
 //
 // ★ 날아가는 것이 닿는 것은 **셋**이다 — 사람 · 소환수 · 장애물.
@@ -35298,6 +35357,7 @@ int main() {
     TestObstacleIsNotAPet();
     TestObstacleGridSameAsFullScan();
     TestStaticGridSameAsFullScan();
+    TestAliasBucketSameAsLinear();
     TestPetDamageStops();
     TestReportKindsMatchSource();
     TestMsgLenSiblings();

@@ -53,10 +53,18 @@ struct AliasSlot {
     bool used = false;
 };
 
+// ★ 11-15 최적화 4차 개선 — **번호의 아래 바이트로 칸을 묶어 둔다**(`head_` · `next_`).
+//   `FindByObject` 는 받는 사람 × 보이는 것마다 부르는데, 전에는 칸 254개를 1번부터 훑었다 —
+//   192방 M8 에서 이것을 부르는 `FillEntry` 가 게임 스레드의 13.4%(이 함수는 표에 따로 안 잡혀 몫은 그 안 일부).
+//   같은 번호의 칸은 모두 아래 바이트가 같으니 그 묶음 하나에 다 들고, 묶음 안은 **칸 번호 오름차순**이라
+//   묶음을 앞에서부터 보면 「1번부터 훑어 처음 맞는 칸」과 같은 칸이 나온다. 쓰지 않는 칸은 어느 묶음에도 없다
+//   (전에도 `used` 가 거짓이면 안 맞았다). 묶음을 바꾸는 곳은 `Set` · `Clear` 뿐 — 칸을 쓰는 길이 그 둘뿐이라서다.
 class AliasTable {
 public:
     void Clear() {
         for (auto& s : slots_) s = AliasSlot{};
+        std::memset(head_, 0, sizeof(head_));
+        std::memset(next_, 0, sizeof(next_));
     }
 
     // 클라와 똑같은 규칙으로 자리를 고른다. 못 잡으면 -1.
@@ -76,7 +84,10 @@ public:
 
     void Set(int alias, uint16_t netCode, uint16_t type, uint32_t deadline) {
         if (alias < kAliasMin || alias > kAliasMax) return;
-        slots_[alias] = AliasSlot{netCode, type, deadline, true};
+        AliasSlot& s = slots_[alias];
+        if (s.used) Unlink(alias, static_cast<uint8_t>(s.netCode));   // 옛 번호의 묶음에서 뺀다
+        s = AliasSlot{netCode, type, deadline, true};
+        Link(alias, static_cast<uint8_t>(netCode));
     }
 
     // 자리를 잡고 그 자리에 등록까지 한다. 서버가 내보낼 때 쓰는 길.
@@ -116,10 +127,11 @@ public:
     //   서버가 그 별칭으로 계속 보내는 동안은 클라 쪽 칸도 살아 있다 — 쓸 때마다 민다.
     //   ⚠ 임대가 **이미** 지난 자리는 여전히 안 쓴다 — 시야 밖으로 나가 한동안 안 보낸
     //     물체의 칸은 클라가 다른 것에 내줬을 수 있다.
+    //   ★ 11-15 최적화 4차 개선 — 칸 254개 대신 이 번호의 묶음만 오름차순으로 본다(클래스 머리 주석). 돌려주는 칸은 전과 같다.
     int FindByObject(uint16_t netCode, uint16_t type, uint32_t frame) {
-        for (int a = kAliasMin; a <= kAliasMax; ++a) {
-            AliasSlot& s = slots_[a];
-            if (s.used && s.netCode == netCode && s.type == type && s.deadline >= frame)
+        for (int a = head_[static_cast<uint8_t>(netCode)]; a != 0; a = next_[a]) {
+            const AliasSlot& s = slots_[a];
+            if (s.netCode == netCode && s.type == type && s.deadline >= frame)
                 return a;   // ★ 11-13 — 기한을 늘리지 않는다(위 정정)
         }
         return -1;
@@ -143,7 +155,24 @@ public:
     //     클라는 옛 칸을 재사용하고 `a5` 를 안 보내 서버가 영영 별칭을 못 되찾고, 매 틱 재소개로 죽는다.
 
 private:
+    // 묶음에 넣는다 — 칸 번호가 커지는 차례를 지킨다(묶음엔 아래 바이트가 같은 칸만 들어 앞에서부터 자리를 찾는다)
+    void Link(int alias, uint8_t bucket) {
+        uint8_t* p = &head_[bucket];
+        while (*p != 0 && *p < alias) p = &next_[*p];
+        next_[alias] = *p;
+        *p = static_cast<uint8_t>(alias);
+    }
+    void Unlink(int alias, uint8_t bucket) {
+        uint8_t* p = &head_[bucket];
+        while (*p != 0 && *p != alias) p = &next_[*p];
+        if (*p == 0) return;   // 없다 — Set · Clear 만 묶음을 바꾸니 안 생긴다
+        *p = next_[alias];
+        next_[alias] = 0;
+    }
+
     AliasSlot slots_[256];
+    uint8_t head_[256] = {};   // 번호 아래 바이트 → 그 묶음의 첫 칸(0 = 없음 · 칸 0 은 안 쓴다)
+    uint8_t next_[256] = {};   // 칸 → 같은 묶음의 다음 칸(0 = 끝)
 };
 
 }  // namespace nox
