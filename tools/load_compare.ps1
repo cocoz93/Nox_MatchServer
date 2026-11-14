@@ -1,4 +1,4 @@
-﻿# 최적화 바퀴 비교 — 플랜 `Docs/MO_OPTIMIZE_PLAN_1114.md` 2절 4 · 5 · 6번을 한 번에 돈다.
+﻿# 최적화 개선 비교 — 플랜 `Docs/MO_OPTIMIZE_PLAN_1114.md` 2절 4 · 5 · 6번을 한 번에 돈다.
 #   ① 같은 결과 확인 — wirecmp 로 고치기 전 서버 두 번 · 고친 서버 한 번 녹음(같은 자동 클라 · 120초씩)해
 #      서버→클라 메시지 종류별 수가 고치기 전 두 번의 차이 폭 안인지 본다
 #   ② PC 확인 — 고치기 전 서버 64방 × 5분 1판. 틱합이 기준 중앙 ± DriftMs 밖이면 PC 가 느려진 것이라 멈춘다
@@ -17,11 +17,11 @@ param(
   [Parameter(Mandatory = $true)][string]$BaseExe,
   [int]$Runs = 3,
   [int]$Rooms = 64,
-  # 기준 세 판 틱합 — 첫째 묶음 M4 64방(`_out/load_series/20261113_225933/series.jsonl` · 4844f00). 채택하면 다음 바퀴는 그 세 판을 준다(플랜 2절 8번)
-  [double[]]$BaseTicks = @(288.39, 287.08, 288.68),
+  # 기준 세 판 틱합 — 첫째 묶음 M4 64방(`_out/load_series/20261113_225933/series.jsonl` · 4844f00). 채택하면 다음 개선은 그 세 판을 준다(플랜 2절 8번)
+  [string[]]$BaseTicks = @('288.39', '287.08', '288.68'),   # 글자로 받아 아래에서 쉼표로 나눠 수로 바꾼다(`-File` 은 a,b,c 를 문자열 하나로 넘긴다)
   [double]$AdoptMs = 4.8,           # 채택 = 세 판 모두 기준 최솟값보다 낮고 중앙값이 기준 중앙보다 이만큼 이상 낮음(판끼리 흔들림 1.6 의 세 배)
   [double]$DriftMs = 4.8,           # PC 확인 폭 — 11-14 사용자 「적당히 넓게」(처음 287.1~288.7 은 한 판이 들 확률이 절반이라 넓힘)
-  [double]$UptimeMaxHours = 1000,   # 바퀴 비교 판은 가동 시간 문턱을 푼다(11-14 사용자 「좋아 그렇게가자」 · 대신 ② PC 확인)
+  [double]$UptimeMaxHours = 1000,   # 개선 비교 판은 가동 시간 문턱을 푼다(11-14 사용자 「좋아 그렇게가자」 · 대신 ② PC 확인)
   [int]$WireSecs = 120,
   [switch]$SkipWire,                # ① 을 건너뜀(시험용)
   [string[]]$WireCaps = @(),        # 시험용 — 녹음 셋(기준1 · 기준2 · 고친)을 새로 뜨지 않고 이 파일들로 ① 판정만 하고 끝낸다
@@ -68,14 +68,18 @@ function F([double]$v) { return $v.ToString('0.00', $inv) }
 $size = 10; $window = 300
 $sec = [int][math]::Ceiling($Rooms * $size * 0.2) + $window + 60
 $extra = '--no-event-log --no-first-seen --no-op-count'
-$baseMed = Median $BaseTicks
-$baseMin = ($BaseTicks | Measure-Object -Minimum).Minimum
+# `-File` 로 부르면 `-BaseTicks a,b,c` 가 문자열 하나로 온다 — [double[]] 로 받으면 변환 오류로 대본이 아예 안 뜬다(11-14 2차 개선).
+#   매개 변수는 [string[]] 꼴이 붙어 있어 수를 다시 넣으면 글자로 돌아간다 — 수는 따로 담는다
+$baseTicksV = @(($BaseTicks -join ',') -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ } | ForEach-Object { [double]::Parse($_, $inv) })
+if ($baseTicksV.Count -lt 1) { Write-Host "[멈춤] -BaseTicks 가 비었다"; exit 2 }
+$baseMed = Median $baseTicksV
+$baseMin = ($baseTicksV | Measure-Object -Minimum).Minimum
 $driftLo = $baseMed - $DriftMs; $driftHi = $baseMed + $DriftMs
 
 $head = (& git -C $repo rev-parse --short HEAD).Trim()
 Log "[비교] $Label · 커밋 $head + 미커밋 고침 · 고치기 전 $BaseExe · 고친 $fixExe"
 Log "[비교] 방 $Rooms × $size · 실행 $sec 초 · 측정 구간 $window 초 · 끈 계측 $extra · 가동 시간 문턱 $UptimeMaxHours"
-Log "[비교] 기준 틱합 $(($BaseTicks | ForEach-Object { F $_ }) -join ' · ') · 중앙 $(F $baseMed) · 채택 = 세 판 모두 $(F $baseMin) 미만 · 중앙 $(F ($baseMed - $AdoptMs)) 이하 · PC 확인 폭 $(F $driftLo)~$(F $driftHi)"
+Log "[비교] 기준 틱합 $(($baseTicksV | ForEach-Object { F $_ }) -join ' · ') · 중앙 $(F $baseMed) · 채택 = 세 판 모두 $(F $baseMin) 미만 · 중앙 $(F ($baseMed - $AdoptMs)) 이하 · PC 확인 폭 $(F $driftLo)~$(F $driftHi)"
 if (-not $DryRun) {
   [IO.File]::WriteAllText((Join-Path $outDir 'fix.diff'), ((& git -C $repo diff HEAD) -join "`n") + "`n", (New-Object Text.UTF8Encoding($false)))
 }
@@ -83,10 +87,21 @@ if (-not $DryRun) {
 # ── ① 같은 결과 확인 — 녹음 셋 ──
 #   서버 인자에 `--aoi` 를 준다 — wirecmp 기본 인자에는 시야 반경이 없어 정적 소개 길(AppendAoiStatics · CollectAoiExits)을 안 지난다
 function Wire-Counts([string]$cap) {
+  # ★ 11-14 2차 개선 — **클라가 마지막으로 보낸 순간까지만 센다.** 자동 클라를 닫은 뒤에도 서버는 끊김을 알 때까지
+  #   그 사람을 마지막 입력 그대로 굴린다 — 닫는 순간 달리던 중이면 그 꼬리에 발소리(`0xA7` WalkOnDirt · RunOnDirt ·
+  #   HumanMaleExertionLight)가 더 붙는다. 닫는 순간의 자세는 자동 클라 대본의 박자 탓이지 서버 고침 탓이 아니다:
+  #   2차 개선 첫 판정이 `0xA7` 기준 61 · 59 · 고친 69 로 멈췄는데 고친 쪽의 8건이 모두 클라 마지막 줄 뒤였고,
+  #   장애물 고침이 없는 1차 개선 녹음(`opt_t_same_fix`)도 67건 중 8건이 그 뒤였다. 클라 마지막 줄까지는 61 · 59 · 61
+  $lastCs = $null; $lines = 0
+  foreach ($ln in [IO.File]::ReadLines($cap)) { $lines++; if ($ln -match '^(\d\d:\d\d:\d\d\.\d{3}) C->S ') { $lastCs = $Matches[1] } }
+  if (-not $lastCs) { Log "[멈춤] 녹음 $cap 에 클라→서버 줄이 없다(읽은 줄 $lines)"; exit 4 }
   # nox_opcount 는 UTF-8 로 찍는다 — PowerShell 5.1 은 바깥 프로그램 출력을 콘솔 인코딩(CP949)으로 읽어 한글 머리줄이 깨지고 0종류가 된다(11-14 시험)
   $prevEnc = [Console]::OutputEncoding
   [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
-  try { $out = @(& $opcount $cap 2>&1 | ForEach-Object { "$_" }) } finally { [Console]::OutputEncoding = $prevEnc }
+  try { $out = @(& $opcount $cap '--to' $lastCs 2>&1 | ForEach-Object { "$_" }) } finally { [Console]::OutputEncoding = $prevEnc }
+  $tail = 0
+  foreach ($ln in [IO.File]::ReadLines($cap)) { if ($ln -match '^(\d\d:\d\d:\d\d\.\d{3}) S->C ' -and $Matches[1] -gt $lastCs) { $tail++ } }
+  Log "[녹음 자르기] $(Split-Path -Leaf $cap) · 클라 마지막 $lastCs · 그 뒤 서버→클라 $tail 통 뺌(읽은 줄 $lines)"
   $h = @{}; $in = $false
   foreach ($ln in $out) {
     if ($ln -match '^-- 서버→클라 상위') { $in = $true; continue }
@@ -150,7 +165,7 @@ function Run-One([string]$tag, [string]$exe) {
       $m = [regex]::Match($ln, '^지문: (.+)\\env\.txt$'); if ($m.Success -and -not $runDir) { $runDir = $m.Groups[1].Value }
     }
     if ($code -ne 0 -or -not $runDir) { Log "  load_run 종료 코드 $code — 다시"; continue }
-    # 띄운 서버가 맞나 — 판 지문의 「서버 명령줄」 첫머리가 넘긴 실행 파일이어야 한다. 11-14 바퀴 1 은 load_run 이 `-ServerExe` 를
+    # 띄운 서버가 맞나 — 판 지문의 「서버 명령줄」 첫머리가 넘긴 실행 파일이어야 한다. 11-14 1차 개선은 load_run 이 `-ServerExe` 를
     #   지역 변수로 덮어(PowerShell 은 변수 이름 대소문자를 안 가림) 「고치기 전」 판이 build\Release 를 띄웠는데 아무 데서도 안 걸렸다
     $envTxt = Join-Path $runDir 'env.txt'
     $cmdLine = @(Get-Content -Encoding UTF8 -LiteralPath $envTxt | Where-Object { $_ -match '^서버 명령줄: ' }) | Select-Object -First 1
