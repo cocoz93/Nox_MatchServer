@@ -20839,6 +20839,141 @@ void TestObstacleGridSameAsFullScan() {
     Check(cand.empty(), "빈 장애물 목록에서 후보가 나왔다");
 }
 
+// ★ 11-14 최적화 3차 개선 — 바닥 물건 칸 색인으로 고른 들어옴 · 나감이 **전의 전부 훑기와 같은가**(내용 · 차례 · 같은 번호 여럿).
+//   기준은 고치기 전 `AppendAoiStatics` 고리와 `CollectAoiExits` 를 그대로 옮겨 둔 것.
+void TestStaticGridSameAsFullScan() {
+    std::printf("\n[바닥 물건 칸 색인 = 전부 훑기]\n");
+    using WS = nox::Server::WorldStatic;
+    uint32_t seed = 777;
+    auto rndi = [&](int lo, int hi) {
+        seed = seed * 1103515245u + 12345u;
+        return lo + static_cast<int>(((seed >> 8) & 0xFFFFu) % static_cast<uint32_t>(hi - lo + 1));
+    };
+    std::vector<WS> st;
+    for (int i = 0; i < 900; ++i) {
+        WS w;
+        w.netCode = static_cast<uint16_t>(100 + i);
+        w.x = rndi(-300, 6400); w.y = rndi(-300, 6400);   // 맵 밖(0 아래 · 6000 위)도 섞는다 — 끝 칸 붙이기
+        if (i % 9 == 0) w.x = 85 * rndi(0, 71);           // 칸 경계 위
+        if (i % 41 == 0 && i > 0) w.netCode = st[static_cast<size_t>(rndi(0, i - 1))].netCode;   // 같은 번호 여럿
+        st.push_back(w);
+    }
+    // 같은 번호 셋이 한 사람 둘레 안 · 밖에 갈린다 — 나감은 목록에서 「처음 먼 것」 하나(전의 훑기는 그걸 지운 뒤 뒤엣것을 안 봤다)
+    WS dupA; dupA.netCode = 9000; dupA.x = 3000; dupA.y = 3000;
+    WS dupB = dupA; dupB.x = 5000;
+    WS dupC = dupA; dupC.x = 1000;
+    st.push_back(dupA); st.push_back(dupB); st.push_back(dupC);
+    const uint32_t dupBIndex = static_cast<uint32_t>(st.size() - 2);
+    WS edge; edge.netCode = 9001; edge.x = 2700; edge.y = 1500;   // (2000,1500) 에서 정확히 반경 700 — 「안」이다(d² > R² 만 뺀다)
+    st.push_back(edge);
+    nox::Server::StaticGrid g;
+    nox::Server::BuildStaticGrid(st, g);
+
+    auto refEnter = [&](const std::vector<WS>& list, const std::map<uint16_t, uint32_t>& introAt, int sx, int sy,
+                        const std::set<uint16_t>* only, std::vector<std::pair<double, uint32_t>>& out) {
+        out.clear();
+        for (size_t i = 0; i < list.size(); ++i) {
+            const WS& w = list[i];
+            const double dx = w.x - sx, dy = w.y - sy;
+            const double d2 = dx * dx + dy * dy;
+            if (d2 > nox::kAoiRadius * nox::kAoiRadius) continue;
+            if (only && !only->count(w.netCode)) continue;
+            if (introAt.count(w.netCode)) continue;
+            out.push_back({ d2, static_cast<uint32_t>(i) });
+        }
+    };
+    auto refLeave = [&](std::map<uint16_t, uint32_t>& introAt, int sx, int sy, std::vector<uint16_t>& gone) {
+        for (const auto& w : st) {
+            auto it = introAt.find(w.netCode);
+            if (it == introAt.end()) continue;
+            const double dx = w.x - sx, dy = w.y - sy;
+            if (dx * dx + dy * dy <= nox::kAoiDropRadius * nox::kAoiDropRadius) continue;
+            gone.push_back(w.netCode);
+            introAt.erase(it);
+        }
+    };
+    size_t queries = 0, enterHit = 0, enterMany = 0, leaveHit = 0, leaveMany = 0, onlyRuns = 0, mismatchE = 0, mismatchL = 0;
+    std::vector<std::pair<double, uint32_t>> a, b;
+    std::vector<std::pair<uint32_t, uint16_t>> lv;
+    std::vector<uint16_t> goneRef, goneNew;
+    auto one = [&](int sx, int sy, bool withOnly) {
+        ++queries;
+        std::map<uint16_t, uint32_t> intro;
+        for (const auto& w : st) if (rndi(0, 2) == 0) intro[w.netCode] = 1;
+        intro[60000] = 1; intro[5] = 1;                    // 목록에 없는 번호(사라진 물건)
+        std::set<uint16_t> onlySet;
+        const std::set<uint16_t>* only = nullptr;
+        if (withOnly) { ++onlyRuns; for (const auto& w : st) if (rndi(0, 3) == 0) onlySet.insert(w.netCode); only = &onlySet; }
+        refEnter(st, intro, sx, sy, only, a);
+        nox::Server::AoiStaticsEntering(st, g, intro, sx, sy, only, b);
+        if (a != b) ++mismatchE;
+        if (!a.empty()) ++enterHit;
+        if (a.size() >= 2) ++enterMany;
+        std::map<uint16_t, uint32_t> introRef = intro, introNew = intro;
+        goneRef.clear(); goneNew.clear();
+        refLeave(introRef, sx, sy, goneRef);
+        nox::Server::AoiStaticsLeaving(st, g, introNew, sx, sy, lv);
+        for (const auto& l : lv) { goneNew.push_back(l.second); introNew.erase(l.second); }
+        if (goneRef != goneNew || introRef != introNew) ++mismatchL;
+        if (!goneRef.empty()) ++leaveHit;
+        if (goneRef.size() >= 2) ++leaveMany;
+    };
+    for (int i = 0; i < 3000; ++i) one(rndi(-1000, 7000), rndi(-1000, 7000), i % 5 == 0);
+    for (int k = 0; k <= 72; ++k) one(85 * k, 85 * k, false);   // 칸 경계 위에 선 사람
+    one(2000, 1500, false);
+    std::printf("  사람 자리 %zu개(그중 only %zu) · 들어옴 있음 %zu(둘 이상 %zu) · 나감 있음 %zu(둘 이상 %zu) · 다름 들어옴 %zu 나감 %zu\n",
+                queries, onlyRuns, enterHit, enterMany, leaveHit, leaveMany, mismatchE, mismatchL);
+    Check(mismatchE == 0, "칸 색인 들어옴이 전부 훑기와 다르다(빠짐 · 더함 · 차례)");
+    Check(mismatchL == 0, "칸 색인 나감이 전부 훑기와 다르다(빠짐 · 더함 · 차례 · 같은 번호)");
+    Check(enterMany > 1000 && leaveMany > 1000 && onlyRuns > 500, "들어옴 · 나감이 둘 이상인 자리가 너무 적다 — 이 시험이 차례를 못 본다");
+
+    // 정확히 반경 위 · 같은 번호 갈림 — 무작위가 못 밟을 수 있어 따로
+    std::map<uint16_t, uint32_t> none;
+    nox::Server::AoiStaticsEntering(st, g, none, 2000, 1500, nullptr, b);
+    bool edgeIn = false;
+    for (const auto& e2 : b) if (st[e2.second].netCode == 9001) edgeIn = true;
+    Check(edgeIn, "정확히 반경 700 인 물건이 들어옴에서 빠졌다");
+    std::map<uint16_t, uint32_t> dupIntro{ { 9000, 1 } };
+    nox::Server::AoiStaticsLeaving(st, g, dupIntro, 3000, 3000, lv);
+    Check(lv.size() == 1 && lv[0].first == dupBIndex && lv[0].second == 9000, "같은 번호 셋 중 목록에서 처음 먼 것(둘째)을 안 골랐다");
+
+    // 색인이 목록과 안 맞으면(개수 다름) 그 자리에서 만들어 쓴다
+    std::vector<WS> st2 = st;
+    WS late; late.netCode = 9100; late.x = 400; late.y = 400;
+    st2.push_back(late);
+    refEnter(st2, none, 400, 400, nullptr, a);
+    nox::Server::AoiStaticsEntering(st2, g, none, 400, 400, nullptr, b);
+    Check(std::any_of(b.begin(), b.end(), [&](const std::pair<double, uint32_t>& p) { return st2[p.second].netCode == 9100; }),
+          "개수가 다른 색인에서 새 물건을 못 봤다");
+    Check(a == b, "개수가 다른 색인에서 전부 훑기와 다르다");
+
+    // StaticList — 바꾸는 길마다 따로(앞에서 색인을 한 번 꺼내 깨끗하게 해 둔 뒤) 다음 꺼낼 때 새로 서는가.
+    //   ⚠ 개수가 다를 때는 색인 개수(`grid().count`)를 직접 본다 — 들어옴은 개수가 다르면 그 자리에서 만들어 써 빠뜨림을 가린다
+    nox::Server::StaticList L;
+    (void)L.grid();
+    L = st;                                              // 통째 넣기(복사)
+    Check(L.grid().count == st.size(), "StaticList 통째 넣기(복사) 뒤 색인이 옛 목록이다");
+    L.push_back(late);                                   // 넣기만
+    Check(L.grid().count == st.size() + 1, "StaticList 넣기 뒤 색인이 옛 목록이다");
+    L.erase(L.begin());                                  // 빼기만
+    Check(L.grid().count == st.size(), "StaticList 빼기 뒤 색인이 옛 목록이다");
+    (void)L.grid();
+    L.erase(L.begin());
+    late.netCode = 9101; late.x = 5200; late.y = 700;
+    L.push_back(late);                                   // 빼고 넣어 개수는 그대로 — 내용으로 본다
+    const std::vector<WS>& lv2 = L;
+    refEnter(lv2, none, 5200, 700, nullptr, a);
+    nox::Server::AoiStaticsEntering(lv2, L.grid(), none, 5200, 700, nullptr, b);
+    bool lateIn = false;
+    for (const auto& e2 : b) if (lv2[e2.second].netCode == 9101) lateIn = true;
+    Check(a == b && lateIn, "StaticList 빼고 넣기(개수 같음) 뒤 색인이 옛 목록을 가리킨다");
+    (void)L.grid();
+    L = std::vector<WS>{};                               // 통째 넣기(옮기기)
+    Check(L.grid().cols == 0 && L.grid().count == 0, "StaticList 비운 뒤 색인이 남았다");
+    nox::Server::AoiStaticsEntering(L, L.grid(), none, 0, 0, nullptr, b);
+    Check(b.empty(), "빈 목록에서 들어옴이 나왔다");
+}
+
 // ── 조각 I(09-16) 장애물이 소환수로 둔갑하던 것 ──────────────────────
 //
 // ★ 날아가는 것이 닿는 것은 **셋**이다 — 사람 · 소환수 · 장애물.
@@ -35162,6 +35297,7 @@ int main() {
     TestPlanBot();
     TestObstacleIsNotAPet();
     TestObstacleGridSameAsFullScan();
+    TestStaticGridSameAsFullScan();
     TestPetDamageStops();
     TestReportKindsMatchSource();
     TestMsgLenSiblings();

@@ -1852,6 +1852,57 @@ public:
         uint16_t pickupSound = 0;
         uint8_t bowReload = 0;
     };
+    // ★ 11-14 최적화 3차 개선 — 바닥 물건 칸 색인. 정적 시야(`AppendAoiStatics` 들어옴 · `CollectAoiExits` 나감)가
+    //   받는 사람마다 매 틱 바닥 물건 **전부**를 두 번 훑었다 — 192방 M8 에서 둘이 게임 스레드의 21.4% + 12.0%.
+    //   정답지는 화면 사각형만 지도 칸으로 꺼낸다(`server.go:533-540` EachObjAndMissileInRect · 칸 85 `server/math.go:15`).
+    //   칸 c 의 물건은 items[cellStart[c] .. cellStart[c+1]) — 물건은 점이라 칸 하나에만 들고, 칸 안은 목록 차례 오름차순.
+    //   byNet = 같은 물건들을 (번호, 목록 차례) 오름차순으로 — 소개해 둔 것(번호)을 찾는 나감 쪽이 쓴다.
+    //   x · y · 번호를 칸에 같이 적어 거리 보기가 큰 `WorldStatic`(필드 스물아홉 개)을 안 건드린다.
+    struct StaticGrid {
+        int cols = 0, rows = 0;
+        size_t count = 0;                  // 만들 때의 물건 수
+        struct Item { uint32_t index; int32_t x, y; uint16_t netCode; };
+        std::vector<uint32_t> cellStart;   // 칸 수 + 1
+        std::vector<Item> items;
+        std::vector<Item> byNet;
+    };
+    static void BuildStaticGrid(const std::vector<WorldStatic>& st, StaticGrid& g);
+    // 들어옴 — 반경 kAoiRadius 안 · 아직 소개 안 한(introAt 에 없는) · only 가 있으면 그 번호인 물건의 (거리², 목록 차례)를
+    //   **목록 차례로**(= 전의 전부 훑기 차례 — 뒤의 가까운 순 고르기가 같은 것을 고르게).
+    static void AoiStaticsEntering(const std::vector<WorldStatic>& st, const StaticGrid& g,
+                                   const std::map<uint16_t, uint32_t>& introAt, int sx, int sy,
+                                   const std::set<uint16_t>* only, std::vector<std::pair<double, uint32_t>>& out);
+    // 나감 — 소개해 둔 번호 중 kAoiDropRadius 밖인 물건의 (목록 차례, 번호)를 목록 차례로. 같은 번호가 여럿이면 목록에서 처음 먼 것 하나.
+    //   introAt 에서 지우기는 부르는 쪽(`CollectAoiExits`).
+    static void AoiStaticsLeaving(const std::vector<WorldStatic>& st, const StaticGrid& g,
+                                  const std::map<uint16_t, uint32_t>& introAt, int sx, int sy,
+                                  std::vector<std::pair<uint32_t, uint16_t>>& out);
+    // 바닥 물건 목록 — **바꾸는 길을 여기로만** 모아 칸 색인이 늘 목록과 맞게 한다.
+    //   읽기는 std::vector 그대로(const) · 바꾸기(넣기 · 빼기 · 통째 바꾸기)는 표시만 하고 색인은 다음에 꺼낼 때 다시 만든다.
+    //   왜 감쌌나: 물건은 줍기 · 버리기 · 사라짐 · 판 끝 되돌리기로 판 중에 바뀐다(판 중에 안 바뀌는 장애물과 다름).
+    //   바꾸는 자리를 하나라도 빠뜨리면 색인이 옛 목록을 가리켜 엉뚱한 것을 소개한다 — 목록을 직접 못 바꾸게 해 컴파일러가 잡게 했다.
+    class StaticList {
+    public:
+        using Vec = std::vector<WorldStatic>;
+        StaticList& operator=(const Vec& v) { v_ = v; dirty_ = true; return *this; }
+        StaticList& operator=(Vec&& v) { v_ = std::move(v); dirty_ = true; return *this; }
+        operator const Vec&() const { return v_; }
+        size_t size() const { return v_.size(); }
+        bool empty() const { return v_.empty(); }
+        const WorldStatic& operator[](size_t i) const { return v_[i]; }
+        Vec::const_iterator begin() const { return v_.begin(); }
+        Vec::const_iterator end() const { return v_.end(); }
+        void push_back(const WorldStatic& w) { v_.push_back(w); dirty_ = true; }
+        void erase(Vec::const_iterator it) { v_.erase(it); dirty_ = true; }
+        const StaticGrid& grid() const {
+            if (dirty_) { BuildStaticGrid(v_, grid_); dirty_ = false; }
+            return grid_;
+        }
+    private:
+        Vec v_;
+        mutable StaticGrid grid_;
+        mutable bool dirty_ = true;
+    };
     void SetWorldStatics(std::vector<WorldStatic> v) { statics_ = std::move(v); }
     static Session::Carried CarriedFromStatic(const WorldStatic& w);   // ★ 09-30 — 바닥 물건 → 가방 항목(줍기와 시험 물건 주기가 같이 씀)
     // ★ 09-30 사람 판 시험용 — 들어온 사람마다 세계를 받은 지 2초 뒤 이 종류들을 가방에(틀은 `SetItemTemplate` — main 이 맵 물건에서 뜬다)
@@ -5538,7 +5589,7 @@ private:
     std::set<uint8_t> peerOps_{0x4c, 0x60};
     // 스폰 자리를 사람마다 몇 픽셀씩 벌리나. 기본 40 은 근접 사거리(45) 안이다.
     int spawnSpread_ = 40;
-    std::vector<WorldStatic> statics_;
+    StaticList statics_;   // ★ 11-14 최적화 3차 개선 — 칸 색인을 같이 든 목록(StaticList 주석)
     std::vector<WorldProp> props_;
     // ★ 09-22 — 사람이 문에 **가장 가까이 간 거리**. 「문 0」의 분모다
     double doorNearestDist_ = 1e18;

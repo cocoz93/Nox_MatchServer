@@ -909,26 +909,124 @@ static void Relativize(ObjEntry& e, uint16_t netCode, int wx, int wy,
 //   아이템을 매 틱 항목에 넣으면(별칭+상대라도, 문법이 전수 유효해도) 클라 게임
 //   루프가 첫 프레임에 멎는다 — ao1~ao6 이 전부 그 죽음이었다.
 //   여기서는 introAt(이 사람에게 소개한 물체)에 없는 것만 ff 로 1번 소개한다.
+// ★ 11-14 최적화 3차 개선 — 바닥 물건 칸 색인(`Server::StaticGrid` 주석)의 칸 크기와 칸 번호.
+//   장애물 칸 색인(`ObstacleCellOf`)과 같은 꼴 — 칸 85 = 정답지 버킷 크기 · 내림 + 양끝 붙이기(둘 다 단조라
+//   맵 밖 좌표의 물건도 끝 칸에 들고, 그 물건이 반경에 들 만큼 가까운 사각형은 그 끝 칸을 꼭 덮는다).
+namespace {
+constexpr double kStaticCell = 85.0;
+inline int StaticCellOf(double v, int n) {
+    const double f = std::floor(v / kStaticCell);
+    if (!(f >= 0.0)) return 0;
+    if (f >= static_cast<double>(n - 1)) return n - 1;
+    return static_cast<int>(f);
+}
+}  // namespace
+
+void Server::BuildStaticGrid(const std::vector<WorldStatic>& st, StaticGrid& g) {
+    g.count = st.size();
+    g.cols = g.rows = 0;
+    g.cellStart.clear();
+    g.items.clear();
+    g.byNet.clear();
+    if (st.empty()) return;
+    const int n = static_cast<int>(static_cast<double>(kMaxCoord) / kStaticCell) + 1;   // 6000 → 71 × 71 칸
+    g.cols = g.rows = n;
+    const size_t cellCount = static_cast<size_t>(n) * static_cast<size_t>(n);
+    auto cellOf = [n](const WorldStatic& w) {
+        return static_cast<size_t>(StaticCellOf(w.y, n)) * static_cast<size_t>(n) + static_cast<size_t>(StaticCellOf(w.x, n));
+    };
+    g.cellStart.assign(cellCount + 1, 0);
+    for (const auto& w : st) ++g.cellStart[cellOf(w) + 1];
+    for (size_t c = 0; c < cellCount; ++c) g.cellStart[c + 1] += g.cellStart[c];
+    g.items.resize(st.size());
+    g.byNet.resize(st.size());
+    std::vector<uint32_t> fill(g.cellStart.begin(), g.cellStart.end() - 1);
+    for (size_t i = 0; i < st.size(); ++i) {   // 차례가 커지는 순으로 넣으니 칸마다 오름차순이다
+        const StaticGrid::Item it{ static_cast<uint32_t>(i), st[i].x, st[i].y, st[i].netCode };
+        g.items[fill[cellOf(st[i])]++] = it;
+        g.byNet[i] = it;
+    }
+    std::sort(g.byNet.begin(), g.byNet.end(), [](const StaticGrid::Item& a, const StaticGrid::Item& b) {
+        return a.netCode != b.netCode ? a.netCode < b.netCode : a.index < b.index;
+    });
+}
+
+void Server::AoiStaticsEntering(const std::vector<WorldStatic>& st, const StaticGrid& g,
+                                const std::map<uint16_t, uint32_t>& introAt, int sx, int sy,
+                                const std::set<uint16_t>* only, std::vector<std::pair<double, uint32_t>>& out) {
+    out.clear();
+    if (g.count != st.size()) {   // 색인이 목록과 안 맞는다(StaticList 를 거치면 없는 일) — 이 자리에서 만들어 쓴다
+        StaticGrid fresh;
+        BuildStaticGrid(st, fresh);
+        AoiStaticsEntering(st, fresh, introAt, sx, sy, only, out);
+        return;
+    }
+    if (g.cols == 0) return;
+    // ★ 11-14 최적화 1차 개선 — **거리를 먼저 본다.** 전에는 정적마다 `introAt.count`(std::map 찾기)부터 해
+    //   반경 밖의 것(거의 전부)까지 찾기를 치렀다 — 192방 M8 에서 이 함수가 게임 스레드의 21.4%.
+    //   세 조건은 모두 걸러 내기만 하고 아무것도 안 바꾸므로 순서를 바꿔도 near_ 의 내용 · 차례가 같다
+    //   (정답지는 아예 지도 칸으로 주변만 꺼낸다 — `server.go:534-538` EachObjAndMissileInRect).
+    auto take = [&](uint32_t index, int x, int y, uint16_t netCode) {
+        const double dx = x - sx, dy = y - sy;
+        const double d2 = dx * dx + dy * dy;
+        if (d2 > kAoiRadius * kAoiRadius) return;
+        if (only && !only->count(netCode)) return;
+        if (introAt.count(netCode)) return;   // 이미 소개했다 — 다시는 안 싣는다
+        out.push_back({ d2, index });
+    };
+    // ★ 3차 — 반경을 덮는 정사각형의 칸만 본다. 한 줄의 칸들은 cellStart 에서 이어져 있어 줄마다 한 구간이다
+    const int cx0 = StaticCellOf(static_cast<double>(sx) - kAoiRadius, g.cols), cx1 = StaticCellOf(static_cast<double>(sx) + kAoiRadius, g.cols);
+    const int cy0 = StaticCellOf(static_cast<double>(sy) - kAoiRadius, g.rows), cy1 = StaticCellOf(static_cast<double>(sy) + kAoiRadius, g.rows);
+    for (int cy = cy0; cy <= cy1; ++cy) {
+        const size_t row = static_cast<size_t>(cy) * static_cast<size_t>(g.cols);
+        for (uint32_t k = g.cellStart[row + cx0], e = g.cellStart[row + cx1 + 1]; k < e; ++k) {
+            const StaticGrid::Item& it = g.items[k];
+            take(it.index, it.x, it.y, it.netCode);
+        }
+    }
+    // 칸 차례로 모인 것을 목록 차례(= 전의 전부 훑기 차례)로 — 걸러 낸 뒤라 보통 0~몇 개다
+    std::sort(out.begin(), out.end(), [](const std::pair<double, uint32_t>& a, const std::pair<double, uint32_t>& b) { return a.second < b.second; });
+}
+
+void Server::AoiStaticsLeaving(const std::vector<WorldStatic>& st, const StaticGrid& g,
+                               const std::map<uint16_t, uint32_t>& introAt, int sx, int sy,
+                               std::vector<std::pair<uint32_t, uint16_t>>& out) {
+    out.clear();
+    if (introAt.empty()) return;
+    if (g.count != st.size()) {   // 들어옴과 같은 사정
+        StaticGrid fresh;
+        BuildStaticGrid(st, fresh);
+        AoiStaticsLeaving(st, fresh, introAt, sx, sy, out);
+        return;
+    }
+    // ★ 3차 — 바닥 물건 전부 대신 **소개해 둔 번호만** 본다. introAt 도 byNet 도 번호 오름차순이라 찾는 자리가 앞으로만 간다
+    auto lo = g.byNet.begin();
+    for (const auto& kv : introAt) {
+        lo = std::lower_bound(lo, g.byNet.end(), kv.first,
+                              [](const StaticGrid::Item& a, uint16_t nc) { return a.netCode < nc; });
+        for (auto p = lo; p != g.byNet.end() && p->netCode == kv.first; ++p) {
+            const double dx = p->x - sx, dy = p->y - sy;
+            if (dx * dx + dy * dy <= kAoiDropRadius * kAoiDropRadius) continue;
+            out.push_back({ p->index, kv.first });
+            break;   // 전의 훑기는 처음 먼 것에서 그 번호를 introAt 에서 지워, 뒤의 같은 번호는 안 봤다
+        }
+    }
+    std::sort(out.begin(), out.end(), [](const std::pair<uint32_t, uint16_t>& a, const std::pair<uint32_t, uint16_t>& b) { return a.first < b.first; });
+}
+
 // ★ 09-28 — `only` 가 있으면 그 번호들만(시야 반경이 꺼진 판에서 게임 중 새로 놓인 물건 — 버리기·되돌리기)
-static void AppendAoiStatics(const std::vector<Server::WorldStatic>& statics,
+static void AppendAoiStatics(const std::vector<Server::WorldStatic>& statics, const Server::StaticGrid& grid,
                              AliasTable& tbl, std::map<uint16_t, uint32_t>& introAt,
                              uint32_t frame, int sx, int sy,
                              int& baseX, int& baseY, UpdateMsg& m,
                              const std::set<uint16_t>* only = nullptr) {
     struct Near { double d2; const Server::WorldStatic* w; };
     std::vector<Near> near_;
-    // ★ 11-14 최적화 1차 개선 — **거리를 먼저 본다.** 전에는 정적마다 `introAt.count`(std::map 찾기)부터 해
-    //   반경 밖의 것(거의 전부)까지 찾기를 치렀다 — 192방 M8 에서 이 함수가 게임 스레드의 21.4%.
-    //   세 조건은 모두 걸러 내기만 하고 아무것도 안 바꾸므로 순서를 바꿔도 near_ 의 내용 · 차례가 같다
-    //   (정답지는 아예 지도 칸으로 주변만 꺼낸다 — `server.go:534-538` EachObjAndMissileInRect).
-    for (const auto& w : statics) {
-        const double dx = w.x - sx, dy = w.y - sy;
-        const double d2 = dx * dx + dy * dy;
-        if (d2 > kAoiRadius * kAoiRadius) continue;
-        if (only && !only->count(w.netCode)) continue;
-        if (introAt.count(w.netCode)) continue;   // 이미 소개했다 — 다시는 안 싣는다
-        near_.push_back({ d2, &w });
-    }
+    // ★ 11-14 최적화 3차 개선 — 고르기는 칸 색인으로(`Server::AoiStaticsEntering` · 1차 개선 주석도 그리로 옮김).
+    //   목록 차례 그대로 돌려주므로 아래 가까운 순 고르기 · 소개는 전과 같은 것을 같은 차례로 한다
+    static thread_local std::vector<std::pair<double, uint32_t>> enter;
+    Server::AoiStaticsEntering(statics, grid, introAt, sx, sy, only, enter);
+    for (const auto& en : enter) near_.push_back({ en.first, &statics[en.second] });
     if (near_.size() > kAoiMaxPerUpdate) {
         std::partial_sort(near_.begin(), near_.begin() + kAoiMaxPerUpdate, near_.end(),
                           [](const Near& a, const Near& b) { return a.d2 < b.d2; });
@@ -956,16 +1054,16 @@ static void AppendAoiStatics(const std::vector<Server::WorldStatic>& statics,
 //   방향으로 **156건**(`_evidence/CAP_server_0906.txt`). 지어낸 메시지가 아니다.
 //
 // ⚠ 골라낸 것은 `introAt` 에서 지운다. 그래야 되돌아왔을 때 다시 소개된다.
+// ★ 11-14 최적화 3차 개선 — 바닥 물건 전부를 훑던 것을 소개해 둔 번호만 보게(`Server::AoiStaticsLeaving`).
+//   고르는 것 · 차례는 전과 같다 — 목록 차례로 돌려받아 그 차례로 담고 지운다.
 static void CollectAoiExits(std::map<uint16_t, uint32_t>& introAt,
-                            const std::vector<Server::WorldStatic>& statics,
+                            const std::vector<Server::WorldStatic>& statics, const Server::StaticGrid& grid,
                             int sx, int sy, std::vector<uint16_t>& gone) {
-    for (const auto& w : statics) {
-        auto it = introAt.find(w.netCode);
-        if (it == introAt.end()) continue;          // 아직 소개도 안 했다
-        const double dx = w.x - sx, dy = w.y - sy;
-        if (dx * dx + dy * dy <= kAoiDropRadius * kAoiDropRadius) continue;
-        gone.push_back(w.netCode);
-        introAt.erase(it);
+    static thread_local std::vector<std::pair<uint32_t, uint16_t>> leave;
+    Server::AoiStaticsLeaving(statics, grid, introAt, sx, sy, leave);
+    for (const auto& l : leave) {
+        gone.push_back(l.second);
+        introAt.erase(l.second);
     }
 }
 
@@ -18534,7 +18632,7 @@ void Server::RunTick(int ticks) {
                 // 시야 안 정적 — **상한 필수** (AppendAoiStatics 주석: 상한 없이는
                 // 스폰 주변 40개↑ 가 480B 를 넘겨 a4 가 통째로 비어 나갔다).
                 int snBaseX = s.x, snBaseY = s.y;   // 직전 항목(me)의 자리
-                AppendAoiStatics(statics_, s.aliases, s.staticIntroAt,
+                AppendAoiStatics(statics_, statics_.grid(), s.aliases, s.staticIntroAt,
                                  s.tickFrame, s.x, s.y, snBaseX, snBaseY, m);
                 uint8_t ub[480];
                 ub[0] = static_cast<uint8_t>(Op::UPDATE_STREAM);
@@ -19149,16 +19247,16 @@ void Server::RunTick(int ticks) {
 
         std::vector<uint16_t> outOfSight(creatureExits);
         if (aoiOn_) {
-            AppendAoiStatics(statics_, s.aliases, s.staticIntroAt,
+            AppendAoiStatics(statics_, statics_.grid(), s.aliases, s.staticIntroAt,
                              s.tickFrame, s.x, s.y, baseX, baseY, m);
             // 멀어진 것은 갱신 **항목이 아니라** 별도 메시지로 알린다 —
             // 갱신에 실을 수 있는 것은 「움직인 것」뿐이라는 규약(P4 8런의 결론) 때문이다.
-            CollectAoiExits(s.staticIntroAt, statics_, s.x, s.y, outOfSight);
+            CollectAoiExits(s.staticIntroAt, statics_, statics_.grid(), s.x, s.y, outOfSight);
         } else if (!freshStatics_.empty()) {
             // ★ 09-28 사람 판 — 「버리면 가방에서는 빠지는데 바닥에 안 생긴다」. 시야 반경이 꺼진 판은 바닥 물건을
             //   **접속 스냅샷에서만** 소개했다(위 14707 자리). 게임 중 새로 놓인 것은 소개할 길이 없었다 →
             //   그것들만 반경 안에서 한 번 소개한다(소개 규약은 같다 — ff·절대·한 번). 지우기는 줍기의 DESTROY 가 한다
-            AppendAoiStatics(statics_, s.aliases, s.staticIntroAt,
+            AppendAoiStatics(statics_, statics_.grid(), s.aliases, s.staticIntroAt,
                              s.tickFrame, s.x, s.y, baseX, baseY, m, &freshStatics_);
         }
 
