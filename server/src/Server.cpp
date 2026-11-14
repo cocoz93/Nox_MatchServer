@@ -917,12 +917,16 @@ static void AppendAoiStatics(const std::vector<Server::WorldStatic>& statics,
                              const std::set<uint16_t>* only = nullptr) {
     struct Near { double d2; const Server::WorldStatic* w; };
     std::vector<Near> near_;
+    // ★ 11-14 최적화 1바퀴 — **거리를 먼저 본다.** 전에는 정적마다 `introAt.count`(std::map 찾기)부터 해
+    //   반경 밖의 것(거의 전부)까지 찾기를 치렀다 — 192방 M8 에서 이 함수가 게임 스레드의 21.4%.
+    //   세 조건은 모두 걸러 내기만 하고 아무것도 안 바꾸므로 순서를 바꿔도 near_ 의 내용 · 차례가 같다
+    //   (정답지는 아예 지도 칸으로 주변만 꺼낸다 — `server.go:534-538` EachObjAndMissileInRect).
     for (const auto& w : statics) {
-        if (only && !only->count(w.netCode)) continue;
-        if (introAt.count(w.netCode)) continue;   // 이미 소개했다 — 다시는 안 싣는다
         const double dx = w.x - sx, dy = w.y - sy;
         const double d2 = dx * dx + dy * dy;
         if (d2 > kAoiRadius * kAoiRadius) continue;
+        if (only && !only->count(w.netCode)) continue;
+        if (introAt.count(w.netCode)) continue;   // 이미 소개했다 — 다시는 안 싣는다
         near_.push_back({ d2, &w });
     }
     if (near_.size() > kAoiMaxPerUpdate) {
