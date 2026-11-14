@@ -1762,7 +1762,12 @@ public:
         const float px = w * 0.35354999f, py = h * 0.35354999f;
         b.boxLT = -px + py; b.boxLB = -px - py; b.boxRT = px + py; b.boxRB = px - py;
     }
-    void SetObstacles(std::vector<PhysBody> v) { MtMut().obstacles = std::move(v); AIPathBakeObstacles(); }
+    void SetObstacles(std::vector<PhysBody> v) {
+        MapTables& t = MtMut();
+        t.obstacles = std::move(v);
+        BuildObstacleGrid(t.obstacles, t.obstacleGrid);   // ★ 11-14 최적화 2차 개선 — 칸 색인을 같이(MapTables::ObstacleGrid 주석)
+        AIPathBakeObstacles();
+    }
     size_t ObstacleCount() const { return mt_->obstacles.size(); }
     // 소환수 종류 번호 → 몸(모양·반지름·깃발·질량). main.cpp 가 thing.bin 에서 채운다.
     void SetTypeBody(uint16_t type, const PhysBody& b) { GtMut().typeBodies[type] = b; }
@@ -5763,11 +5768,27 @@ public:   // ★ 10-12 작업 7e-2 — 표 묶음과 같이 쓰기 입구는 바
         std::string saMapName;
         uint32_t saMapCrc = 0;   // P4-c 실클라 검증 전까지 기본 꺼짐   // 맵 정적 오브젝트 (P4)
         std::vector<PhysBody> obstacles;        // 묶음 2-c 장애물
+        // ★ 11-14 최적화 2차 개선 — 장애물 칸 색인. `SetObstacles` 가 obstacles 와 같이 만든다(판 중에 안 바뀐다).
+        //   칸마다 충돌 사각형이 걸치는 장애물 번호를 **오름차순**으로 — 칸 c 의 번호는 items[cellStart[c] .. cellStart[c+1]).
+        //   왜: 사람 걸음 충돌이 걸음마다 장애물 전부(Estate 303개)의 사각형을 봤다 — 192방 M8 에서 그 고리 하나가 게임 스레드의 17.0%.
+        //   정답지도 칸 버킷으로 둘레만 꺼낸다(`server/map.go:266` EachObjInRect · 칸 85 · 70×70)
+        struct ObstacleGrid {
+            int cols = 0, rows = 0;
+            size_t count = 0;                   // 만들 때의 obstacles 개수 — 다르면 색인을 안 믿고 전부 본다(`ObstacleCandidates`)
+            std::vector<uint32_t> cellStart;    // 칸 수 + 1
+            std::vector<uint32_t> items;
+        };
+        ObstacleGrid obstacleGrid;
         // ★ 10-12 작업 7e-4a — 맵을 차릴 때 정해지고 판 중에 안 바뀌는 값 둘(옛 멤버 `wallsOn_` · `quiverFromMap_`).
         //   방이 원본을 가리키면 다시 셈하지 않고 이 값을 그대로 쓴다(7e-4 자가검증 ① ②)
         bool wallsOn = false;                    // 맵 벽 칸이 있었나(`SetWallTiles` · `SetWalls` — 문이 붙인 벽은 안 셈)
         unsigned long long quiverFromMap = 0;    // ★ 09-29 — 맵 짐에서 화살 수를 읽어 실은 바닥 화살통
     };
+    // ★ 11-14 최적화 2차 개선 — 장애물 칸 색인 만들기 · 꺼내기(`Server.cpp` · 시험 `TestObstacleGridSameAsFullScan`).
+    //   꺼내기는 사각형 (x0,y0)-(x1,y1)에 걸칠 수 **있는** 장애물 번호를 오름차순(= obstacles 차례)으로 — 겹침 판정은 부르는 쪽이 그대로 한다
+    static void BuildObstacleGrid(const std::vector<PhysBody>& obs, MapTables::ObstacleGrid& g);
+    static void ObstacleCandidates(const MapTables::ObstacleGrid& g, size_t obstacleCount,
+                                   double x0, double y0, double x1, double y1, std::vector<uint32_t>& out);
     std::shared_ptr<const MapTables> ShareMapTables() { mtOwn_.reset(); return mt_; }
     void UseMapTables(std::shared_ptr<const MapTables> t) { if (t) { mt_ = std::move(t); mtOwn_.reset(); } }
     bool SharesMapTables() const { return mtOwn_ == nullptr; }

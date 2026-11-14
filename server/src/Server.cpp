@@ -917,7 +917,7 @@ static void AppendAoiStatics(const std::vector<Server::WorldStatic>& statics,
                              const std::set<uint16_t>* only = nullptr) {
     struct Near { double d2; const Server::WorldStatic* w; };
     std::vector<Near> near_;
-    // ★ 11-14 최적화 1바퀴 — **거리를 먼저 본다.** 전에는 정적마다 `introAt.count`(std::map 찾기)부터 해
+    // ★ 11-14 최적화 1차 개선 — **거리를 먼저 본다.** 전에는 정적마다 `introAt.count`(std::map 찾기)부터 해
     //   반경 밖의 것(거의 전부)까지 찾기를 치렀다 — 192방 M8 에서 이 함수가 게임 스레드의 21.4%.
     //   세 조건은 모두 걸러 내기만 하고 아무것도 안 바꾸므로 순서를 바꿔도 near_ 의 내용 · 차례가 같다
     //   (정답지는 아예 지도 칸으로 주변만 꺼낸다 — `server.go:534-538` EachObjAndMissileInRect).
@@ -5384,7 +5384,72 @@ double BoxOverlap(float px, float py, float r, const Server::PhysBody& b, float 
         default: return -1.0;
     }
 }
+
+// ★ 11-14 최적화 2차 개선 — 장애물 칸 색인의 칸 크기와 칸 번호(`MapTables::ObstacleGrid` 주석).
+//   칸 85 = 정답지 버킷 크기(`server/math.go:15` RoundCoord 의 ÷85). 사람 사각형(20)이면 한 번에 칸 1~4개를 본다.
+//   칸 번호는 내림(floor) + 양끝 붙이기 — 둘 다 단조라 「두 사각형이 겹치면 같은 칸을 하나는 나눠 가진다」가 맵 밖 좌표에서도 선다
+constexpr double kObstacleCell = 85.0;
+inline int ObstacleCellOf(double v, int n) {
+    const double f = std::floor(v / kObstacleCell);
+    if (!(f >= 0.0)) return 0;               // 음수(· NaN)는 첫 칸
+    if (f >= static_cast<double>(n - 1)) return n - 1;
+    return static_cast<int>(f);
+}
 }  // namespace
+
+void Server::BuildObstacleGrid(const std::vector<PhysBody>& obs, MapTables::ObstacleGrid& g) {
+    g = MapTables::ObstacleGrid{};
+    g.count = obs.size();
+    if (obs.empty()) return;
+    const int n = static_cast<int>(static_cast<double>(kMaxCoord) / kObstacleCell) + 1;   // 6000 → 71 × 71 칸
+    g.cols = g.rows = n;
+    // 칸 범위 — 사각형의 작은 쪽 · 큰 쪽(뒤집힌 사각형이 와도 겹침이 있으면 칸을 나눠 갖게)
+    auto cells = [n](const PhysBody& o, int& cx0, int& cy0, int& cx1, int& cy1) {
+        double x0, y0, x1, y1;
+        BodyRect(o, o.x, o.y, x0, y0, x1, y1);
+        cx0 = ObstacleCellOf(std::min(x0, x1), n); cx1 = ObstacleCellOf(std::max(x0, x1), n);
+        cy0 = ObstacleCellOf(std::min(y0, y1), n); cy1 = ObstacleCellOf(std::max(y0, y1), n);
+    };
+    const size_t cellCount = static_cast<size_t>(n) * static_cast<size_t>(n);
+    g.cellStart.assign(cellCount + 1, 0);
+    for (const auto& o : obs) {
+        int cx0, cy0, cx1, cy1;
+        cells(o, cx0, cy0, cx1, cy1);
+        for (int cy = cy0; cy <= cy1; ++cy)
+            for (int cx = cx0; cx <= cx1; ++cx) ++g.cellStart[static_cast<size_t>(cy) * n + cx + 1];
+    }
+    for (size_t c = 0; c < cellCount; ++c) g.cellStart[c + 1] += g.cellStart[c];
+    g.items.resize(g.cellStart[cellCount]);
+    std::vector<uint32_t> fill(g.cellStart.begin(), g.cellStart.end() - 1);
+    for (size_t i = 0; i < obs.size(); ++i) {   // 번호가 커지는 차례로 넣으니 칸마다 오름차순이다
+        int cx0, cy0, cx1, cy1;
+        cells(obs[i], cx0, cy0, cx1, cy1);
+        for (int cy = cy0; cy <= cy1; ++cy)
+            for (int cx = cx0; cx <= cx1; ++cx) g.items[fill[static_cast<size_t>(cy) * n + cx]++] = static_cast<uint32_t>(i);
+    }
+}
+
+void Server::ObstacleCandidates(const MapTables::ObstacleGrid& g, size_t obstacleCount,
+                                double x0, double y0, double x1, double y1, std::vector<uint32_t>& out) {
+    out.clear();
+    if (g.count != obstacleCount) {   // 색인이 지금 목록과 안 맞는다(obstacles 를 `SetObstacles` 밖에서 바꿈) — 전부 차례대로
+        for (size_t i = 0; i < obstacleCount; ++i) out.push_back(static_cast<uint32_t>(i));
+        return;
+    }
+    if (g.cols == 0) return;
+    const int cx0 = ObstacleCellOf(std::min(x0, x1), g.cols), cx1 = ObstacleCellOf(std::max(x0, x1), g.cols);
+    const int cy0 = ObstacleCellOf(std::min(y0, y1), g.rows), cy1 = ObstacleCellOf(std::max(y0, y1), g.rows);
+    for (int cy = cy0; cy <= cy1; ++cy)
+        for (int cx = cx0; cx <= cx1; ++cx) {
+            const size_t c = static_cast<size_t>(cy) * g.cols + cx;
+            out.insert(out.end(), g.items.begin() + g.cellStart[c], g.items.begin() + g.cellStart[c + 1]);
+        }
+    // 칸이 둘 이상이면 걸친 장애물이 겹쳐 들고 칸 차례로 섞인다 — 번호 차례(= 전의 obstacles 차례)로 되돌리고 겹친 것을 뺀다
+    if (cx1 != cx0 || cy1 != cy0) {
+        std::sort(out.begin(), out.end());
+        out.erase(std::unique(out.begin(), out.end()), out.end());
+    }
+}
 
 // sub_548220(거르기 sub_548360 + 모양별 나누기) → 원 대 원(550D00) · 원 대 상자(54AD50, a3=0).
 //   ⚠ 뺀 것: 오각형·염력손·검은가루 예외 · Trigger 종류 예외 · NO_COLLIDE_OWNER 같은 편 · 문(5488B0/551250)·
@@ -5881,6 +5946,7 @@ void Server::UpdatePlayerMovement(uint32_t frame) {
     // ⚠ 무게는 여기서 못 정한다 — **사람마다 다르다**(직업별 힘에서 나온다). 걸음마다 그 사람 것으로 채운다
     playerBody.cls = kClsPlayer; playerBody.flags = 0; playerBody.mass = 1.0f;   // NewPlayer FLAGS NULL
     contacts_.clear();                                     // nox_xxx_allocHitArray_5486D0
+    std::vector<uint32_t> obsCand;                         // ★ 11-14 최적화 2차 개선 — 걸음마다 다시 쓰는 장애물 후보 번호(아래 오브젝트 고리)
     for (int i = 0; i < kMoveSubSteps; ++i) {
         for (auto& m : movers) {
             Session& s = *m.s;
@@ -5893,7 +5959,12 @@ void Server::UpdatePlayerMovement(uint32_t frame) {
             double qx0, qy0, qx1, qy1;
             BodyRect(playerBody, m.bx, m.by, qx0, qy0, qx1, qy1);
             // 오브젝트 먼저(getUnitsInRect → sub_548220) — 상대 사각형과 겹칠 때만(`server/map.go:302`)
-            for (const auto& o : mt_->obstacles) {
+            // ★ 11-14 최적화 2차 개선 — 칸 색인으로 이 사각형 둘레의 장애물만 본다. 전에는 걸음마다 장애물 전부(Estate 303개)의
+            //   사각형을 셈해 봤다 — 192방 M8 에서 이 고리가 게임 스레드의 17.0%. 후보는 번호 오름차순(= 전의 차례)이고
+            //   겹치는 장애물은 빠짐없이 든다(`ObstacleCellOf` 주석) · 아래 겹침 판정은 그대로라 밀림을 더하는 차례 · 값이 같다
+            ObstacleCandidates(mt_->obstacleGrid, mt_->obstacles.size(), qx0, qy0, qx1, qy1, obsCand);
+            for (const uint32_t oi : obsCand) {
+                const auto& o = mt_->obstacles[oi];
                 double ox0, oy0, ox1, oy1;
                 BodyRect(o, o.x, o.y, ox0, oy0, ox1, oy1);
                 if (!(ox0 < qx1 && ox1 > qx0 && oy0 < qy1 && oy1 > qy0)) continue;

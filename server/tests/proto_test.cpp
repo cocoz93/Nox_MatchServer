@@ -20775,6 +20775,70 @@ void TestPlanBot() {
     std::printf("  11-g 봇 세우기 — 자리 돌려쓰기 · 편 번갈이 · 시작 자리 0 이면 안 세움\n");
 }
 
+// ── 11-14 최적화 2차 개선 장애물 칸 색인 ──────────────────────
+//
+// ★ 걸음 충돌은 칸 색인이 내놓은 후보마다 겹침 판정을 **그대로** 한다. 그래서 「겹치는 장애물이 후보에 빠짐없이 들고,
+//   차례가 번호 오름차순(= 전의 obstacles 차례)」이면 밀림을 더하는 차례 · 값이 전과 같다. 그 둘을 「전부 보기」와 대조한다.
+//   원 · 상자 · 반지름 0 · 맵 밖(음수 · 6000 넘음) · 칸 경계(85 의 배수)에 딱 걸친 것을 섞는다
+void TestObstacleGridSameAsFullScan() {
+    std::printf("\n[장애물 칸 색인 = 전부 보기]\n");
+    using PB = nox::Server::PhysBody;
+    auto rectOf = [](const PB& b, double& x0, double& y0, double& x1, double& y1) {   // `Server.cpp` BodyRect 와 같은 식
+        if (b.shape == 3) { x0 = b.x + b.boxLB; y0 = b.y + b.boxLB; x1 = b.x + b.boxRT; y1 = b.y + b.boxRT; }
+        else { x0 = b.x - b.r; y0 = b.y - b.r; x1 = b.x + b.r; y1 = b.y + b.r; }
+    };
+    uint32_t seed = 12345;
+    auto rnd = [&](double lo, double hi) { seed = seed * 1103515245u + 12345u; return lo + (hi - lo) * static_cast<double>((seed >> 8) & 0xFFFF) / 65535.0; };
+    std::vector<PB> obs;
+    for (int i = 0; i < 400; ++i) {
+        PB b;
+        b.x = static_cast<float>(rnd(-200, 6300)); b.y = static_cast<float>(rnd(-200, 6300));
+        if (i % 3 == 0) { b.shape = 3; nox::Server::CalcBox(b, static_cast<float>(rnd(0, 120)), static_cast<float>(rnd(0, 120))); }
+        else { b.shape = 2; b.r = (i % 17 == 0) ? 0.0f : static_cast<float>(rnd(1, 60)); }
+        obs.push_back(b);
+    }
+    for (int k = 1; k <= 5; ++k) { PB b; b.shape = 2; b.r = 10; b.x = 85.0f * k + 10; b.y = 85.0f * k; obs.push_back(b); }   // 왼쪽 끝이 칸 경계
+    nox::Server::MapTables::ObstacleGrid g;
+    nox::Server::BuildObstacleGrid(obs, g);
+    std::vector<uint32_t> cand, full, viaGrid;
+    size_t queries = 0, withHit = 0, withTwo = 0, candSum = 0, mismatch = 0;
+    auto query = [&](double qx0, double qy0, double qx1, double qy1) {
+        ++queries;
+        full.clear(); viaGrid.clear();
+        for (size_t i = 0; i < obs.size(); ++i) {
+            double ox0, oy0, ox1, oy1; rectOf(obs[i], ox0, oy0, ox1, oy1);
+            if (ox0 < qx1 && ox1 > qx0 && oy0 < qy1 && oy1 > qy0) full.push_back(static_cast<uint32_t>(i));
+        }
+        nox::Server::ObstacleCandidates(g, obs.size(), qx0, qy0, qx1, qy1, cand);
+        candSum += cand.size();
+        for (const uint32_t i : cand) {
+            double ox0, oy0, ox1, oy1; rectOf(obs[i], ox0, oy0, ox1, oy1);
+            if (ox0 < qx1 && ox1 > qx0 && oy0 < qy1 && oy1 > qy0) viaGrid.push_back(i);
+        }
+        if (!full.empty()) ++withHit;
+        if (full.size() >= 2) ++withTwo;
+        if (viaGrid != full) ++mismatch;
+    };
+    for (int i = 0; i < 20000; ++i) {
+        const double cx = rnd(-300, 6400), cy = rnd(-300, 6400);
+        const double h = (i % 4 == 0) ? rnd(0, 200) : 10.0;   // 사람 몸(반지름 10)이 대부분 · 큰 사각형 가끔(칸 여럿에 걸쳐 차례가 섞이는 쪽)
+        query(cx - h, cy - h, cx + h, cy + h);
+    }
+    for (int k = 0; k <= 72; ++k) query(85.0 * k - 10, 85.0 * k - 10, 85.0 * k + 10, 85.0 * k + 10);   // 칸 경계 위
+    std::printf("  사각형 %zu개 · 겹침 있음 %zu(둘 이상 %zu) · 후보 평균 %.2f / 장애물 %zu · 다름 %zu\n",
+                queries, withHit, withTwo, static_cast<double>(candSum) / static_cast<double>(queries), obs.size(), mismatch);
+    Check(mismatch == 0, "칸 색인으로 거른 장애물이 전부 보기와 다르다(빠짐 또는 차례)");
+    Check(withHit > 1000 && withTwo > 100, "겹치는 장애물이 있는 사각형이 너무 적다 — 이 시험이 빠짐 · 차례를 못 본다");
+    Check(candSum * 10 < queries * obs.size(), "후보가 전부 보기의 10분의 1 을 넘는다 — 색인이 거르지 않는다");
+    // 색인이 목록과 안 맞으면(개수 다름 — obstacles 를 `SetObstacles` 밖에서 바꿈) 전부를 차례대로 내놓는다
+    nox::Server::ObstacleCandidates(g, obs.size() + 1, 0, 0, 1, 1, cand);
+    Check(cand.size() == obs.size() + 1 && cand.front() == 0 && cand.back() == obs.size(), "개수가 다른 색인에서 전부 보기로 안 돌아갔다");
+    nox::Server::MapTables::ObstacleGrid e;
+    nox::Server::BuildObstacleGrid({}, e);
+    nox::Server::ObstacleCandidates(e, 0, 0, 0, 100, 100, cand);
+    Check(cand.empty(), "빈 장애물 목록에서 후보가 나왔다");
+}
+
 // ── 조각 I(09-16) 장애물이 소환수로 둔갑하던 것 ──────────────────────
 //
 // ★ 날아가는 것이 닿는 것은 **셋**이다 — 사람 · 소환수 · 장애물.
@@ -35097,6 +35161,7 @@ int main() {
     TestModeRules();
     TestPlanBot();
     TestObstacleIsNotAPet();
+    TestObstacleGridSameAsFullScan();
     TestPetDamageStops();
     TestReportKindsMatchSource();
     TestMsgLenSiblings();
