@@ -1,4 +1,5 @@
-﻿param([string]$Tag = 'wc1', [switch]$Ref, [int]$Secs = 120, [string]$Map = 'Estate', [switch]$NoWalk, [string]$SrvExtra = '')
+﻿param([string]$Tag = 'wc1', [switch]$Ref, [int]$Secs = 120, [string]$Map = 'Estate', [switch]$NoWalk, [string]$SrvExtra = '', [string]$ServerExe = '')
+# -ServerExe — 우리 서버 실행 파일(비우면 build\Release\nox_server.exe). 최적화 바퀴의 「고치기 전 서버」 사본을 녹음할 때(11-14 · tools/load_compare.ps1)
 # -SrvExtra — 우리 서버에 덧붙일 인자(공백으로 가름 · 대조군에는 안 붙음). 예: '--spawn-at 2466 2838 --debug-mob 150 1382 2566 2838'
 # ★ 09-29 — 와이어 대조 녹음(원칙 「같은 클라·같은 자동화로 **서버만 바꿔**」). 양쪽 다 중계기를 끼운다(`Docs/PROTOCOL.md:1438~1444`).
 #     우리  : 자동 클라 → 중계기(18590 · 기록) → nox_server(18591)
@@ -34,7 +35,9 @@ if ($Ref) {
 } else {
   $srvArgs = @('--port','18591','--map',"`"$mapFile`"",'--no-join-token')   # 10-10 토큰 작업 2 — 시험 도구는 토큰 검사 끄기
   if ($SrvExtra -ne '') { $srvArgs += ($SrvExtra -split '\s+' | Where-Object { $_ -ne '' }) }
-  $srv = Start-Process -FilePath (Join-Path $root 'build\Release\nox_server.exe') -ArgumentList $srvArgs `
+  $srvExe = if ($ServerExe) { $ServerExe } else { Join-Path $root 'build\Release\nox_server.exe' }
+  if (-not (Test-Path -LiteralPath $srvExe)) { "서버 실행 파일 없음 — $srvExe"; exit 1 }
+  $srv = Start-Process -FilePath $srvExe -ArgumentList $srvArgs `
     -PassThru -WindowStyle Minimized -RedirectStandardOutput $srvOut -RedirectStandardError $srvErr
   $wait = 6
   "우리 서버 pid=$($srv.Id)"

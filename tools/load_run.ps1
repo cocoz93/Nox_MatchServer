@@ -26,6 +26,7 @@ param(
   [switch]$NoDummy,                      # 빈 서버(측정 플랜 M2) — 더미를 안 띄우고 서버만 Sec 초 돌린다. 방은 더미가 들어와야 생겨 0개다
   [string]$ExtraServerArgs = '',
   [string]$ExtraDummyArgs = '',
+  [string]$ServerExe = '',               # 비우면 build\Release\nox_server.exe · 최적화 바퀴의 「고치기 전 서버」 사본을 띄울 때(tools/load_compare.ps1 · 11-14)
   [string]$GameDir = 'C:\Program Files\GOG Galaxy\Games\Nox',
   [switch]$CheckOnly,
   # 게이트 문턱 — 시험 때 일부러 틀리게 줄 수 있도록 인자로 뺐다. 측정에서는 기본값을 쓴다
@@ -42,7 +43,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
-$serverExe = Join-Path $repo 'build\Release\nox_server.exe'
+# ⚠ PowerShell 변수 이름은 대소문자를 안 가린다 — 인자 `$ServerExe` 와 지역 변수 `$serverExe` 는 **한 변수**라, 기본 경로를 먼저 넣으면
+#   인자가 지워진다(11-14 바퀴 1 「고치기 전」 판이 실제로는 build\Release 를 띄웠다 · 그 판 env.txt 「서버 명령줄」). 지역 이름을 따로 둔다
+$srvExePath = if (-not $ServerExe) { Join-Path $repo 'build\Release\nox_server.exe' }
+              elseif (Test-Path -LiteralPath $ServerExe) { (Resolve-Path -LiteralPath $ServerExe).Path }
+              else { $ServerExe }   # 없으면 아래 검사가 「[멈춤] 없음」으로 멈춘다
 $dummyExe = Join-Path $repo 'build\Release\nox_dummy.exe'
 $map = Join-Path $GameDir 'maps\So_LOD\So_LOD.map'
 $runRoot = Join-Path $repo '_out\load_run'
@@ -52,7 +57,7 @@ $stamp = Join-Path $runRoot 'last_end.txt'   # 직전 실행이 끝난 시각(UT
 $serverMask = 0x3F
 $dummyMask = 0xFFFC0
 
-foreach ($p in @($serverExe, $dummyExe, $map)) {
+foreach ($p in @($srvExePath, $dummyExe, $map)) {
   if (-not (Test-Path -LiteralPath $p)) { Write-Host "[멈춤] 없음: $p"; exit 2 }
 }
 
@@ -288,7 +293,7 @@ if ($ExtraServerArgs) { $serverArgs += " $ExtraServerArgs" }
 $dummyArgs = "--server 127.0.0.1:$Port --count $($Rooms * $RoomSize) --room-size $RoomSize --classes $Classes --behavior $Behavior --stat-mult $StatMult --freq-mult $FreqMult --duration-sec $Sec --threads $DummyThreads"
 if ($CycleSec -gt 0) { $dummyArgs += " --cycle-sec $CycleSec" }
 if ($ExtraDummyArgs) { $dummyArgs += " $ExtraDummyArgs" }
-Note '서버 명령줄' "$serverExe $serverArgs"
+Note '서버 명령줄' "$srvExePath $serverArgs"
 Note '더미 명령줄' $(if ($NoDummy) { '없음(-NoDummy)' } else { "$dummyExe $dummyArgs" })
 
 function Stop-Server($Proc) {
@@ -322,7 +327,7 @@ function Set-Affinity($Proc, [int64]$Mask, [string]$Who) {
 $os = Get-CimInstance Win32_OperatingSystem
 Note '메모리 여유 — 시작 때(MB)' ('{0:F0} / 전체 {1:F0}' -f ($os.FreePhysicalMemory / 1024.0), ($os.TotalVisibleMemorySize / 1024.0))
 
-$sv = Start-Process -FilePath $serverExe -ArgumentList $serverArgs -WorkingDirectory $repo -PassThru -WindowStyle Hidden `
+$sv = Start-Process -FilePath $srvExePath -ArgumentList $serverArgs -WorkingDirectory $repo -PassThru -WindowStyle Hidden `
   -RedirectStandardOutput (Join-Path $runDir 'server.txt') -RedirectStandardError (Join-Path $runDir 'server_err.txt')
 $null = $sv.Handle   # 끝난 뒤 종료 코드를 읽으려면 핸들을 잡아 둬야 한다
 if (-not (Set-Affinity $sv $serverMask '서버')) {
