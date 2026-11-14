@@ -7,7 +7,7 @@
 #
 # 사용:
 #   첫째 묶음(M1 ~ M4 확인):  powershell -NoProfile -ExecutionPolicy Bypass -File tools\load_series.ps1 -Batch 1
-#   둘째 묶음(M5 ~ M9):        ... -Batch 2 -SeriesDir _out\load_series\<첫째 묶음 폴더>   (L · 60% 지점은 그 폴더 state.json 에서)
+#   둘째 묶음(M5 ~ M9):        ... -Batch 2 -SeriesDir _out\load_series\<첫째 묶음 폴더>   (L · 60% 지점 · 완료 시간 20ms 지점은 그 폴더 state.json 에서)
 #   멈춘 뒤 잇기:              같은 명령에 -SeriesDir 를 주면 쓸 수 있는 실행이 이미 있는 자리는 다시 안 돈다
 #   흐름만 시험:               -SimulateLimit 100   (실행 없이 「방 수 > 100 이면 넘음」 가짜 판정으로 차례만 돈다)
 #
@@ -18,7 +18,8 @@ param(
   [string[]]$Stage = @(),            # 비우면 묶음의 단계 전부 · 고르면 그 단계만(시험용 — 예: -Stage M2)
   [int]$L = 0,                       # 둘째 묶음 — 주면 state.json 대신 이 값
   [int]$P60 = 0,
-  [int]$SimulateLimit = 0,           # 0 보다 크면 실행 없이 가짜 판정
+  [int]$P20 = 0,                     # 둘째 묶음 — 완료 시간 20ms 지점(M7 · M9 가 도는 방 수 · 11-14)
+  [int]$SimulateLimit = 0,          # 0 보다 크면 실행 없이 가짜 판정
   [string]$SimulateAnomaly = '',     # 시험용 — 'above' = 처음 넘은 지점 위 한 칸이 두 번 통과 · 'edge' = M4 확인의 앞뒤가 다름 · 'freq' = 빈도 2배의 큰 구간이 바뀜 · 'm3' = 사건 기록 끄면 걸음이 줆
   [string]$LoadRunExtra = ''         # load_run 에 그대로 붙인다(시험 때 문턱을 풀 때만 — 그런 실행은 load_report 가 버린다)
 )
@@ -392,9 +393,9 @@ if ($want -contains 'M4C') {
 
 # ── 둘째 묶음 ───────────────────────────────────────────────────
 if ($Batch -eq 2) {
-  if ($L -le 0) { $L = [int]$state['L'] }; if ($P60 -le 0) { $P60 = [int]$state['P60'] }
-  if ($L -le 0 -or $P60 -le 0) { Log '[멈춤] 둘째 묶음 — L · 60% 지점이 없다(-L · -P60 을 주거나 첫째 묶음 폴더를 -SeriesDir 로)'; exit 2 }
-  Log "[둘째 묶음] L = $L · 60% 지점 = $P60 · 끈 계측 $(if ($script:serverExtra) { $script:serverExtra } else { '없음' })"
+  if ($L -le 0) { $L = [int]$state['L'] }; if ($P60 -le 0) { $P60 = [int]$state['P60'] }; if ($P20 -le 0) { $P20 = [int]$state['P20'] }
+  if ($L -le 0 -or $P60 -le 0 -or $P20 -le 0) { Log '[멈춤] 둘째 묶음 — L · 60% 지점 · 완료 시간 20ms 지점 중 없는 것이 있다(-L · -P60 · -P20 을 주거나 첫째 묶음 폴더를 -SeriesDir 로)'; exit 2 }
+  Log "[둘째 묶음] L = $L · 60% 지점 = $P60 · 완료 시간 20ms 지점 = $P20 · 끈 계측 $(if ($script:serverExtra) { $script:serverExtra } else { '없음' })"
 }
 
 if ($want -contains 'M5') {
@@ -434,14 +435,20 @@ if ($want -contains 'M6') {
 }
 
 if ($want -contains 'M7') {
-  $c = Cfg $L @{ cycle = 60 }
-  for ($p = 1; $p -le 3; $p++) { [void](Run-Point 'M7' "r${L}_cycle60" $p $c) }
-  Summary (Point-Line "M7 방 여닫기 60초 r$L" (Point-Records 'M7' "r${L}_cycle60" @(1, 2, 3)))
+  # 방 여닫기는 완료 시간 20ms 지점에서 돈다(11-14 사용자 결정 · 처음 플랜은 L).
+  #   왜: L(첫째 묶음 192방)은 게임 스레드가 99.9% 바빠 가장 느린 틱이 저절로 14~41ms 흔들린다 —
+  #   방 하나 만들기(0.56ms · 실측 r192_p1)가 다른 방을 얼마나 늦추는지가 그 흔들림에 묻힌다. 20ms 지점(128방)은 1~2ms 로 고르다
+  $c = Cfg $P20 @{ cycle = 60 }
+  for ($p = 1; $p -le 3; $p++) { [void](Run-Point 'M7' "r${P20}_cycle60" $p $c) }
+  Summary (Point-Line "M7 방 여닫기 60초 r$P20" (Point-Records 'M7' "r${P20}_cycle60" @(1, 2, 3)))
 }
 if ($Batch -eq 2) { Log '[건너뜀] M8 함수별 시간 — 관리자 권한의 xperf 라 사용자가 명령을 실행한다(5절 · 8절 4번)' }
 if ($want -contains 'M9') {
-  $r = Run-Point 'M9' "r${P60}_60min" 1 (Cfg $P60 @{ window = 3600; edge = 600 })
-  Summary (Point-Line "M9 오래 버티기 60분 r$P60" @($r))
+  # 오래 버티기도 완료 시간 20ms 지점에서 돈다(11-14 사용자 결정 · 처음 플랜은 60% 지점).
+  #   왜: 운영 방 수는 그보다 아래에 둔다 — 더 무거운 곳에서 60분을 버티면 그 아래도 버틴다.
+  #   방이 많을수록 판이 자주 끝나고 다시 열려 메모리가 느는지 · 뒤로 갈수록 느려지는지가 먼저 드러난다(짐작)
+  $r = Run-Point 'M9' "r${P20}_60min" 1 (Cfg $P20 @{ window = 3600; edge = 600 })
+  Summary (Point-Line "M9 오래 버티기 60분 r$P20" @($r))
   Summary ('M9 처음 10분 대 마지막 10분 · 틱합 {0} 대 {1} · 틱 완료 1% {2} 대 {3} · 메모리 {4} 대 {5}MB' -f $r.edgeFirst.tickSumMsPerSec, $r.edgeLast.tickSumMsPerSec,
     $r.edgeFirst.completionP99Ms, $r.edgeLast.completionP99Ms, $r.memPrivFirstMb, $r.memPrivLastMb)
 }
