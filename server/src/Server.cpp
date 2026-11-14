@@ -257,12 +257,16 @@ void Server::FlushBundles() {
         if (total == 0) continue;
         // 단위 — (시작, 길이) 를 칸 차례로
         struct Unit { const uint8_t* p; size_t n; };
-        std::vector<Unit> units;
+        // ★ 11-15 최적화 7차 개선 — 사람마다 · 틱마다 새로 잡던 두 목록(단위 · 아래 조각 `pkt`)을 비워 다시 쓴다.
+        //   담는 것 · 차례 · 내는 조각은 전과 같다(`EmitNow` 가 조각 바이트를 베껴 가므로 다음 사람이 덮어써도 된다)
+        static thread_local std::vector<Unit> units;
+        units.clear();
         if (!s.bundleUpd.empty()) units.push_back({ s.bundleUpd.data(), s.bundleUpd.size() });
         uint32_t from = 0;
         for (uint32_t end : s.bundleMiscEnds) { units.push_back({ s.bundleMisc.data() + from, end - from }); from = end; }
         if (!s.bundleImp.empty()) units.push_back({ s.bundleImp.data(), s.bundleImp.size() });
-        std::vector<uint8_t> pkt;
+        static thread_local std::vector<uint8_t> pkt;   // ★ 7차 — 위 `units` 와 같은 까닭
+        pkt.clear();
         pkt.reserve(total < kBundleMaxPayload ? total : kBundleMaxPayload);
         pkt.insert(pkt.end(), s.bundleTs.begin(), s.bundleTs.end());
         const size_t prefix = pkt.size();
@@ -1021,7 +1025,9 @@ static void AppendAoiStatics(const std::vector<Server::WorldStatic>& statics, co
                              int& baseX, int& baseY, UpdateMsg& m,
                              const std::set<uint16_t>* only = nullptr) {
     struct Near { double d2; const Server::WorldStatic* w; };
-    std::vector<Near> near_;
+    // ★ 11-15 최적화 7차 개선 — 부를 때마다 새로 잡던 목록을 비워 다시 쓴다(아래 `enter` 와 같은 꼴 · 담는 것 · 차례는 전과 같다)
+    static thread_local std::vector<Near> near_;
+    near_.clear();
     // ★ 11-14 최적화 3차 개선 — 고르기는 칸 색인으로(`Server::AoiStaticsEntering` · 1차 개선 주석도 그리로 옮김).
     //   목록 차례 그대로 돌려주므로 아래 가까운 순 고르기 · 소개는 전과 같은 것을 같은 차례로 한다
     static thread_local std::vector<std::pair<double, uint32_t>> enter;
@@ -18823,7 +18829,17 @@ void Server::RunTick(int ticks) {
 
         // ② 상태 갱신 — 머리는 「보는 사람」, 항목에는 **게임에 있는 모두**를 싣는다.
         //    이것이 M 의 「서로를 본다」다. 관심영역(멀리 있는 것은 빼기)은 나중에.
-        UpdateMsg m;
+        // ★ 11-15 최적화 7차 개선 — 사람마다 새로 짓던 갱신(항목 목록이 1→2→3→4→6→9… 로 자라며 매번 다시 잡혔다 ·
+        //   6차 뒤 272방 표본에서 그 다시 잡기가 게임 스레드의 4.12%)을 한 벌 들고 다시 쓴다.
+        //   항목 목록은 비우고 잡아 둔 자리만 남기며, 나머지 칸은 새것(`UpdateMsg{}`)과 같게 되돌린다 — 싣는 것 · 차례는 전과 같다
+        static thread_local UpdateMsg mBuf;
+        {
+            std::vector<ObjEntry> keep = std::move(mBuf.objects);
+            keep.clear();
+            mBuf = UpdateMsg{};
+            mBuf.objects = std::move(keep);
+        }
+        UpdateMsg& m = mBuf;
         // ★★ 정품은 **첫 갱신만** 머리를 전체번호(ff·번호 0·종류 0)로 보내고,
         //   그 뒤로는 **별칭 `01`** 한 바이트로 보낸다(2026-09-08 대조):
         //     정품  [갱신1] 머리 별칭=ff  [갱신2~] 머리 별칭=01
@@ -18874,7 +18890,8 @@ void Server::RunTick(int ticks) {
         //     그에 딸린 좌표 모드(첫째=상대·나머지=절대)뿐이다. 뒤집었을 때
         //     **남이 그려지고 자기가 안 그려지면** 원인은 자리·좌표 모드이고,
         //     그대로면 원인은 「누구냐」쪽이다(2026-09-09).
-        std::vector<Session*> order;
+        static thread_local std::vector<Session*> order;   // ★ 11-15 최적화 7차 개선 — 사람마다 새로 잡던 것을 비워 다시 쓴다(담는 것 · 차례는 전과 같다)
+        order.clear();
         order.reserve(sessions_.size());
         if (peerFirst_) {
             for (auto& kv2 : sessions_) if (kv2.second.inGame && &kv2.second != &s) order.push_back(&kv2.second);
