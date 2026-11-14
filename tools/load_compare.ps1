@@ -22,6 +22,10 @@ param(
   [double]$AdoptMs = 4.8,           # 채택 = 세 판 모두 기준 최솟값보다 낮고 중앙값이 기준 중앙보다 이만큼 이상 낮음(판끼리 흔들림 1.6 의 세 배)
   [double]$DriftMs = 4.8,           # PC 확인 폭 — 11-14 사용자 「적당히 넓게」(처음 287.1~288.7 은 한 판이 들 확률이 절반이라 넓힘)
   [double]$UptimeMaxHours = 1000,   # 개선 비교 판은 가동 시간 문턱을 푼다(11-14 사용자 「좋아 그렇게가자」 · 대신 ② PC 확인)
+  # ★ 11-15 6차 개선 — 판정 값. tick = 틱합(ms/초 · 기본) · busy = 게임 바쁨(게임 스레드가 안 기다린 시간 · % × 10 = ms/초).
+  #   틱 시계 밖(`main.cpp` 의 `BeginTick` · 사건 처리)을 고치면 틱합이 못 본다 — 그때 busy. busy 는 판끼리 흔들림이 틱합과 달라
+  #   -AdoptMs · -DriftMs · -BaseTicks(기준 세 판의 busy ms/초)를 같이 준다(안 주면 멈춤)
+  [ValidateSet('tick', 'busy')][string]$Metric = 'tick',
   [int]$WireSecs = 120,
   [switch]$SkipWire,                # ① 을 건너뜀(시험용)
   [string[]]$WireCaps = @(),        # 시험용 — 녹음 셋(기준1 · 기준2 · 고친)을 새로 뜨지 않고 이 파일들로 ① 판정만 하고 끝낸다
@@ -72,6 +76,12 @@ $extra = '--no-event-log --no-first-seen --no-op-count'
 #   매개 변수는 [string[]] 꼴이 붙어 있어 수를 다시 넣으면 글자로 돌아간다 — 수는 따로 담는다
 $baseTicksV = @(($BaseTicks -join ',') -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ } | ForEach-Object { [double]::Parse($_, $inv) })
 if ($baseTicksV.Count -lt 1) { Write-Host "[멈춤] -BaseTicks 가 비었다"; exit 2 }
+if ($Metric -eq 'busy') {
+  foreach ($need in @('AdoptMs', 'DriftMs', 'BaseTicks')) {
+    if (-not $PSBoundParameters.ContainsKey($need)) { Write-Host "[멈춤] -Metric busy 는 -$need 를 같이 준다(기본값은 틱합 몫)"; exit 2 }
+  }
+}
+$mName = if ($Metric -eq 'busy') { '게임 바쁨(ms/초)' } else { '틱합' }
 $baseMed = Median $baseTicksV
 $baseMin = ($baseTicksV | Measure-Object -Minimum).Minimum
 $driftLo = $baseMed - $DriftMs; $driftHi = $baseMed + $DriftMs
@@ -79,7 +89,7 @@ $driftLo = $baseMed - $DriftMs; $driftHi = $baseMed + $DriftMs
 $head = (& git -C $repo rev-parse --short HEAD).Trim()
 Log "[비교] $Label · 커밋 $head + 미커밋 고침 · 고치기 전 $BaseExe · 고친 $fixExe"
 Log "[비교] 방 $Rooms × $size · 실행 $sec 초 · 측정 구간 $window 초 · 끈 계측 $extra · 가동 시간 문턱 $UptimeMaxHours"
-Log "[비교] 기준 틱합 $(($baseTicksV | ForEach-Object { F $_ }) -join ' · ') · 중앙 $(F $baseMed) · 채택 = 세 판 모두 $(F $baseMin) 미만 · 중앙 $(F ($baseMed - $AdoptMs)) 이하 · PC 확인 폭 $(F $driftLo)~$(F $driftHi)"
+Log "[비교] 기준 $mName $(($baseTicksV | ForEach-Object { F $_ }) -join ' · ') · 중앙 $(F $baseMed) · 채택 = 세 판 모두 $(F $baseMin) 미만 · 중앙 $(F ($baseMed - $AdoptMs)) 이하 · PC 확인 폭 $(F $driftLo)~$(F $driftHi)"
 if (-not $DryRun) {
   [IO.File]::WriteAllText((Join-Path $outDir 'fix.diff'), ((& git -C $repo diff HEAD) -join "`n") + "`n", (New-Object Text.UTF8Encoding($false)))
 }
@@ -184,20 +194,22 @@ function Run-One([string]$tag, [string]$exe) {
   Log "[멈춤] $tag — 3번 해도 쓸 판을 못 얻음"; exit 4
 }
 function Part($r, [string]$n) { $v = $r.partMsPerSec.$n; if ($null -eq $v) { return 0.0 } else { return [double]$v } }
+# 판정 값 — `-Metric`(머리 주석). busy 는 report.json `gameBusyPct`(%) × 10 = ms/초
+function Judge($r) { if ($Metric -eq 'busy') { return 10.0 * [double]$r.gameBusyPct } else { return Part $r '틱합' } }
 function Run-Line([string]$who, $r) {
-  return ("[결과] {0} · 틱합 {1} · 정적 {2} · 걸음 {3} · 사람 {4} · 게임 바쁨 {5}% · 틱 완료 1% {6} · 받은 조각 {7} · 끊김 {8} · 넘침 {9} · 입력 차이 {10}% · 조각 차이 {11}% · 메모리 {12}MB · {13}" -f `
+  return ("[결과] {0} · 틱합 {1} · 정적 {2} · 걸음 {3} · 사람 {4} · 게임 바쁨 {5}% · 고리 나머지 {14} · 틱 완료 1% {6} · 받은 조각 {7} · 끊김 {8} · 넘침 {9} · 입력 차이 {10}% · 조각 차이 {11}% · 메모리 {12}MB · {13}" -f `
     $who, (F (Part $r '틱합')), (F (Part $r '정적')), (F (Part $r '걸음')), (F (Part $r '사람')), $r.gameBusyPct, $r.completionP99Ms, $r.recvPieces,
-    $r.timeouts, $r.overflow, $r.inputDiffPct, $r.pieceDiffPct, $r.memPrivMaxMb, $r.dir)
+    $r.timeouts, $r.overflow, $r.inputDiffPct, $r.pieceDiffPct, $r.memPrivMaxMb, $r.dir, $r.loopRestMsPerSec)
 }
 
 # ── ② PC 확인 — 고치기 전 서버 1판 ──
 $rb = Run-One "OPT_${Label}_base" $BaseExe
 if ($DryRun) { Log '[시험] 끝'; exit 0 }
 Log (Run-Line '고치기 전' $rb)
-$bt = Part $rb '틱합'
+$bt = Judge $rb
 if ($bt -lt $driftLo -or $bt -gt $driftHi) {
   $dir = if ($bt -gt $driftHi) { '느려짐' } else { '빨라짐 — 기준이 지금 PC 와 안 맞는다' }
-  Log "[멈춤] PC 상태가 기준과 다르다($dir) — 고치기 전 서버 틱합 $(F $bt) 이 $(F $driftLo)~$(F $driftHi) 밖(플랜 4절: 측정을 멈추고 고치기 · 빌드 · 시험만)"; exit 3
+  Log "[멈춤] PC 상태가 기준과 다르다($dir) — 고치기 전 서버 $mName $(F $bt) 이 $(F $driftLo)~$(F $driftHi) 밖(플랜 4절: 측정을 멈추고 고치기 · 빌드 · 시험만)"; exit 3
 }
 Log "[PC 확인] 고치기 전 $(F $bt) — 폭 안"
 
@@ -208,13 +220,13 @@ for ($i = 1; $i -le $Runs; $i++) {
   Log (Run-Line "고친 $i" $r)
   $fix += $r
 }
-$ft = @($fix | ForEach-Object { Part $_ '틱합' })
+$ft = @($fix | ForEach-Object { Judge $_ })
 $fmed = Median $ft
 $allBelow = @($ft | Where-Object { $_ -ge $baseMin }).Count -eq 0
 $adopt = $allBelow -and ($fmed -le $baseMed - $AdoptMs)
 $loss = @($fix + @($rb) | Where-Object { $_.timeouts -ne 0 -or $_.overflow -ne 0 -or $_.inputDiffPct -ne 0 -or $_.pieceDiffPct -ne 0 }).Count
 $rooms1 = $fmed / $Rooms
-Log ("[판정] 고친 틱합 {0} · 중앙 {1}(방 하나 {2}ms) · 기준 중앙 {3} → 차 {4} · 고치기 전 판 {5} 대비 {6} · 손실 있는 판 {7}" -f `
+Log ("[판정] 고친 $mName {0} · 중앙 {1}(방 하나 {2}ms) · 기준 중앙 {3} → 차 {4} · 고치기 전 판 {5} 대비 {6} · 손실 있는 판 {7}" -f `
   (($ft | ForEach-Object { F $_ }) -join ' · '), (F $fmed), $rooms1.ToString('0.000', $inv), (F $baseMed), (F ($fmed - $baseMed)), (F $bt), (F ($fmed - $bt)), $loss)
 if ($loss -gt 0) { Log '[끝] 기각 — 손실(끊김 · 넘침 · 입력 · 조각 차이)이 0 이 아닌 판이 있다'; exit 0 }
 Log $(if ($adopt) { '[끝] 채택' } else { "[끝] 기각 — 세 판 모두 기준 최솟값 미만 $allBelow · 중앙 차 $(F ($fmed - $baseMed)) (기준 -$(F $AdoptMs))" })
