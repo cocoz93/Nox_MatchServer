@@ -69,14 +69,43 @@ int CRoomManager::CreateRoom(const RoomSettings& settings, int* buildRc) {
     return id;
 }
 
-std::map<int, size_t> CRoomManager::SeatCounts() const {
-    std::map<int, size_t> n;
+// ★ 11-15 최적화 6차 개선 — 세션표를 고치는 자리 셋(머리 `SeatCounts` 주석). 방별 수 `_seatsPerRoom` 은 옛 `SeatCounts` 가
+//   훑어 지은 지도와 늘 같다 — 열쇠 = 세션이 하나라도 있는 방(없는 방 번호도 · `AssignDirect` 는 방이 없어도 적는다) · 값 = 그 수
+void CRoomManager::SeatSet(int64_t sessionId, int roomId) {
+    const auto ins = _seats.emplace(sessionId, roomId);
+    if (!ins.second) {                          // 이미 앉은 세션 — 옛 `_seats[id] = room` 처럼 덮어쓴다
+        if (ins.first->second == roomId) return;   // 같은 방이면 수도 그대로
+        SeatUncount(ins.first->second);
+        ins.first->second = roomId;
+    }
+    ++_seatsPerRoom[roomId];
+}
+
+std::map<int64_t, int>::iterator CRoomManager::SeatErase(std::map<int64_t, int>::iterator it) {
+    SeatUncount(it->second);
+    return _seats.erase(it);
+}
+
+size_t CRoomManager::SeatErase(int64_t sessionId) {
+    const auto it = _seats.find(sessionId);
+    if (it == _seats.end()) return 0;
+    SeatErase(it);
+    return 1;
+}
+
+void CRoomManager::SeatUncount(int roomId) {
+    const auto it = _seatsPerRoom.find(roomId);
+    if (it != _seatsPerRoom.end() && --it->second == 0) _seatsPerRoom.erase(it);
+}
+
+bool CRoomManager::SeatCountsMatchScan() const {
+    std::map<int, size_t> n;   // 옛 `SeatCounts` 그대로
     for (const auto& kv : _seats) ++n[kv.second];
-    return n;
+    return n == _seatsPerRoom;
 }
 
 std::vector<RoomFact> CRoomManager::ListRooms() const {
-    const std::map<int, size_t> seats = SeatCounts();
+    const std::map<int, size_t>& seats = SeatCounts();   // ★ 6차 — 복사 없이(이 함수 안에서는 세션표를 안 고친다)
     std::vector<RoomFact> r;
     r.reserve(_rooms.size());
     for (const auto& kv : _rooms) {
@@ -222,7 +251,7 @@ size_t CRoomManager::RankWaiting() const {
 // ★ 10-14 작업 9e — 비면 닫는 방(로비가 만든 방)이 빈 채 `kEmptyRoomCloseMs` 지나면 닫는다. 빈 때는 처음 빈 것을 본 `BeginTick` 의 시각
 void CRoomManager::CloseEmptyRooms(uint32_t nowMs) {
     std::vector<int> toClose;
-    const std::map<int, size_t> seats = SeatCounts();
+    const std::map<int, size_t>& seats = SeatCounts();   // ★ 6차 — 복사 없이(닫기 `CloseRoom` 은 아래 고리를 다 돈 뒤)
     for (auto& kv : _rooms) {
         CRoom& room = *kv.second;
         if (!room._settings.closeWhenEmpty) continue;
@@ -304,7 +333,7 @@ bool CRoomManager::CloseRoom(int id) {
         RequestSendMsg(s->first, /*reliable=*/false, closeMsg, sizeof(closeMsg));
         RequestDisconnectSession(s->first);
         ++_stats.closedRoomSessions;
-        s = _seats.erase(s);
+        s = SeatErase(s);
     }
     _rooms.erase(it);
     ++_stats.roomsClosed;
@@ -330,7 +359,7 @@ void CRoomManager::SetLoadEntry(const RoomSettings& roomTemplate, int maxOpenRoo
 }
 
 int CRoomManager::FindLoadRoom() const {
-    const std::map<int, size_t> seats = SeatCounts();
+    const std::map<int, size_t>& seats = SeatCounts();   // ★ 6차 — 복사 없이
     for (const auto& kv : _rooms) {
         if (kv.second->_phase != RoomPhase::Waiting) continue;   // 판 중엔 입장을 거절한다(`RoomAdmits`)
         const auto it = seats.find(kv.first);
@@ -349,7 +378,7 @@ size_t CRoomManager::OnLoadEntryEvent(const NetworkEvent& ev) {
         RequestDisconnectSession(ev.sessionId);
         return 0;
     }
-    _seats[ev.sessionId] = roomId;
+    SeatSet(ev.sessionId, roomId);
     AddMember(Room(roomId), ev.sessionId, std::string());
     ++_stats.assigned;
     return Forward(roomId, ev);
@@ -361,14 +390,13 @@ int CRoomManager::RoomOfSession(int64_t sessionId) const {
 }
 
 void CRoomManager::AssignDirect(int64_t sessionId, int roomId) {
-    _seats[sessionId] = roomId;
+    SeatSet(sessionId, roomId);
     if (HasRoom(roomId)) AddMember(Room(roomId), sessionId, std::string());   // ★ 10-16 작업 12a — 구성원 = 세션표의 이 방 세션
 }
 
 size_t CRoomManager::SeatsIn(int roomId) const {
-    size_t n = 0;
-    for (const auto& kv : _seats) if (kv.second == roomId) ++n;
-    return n;
+    const auto it = _seatsPerRoom.find(roomId);   // ★ 11-15 최적화 6차 — 옛 세션표 전부 훑기와 같은 수
+    return it == _seatsPerRoom.end() ? 0 : it->second;
 }
 
 // ★ 10-16 작업 12a — 방 규칙. 판 중(결정 3)이면 원작이 닫힌 판에 쓰는 사유(`network.go:443-453`) · 꽉 찼으면 원작 인원 초과 사유(`network.go:409·418·427`)
@@ -486,7 +514,7 @@ size_t CRoomManager::OnNetworkEvent(const NetworkEvent& ev) {
                 return 0;
             }
         }
-        _seats[ev.sessionId] = _openRoom;
+        SeatSet(ev.sessionId, _openRoom);
         AddMember(Room(_openRoom), ev.sessionId, std::string());   // ★ 10-16 작업 12a — 세션표에 넣는 곳마다(구성원 = 세션표의 이 방 세션)
         if (ev.type == NetworkEvent::Type::CONNECTED) ++_stats.assigned;
         return Forward(_openRoom, ev);
@@ -503,7 +531,7 @@ size_t CRoomManager::OnNetworkEvent(const NetworkEvent& ev) {
             LogJoin("CONNECT 끊음", ev, roomId, tok, why);
             return 0;
         }
-        _seats[ev.sessionId] = roomId;
+        SeatSet(ev.sessionId, roomId);
         ++_stats.assigned;
         AddMember(Room(roomId), ev.sessionId, tok.account);   // ★ 10-16 작업 12a
         LogJoin("방 배정", ev, roomId, tok, why);
@@ -722,7 +750,7 @@ void CRoomManager::PullRequests(CRoom& room) {
     room._game.SwapOutNetworkRequests(_pull);
     for (NetworkRequest& q : _pull) {
         // ★ 작업 6b — 나감. 방에서 사람이 빠지는 길(자리 비우기 · 내보내기)은 모두 이 끊기 요청으로 끝난다
-        if (q.type == NetworkRequest::Type::DISCONNECT_SESSION && _seats.erase(q.sessionId) != 0) {
+        if (q.type == NetworkRequest::Type::DISCONNECT_SESSION && SeatErase(q.sessionId) != 0) {
             ++_stats.left;
             RemoveMember(room, q.sessionId);   // ★ 10-16 작업 12a — 방장이면 다음 사람
         }

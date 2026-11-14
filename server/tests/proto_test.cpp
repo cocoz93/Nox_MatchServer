@@ -26674,6 +26674,197 @@ void TestLoadEntry() {
     std::printf("  11-10 부하 실험 3-1절 — K명씩 채우기 · 방은 접속 때 · 시도 되풀이에 방 안 늠 · 판 중 건너뜀 · 상한 거절 · 닫힌 뒤 새 방 · 틀 = 로비 틀 · 인자 검사\n");
 }
 
+// ── ★ 11-15 최적화 6차 개선 — 방별 세션 수를 세션표와 함께 고쳐 둔다(`CRoomManager::SeatCounts` 머리 주석) ─────────
+//   옛 꼴(부를 때마다 세션표 전부를 훑어 다시 셈)과 같은 지도인지. 세션표를 고치는 자리 여섯 — 부하 입구 · 바로 앉히기 ·
+//   열린 입구 · 토큰 입구(앉기) · 방 닫기 · 끊기 요청(빼기) — 을 섞어 돌리고 한 걸음마다 `SeatCountsMatchScan` 으로 대조한다.
+//   방별 수를 읽는 자리(열린 입구의 꽉 참 · `SeatsIn`)는 그 판단이 시험이 따로 센 수(아는 세션마다 `RoomOfSession`)와 맞는지도 센다.
+//   세는 자리는 자리마다 따로 둔다(한 곳만 세면 그 0 은 거짓말)
+void TestSeatCountsSameAsScan() {
+    std::printf("\n[방별 세션 수 = 세션표 다시 세기]\n");
+    using Ev = nox::NetworkEvent;
+    using Rq = nox::NetworkRequest;
+    using RM = nox::CRoomManager;
+    uint32_t seed = 616;
+    auto rnd = [&](uint32_t n) { seed = seed * 1103515245u + 12345u; return ((seed >> 8) & 0xFFFFFFu) % n; };
+    auto connEv = [](int64_t sid) { Ev e; e.type = Ev::Type::CONNECTED; e.sessionId = sid; e.addr = "10.61.0.1:" + std::to_string(20000 + sid); return e; };
+    size_t steps = 0, mismatch = 0, maxSeats = 0, maxRooms = 0;
+    size_t loadSeat = 0, openSeat = 0, openFull = 0, openNoRoom = 0, admitWrong = 0, directNew = 0, directMove = 0, directSame = 0, directGhost = 0, tokenSeat = 0;
+    size_t kickLeft = 0, closeLeft = 0, emptyClosed = 0;
+    std::vector<Rq> rq;
+    auto check = [&](const RM& rooms) {
+        ++steps;
+        if (!rooms.SeatCountsMatchScan()) ++mismatch;
+        maxSeats = std::max(maxSeats, rooms.SeatCount());
+        maxRooms = std::max(maxRooms, rooms.RoomCount());
+    };
+    auto seatsOf = [](const RM& rooms, int roomId) -> size_t {   // 방 목록(`ListRooms`)에 보이는 세션 수
+        for (const nox::RoomFact& f : rooms.ListRooms()) if (f.roomId == roomId) return f.seats;
+        return 0;
+    };
+    // `real` = 접속 사건을 받은 세션(게임에 자리가 있어 내보낼 수 있다) · `ghost` = 사건을 안 보내는 세션(없는 방에도 앉힌다 —
+    //   없는 방에 앉은 세션에 사건을 보내면 `Room(id)` 가 없는 방을 찾는다. 서버에서는 `CloseRoom` 이 그 방 세션을 다 지워 안 생긴다)
+    auto run = [&](RM& rooms, bool loadMode, int64_t sidBase, int& openRoom) {
+        int64_t nextReal = sidBase, nextGhost = sidBase + 500000;
+        std::vector<int64_t> real, ghost;
+        std::vector<int> made;
+        if (!loadMode) for (const nox::RoomFact& f : rooms.ListRooms()) made.push_back(f.roomId);
+        uint32_t now = 100000;
+        auto liveRoom = [&]() -> int {
+            const std::vector<nox::RoomFact> fs = rooms.ListRooms();
+            return fs.empty() ? RM::kNoRoom : fs[rnd(static_cast<uint32_t>(fs.size()))].roomId;
+        };
+        auto seatedReal = [&]() -> int64_t {   // 지금 앉은 `real` 하나(여덟 번 골라 못 찾으면 -1 — 닫힌 방의 세션은 세션표에서 빠져 있다)
+            for (int t = 0; t < 8 && !real.empty(); ++t) {
+                const int64_t sid = real[rnd(static_cast<uint32_t>(real.size()))];
+                if (rooms.RoomOfSession(sid) != RM::kNoRoom) return sid;
+            }
+            return -1;
+        };
+        auto scanSeats = [&](int roomId) {   // 시험이 따로 센 수 — 아는 세션마다 `RoomOfSession`(방별 수 지도를 안 거친다)
+            size_t n = 0;
+            for (const int64_t sid : real) n += rooms.RoomOfSession(sid) == roomId ? 1 : 0;
+            for (const int64_t sid : ghost) n += rooms.RoomOfSession(sid) == roomId ? 1 : 0;
+            return n;
+        };
+        for (int i = 0; i < 6000; ++i) {
+            const uint32_t op = rnd(100);
+            const size_t before = rooms.SeatCount();
+            if (op < 30) {                                       // 새 접속 — 부하 입구 · 열린 입구
+                const int64_t sid = nextReal++;
+                const bool openHere = !loadMode && rooms.HasRoom(openRoom);
+                const bool wantFull = openHere && scanSeats(openRoom) >= static_cast<size_t>(rooms.Room(openRoom).Settings().maxPlayers);
+                const unsigned long long fullBefore = rooms.Stats().rejectFull, noRoomBefore = rooms.Stats().openNoRoom;
+                rooms.OnNetworkEvent(connEv(sid));
+                const bool seated = rooms.SeatCount() == before + 1;
+                if (seated) { real.push_back(sid); ++(loadMode ? loadSeat : openSeat); }
+                if (!loadMode) {
+                    const bool full = rooms.Stats().rejectFull > fullBefore;
+                    if (full) ++openFull;
+                    if (rooms.Stats().openNoRoom > noRoomBefore) ++openNoRoom;
+                    if (openHere && (full != wantFull || seated == wantFull)) ++admitWrong;
+                }
+            } else if (op < 50) {                                // 바로 앉히기 — 새 세션 · 옮기기 · 같은 방 · 없는 방
+                const uint32_t k = rnd(4);
+                const int target = liveRoom();
+                if (k == 0 && target != RM::kNoRoom) {
+                    const int64_t sid = nextReal++;
+                    rooms.AssignDirect(sid, target);
+                    rooms.OnNetworkEvent(connEv(sid));           // 세션표에 있으니 그 방 게임으로 간다 — 게임에 자리가 생긴다
+                    real.push_back(sid);
+                    ++directNew;
+                } else if (k == 1 && target != RM::kNoRoom && !real.empty()) {
+                    const int64_t pick = seatedReal();
+                    const int64_t sid = pick >= 0 ? pick : real[rnd(static_cast<uint32_t>(real.size()))];
+                    const int was = rooms.RoomOfSession(sid);
+                    const int to = was != RM::kNoRoom && rnd(4) == 0 ? was : target;   // 넷에 하나는 같은 방에 다시
+                    rooms.AssignDirect(sid, to);
+                    rooms.OnNetworkEvent(connEv(sid));           // 옮긴 방 게임에도 자리(내보내기 대상)
+                    if (was == RM::kNoRoom) ++directNew; else ++(was == to ? directSame : directMove);
+                } else if (k == 2 || target == RM::kNoRoom) {   // 없는 방(방 번호는 늘기만 해 이 번호에는 방이 안 생긴다)
+                    const bool fresh = ghost.empty() || rnd(2) == 0;
+                    const int64_t sid = fresh ? nextGhost++ : ghost[rnd(static_cast<uint32_t>(ghost.size()))];
+                    if (fresh) ghost.push_back(sid);
+                    rooms.AssignDirect(sid, 900000 + static_cast<int>(rnd(3)));
+                    ++directGhost;
+                } else if (!ghost.empty()) {                     // 없는 방에 앉았던 세션을 있는 방으로
+                    const int64_t sid = ghost[rnd(static_cast<uint32_t>(ghost.size()))];
+                    const int was = rooms.RoomOfSession(sid);
+                    rooms.AssignDirect(sid, target);
+                    if (was == RM::kNoRoom) ++directNew; else ++(was == target ? directSame : directMove);
+                }
+            } else if (op < 72) {                                // 내보내기 → 끊기 요청(방 관리자가 세션표에서 뺀다)
+                const int64_t sid = seatedReal();
+                if (sid >= 0) {
+                    const int r = rooms.RoomOfSession(sid);
+                    if (rooms.HasRoom(r)) {
+                        const bool all = rnd(4) == 0;              // 넷에 하나는 그 방의 `real` 을 다 내보낸다(빈 방 닫기가 돌게)
+                        for (const int64_t s : real)
+                            if (s == sid || (all && rooms.RoomOfSession(s) == r)) rooms.Game(r).DebugKickPlayer(s);
+                        rooms.SwapOutNetworkRequests(rq);
+                        kickLeft += before - rooms.SeatCount();
+                    }
+                }
+            } else if (op < 75) {                                // 방 닫기
+                const int r = liveRoom();
+                if (r != RM::kNoRoom) {
+                    rooms.CloseRoom(r);
+                    closeLeft += before - rooms.SeatCount();
+                }
+            } else if (op < 82 && !loadMode) {                   // 열린 입구의 방 바꾸기 · 방 더 차리기(넷에 하나는 닫힌 방일 수도)
+                if (rnd(2) == 0 && rooms.RoomCount() < 5) {
+                    RoomSettings s;
+                    s.closeWhenEmpty = rnd(2) == 0;
+                    s.maxPlayers = 6;
+                    made.push_back(rooms.CreateRoom(s));
+                }
+                const int live = liveRoom();
+                openRoom = live != RM::kNoRoom && rnd(4) != 0 ? live : made[rnd(static_cast<uint32_t>(made.size()))];
+                rooms.SetOpenEntry(openRoom);
+            } else {                                             // 시간 — 빈 방 닫기
+                const unsigned long long closedBefore = rooms.Stats().emptyRoomsClosed;
+                now += 1000 * rnd(8);
+                rooms.BeginTick(now);
+                emptyClosed += static_cast<size_t>(rooms.Stats().emptyRoomsClosed - closedBefore);
+            }
+            rooms.SwapOutNetworkRequests(rq);
+            rq.clear();
+            check(rooms);
+        }
+    };
+    {   // 부하 입구 — 방 상한 6 · 방당 3명 · 비면 닫음
+        RoomSettings frame;
+        frame.closeWhenEmpty = true;
+        RM rooms;
+        rooms.SetLoadEntry(frame, 6, 3);
+        int unused = RM::kNoRoom;
+        run(rooms, true, 1, unused);
+    }
+    {   // 열린 입구 — 방 셋(모두 정원 6 · 둘은 비면 닫음)에서 시작
+        RM rooms;
+        RoomSettings s;
+        s.closeWhenEmpty = true;
+        s.maxPlayers = 6;
+        rooms.CreateRoom(s);
+        rooms.CreateRoom(s);
+        RoomSettings keep;
+        keep.maxPlayers = 6;
+        int openRoom = rooms.CreateRoom(keep);
+        rooms.SetOpenEntry(openRoom);
+        run(rooms, false, 1000000, openRoom);
+    }
+    {   // 토큰 입구 — 진짜 접속 길로 둘(`TestLobbyClientRatingNotice` 의 차례)
+        const uint8_t conn[3] = { 0xff, 0x00, 0x00 };
+        nox::CSyncHost srv;
+        UseTokens(srv);
+        MapCatalog cat;
+        cat.maps.push_back(FakeMapOriginal("so_lod", 0x18d8f4d9u, 1000.0f, 1000.0f));
+        const int r = MakeLobbyLikeRoom(srv.Rooms(), cat, "so_lod", "");
+        std::vector<nox::OutPacket> o;
+        srv.Tick(1000, o);
+        srv.Tick(1033, o);
+        const size_t before = srv.Rooms().SeatCount();
+        for (int k = 0; k < 2; ++k) {
+            const std::string ip = "10.62.0." + std::to_string(k + 1);
+            const auto tail = TrailerAs(k ? "bob" : "amy", r, ip, 900 + static_cast<uint64_t>(k));
+            const auto tj = WithTail(TryJoinPkt("Jack"), tail);
+            srv.OnPacket(ip + ":1", tj.data(), tj.size(), o);
+            const auto cn = WithTail(std::vector<uint8_t>(conn, conn + sizeof(conn)), tail);
+            srv.OnPacket(ip + ":2", cn.data(), cn.size(), o);
+            check(srv.Rooms());
+        }
+        tokenSeat = srv.Rooms().SeatCount() - before;
+        if (seatsOf(srv.Rooms(), r) != tokenSeat) ++admitWrong;
+    }
+    std::printf("  걸음 %zu · 다름 %zu · 판단 어긋남 %zu | 앉기: 부하 입구 %zu · 열린 입구 %zu(꽉 참 거절 %zu · 방 없음 %zu) · 바로 새 %zu · 옮김 %zu · 같은 방 %zu · 없는 방 %zu · 토큰 %zu"
+                " | 빼기: 끊기 요청 %zu · 방 닫기 %zu · 빈 방 닫힘 %zu | 가장 많을 때 세션 %zu · 방 %zu\n",
+                steps, mismatch, admitWrong, loadSeat, openSeat, openFull, openNoRoom, directNew, directMove, directSame, directGhost, tokenSeat,
+                kickLeft, closeLeft, emptyClosed, maxSeats, maxRooms);
+    Check(mismatch == 0 && admitWrong == 0, "방별 세션 수가 세션표를 다시 센 것과 다르다(또는 꽉 참 판단이 옛 수와 다르다)");
+    Check(steps == 12002 && loadSeat > 300 && openSeat > 300 && openFull > 100 && openNoRoom > 20 && directNew > 300 && directMove > 300 && directSame > 30 &&
+              directGhost > 300 && tokenSeat == 2 && kickLeft > 300 && closeLeft > 100 && emptyClosed > 20 && maxSeats > 15,
+          "앉기 · 옮기기 · 빼기 · 닫기 자리 가운데 너무 적게 지난 것이 있다 — 이 시험이 그 자리를 못 본다");
+}
+
 void TestRooms() {
     const uint8_t conn[3] = { 0xff, 0x00, 0x00 };
     const uint8_t leave[3] = { 0x00, 0x00, static_cast<uint8_t>(nox::Op::OUTGOING_CLIENT) };
@@ -35485,6 +35676,7 @@ int main() {
     TestMatchRecordRoundTrip();   // ★ 7단계 조각 4
     TestLobbyMapPaths();
     TestLoadEntry();              // ★ 11-10 부하 실험 3-1절
+    TestSeatCountsSameAsScan();   // ★ 11-15 최적화 6차 개선
     TestStatMult();               // ★ 11-10 부하 실험 3-2절
     TestInGameNameIsAccount();   // ★ 11-05
     TestJoinTrailer();

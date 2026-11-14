@@ -414,6 +414,8 @@ public:
     // ── 세션표 ──
     int RoomOfSession(int64_t sessionId) const;   // 모르는 세션이면 `kNoRoom`
     size_t SeatCount() const { return _seats.size(); }
+    // ★ 11-15 최적화 6차 개선 — 시험용. 고쳐 둔 방별 수(`_seatsPerRoom`)가 세션표를 다 훑어 다시 센 것(옛 `SeatCounts`)과 같나
+    bool SeatCountsMatchScan() const;
     // 소켓 없이 방에 바로 세운 사람(봇 · 시험 — `CSyncHost::DebugEnterGame`)을 세션표에 적는다
     void AssignDirect(int64_t sessionId, int roomId);
 
@@ -467,7 +469,15 @@ private:
     void PullRequests(CRoom& room);   // 방의 요청 목록을 방 관리자 목록 뒤로 옮긴다(끊기 요청이면 세션표에서 지운다)
     void PullResults(CRoom& room);    // ★ 10-19 MO 5단계 작업 2 — 방이 지은 판 결과를 방 이벤트(`MATCH_RESULT`)로
     void CloseEmptyRooms(uint32_t nowMs);   // ★ 10-14 작업 9e
-    std::map<int, size_t> SeatCounts() const;   // 방 → 세션표의 세션 수(한 번 훑기)
+    // 방 → 세션표의 세션 수(0 인 방은 없음). ★ 11-15 최적화 6차 개선 — 옛 꼴은 부를 때마다 세션표 전부를 훑어 지도를 새로 지었다.
+    //   `BeginTick` → `CloseEmptyRooms` 가 게임 루프 한 바퀴마다 불러 272방 표본(5차 뒤)에서 게임 스레드의 19.5%(부른 쪽 포함 ·
+    //   빈 방 닫기 전체 23.9%)였다 — 이제 세션표를 고치는 자리(`SeatSet` · `SeatErase`)가 같이 고쳐 둔 것을 돌려준다
+    const std::map<int, size_t>& SeatCounts() const { return _seatsPerRoom; }
+    // 세션표(`_seats`)는 이 셋으로만 고친다 — 방별 수를 같이 고친다(옛 `_seats[id] = room` · `_seats.erase(...)` 와 같은 결과)
+    void SeatSet(int64_t sessionId, int roomId);
+    std::map<int64_t, int>::iterator SeatErase(std::map<int64_t, int>::iterator it);
+    size_t SeatErase(int64_t sessionId);
+    void SeatUncount(int roomId);   // 그 방 수를 하나 줄이고 0 이면 지운다
 
     std::map<int, std::unique_ptr<CRoom>> _rooms;
     std::map<uint8_t, unsigned long long> _closedSeen;   // 닫은 방들의 받은 메시지 수(`SeenTotals`)
@@ -490,6 +500,7 @@ private:
     std::function<uint32_t()> _unixNow = UnixNow;
     bool _logJoins = false;
     std::map<int64_t, int> _seats;                // 세션표 — 세션 → 방
+    std::map<int, size_t> _seatsPerRoom;          // ★ 11-15 최적화 6차 — 세션표의 방별 세션 수(0 인 방은 없음 · `SeatSet` · `SeatErase` 만 고친다)
     std::vector<NetworkRequest> _requests;
     std::vector<NetworkRequest> _pull;            // `PullRequests` 가 쓰는 그릇(다시 씀)
     std::vector<RoomEvent> _roomEvents;
