@@ -11,8 +11,14 @@
 param(
   [int]$StartRooms = 224,
   [int]$StepRooms = 16,          # 첫째 묶음 좁히기 눈금(M4 · 192 → 208)
-  [int]$TopRooms = 320,          # 올라가는 상한 — 더미 3,200명(4스레드)까지만(첫째 묶음 192방 = 1,920명에서 입력 차이 0)
+  [int]$TopRooms = 0,            # 올라가는 상한 · 0 = 더미 스레드 수 × 스레드당 인원 ÷ 방 인원으로 셈(아래)
   [int]$FloorRooms = 160,
+  # ★ 11-15 — 상한을 더미 몫에서 셈한다. 옛 상한 320방(3,200명 · 4스레드)은 근거 없이 정한 값이라 7차 뒤 판이 넘지 않고 상한에서 멈췄다.
+  #   스레드당 인원 800 = 11-15 320방 30분 판 실측(`_out/load_run/20261115_105107_LIM_p30_r320_t1/dummy.txt` — 스레드당 800명 ·
+  #   한 바퀴 일한 시간 평균 7.77 · 최대 11.17ms = 33ms 의 34% · 측정 구간 안 밀림 0). 최대치는 안 쟀다 — 이 몫을 지키면 더미가 서버보다 먼저 막히지 않고,
+  #   막히면 load_report 가 측정 구간 안 더미 밀림으로 버린다(넘음과 갈린다)
+  [int]$DummyThreads = 6,        # 6 × 800 ÷ 10 = 480방 — 게임 · 통신 바쁨을 방 수에 비례로 늘린 짐작(게임 약 390 · 통신 약 470방에서 100%)을 둘 다 덮는다
+  [int]$PerThread = 800,
   [switch]$DryRun
 )
 $ErrorActionPreference = 'Stop'
@@ -22,6 +28,7 @@ $loadRun = Join-Path $PSScriptRoot 'load_run.ps1'
 $loadReport = Join-Path $PSScriptRoot 'load_report.ps1'
 $size = 10; $joinSec = 0.2; $tailSec = 60
 $serverExtra = '--no-event-log --no-first-seen --no-op-count'
+if ($TopRooms -le 0) { $TopRooms = [int][math]::Floor($DummyThreads * $PerThread / $size) }
 
 $outDir = Join-Path $repo ("_out\load_limit\" + (Get-Date -Format 'yyyyMMdd_HHmmss'))
 if (-not $DryRun) { New-Item -ItemType Directory -Force -Path $outDir | Out-Null }
@@ -37,7 +44,7 @@ function Q([string]$s) { return "'" + $s.Replace("'", "''") + "'" }
 $dirtyN = @(& git -C $repo status --porcelain).Count
 if ($dirtyN -gt 0 -and -not $DryRun) { Log "[멈춤] 미커밋 $dirtyN 개 — 판이 다 버려진다(git status)"; exit 2 }
 $head = (& git -C $repo rev-parse --short HEAD).Trim()
-Log "[한계] 커밋 $head · 시작 $StartRooms 방 · 눈금 $StepRooms · 범위 $FloorRooms~$TopRooms · 끈 계측 $serverExtra · 가동 시간 문턱 기본"
+Log "[한계] 커밋 $head · 시작 $StartRooms 방 · 눈금 $StepRooms · 범위 $FloorRooms~$TopRooms · 더미 스레드 $DummyThreads(스레드당 $PerThread 명까지) · 끈 계측 $serverExtra · 가동 시간 문턱 기본"
 
 # 판 하나 → @{ pass; rec; dir }. 버림이면 같은 지점을 3번까지
 function Run-Point([string]$tag, [int]$rooms, [int]$window, [int]$edge) {
@@ -46,7 +53,7 @@ function Run-Point([string]$tag, [int]$rooms, [int]$window, [int]$edge) {
     $t = "LIM_${tag}_r${rooms}_t$try"
     if ($DryRun) { Log "[판] (시험) $t · 방 $rooms × $size · $sec 초 · 측정 구간 $window"; return @{ pass = ($rooms -le 240); rec = $null; dir = '' } }
     Log "[판] $t · 방 $rooms × $size · $sec 초 · 측정 구간 $window 초"
-    $cmd = "& $(Q $loadRun) -Tag $(Q $t) -Rooms $rooms -RoomSize $size -Sec $sec -Behavior 'fight' -Classes '0,1' -FreqMult 1 -CycleSec 0 -ExtraServerArgs $(Q $serverExtra); exit `$LASTEXITCODE"
+    $cmd = "& $(Q $loadRun) -Tag $(Q $t) -Rooms $rooms -RoomSize $size -Sec $sec -Behavior 'fight' -Classes '0,1' -FreqMult 1 -CycleSec 0 -DummyThreads $DummyThreads -ExtraServerArgs $(Q $serverExtra); exit `$LASTEXITCODE"
     $out = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -Command $cmd 2>&1 | ForEach-Object { "$_" })
     $code = $LASTEXITCODE
     foreach ($ln in $out) { if ($ln -match '^\[(게이트|멈춤|주의|끝|코어)\]') { Log "  $ln" } }
