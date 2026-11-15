@@ -327,6 +327,16 @@ function Set-Affinity($Proc, [int64]$Mask, [string]$Who) {
 $os = Get-CimInstance Win32_OperatingSystem
 Note '메모리 여유 — 시작 때(MB)' ('{0:F0} / 전체 {1:F0}' -f ($os.FreePhysicalMemory / 1024.0), ($os.TotalVisibleMemorySize / 1024.0))
 
+# ★ 11-15 — 판 도중 업데이트. 일시 중지(11-04~12-09)를 걸어도 백신 정의 · Store 앱 업데이트가 업데이트 서비스를 부른다
+#   (11-15 10:05:50 Store 내려받기 둘이 288방 판 도중). 위 업데이트 서비스 게이트는 판 시작 때만 봐서 판 도중을 못 본다 —
+#   판 동안 서비스 상태를 10초마다 적고, 끝난 뒤 그 시간의 업데이트 기록(WindowsUpdateClient/Operational)을 센다.
+#   기록(찾기 · 받기 · 설치)이 있으면 load_report 가 버린다. 서비스가 켜져 있던 것만으로는 안 버리고 적기만 한다 —
+#   11-15 판 넷 중 둘(288 · 304방)이 서비스가 켜진 채 끝났는데 둘 다 가장 느린 1% 1ms 통과였고, 켜짐만으로 버리면 load_limit 이 같은 지점 버림 3번에 멈춘다
+Add-Type -AssemblyName System.ServiceProcess
+$runWallStart = Get-Date
+$wuSc = New-Object System.ServiceProcess.ServiceController 'wuauserv'
+$wuSeen = 0; $wuOn = 0; $wuErr = 0; $wuOnAt = New-Object System.Collections.ArrayList
+
 $sv = Start-Process -FilePath $srvExePath -ArgumentList $serverArgs -WorkingDirectory $repo -PassThru -WindowStyle Hidden `
   -RedirectStandardOutput (Join-Path $runDir 'server.txt') -RedirectStandardError (Join-Path $runDir 'server_err.txt')
 $null = $sv.Handle   # 끝난 뒤 종료 코드를 읽으려면 핸들을 잡아 둬야 한다
@@ -372,6 +382,10 @@ while ($(if ($NoDummy) { -not $sv.HasExited } else { -not $du.HasExited })) {
   if ($left -le 0) { break }
   $waitMs = [int][math]::Min(10000, $left)
   if ($NoDummy) { [void]$sv.WaitForExit($waitMs) } else { [void]$du.WaitForExit($waitMs) }
+  try {
+    $wuSc.Refresh(); $wuSeen++
+    if ($wuSc.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Stopped) { $wuOn++; [void]$wuOnAt.Add([int]((Get-Date) - $duStart).TotalSeconds) }
+  } catch { $wuErr++ }
   if ($pdhErr) { continue }
   $perf = 0.0; $base = 0.0
   if ([NoxLoadRunPdh]::Read([ref]$perf, [ref]$base)) {
@@ -396,6 +410,23 @@ if ($cpuMhz.Count -gt 0) {
 Start-Sleep -Seconds 1   # 더미가 끝난 뒤 서버가 마지막 입력을 다 받도록
 $clean = Stop-Server $sv
 [IO.File]::WriteAllText($stamp, ((Get-Date).ToUniversalTime().Ticks).ToString())
+
+# 판 도중 업데이트 기록 — 서버를 띄우기 직전부터 멈춘 뒤까지. 「0건」과 「못 읽음」을 가른다(기록이 없으면 Get-WinEvent 가 오류를 낸다)
+$runWallEnd = Get-Date
+$wuEvText = $null
+try {
+  $wuEv = @(Get-WinEvent -FilterHashtable @{ LogName = 'Microsoft-Windows-WindowsUpdateClient/Operational'; StartTime = $runWallStart; EndTime = $runWallEnd } -ErrorAction Stop)
+} catch {
+  if ($_.FullyQualifiedErrorId -like 'NoMatchingEventsFound*') { $wuEv = @() } else { $wuEv = $null; $wuEvText = "못 읽음 — $($_.Exception.Message)" }
+}
+if ($null -ne $wuEv) {
+  $wuItems = @($wuEv | Sort-Object TimeCreated | ForEach-Object { '{0:HH:mm:ss} id={1} {2}' -f $_.TimeCreated, $_.Id, [string]$_.Properties[0].Value })
+  $wuEvText = "$($wuEv.Count)건 · 본 시간 $($runWallStart.ToString('HH:mm:ss'))~$($runWallEnd.ToString('HH:mm:ss'))" + $(if ($wuItems.Count) { ' · ' + ($wuItems -join ' ; ') } else { '' })
+}
+Note '업데이트 기록 — 판 도중' $wuEvText
+Note '업데이트 서비스 — 판 도중 10초 표본' ("켜짐 $wuOn / 본 횟수 $wuSeen · 못 읽음 $wuErr" + $(if ($wuOnAt.Count) { ' · 켜진 때(더미 띄운 뒤 초) ' + (@($wuOnAt | Select-Object -First 30) -join ' ') } else { '' }))
+if (-not $wuEvText.StartsWith('0건')) { Write-Host "[주의] 판 도중 업데이트 기록 — $wuEvText" }
+if ($wuOn -gt 0) { Write-Host "[주의] 판 도중 업데이트 서비스 켜짐 — 10초 표본 $wuSeen 번 중 $wuOn 번(버림은 아님)" }
 
 Note '서버 종료 코드' "$($sv.ExitCode)"
 $duCode = if ($du) { "$($du.ExitCode)" } else { '없음' }

@@ -151,6 +151,14 @@ function Report-Run([string]$dir) {
   }
   $dirty = [string]$envMap['미커밋 파일 수']
   if ($dirty -and [int]$dirty -gt 0) { [void]$rs.Add("미커밋 파일 ${dirty}개") }
+  # ★ 11-15 — 판 도중 업데이트 기록(load_run 이 판이 끝난 뒤 센다). 이 줄이 없는 옛 판은 따지지 않는다 · 서비스 켜짐 표본은 적기만 한다
+  $wuRec = [string]$envMap['업데이트 기록 — 판 도중']
+  $o.updateDuringRun = $wuRec; $o.updateServiceSamples = [string]$envMap['업데이트 서비스 — 판 도중 10초 표본']
+  if ($wuRec) {
+    $mw = [regex]::Match($wuRec, '^(\d+)건')
+    if (-not $mw.Success) { [void]$rs.Add("판 도중 업데이트 기록을 못 읽음($wuRec)") }
+    elseif ([int]$mw.Groups[1].Value -gt 0) { [void]$rs.Add("판 도중 업데이트 기록 $($mw.Groups[1].Value)건") }
+  }
   $svCmd = [string]$envMap['서버 명령줄']; $duCmd = [string]$envMap['더미 명령줄']
   $m = [regex]::Match($svCmd, '--load-rooms (\d+) --load-room-size (\d+)')
   $o.rooms = if ($m.Success) { [int]$m.Groups[1].Value } else { 0 }
