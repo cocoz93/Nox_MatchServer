@@ -393,6 +393,8 @@ public:
     std::vector<RoomFact> ListRooms() const;
     std::vector<MemberUiFact> ListMemberUi() const;   // ★ 11-04 플랜1
     void SetLogRooms(bool on) { _logRooms = on; }
+    // ★ 11-16 방 번호 플랜 조각 1 — 다음에 만들 방 번호(시험용 `--first-room-id` · 65,536 같은 경계를 실물로 보려고). 번호는 여기서부터 올리기만 한다
+    void SetFirstRoomId(int id) { _nextRoomId = id; }
 
     // ── 입장 방식 ── (머리 주석 「10-10 토큰 작업 2」)
     void SetJoinKey(const JoinKey& key);   // 토큰 방식 — 실제 서버

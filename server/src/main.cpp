@@ -196,6 +196,10 @@ int main(int argc, char** argv) {
             opt.loadRoomSize = std::atoi(argv[++i]);    // ★ 11-10 부하 실험 — 방당 인원
         } else if (a == "--stat-mult" && i + 1 < argc) {
             opt.statMult = std::atoi(argv[++i]);        // ★ 11-10 부하 실험 — 사람 최대 체력 · 마나 배수
+        } else if (a == "--first-room-id" && i + 1 < argc) {
+            // ★ 11-16 방 번호 플랜 조각 1 — 첫 방 번호(시험용 · 65,536 같은 경계를 실물로 보려고). 0 ~ int 최댓값 밖이면 아래에서 멈춘다
+            const long long v = std::strtoll(argv[++i], nullptr, 10);
+            opt.firstRoomId = (v < 0 || v > 0x7fffffffLL) ? -1 : static_cast<int>(v);
         } else if (a == "--tick-sections") {
             opt.tickSections = true;                    // ★ 11-10 부하 실험 — 틱 안을 나눠 잰다(`TickSections.h`)
         } else if (a == "--no-event-log") {
@@ -670,6 +674,10 @@ int main(int argc, char** argv) {
         std::printf("[멈춤] --stat-mult 는 1~10 (받은 값 %d)\n", opt.statMult);
         return 2;
     }
+    if (opt.firstRoomId < 0) {   // ★ 11-16 방 번호 플랜 조각 1
+        std::printf("[멈춤] --first-room-id 는 0~2147483647\n");
+        return 2;
+    }
     nox::SetStatMult(opt.statMult);   // 방을 만들기 전에 한 번
     nox::g_tickSections = opt.tickSections;   // 방을 만들기 전에 한 번
     if (opt.tickSections) std::printf("옵션: 구간 시간 켬 — 초당 [구간] 줄 · 10초마다 [틱분포] 줄\n");
@@ -739,6 +747,10 @@ int main(int argc, char** argv) {
     rooms.SetWorldData(world);
     rooms.SetLogRooms(true);   // ★ 10-14 작업 9e — 방을 만들고 닫을 때 한 줄(`[방] N 만듦` · `닫음`)
     rooms.SetRankOneMap(opt.rankOneMap);   // ★ 매칭 손보기 3
+    if (opt.firstRoomId != 0) {   // ★ 11-16 방 번호 플랜 조각 1 — 첫 방을 만들기 전에(시험용)
+        rooms.SetFirstRoomId(opt.firstRoomId);
+        std::printf("옵션: 첫 방 번호 %d (--first-room-id · 시험용)\n", opt.firstRoomId);
+    }
     // ★ 10-14 작업 8d — 로비 방식(`--lobby-port`)은 방 없이 시작한다 — 방은 로비가 만든다(작업 10 · `Docs/ROOMS_DESIGN.md` 흐름 1)
     // ★ 10-20 v2 작업 4b — 로비에 붙기(`--lobby`)도 방 없이 시작한다(새 방은 로비가 묻고 `CLobbyClient` 가 만든다)
     // ★ 11-10 부하 실험 — 실험 옵션도 방 없이 시작한다(접속 때 만드는 것까지 부하에 넣는다 · Docs/MO_DUMMY_PLAN_1109.md 3-1절)

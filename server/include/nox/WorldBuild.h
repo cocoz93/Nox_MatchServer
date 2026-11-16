@@ -190,6 +190,7 @@ struct ServerOptions {
     int loadRooms = 0;          // `--load-rooms N` — 동시에 열려 있는 방 수의 상한
     int loadRoomSize = 0;       // `--load-room-size K` — 방당 인원
     int statMult = 1;           // `--stat-mult N`(1~10) — 사람 최대 체력 · 마나 배수(더미 플랜 3-2절)
+    int firstRoomId = 0;        // ★ 11-16 `--first-room-id N` — 첫 방 번호(시험용 · `Docs/ROOM_ID_WIDEN_PLAN_1116.md` 조각 1) · 범위 밖이면 -1(`main` 이 멈춤)
     bool tickSections = false;  // `--tick-sections` — 틱 안을 11구간으로 나눠 재서 `[구간]` · `[틱분포]` 줄을 찍는다(더미 플랜 5-1절)
     bool noEventLog = false;    // `--no-event-log` — 사건 기록을 끈다(더미 플랜 5-2절)
     bool noFirstSeen = false;   // `--no-first-seen` — 「처음 본 종류」 알림을 끈다
