@@ -18,14 +18,20 @@
 // ★ 11-17 C-2 — UDP 소켓은 ServerCore 의 UDP 부품(`CUdpEndpoint`)이 든다(옛 이 스레드의 `socket` · `recvfrom` · `sendto` · 이벤트 둘).
 //   팔(Windows 보통 · RIO)은 `SetUdpOptions` 로 고른다 — 기본 보통(옛 꼴과 같은 커널 호출). 고리 차례는 그대로이고,
 //   보내기 고리 끝에 `Flush` 한 번(RIO 는 그 깸의 보내기를 한 번에 낸다). 부품 손잡이 하나가 받을 것 · 깨움을 같이 알린다
+// ★ 11-17 C-3b — 게임 스레드 여럿(`Docs/SERVERCORE_UDP_PLAN_1116.md` 5-1 · 5-2). 큐가 「게임 스레드 하나」에서 「큐 번호」로 바뀐다
+//   이벤트 큐 = 게임 스레드마다 하나 + 로비 큐 하나(로비 TCP 사건 — 조정 스레드 몫) · 요청 큐 = 넣는 스레드마다 하나(같은 번호).
+//   세션의 첫 사건에서 주인 게임 스레드를 정하고(`CSessionOwners`) 그 세션이 끝날 때까지 그 큐로만 보낸다.
+//   게임 스레드가 하나면(기본) 큐도 하나 — 로비 사건까지 큐 0 으로 와 옛 꼴과 같다. 인자 없는 옛 함수 = 큐 0
 #pragma once
 
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "nox/TcpLines.h"
@@ -62,12 +68,79 @@ struct CNetworkThreadStats {
     // ★ 10-20 v2 작업 4a — 로비에 붙기(`ConnectLobby`)
     unsigned long long lobbyConnects = 0;         // 붙기 시도
     unsigned long long lobbyConnectFailed = 0;    // 못 붙음(상대가 안 들음 · 닿지 않음 · 붙는 시간 한도) — 게임엔 안 넘기고 다시 시도
+    // ★ 11-17 C-3b — 세션 주인 정하기(게임 스레드가 여럿일 때만 · 하나면 모두 0). 갈래마다 따로 센다(`CSessionOwners`)
+    unsigned long long ownerByToken = 0;          // 토큰의 방 번호 % N
+    unsigned long long ownerNoToken = 0;          // 토큰이 없거나 길이가 틀림 → 게임 스레드 0
+    unsigned long long ownerByLoad = 0;           // 부하 판 — 도착 차례 ÷ 방 인원 % N
+    unsigned long long ownerThreadZero = 0;       // 열린 방 하나(토큰 끔 · 부하 판 아님) → 게임 스레드 0
+    unsigned long long ownerForgot = 0;           // 게임이 끊기를 요청해 지움(`DISCONNECT_SESSION`)
+    unsigned long long ownerPruned = 0;           // 통신 층이 걷은 세션(접속 시도만 한 상대)이라 지움
+    size_t owners = 0;                            // 사본을 뜰 때 주인 지도 크기
+    unsigned long long queueIndexBad = 0;         // 없는 요청 큐 번호로 넣음 — 큐 0 에 넣고 센다(잃지 않게) · 0 이 정상
+};
+
+// ★ 11-17 C-3b — 세션 주인 정하는 법(실행 하나에 하나 — `--load-rooms` · `--no-join-token` 이 정한다 · 게임 쪽 `CRoomManager` 와 같은 차례)
+//   게임 쪽은 부하 판 → 열린 방 → 토큰 차례로 본다(`RoomManager.cpp` `OnLoadEntryEvent` 를 먼저). 주인도 그 차례를 따라야 게임이 받는 세션이 그 스레드로 간다
+enum class OwnerRule : uint8_t {
+    Token,         // 토큰의 방 번호 % N(토큰 없음 → 0)
+    LoadArrival,   // 부하 판 — 새 세션 도착 차례 i 의 주인 = (i ÷ 방 인원) % N(방 하나 몫을 한 스레드에 몰아 채운다)
+    ThreadZero     // 열린 방 하나(토큰 끔 · 부하 판 아님) — 모두 0
+};
+
+// ★ 11-17 C-3b — 세션 주인 지도(계획 5-2). 네트워크 스레드 혼자 쓴다 — 소켓 없이 시험하려고 떼었다(`net_thread_test` ⑩).
+//   정하는 때 = 그 세션의 첫 사건(보통 JOIN_REQUESTED 또는 CONNECTED). 한 번 정하면 지울 때까지 안 바뀐다 — JOIN 과 CONNECT 의
+//   토큰 방이 달라도 첫 것(그 스레드에 방이 없으면 게임이 「방 없음」으로 끊는다 `tokenNoRoom`).
+//   서명은 안 본다 — 남의 방 번호를 적은 가짜 토큰은 그 방 주인 스레드로 가서 거기서 막힌다(고른 스레드가 틀려도 새는 길은 없다).
+//   지우는 때 둘 — 게임이 끊기를 요청할 때(`Forget`) · 통신 층이 사건 없이 걷은 세션(`Prune` — 접속 시도만 한 상대).
+//   세션 번호는 다시 쓰지 않아(통신 층이 1부터 올리기만) 지운 번호로 사건이 다시 오지 않는다
+class CSessionOwners {
+public:
+    // 사건 하나의 갈래 — 시험이 개수로 본다
+    enum class Why : uint8_t { Single, Lobby, Known, Token, NoToken, LoadArrival, ThreadZero };
+
+    // n ≥ 1. 하나면 지도를 안 쓴다(모두 큐 0 — 옛 꼴)
+    void Configure(int gameThreads, OwnerRule rule, int loadRoomSize);
+    int GameThreads() const { return _n; }
+    // 큐 번호 — 게임 스레드 k = k · 로비 큐 = N(하나면 0 — 로비 사건도 게임 스레드 0 이 받던 옛 꼴)
+    int QueueCount() const { return _n == 1 ? 1 : _n + 1; }
+    int LobbyQueue() const { return _n == 1 ? 0 : _n; }
+    // 사건이 갈 큐 번호. 처음 보는 세션이면 규칙대로 정해 기억한다
+    int Route(const NetworkEvent& ev, Why* why = nullptr);
+    // 토큰의 방 번호 % n — 길이가 53바이트가 아니면 `hadToken` 거짓 · 0
+    static int OwnerByToken(const std::vector<uint8_t>& token, int n, bool& hadToken);
+    void Forget(int64_t sessionId);
+    // `alive(세션 번호)` 가 거짓인 항목을 지우고 지운 수를 돌려준다
+    template <class F> size_t Prune(F alive) {
+        size_t n = 0;
+        for (auto it = _owner.begin(); it != _owner.end();) {
+            if (alive(it->first)) { ++it; continue; }
+            it = _owner.erase(it);
+            ++n;
+        }
+        pruned += n;
+        return n;
+    }
+    size_t Size() const { return _owner.size(); }
+    bool Knows(int64_t sessionId) const { return _owner.count(sessionId) != 0; }
+
+    // 갈래마다 셈(처음 정할 때 한 번씩 — 이미 아는 세션 · 로비 사건은 안 셈)
+    unsigned long long byToken = 0, noToken = 0, byLoad = 0, threadZero = 0, forgot = 0, pruned = 0;
+
+private:
+    int _n = 1;
+    OwnerRule _rule = OwnerRule::Token;
+    int _loadRoomSize = 0;
+    unsigned long long _arrivals = 0;              // 부하 판 — 주인을 정한 새 세션 수(도착 차례)
+    std::unordered_map<int64_t, int> _owner;       // 세션 번호 → 게임 스레드
 };
 
 class CNetworkThread {
 public:
     // 큐 한도(이벤트 · 요청 각각) — 넘치면 버리고 센다(MMO_Zone 이벤트 큐 accept 차단과 같은 자리)
+    //   ★ 11-17 C-3b — 큐마다(게임 스레드가 여럿이면 큐도 여럿 — 한 스레드가 밀려도 다른 스레드 몫을 안 막는다)
     static constexpr size_t kQueueMax = 10000;
+    // ★ 11-17 C-3b — 게임 스레드 수 상한(근거 없는 값 — 이 PC 논리 코어 수 안팎을 넉넉히 · 큐 손잡이가 스레드마다 하나)
+    static constexpr int kMaxGameThreads = 64;
     // 타이머가 없을 때도 이만큼마다 깨어 지표 사본을 내놓는다
     static constexpr uint32_t kMaxWaitMs = 250;
 
@@ -119,14 +192,27 @@ public:
     void Stop(bool closeSessions = false);
     bool Running() const { return _thread.joinable(); }
 
+    // ★ 11-17 C-3b — 게임 스레드 수 · 주인 정하는 법(시작 전에만 · 1 ~ `kMaxGameThreads`). 큐를 다시 만든다 — 그 전에 넣은 것은 버린다.
+    //   `loadRoomSize` 는 `OwnerRule::LoadArrival` 일 때만(1 이상)
+    bool SetGameThreads(int n, OwnerRule rule, int loadRoomSize, std::string& err);
+    int GameThreads() const { return _owners.GameThreads(); }
+    int QueueCount() const { return _owners.QueueCount(); }   // 이벤트 큐 · 요청 큐 수(같다)
+    int LobbyQueue() const { return _owners.LobbyQueue(); }   // 로비 사건이 오는 큐 · 조정 스레드가 요청을 넣는 큐
+
     // ── 게임 스레드에서 부른다(스레드 안전) ──
     // 그 틱의 요청을 한 묶음으로 넣고 네트워크 스레드를 깨운다. `reqs` 는 비워진다.
-    void PushRequests(std::vector<NetworkRequest>& reqs);
+    //   ★ 11-17 C-3b — `producer` = 넣는 스레드의 큐 번호(게임 스레드 k · 조정 스레드 `LobbyQueue`). 옛 인자 없는 꼴 = 0
+    void PushRequests(int producer, std::vector<NetworkRequest>& reqs);
+    void PushRequests(std::vector<NetworkRequest>& reqs) { PushRequests(0, reqs); }
     // 쌓인 이벤트를 통째로 꺼낸다(`into` 는 비어 있다고 보고 바꾼다).
-    void SwapOutNetworkEvents(std::vector<NetworkEvent>& into);
+    //   ★ 11-17 C-3b — `queue` = 큐 번호(없는 번호면 아무것도 안 함). 옛 인자 없는 꼴 = 0
+    void SwapOutNetworkEvents(int queue, std::vector<NetworkEvent>& into);
+    void SwapOutNetworkEvents(std::vector<NetworkEvent>& into) { SwapOutNetworkEvents(0, into); }
     // ★ 10-09 플랜 A 5d 자가검증 ② — 이벤트를 큐에 넣을 때 켜지는 이벤트(HANDLE · 자동으로 꺼짐). 게임 루프가 틱 마감 타이머와 함께
     //   기다린다(`WaitForMultipleObjects`) — 옛 `Sleep(1)` 돌려 보기 대신. `Open` 뒤에 있다.
-    void* EventsReadyHandle() const { return _eventsReady; }
+    //   ★ 11-17 C-3b — 큐마다 하나(만들 때 연다 — `Open` 전에도 있다). 없는 번호면 nullptr. 옛 인자 없는 꼴 = 0
+    void* EventsReadyHandle(int queue) const;
+    void* EventsReadyHandle() const { return EventsReadyHandle(0); }
     CUdpStats LatestNetworkStats() const;
     void* ThreadHandle() { return _thread.joinable() ? _thread.native_handle() : nullptr; }   // ★ 11-10 부하 실험 — 스레드 CPU 읽기(`GetThreadTimes`)
     CNetworkThreadStats LatestThreadStats() const;
@@ -163,8 +249,7 @@ private:
     uint32_t _udpRecvSlots = 0;                     // 0 = 팔마다 기본
     uint32_t _udpSendSlots = 0;
     uint64_t _udpSendFailSeen = 0;                  // 부품 보내기 실패 셈 중 `g_sendFail` 에 옮긴 몫
-    void* _eventsReady = nullptr;                   // 이벤트를 큐에 넣음 — 게임 루프가 기다린다
-    bool _wsaUp = false;                            // 로비 TCP(`CTcpLines`) 몫 — 부품은 따로 올리고 내린다
+    bool _wsaUp = false;                           // 로비 TCP(`CTcpLines`) 몫 — 부품은 따로 올리고 내린다
     bool _verbose = false;
     uint32_t _maxWaitMs = kMaxWaitMs;
     size_t _queueMax = kQueueMax;
@@ -172,11 +257,28 @@ private:
     std::atomic<bool> _stop{ false };
     std::atomic<bool> _closeOnStop{ false };
 
-    mutable std::mutex _queueMu;                    // 아래 넷을 지킨다
-    std::vector<NetworkRequest> _requests;
-    std::vector<NetworkEvent> _events;
-    unsigned long long _requestsDropped = 0;
-    unsigned long long _eventsDropped = 0;
+    // ★ 11-17 C-3b — 큐가 번호마다(옛 `_queueMu` 하나가 지키던 요청 · 이벤트 · 버림 셈 넷). 64바이트 줄에 맞춰 두 큐의 잠금이
+    //   같은 캐시 줄을 나눠 쓰지 않게 한다(게임 스레드끼리 서로 다른 큐를 동시에 잠근다 — 효과는 안 잼 · 짐작)
+    struct alignas(64) EventQueue {
+        std::mutex mu;                              // 아래 둘을 지킨다
+        std::vector<NetworkEvent> events;
+        unsigned long long dropped = 0;
+        void* ready = nullptr;                      // 이벤트를 넣음 — 그 큐의 게임 루프가 기다린다(자동으로 꺼짐)
+        EventQueue();
+        ~EventQueue();
+    };
+    struct alignas(64) RequestQueue {
+        std::mutex mu;                              // 아래 둘을 지킨다
+        std::vector<NetworkRequest> requests;
+        unsigned long long dropped = 0;
+    };
+    void MakeQueues(int count);
+    std::vector<std::unique_ptr<EventQueue>> _eventQs;
+    std::vector<std::unique_ptr<RequestQueue>> _requestQs;
+    std::atomic<unsigned long long> _queueIndexBad{ 0 };
+    // ★ 11-17 C-3b — 세션 주인 지도(네트워크 스레드 혼자) · 걷기 셈을 마지막으로 본 값(늘었을 때만 지도를 훑는다)
+    CSessionOwners _owners;
+    unsigned long long _sweptSeen = 0;
 
     mutable std::mutex _statsMu;                    // 지표 사본
     CUdpStats _pubNetwork;

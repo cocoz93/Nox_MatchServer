@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "nox/Clock.h"
+#include "nox/JoinToken.h"   // ★ 11-17 C-3b — 토큰 꼬리(⑩)
 #include "nox/NetworkThread.h"
 #include "nox/Opcode.h"
 
@@ -377,5 +378,324 @@ std::vector<std::pair<bool, std::string>> RunNetworkThreadChecks(bool rio) {
     }
     if (rio)
         for (auto& kv : r) kv.second = "[RIO 팔] " + kv.second;
+    return r;
+}
+
+// ⑩ ★ 11-17 C-3b — 게임 스레드 여럿 — 세션 주인 정하기(`CSessionOwners` · 계획 5-2) · 큐 번호마다 사건 · 요청.
+//   앞은 소켓 없이 주인 지도만(갈래마다 개수로) · 뒤는 실제 소켓(토큰 꼬리를 단 접속 → 그 방 주인 큐 · 넣는 스레드별 요청 큐 · 로비 큐).
+//   팔과 상관없는 일이라 보통 팔로 한 번만 돈다(`proto_test` `TestNetworkThread`)
+namespace {
+
+// 접속 시도 · CONNECT 꼬리에 실을 토큰 — 판 2 · 방 번호만 채움(통신 스레드는 서명을 안 본다)
+std::vector<uint8_t> TokenForRoom(uint32_t room) {
+    std::vector<uint8_t> t(nox::kJoinTokenSize, 0);
+    t[0] = nox::kJoinTokenVersion;
+    t[1] = static_cast<uint8_t>(room);
+    t[2] = static_cast<uint8_t>(room >> 8);
+    t[3] = static_cast<uint8_t>(room >> 16);
+    t[4] = static_cast<uint8_t>(room >> 24);
+    return t;
+}
+
+nox::NetworkEvent Ev(nox::NetworkEvent::Type t, int64_t sid, const std::vector<uint8_t>& token = {}) {
+    nox::NetworkEvent e;
+    e.type = t;
+    e.sessionId = sid;
+    e.token = token;
+    return e;
+}
+
+// 갈래 이름 — 갈래를 늘리면 여기서 컴파일러가 잡는다(값을 돌려주는 switch)
+const char* WhyName(nox::CSessionOwners::Why w) {
+    switch (w) {
+        case nox::CSessionOwners::Why::Single: return "하나";
+        case nox::CSessionOwners::Why::Lobby: return "로비";
+        case nox::CSessionOwners::Why::Known: return "앎";
+        case nox::CSessionOwners::Why::Token: return "토큰";
+        case nox::CSessionOwners::Why::NoToken: return "토큰 없음";
+        case nox::CSessionOwners::Why::LoadArrival: return "도착 차례";
+        case nox::CSessionOwners::Why::ThreadZero: return "0 고정";
+    }
+    return "?";
+}
+
+}  // namespace
+
+std::vector<std::pair<bool, std::string>> RunGameThreadRouteChecks() {
+    using T = nox::NetworkEvent::Type;
+    using W = nox::CSessionOwners::Why;
+    std::vector<std::pair<bool, std::string>> r;
+    char m[300];
+
+    // ⑩-1 토큰의 방 번호 % N — [1..4] 작은 끝수 · 부호 없는 수.
+    //   0x01020304 % 2 = 0(큰 끝수로 읽으면 1) · 0x80000001 % 3 = 0(부호 있는 수로 읽으면 -1) · 5 % 2 = 1 · 7 % 3 = 1 · 길이 52 · 빈 것 → 토큰 없음 0
+    {
+        bool h1 = false, h2 = false, h3 = false, h4 = false, h5 = false, h6 = false;
+        const int a = nox::CSessionOwners::OwnerByToken(TokenForRoom(0x01020304u), 2, h1);
+        const int b = nox::CSessionOwners::OwnerByToken(TokenForRoom(0x80000001u), 3, h2);
+        const int c = nox::CSessionOwners::OwnerByToken(TokenForRoom(5), 2, h3);
+        const int d = nox::CSessionOwners::OwnerByToken(TokenForRoom(7), 3, h4);
+        std::vector<uint8_t> shortTok = TokenForRoom(5);
+        shortTok.pop_back();
+        const int e = nox::CSessionOwners::OwnerByToken(shortTok, 2, h5);
+        const int f = nox::CSessionOwners::OwnerByToken({}, 2, h6);
+        std::snprintf(m, sizeof(m), "⑩-1 토큰 방 %% N — 0x01020304%%2=%d(0) · 0x80000001%%3=%d(0) · 5%%2=%d(1) · 7%%3=%d(1) · 52바이트 %d/%d(0/0) · 빈 것 %d/%d(0/0)",
+                      a, b, c, d, e, (int)h5, f, (int)h6);
+        r.push_back({ a == 0 && b == 0 && c == 1 && d == 1 && e == 0 && !h5 && f == 0 && !h6 && h1 && h2 && h3 && h4, m });
+    }
+
+    // ⑩-2 토큰 규칙 N = 2 — 갈래마다 개수. 사건 여덟:
+    //   로비 둘(→ 큐 2) · 세션 1 CONNECTED 방 3(→ 1 토큰) · 세션 1 RECEIVED(→ 1 앎) · 세션 2 JOIN 토큰 없음(→ 0 토큰 없음) ·
+    //   세션 2 CONNECTED 방 1(→ 0 앎 — 첫 것이 주인) · 세션 3 JOIN 방 4(→ 0 토큰) · 세션 3 DISCONNECTED(→ 0 앎)
+    {
+        nox::CSessionOwners o;
+        o.Configure(2, nox::OwnerRule::Token, 0);
+        struct Case { nox::NetworkEvent ev; int want; W why; };
+        const Case cases[] = {
+            { Ev(T::LOBBY_OPENED, 0), 2, W::Lobby },
+            { Ev(T::CONNECTED, 1, TokenForRoom(3)), 1, W::Token },
+            { Ev(T::RECEIVED, 1), 1, W::Known },
+            { Ev(T::JOIN_REQUESTED, 2), 0, W::NoToken },
+            { Ev(T::CONNECTED, 2, TokenForRoom(1)), 0, W::Known },
+            { Ev(T::JOIN_REQUESTED, 3, TokenForRoom(4)), 0, W::Token },
+            { Ev(T::LOBBY_LINE, 0), 2, W::Lobby },
+            { Ev(T::DISCONNECTED, 3), 0, W::Known },
+        };
+        int ok = 0;
+        int tally[7] = {};
+        std::string bad;
+        for (const Case& cs : cases) {
+            W w = W::Single;
+            const int k = o.Route(cs.ev, &w);
+            ++tally[static_cast<int>(w)];
+            if (k == cs.want && w == cs.why) ++ok;
+            else bad += std::string(" [") + WhyName(w) + "→" + std::to_string(k) + "]";
+        }
+        const bool counts = o.byToken == 2 && o.noToken == 1 && o.byLoad == 0 && o.threadZero == 0 && o.Size() == 3 &&
+                            tally[static_cast<int>(W::Lobby)] == 2 && tally[static_cast<int>(W::Known)] == 3 &&
+                            tally[static_cast<int>(W::Token)] == 2 && tally[static_cast<int>(W::NoToken)] == 1;
+        std::snprintf(m, sizeof(m), "⑩-2 토큰 규칙 N=2 — 맞음 %d/8 · 셈 토큰 %llu(2) · 토큰 없음 %llu(1) · 지도 %zu(3) · 큐 수 %d(3) · 로비 큐 %d(2)%s",
+                      ok, o.byToken, o.noToken, o.Size(), o.QueueCount(), o.LobbyQueue(), bad.c_str());
+        r.push_back({ ok == 8 && counts && o.QueueCount() == 3 && o.LobbyQueue() == 2, m });
+
+        // ⑩-3 지우기 — 끊기 요청(`Forget`) 하나 · 없는 번호는 안 셈 · 걷힌 세션(`Prune` — 2 만 없어짐) 하나 · 지운 번호가 다시 오면 새로 정한다
+        o.Forget(1);
+        o.Forget(99);
+        const size_t pr = o.Prune([](int64_t sid) { return sid != 2; });
+        W w4 = W::Single;
+        const int k4 = o.Route(Ev(T::CONNECTED, 1, TokenForRoom(4)), &w4);
+        std::snprintf(m, sizeof(m), "⑩-3 지우기 — 끊기 %llu(1) · 걷음 %zu/%llu(1/1) · 남은 지도 %zu(2 — 3 과 다시 정한 1) · 다시 온 1 → %d %s(0 토큰)",
+                      o.forgot, pr, o.pruned, o.Size(), k4, WhyName(w4));
+        r.push_back({ o.forgot == 1 && pr == 1 && o.pruned == 1 && o.Size() == 2 && k4 == 0 && w4 == W::Token && o.Knows(3) && !o.Knows(2), m });
+    }
+
+    // ⑩-4 게임 스레드 하나 — 지도를 안 쓰고 모두 큐 0(로비 사건까지 — 옛 꼴) · 셈 0
+    {
+        nox::CSessionOwners o;
+        o.Configure(1, nox::OwnerRule::Token, 0);
+        W w1 = W::Lobby, w2 = W::Lobby;
+        const int k1 = o.Route(Ev(T::CONNECTED, 1, TokenForRoom(3)), &w1);
+        const int k2 = o.Route(Ev(T::LOBBY_LINE, 0), &w2);
+        std::snprintf(m, sizeof(m), "⑩-4 하나 — 토큰 방 3 → %d %s · 로비 → %d %s · 지도 %zu · 셈 %llu · 큐 수 %d · 로비 큐 %d",
+                      k1, WhyName(w1), k2, WhyName(w2), o.Size(), o.byToken + o.noToken, o.QueueCount(), o.LobbyQueue());
+        r.push_back({ k1 == 0 && k2 == 0 && w1 == W::Single && w2 == W::Single && o.Size() == 0 && o.byToken + o.noToken == 0 &&
+                          o.QueueCount() == 1 && o.LobbyQueue() == 0, m });
+    }
+
+    // ⑩-5 부하 판 — 방 인원 10 · N = 2 · 새 세션 25 → 0 열 · 1 열 · 0 다섯(15 / 10) · 이미 아는 세션은 차례를 안 먹음 → 26번째 새 세션 = 차례 25 → 0.
+    //   N = 3 · 30 → 10 / 10 / 10(셋째 열이 2 로 가나 — 나머지가 하나 어긋나면 갈린다)
+    {
+        nox::CSessionOwners o;
+        o.Configure(2, nox::OwnerRule::LoadArrival, 10);
+        int per[2] = {};
+        bool order = true;
+        for (int i = 0; i < 25; ++i) {
+            const int k = o.Route(Ev(T::CONNECTED, 100 + i));
+            if (k >= 0 && k < 2) ++per[k];
+            if (k != (i / 10) % 2) order = false;
+        }
+        W wk = W::Single;
+        const int again = o.Route(Ev(T::RECEIVED, 100 + 12), &wk);
+        const int next = o.Route(Ev(T::CONNECTED, 200));
+        nox::CSessionOwners o3;
+        o3.Configure(3, nox::OwnerRule::LoadArrival, 10);
+        int per3[3] = {};
+        for (int i = 0; i < 30; ++i) {
+            const int k = o3.Route(Ev(T::JOIN_REQUESTED, 1 + i, TokenForRoom(1)));
+            if (k >= 0 && k < 3) ++per3[k];
+        }   // 부하 판은 토큰을 안 본다
+        std::snprintf(m, sizeof(m), "⑩-5 부하 판 — N=2 · 25 → %d/%d(15/10) 차례 %d · 아는 세션 12 → %d %s(1 앎) · 다음 새 → %d(0) · 셈 %llu(26) · N=3 · 30 → %d/%d/%d(10/10/10) · 토큰 셈 %llu(0)",
+                      per[0], per[1], (int)order, again, WhyName(wk), next, o.byLoad, per3[0], per3[1], per3[2], o3.byToken);
+        r.push_back({ per[0] == 15 && per[1] == 10 && order && again == 1 && wk == W::Known && next == 0 && o.byLoad == 26 &&
+                          per3[0] == 10 && per3[1] == 10 && per3[2] == 10 && o3.byToken == 0 && o3.byLoad == 30, m });
+    }
+
+    // ⑩-6 열린 방 하나(토큰 끔 · 부하 판 아님) — 토큰이 있어도 0 · 셈
+    {
+        nox::CSessionOwners o;
+        o.Configure(3, nox::OwnerRule::ThreadZero, 0);
+        W w = W::Single;
+        const int k = o.Route(Ev(T::CONNECTED, 1, TokenForRoom(2)), &w);
+        std::snprintf(m, sizeof(m), "⑩-6 열린 방 — 토큰 방 2 · N=3 → %d %s(0) · 셈 %llu(1)", k, WhyName(w), o.threadZero);
+        r.push_back({ k == 0 && w == W::ThreadZero && o.threadZero == 1 && o.byToken == 0, m });
+    }
+
+    // ⑩-7 `SetGameThreads` 거절 셋(0 · 상한 넘음 · 부하 판에 방 인원 없음) · 받음 → 큐 셋 · 손잡이 0~2 있음 · 3 · -1 없음
+    {
+        nox::CNetworkThread n;
+        std::string e;
+        const bool r0 = !n.SetGameThreads(0, nox::OwnerRule::Token, 0, e);
+        const bool r1 = !n.SetGameThreads(nox::CNetworkThread::kMaxGameThreads + 1, nox::OwnerRule::Token, 0, e);
+        const bool r2 = !n.SetGameThreads(2, nox::OwnerRule::LoadArrival, 0, e);
+        const bool before = n.QueueCount() == 1 && n.EventsReadyHandle() != nullptr;
+        const bool ok = n.SetGameThreads(2, nox::OwnerRule::Token, 0, e);
+        const bool handles = n.EventsReadyHandle(0) && n.EventsReadyHandle(1) && n.EventsReadyHandle(2) && !n.EventsReadyHandle(3) &&
+                             !n.EventsReadyHandle(-1) && n.EventsReadyHandle(0) != n.EventsReadyHandle(1);
+        std::snprintf(m, sizeof(m), "⑩-7 게임 스레드 수 — 거절 0 %d · 상한 넘음 %d · 방 인원 없음 %d · 처음 큐 하나 %d · 받음 %d · 큐 %d(3) · 로비 큐 %d(2) · 손잡이 %d",
+                      (int)r0, (int)r1, (int)r2, (int)before, (int)ok, n.QueueCount(), n.LobbyQueue(), (int)handles);
+        r.push_back({ r0 && r1 && r2 && before && ok && n.QueueCount() == 3 && n.LobbyQueue() == 2 && handles, m });
+    }
+
+    // ⑩-8 실물 — N = 2 · 토큰 규칙. 소켓 A 가 꼬리(방 1)를 단 CONNECT → CONNECTED 는 큐 1 로만(큐 1 손잡이가 켜지고 큐 0 은 꺼진 채) ·
+    //   소켓 B 가 꼬리 없는 CONNECT → 큐 0 · 게임 스레드 1 이 넣은 보내기 → A · 0 이 넣은 보내기 → B · 없는 번호 7 로 넣은 보내기도 A 에 감(셈 1) ·
+    //   A 끊기 요청 → 주인 지움 1 · 지도 1
+    {
+        nox::CNetworkThread n;
+        n.Network().SetXorKey(0);
+        std::string e;
+        const bool set = n.SetGameThreads(2, nox::OwnerRule::Token, 0, e);
+        const bool open = n.Open("127.0.0.1", 0, e);
+        n.Start();
+        sockaddr_in me = {};
+        me.sin_family = AF_INET;
+        inet_pton(AF_INET, "127.0.0.1", &me.sin_addr);
+        sockaddr_in to = me;
+        to.sin_port = htons(n.Port());
+        const SOCKET a = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        const SOCKET b = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        bind(a, reinterpret_cast<sockaddr*>(&me), sizeof(me));
+        bind(b, reinterpret_cast<sockaddr*>(&me), sizeof(me));
+        std::vector<uint8_t> connA = { 0xff, 0x00, 0x00 };
+        const std::vector<uint8_t> tokA = TokenForRoom(1);
+        connA.insert(connA.end(), tokA.begin(), tokA.end());
+        connA.insert(connA.end(), nox::kJoinTrailerMagic, nox::kJoinTrailerMagic + sizeof(nox::kJoinTrailerMagic));
+        sendto(a, reinterpret_cast<const char*>(connA.data()), static_cast<int>(connA.size()), 0, reinterpret_cast<sockaddr*>(&to), sizeof(to));
+        const bool accA = IsAccept(RecvOne(a, 1000));
+        const bool sig1 = WaitForSingleObject(static_cast<HANDLE>(n.EventsReadyHandle(1)), 1000) == WAIT_OBJECT_0;
+        const bool sig0 = WaitForSingleObject(static_cast<HANDLE>(n.EventsReadyHandle(0)), 0) == WAIT_OBJECT_0;
+        std::vector<nox::NetworkEvent> q0, q1, q2;
+        n.SwapOutNetworkEvents(0, q0);
+        n.SwapOutNetworkEvents(1, q1);
+        const int64_t sidA = q1.size() == 1 && q1[0].type == T::CONNECTED ? q1[0].sessionId : 0;
+        const bool aRouted = q0.empty() && sidA != 0 && sig1 && !sig0;
+        std::snprintf(m, sizeof(m), "⑩-8a 꼬리 방 1 접속 — 설정 %d · 열기 %d · 수락 %d · 큐 1 사건 %zu(세션 %lld) · 큐 0 사건 %zu · 손잡이 1 켜짐 %d · 0 켜짐 %d",
+                      (int)set, (int)open, (int)accA, q1.size(), (long long)sidA, q0.size(), (int)sig1, (int)sig0);
+        r.push_back({ set && open && accA && aRouted, m });
+
+        const uint8_t connB[3] = { 0xff, 0x00, 0x00 };
+        sendto(b, reinterpret_cast<const char*>(connB), sizeof(connB), 0, reinterpret_cast<sockaddr*>(&to), sizeof(to));
+        const bool accB = IsAccept(RecvOne(b, 1000));
+        int64_t sidB = 0;
+        for (int i = 0; i < 100 && sidB == 0; ++i) {
+            q0.clear();
+            n.SwapOutNetworkEvents(0, q0);
+            for (const auto& ev : q0) if (ev.type == T::CONNECTED) sidB = ev.sessionId;
+            if (sidB == 0) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        q1.clear();
+        n.SwapOutNetworkEvents(1, q1);
+        std::snprintf(m, sizeof(m), "⑩-8b 꼬리 없는 접속 — 수락 %d · 큐 0 세션 %lld · 큐 1 사건 %zu(0)", (int)accB, (long long)sidB, q1.size());
+        r.push_back({ accB && sidB != 0 && sidB != sidA && q1.empty(), m });
+
+        auto sendTo = [&](int producer, int64_t sid, uint8_t tag) {
+            std::vector<nox::NetworkRequest> rq(1);
+            rq[0].type = nox::NetworkRequest::Type::SEND_MSG;
+            rq[0].sessionId = sid;
+            rq[0].body = { 0x27, tag, tag };
+            n.PushRequests(producer, rq);
+        };
+        auto recvTag = [&](SOCKET s, uint8_t tag) {
+            for (int i = 0; i < 5; ++i) {
+                const std::vector<uint8_t> d = RecvOne(s, 1000);
+                if (d.empty()) return false;
+                if (d.size() == 5 && d[2] == 0x27 && d[3] == tag) return true;
+            }
+            return false;
+        };
+        sendTo(1, sidA, 0x11);
+        const bool gotA = recvTag(a, 0x11);
+        sendTo(0, sidB, 0x22);
+        const bool gotB = recvTag(b, 0x22);
+        sendTo(7, sidA, 0x33);
+        const bool gotBad = recvTag(a, 0x33);
+        std::vector<nox::NetworkRequest> dc(1);
+        dc[0].type = nox::NetworkRequest::Type::DISCONNECT_SESSION;
+        dc[0].sessionId = sidA;
+        n.PushRequests(1, dc);
+        nox::CNetworkThreadStats s;
+        for (int i = 0; i < 100; ++i) {   // 지표 사본은 0.25초마다
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            s = n.LatestThreadStats();
+            if (s.ownerForgot >= 1 && s.queueIndexBad >= 1) break;
+        }
+        n.Stop();
+        closesocket(a);
+        closesocket(b);
+        std::snprintf(m, sizeof(m), "⑩-8c 요청 큐 — 스레드 1 → A %d · 0 → B %d · 없는 번호 7 → A %d(셈 %llu) · 끊기 → 주인 지움 %llu(1) · 지도 %zu(1) · 셈 토큰 %llu(1) · 토큰 없음 %llu(1)",
+                      (int)gotA, (int)gotB, (int)gotBad, s.queueIndexBad, s.ownerForgot, s.owners, s.ownerByToken, s.ownerNoToken);
+        r.push_back({ gotA && gotB && gotBad && s.queueIndexBad == 1 && s.ownerForgot == 1 && s.owners == 1 && s.ownerByToken == 1 &&
+                          s.ownerNoToken == 1, m });
+    }
+
+    // ⑩-9 실물 — N = 2 로비 — 로비 사건은 로비 큐(2)로만 · 조정 스레드 몫 큐(2)로 넣은 줄이 로비에 간다
+    {
+        nox::CTcpLines srv;
+        std::vector<nox::TcpLineEvent> se;
+        std::string e;
+        const bool listening = srv.Listen(0x7f000001u, 0, e);
+        nox::CNetworkThread n;
+        const bool set = n.SetGameThreads(2, nox::OwnerRule::Token, 0, e);
+        const bool started = n.Open("127.0.0.1", 0, e) && n.ConnectLobby(0x7f000001u, srv.ListenPort(0), e);
+        n.Start();
+        auto pollSrv = [&](size_t want, int ms) {
+            const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+            while (se.size() < want && std::chrono::steady_clock::now() < until) {
+                WaitForSingleObject(static_cast<HANDLE>(srv.WaitHandle()), 20);
+                srv.Poll(se);
+                srv.Flush(se);
+            }
+        };
+        std::vector<nox::NetworkEvent> lq, g0, g1;
+        auto drainLobby = [&](size_t want, int ms) {
+            for (int i = 0; i < ms / 10 && lq.size() < want; ++i) {
+                std::vector<nox::NetworkEvent> got;
+                n.SwapOutNetworkEvents(2, got);
+                for (auto& ev : got) lq.push_back(std::move(ev));
+                if (lq.size() < want) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+        };
+        pollSrv(1, 2000);
+        drainLobby(1, 2000);
+        const int sconn = se.empty() ? 0 : se[0].conn;
+        const int lconn = lq.empty() ? 0 : lq[0].lobbyConn;
+        se.clear();
+        srv.Send(sconn, "HELLO c3b");
+        srv.Flush(se);
+        drainLobby(2, 2000);
+        std::vector<nox::NetworkRequest> rq(1);
+        rq[0].type = nox::NetworkRequest::Type::LOBBY_SEND;
+        rq[0].lobbyConn = lconn;
+        rq[0].lobbyLine = "AUTH c3b";
+        n.PushRequests(n.LobbyQueue(), rq);
+        pollSrv(1, 2000);
+        n.SwapOutNetworkEvents(0, g0);
+        n.SwapOutNetworkEvents(1, g1);
+        n.Stop();
+        const bool ok = listening && set && started && lq.size() == 2 && lq[0].type == T::LOBBY_OPENED && lq[1].type == T::LOBBY_LINE &&
+                        lq[1].lobbyLine == "HELLO c3b" && g0.empty() && g1.empty() && se.size() == 1 && se[0].line == "AUTH c3b";
+        std::snprintf(m, sizeof(m), "⑩-9 로비 큐 — 로비 큐 사건 %zu(2 — 붙음 · 줄) · 게임 큐 0 %zu · 1 %zu(0 · 0) · 로비 큐로 넣은 줄이 로비에 %d",
+                      lq.size(), g0.size(), g1.size(), (int)(se.size() == 1 && se[0].line == "AUTH c3b"));
+        r.push_back({ ok, m });
+    }
     return r;
 }

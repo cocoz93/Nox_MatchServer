@@ -374,6 +374,8 @@ public:
     unsigned long long sendNoSession() const { return _stats.sendNoSession; }
     // ★ 10-08 조각 4c — 게임에 안 넘긴 채 조용해져 걷어낸 상대 수(서버 찾기·접속 시도만 한 상대).
     unsigned long long unannouncedSwept() const { return _stats.unannouncedSwept; }
+    // ★ 11-17 C-3b — 그 세션 번호가 아직 있나(네트워크 스레드가 걷힌 세션의 주인을 지운다 `CSessionOwners::Prune`)
+    bool HasSession(int64_t sessionId) const { return _addrOf.count(sessionId) != 0; }
     // ★ 10-09 조각 5a — 시간 초과로 게임에 넘긴 세션 수(`DISCONNECTED` · TIMEOUT).
     unsigned long long sessionTimedOut() const { return _stats.sessionTimedOut; }
     // ★ 10-09 조각 5c — 접속 시도를 게임에 물은 수 · 게임이 거절한 수 · 답이 왔을 때 세션이 이미 없던 수(0 이 정상)

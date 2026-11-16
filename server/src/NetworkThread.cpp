@@ -11,6 +11,7 @@
 #include <set>
 
 #include "nox/Clock.h"
+#include "nox/JoinToken.h"   // ★ 11-17 C-3b — 토큰 길이(주인 정하기가 방 번호 칸을 읽는다)
 #include "nox/Opcode.h"
 #include "nox/TickSections.h"
 
@@ -23,13 +24,114 @@ namespace {
 // ★ 11-17 C-2 — 주소 바꾸기(`sockaddr_in` ↔ 숫자 주소)는 UDP 부품이 한다(옛 이 자리 `KeyOf` — 데이터그램마다 「ip:port」 글자)
 }  // namespace
 
-CNetworkThread::CNetworkThread() = default;
+// ── ★ 11-17 C-3b — 세션 주인 지도(`NetworkThread.h` `CSessionOwners`) ──
+
+void CSessionOwners::Configure(int gameThreads, OwnerRule rule, int loadRoomSize) {
+    _n = gameThreads < 1 ? 1 : gameThreads;
+    _rule = rule;
+    _loadRoomSize = loadRoomSize;
+    _arrivals = 0;
+    _owner.clear();
+}
+
+int CSessionOwners::OwnerByToken(const std::vector<uint8_t>& token, int n, bool& hadToken) {
+    hadToken = token.size() == kJoinTokenSize;
+    if (!hadToken || n <= 1) return 0;
+    // [1..4] 방 번호(작은 끝수 — `JoinToken.h` 머리). 서명 · 판은 안 본다(게임 스레드가 본다)
+    const uint32_t room = static_cast<uint32_t>(token[1]) | (static_cast<uint32_t>(token[2]) << 8) |
+                          (static_cast<uint32_t>(token[3]) << 16) | (static_cast<uint32_t>(token[4]) << 24);
+    return static_cast<int>(room % static_cast<uint32_t>(n));
+}
+
+int CSessionOwners::Route(const NetworkEvent& ev, Why* why) {
+    Why w = Why::Single;
+    int k = 0;
+    if (_n == 1) {
+        // 하나면 지도를 안 쓴다 — 모두 큐 0(옛 꼴)
+    } else if (IsLobbyEvent(ev.type)) {
+        w = Why::Lobby;
+        k = LobbyQueue();
+    } else {
+        const auto it = _owner.find(ev.sessionId);
+        if (it != _owner.end()) {
+            w = Why::Known;
+            k = it->second;
+        } else {
+            switch (_rule) {
+                case OwnerRule::Token: {
+                    bool had = false;
+                    k = OwnerByToken(ev.token, _n, had);
+                    w = had ? Why::Token : Why::NoToken;
+                    if (had) ++byToken; else ++noToken;
+                    break;
+                }
+                case OwnerRule::LoadArrival: {
+                    const unsigned long long size = _loadRoomSize > 0 ? static_cast<unsigned long long>(_loadRoomSize) : 1;
+                    k = static_cast<int>((_arrivals / size) % static_cast<unsigned long long>(_n));
+                    ++_arrivals;
+                    w = Why::LoadArrival;
+                    ++byLoad;
+                    break;
+                }
+                case OwnerRule::ThreadZero:
+                    k = 0;
+                    w = Why::ThreadZero;
+                    ++threadZero;
+                    break;
+            }
+            _owner.emplace(ev.sessionId, k);
+        }
+    }
+    if (why) *why = w;
+    return k;
+}
+
+void CSessionOwners::Forget(int64_t sessionId) {
+    if (_owner.erase(sessionId) != 0) ++forgot;
+}
+
+// ── 네트워크 스레드 ──
+
+CNetworkThread::EventQueue::EventQueue() {
+    ready = CreateEventW(nullptr, FALSE, FALSE, nullptr);  // 자동으로 되돌아가는 이벤트 — 게임 루프가 기다린다
+}
+
+CNetworkThread::EventQueue::~EventQueue() {
+    if (ready) CloseHandle(static_cast<HANDLE>(ready));
+}
+
+void CNetworkThread::MakeQueues(int count) {
+    _eventQs.clear();
+    _requestQs.clear();
+    for (int i = 0; i < count; ++i) {
+        _eventQs.push_back(std::make_unique<EventQueue>());
+        _requestQs.push_back(std::make_unique<RequestQueue>());
+    }
+}
+
+CNetworkThread::CNetworkThread() {
+    MakeQueues(1);   // ★ 11-17 C-3b — 게임 스레드 하나(옛 꼴) · `SetGameThreads` 가 다시 만든다
+}
 
 CNetworkThread::~CNetworkThread() {
     Stop();
     _udp.Close();
-    if (_eventsReady) CloseHandle(static_cast<HANDLE>(_eventsReady));
+    // ★ 11-17 C-3b — 큐마다의 깨우는 이벤트는 큐가 닫는다(`EventQueue`)
     if (_wsaUp) WSACleanup();
+}
+
+bool CNetworkThread::SetGameThreads(int n, OwnerRule rule, int loadRoomSize, std::string& err) {
+    if (_thread.joinable()) { err = "시작한 뒤에는 게임 스레드 수를 정할 수 없다"; return false; }
+    if (n < 1 || n > kMaxGameThreads) { err = "게임 스레드 수는 1 ~ " + std::to_string(kMaxGameThreads); return false; }
+    if (rule == OwnerRule::LoadArrival && loadRoomSize < 1) { err = "부하 판 주인 정하기에 방 인원이 없다"; return false; }
+    _owners.Configure(n, rule, loadRoomSize);
+    MakeQueues(_owners.QueueCount());
+    return true;
+}
+
+void* CNetworkThread::EventsReadyHandle(int queue) const {
+    if (queue < 0 || static_cast<size_t>(queue) >= _eventQs.size()) return nullptr;
+    return _eventQs[static_cast<size_t>(queue)]->ready;
 }
 
 bool CNetworkThread::Open(const std::string& ip, uint16_t port, std::string& err) {
@@ -58,7 +160,7 @@ bool CNetworkThread::Open(const std::string& ip, uint16_t port, std::string& err
         return false;
     }
     _udpConfig = c;
-    _eventsReady = CreateEventW(nullptr, FALSE, FALSE, nullptr);  // 자동으로 되돌아가는 이벤트 — 게임 루프가 기다린다
+    // ★ 11-17 C-3b — 게임 루프를 깨우는 이벤트는 큐를 만들 때 연다(`EventQueue` — 큐마다 하나)
     return true;
 }
 
@@ -148,27 +250,35 @@ void CNetworkThread::Stop(bool closeSessions) {
     _thread.join();
 }
 
-void CNetworkThread::PushRequests(std::vector<NetworkRequest>& reqs) {
+void CNetworkThread::PushRequests(int producer, std::vector<NetworkRequest>& reqs) {
     if (reqs.empty()) return;
+    // ★ 11-17 C-3b — 없는 번호는 큐 0 에 넣고 센다(요청을 잃지 않게 — 부르는 쪽 실수라 `queueIndexBad` 가 0 이 정상)
+    if (producer < 0 || static_cast<size_t>(producer) >= _requestQs.size()) {
+        _queueIndexBad.fetch_add(1, std::memory_order_relaxed);
+        producer = 0;
+    }
+    RequestQueue& q = *_requestQs[static_cast<size_t>(producer)];
     // ★ 11-11 부하 측정 M0 조각 4 — 보내는 쪽 지연의 시작 시각(`TickSections.h` `CSendDelayTotals`). 끄면 시계를 안 읽는다
     const bool stampQueued = g_tickSections;
     const uint32_t queuedMs = stampQueued ? NowMs() : 0;
     {
-        std::lock_guard<std::mutex> lk(_queueMu);
+        std::lock_guard<std::mutex> lk(q.mu);
         for (NetworkRequest& r : reqs) {
-            if (_requests.size() >= _queueMax) { ++_requestsDropped; continue; }
+            if (q.requests.size() >= _queueMax) { ++q.dropped; continue; }
             if (stampQueued) r.queuedMs = queuedMs;
-            _requests.push_back(std::move(r));
+            q.requests.push_back(std::move(r));
         }
     }
     reqs.clear();
     _udp.Wake();
 }
 
-void CNetworkThread::SwapOutNetworkEvents(std::vector<NetworkEvent>& into) {
-    std::lock_guard<std::mutex> lk(_queueMu);
-    into.swap(_events);
-    _events.clear();
+void CNetworkThread::SwapOutNetworkEvents(int queue, std::vector<NetworkEvent>& into) {
+    if (queue < 0 || static_cast<size_t>(queue) >= _eventQs.size()) return;
+    EventQueue& q = *_eventQs[static_cast<size_t>(queue)];
+    std::lock_guard<std::mutex> lk(q.mu);
+    into.swap(q.events);
+    q.events.clear();
 }
 
 CUdpStats CNetworkThread::LatestNetworkStats() const {
@@ -190,13 +300,26 @@ void CNetworkThread::Publish() {
     t.udpSendFail = u.sendFail.load(std::memory_order_relaxed);
     t.udpFlushes = u.flushes.load(std::memory_order_relaxed);
     t.recvErrors = t.udpRecvFail + t.udpOversizeDropped;
-    {
-        std::lock_guard<std::mutex> lk(_queueMu);
-        t.requestsDropped = _requestsDropped;
-        t.eventsDropped = _eventsDropped;
-        t.requestsQueued = _requests.size();
-        t.eventsQueued = _events.size();
+    // ★ 11-17 C-3b — 큐가 여럿이면 합친다(하나면 옛 값 그대로)
+    for (const auto& q : _requestQs) {
+        std::lock_guard<std::mutex> lk(q->mu);
+        t.requestsDropped += q->dropped;
+        t.requestsQueued += q->requests.size();
     }
+    for (const auto& q : _eventQs) {
+        std::lock_guard<std::mutex> lk(q->mu);
+        t.eventsDropped += q->dropped;
+        t.eventsQueued += q->events.size();
+    }
+    // ★ 11-17 C-3b — 주인 지도(네트워크 스레드 혼자 쓴다 — 여기도 네트워크 스레드)
+    t.ownerByToken = _owners.byToken;
+    t.ownerNoToken = _owners.noToken;
+    t.ownerByLoad = _owners.byLoad;
+    t.ownerThreadZero = _owners.threadZero;
+    t.ownerForgot = _owners.forgot;
+    t.ownerPruned = _owners.pruned;
+    t.owners = _owners.Size();
+    t.queueIndexBad = _queueIndexBad.load(std::memory_order_relaxed);
     CUdpStats n = _network.Stats();
     std::lock_guard<std::mutex> lk(_statsMu);
     _pubNetwork = std::move(n);
@@ -216,6 +339,9 @@ void CNetworkThread::Run() {
     std::vector<TcpLineEvent> tcpEvs;
     std::set<uint8_t> told;                      // `[처음]` — 접속 제어 오프코드(게임 오프코드는 게임 스레드가 찍는다)
     UdpDatagram batch[kUdpRecvBatch];            // ★ 11-17 C-2 — 받은 것(부품 칸을 가리킨다 · 다음 `Receive` 까지 유효)
+    // ★ 11-17 C-3b — 게임 스레드가 여럿인가(시작 뒤로 안 바뀐다) · 큐마다 이 깸에 넣을 사건
+    const bool multi = _owners.GameThreads() > 1;
+    std::vector<std::vector<NetworkEvent>> stage(_eventQs.size());
     Publish();
     for (;;) {
         // 기다리는 시간 — 타이머 맨 앞 마감까지(없으면 `_maxWaitMs` — 기본 `kMaxWaitMs`)
@@ -248,11 +374,25 @@ void CNetworkThread::Run() {
 
         // ① 시계 — 마감 지난 타이머(다시 보내기 · 시간 초과 알림 · 접속 전 걷기)
         if (!stopping) _network.Tick(now, out, events);
+        // ★ 11-17 C-3b — 통신 층이 사건 없이 걷은 세션(접속 시도만 한 상대)이 생겼으면 그 주인을 지운다(걷기 셈이 늘 때만 훑는다)
+        if (multi && _network.unannouncedSwept() != _sweptSeen) {
+            _sweptSeen = _network.unannouncedSwept();
+            _owners.Prune([this](int64_t sid) { return _network.HasSession(sid); });
+        }
         if (sections) AddNetworkSection(g_networkSections.resendNs, secLast);
         // ② 쌓인 요청 — 게임이 지난 틱에 만든 것이라 이번에 받은 것보다 먼저(`CSyncHost` 의 「받기 앞 요청」과 같은 차례)
-        {
-            std::lock_guard<std::mutex> lk(_queueMu);
-            reqs.swap(_requests);
+        //   ★ 11-17 C-3b — 넣는 스레드마다 큐 하나 — 번호 차례로 다 비운다(한 큐 안의 차례는 그대로 · 큐 사이 차례는 없다 —
+        //   한 세션의 요청은 그 주인 게임 스레드 하나가 넣는다). 큐가 하나면 옛 꼴(통째로 바꾸기)과 같다
+        for (const auto& qp : _requestQs) {
+            RequestQueue& q = *qp;
+            std::lock_guard<std::mutex> lk(q.mu);
+            if (q.requests.empty()) continue;
+            if (reqs.empty()) {
+                reqs.swap(q.requests);
+            } else {
+                for (NetworkRequest& r : q.requests) reqs.push_back(std::move(r));
+                q.requests.clear();
+            }
         }
         sendQueuedMs.clear();
         for (const NetworkRequest& r : reqs) {
@@ -269,6 +409,8 @@ void CNetworkThread::Run() {
                 LobbyToEvents(tcpEvs, events);
                 continue;
             }
+            // ★ 11-17 C-3b — 게임이 지우는 세션은 주인도 지운다(통신 층이 그 번호를 지운다 `RequestDisconnectSession`)
+            if (multi && r.type == NetworkRequest::Type::DISCONNECT_SESSION) _owners.Forget(r.sessionId);
             _network.OnRequest(r, out);
         }
         reqs.clear();
@@ -345,20 +487,33 @@ void CNetworkThread::Run() {
             LobbyToEvents(tcpEvs, events);
         }
         // ④ 이벤트를 큐로 — 넣은 시각을 찍는다(게임 스레드가 넘김 지연을 잰다)
+        //   ★ 11-17 C-3b — 게임 스레드가 여럿이면 사건마다 큐 번호를 정해(`CSessionOwners::Route`) 큐마다 모았다가 큐마다 한 번 잠근다.
+        //   하나면 모두 큐 0(옛 꼴 — 주인 지도를 안 쓴다)
         if (!events.empty()) {
-            bool queued = false;
-            {
-                std::lock_guard<std::mutex> lk(_queueMu);
-                for (NetworkEvent& ev : events) {
-                    if (_events.size() >= _queueMax) { ++_eventsDropped; continue; }
-                    ev.queuedMs = now;
-                    _events.push_back(std::move(ev));
-                    queued = true;
-                }
+            if (multi) {
+                for (NetworkEvent& ev : events) stage[static_cast<size_t>(_owners.Route(ev))].push_back(std::move(ev));
+            } else {
+                stage[0].swap(events);
             }
             events.clear();
-            // ★ 10-09 플랜 A 5d 자가검증 ② — 게임 루프를 깨운다(틱 마감 전이라도 받은 것을 바로 처리)
-            if (queued) SetEvent(static_cast<HANDLE>(_eventsReady));
+            for (size_t qi = 0; qi < stage.size(); ++qi) {
+                std::vector<NetworkEvent>& part = stage[qi];
+                if (part.empty()) continue;
+                EventQueue& q = *_eventQs[qi];
+                bool queued = false;
+                {
+                    std::lock_guard<std::mutex> lk(q.mu);
+                    for (NetworkEvent& ev : part) {
+                        if (q.events.size() >= _queueMax) { ++q.dropped; continue; }
+                        ev.queuedMs = now;
+                        q.events.push_back(std::move(ev));
+                        queued = true;
+                    }
+                }
+                part.clear();
+                // ★ 10-09 플랜 A 5d 자가검증 ② — 게임 루프를 깨운다(틱 마감 전이라도 받은 것을 바로 처리)
+                if (queued) SetEvent(static_cast<HANDLE>(q.ready));
+            }
         }
         if (sections) AddNetworkSection(g_networkSections.handoffNs, secLast);
         // ★ 10-09 조각 5d-2c — 닫기면 키를 준 상대마다 `SERVER_CLOSE`(쌓인 요청 뒤에)
