@@ -363,6 +363,17 @@ void CRoomManager::SetLoadEntry(const RoomSettings& roomTemplate, int maxOpenRoo
     _loadRoomSize = roomSize;
 }
 
+size_t CRoomManager::LoadRoomsUnderfilled() const {
+    if (!_loadEntry) return 0;
+    const std::map<int, size_t>& seats = SeatCounts();
+    size_t n = 0;
+    for (const auto& kv : _rooms) {
+        const auto it = seats.find(kv.first);
+        if ((it == seats.end() ? 0 : it->second) < static_cast<size_t>(_loadRoomSize)) ++n;
+    }
+    return n;
+}
+
 int CRoomManager::FindLoadRoom() const {
     const std::map<int, size_t>& seats = SeatCounts();   // ★ 6차 — 복사 없이
     for (const auto& kv : _rooms) {

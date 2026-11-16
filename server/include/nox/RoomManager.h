@@ -377,6 +377,8 @@ public:
     Server& Game(int roomId) { return Room(roomId).Game(); }
     const Server& Game(int roomId) const { return Room(roomId).Game(); }
     size_t RoomCount() const { return _rooms.size(); }
+    // ★ 11-17 C-3a — 부하 판(`SetLoadEntry`)에서 세션이 방 인원보다 적은 방 수(`[구간]` 줄 「덜 참」 · C 플랜 7절). 부하 판이 아니면 0
+    size_t LoadRoomsUnderfilled() const;
     // ★ 10-12 플랜 B 작업 7c — 방을 번호 차례로 돈다(판 차리기 · 진단 · `[처음]` 모으기). 도는 동안 방을 만들거나 닫지 않는다
     template <class F> void ForEachRoom(F&& f) { for (auto& kv : _rooms) f(*kv.second); }
     template <class F> void ForEachRoom(F&& f) const { for (const auto& kv : _rooms) f(static_cast<const CRoom&>(*kv.second)); }

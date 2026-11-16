@@ -44,6 +44,9 @@ $rxPart = [regex]' · (뒷일|앞|걸음|생각|시전|세계|자기|사람|물�
 $rxRecv = [regex]' · 받기 ([\d.]+)\(수 (\d+)\)'
 $rxLeave = [regex]' · 끊김 (\d+)\(시간 초과 (\d+) · 0a (\d+)\) · 넘침 (\d+)'
 $rxBusy = [regex]' · 지난 ([\d.]+) · 기다림 ([\d.]+) · 바쁨 ([\d.]+)% · 고리 나머지 (-?[\d.]+) · 넘김 지연 평균 ([\d.]+) 최대 (\d+) · 큐 버림 사건 (\d+) 요청 (\d+) · 메모리 개인 ([\d.]+)MB 작업 ([\d.]+)MB · 통신 기다림 ([\d.]+) 바쁨 ([\d.]+)% · 보내기 실패 (\d+)\(마지막 오류 (-?\d+)\)'
+# ★ 11-17 C-3a — 게임 스레드가 여럿이면 줄마다 끝에 「· 게임 스레드 k」(분포 줄 셋도) · [구간] 줄은 그 뒤 「· 방 n(덜 참 m)」.
+#   칸이 없는 옛 기록은 게임 스레드 0 으로 읽는다(Docs/SERVERCORE_UDP_PLAN_1116.md 5-7). 통신 칸 · [보내기분포] 는 게임 스레드 0 의 줄에만 있다
+$rxThread = [regex]' · 게임 스레드 (\d+)(?: · 방 (\d+)\(덜 참 (\d+)\))?$'
 # 통신 스레드 몫 — 나머지는 게임 스레드 몫이다(구간 이름은 TickSections.h). 두 스레드는 각자 33ms 를 쓰니 「먼저 차는 구간」은 따로 줄 세운다
 $netParts = @('통신 재전송', '보내기', '받기', '넘기기')
 # 줄 세우기에서 빼는 것 — 틱합 = 틱 안 11구간(앞~묶음)의 합 · 방 만들기 = 사건 안에 든다(TickSections.h CGameSectionTotals)
@@ -54,7 +57,11 @@ function Parse-Section([string]$ln) {
   if (-not ($h.Success -and $b.Success -and $l.Success -and $rv.Success)) { return $null }
   $parts = @{ '틱합' = (D $h.Groups[3].Value); '사건' = (D $h.Groups[5].Value); '방 만들기' = (D $h.Groups[7].Value); '방 닫기' = (D $h.Groups[10].Value); '받기' = (D $rv.Groups[1].Value) }
   foreach ($m in $rxPart.Matches($ln)) { $parts[$m.Groups[1].Value] = D $m.Groups[2].Value }
+  $t = $rxThread.Match($ln)   # ★ 11-17 C-3a
   return [pscustomobject]@{
+    thread = $(if ($t.Success) { [int]$t.Groups[1].Value } else { 0 })
+    rooms = $(if ($t.Success -and $t.Groups[2].Success) { [int]$t.Groups[2].Value } else { $null })
+    underfilled = $(if ($t.Success -and $t.Groups[3].Success) { [int]$t.Groups[3].Value } else { $null })
     ticks = [int64]$h.Groups[2].Value; made = [int]$h.Groups[8].Value; closed = [int]$h.Groups[11].Value
     parts = $parts; recvCount = [int64]$rv.Groups[2].Value
     leaveTimeout = [int64]$l.Groups[2].Value; leave0a = [int64]$l.Groups[3].Value; overflow = [int64]$l.Groups[4].Value
@@ -127,6 +134,73 @@ function Edge-Of($w, [double]$fromMs, [double]$toMs) {
     gameBusyPct = $w.gameBusyPct; netBusyPct = $w.netBusyPct; lateRuns = $w.lateRuns; memPrivLastMb = $w.memPrivLastMb }
 }
 
+# ③④ 게임 스레드 하나의 측정 구간과 그 합(★ 11-17 C-3a — 옛 Report-Run ③④ 를 게임 스레드마다 돌리려고 떼어 냄 · 셈은 그대로).
+#   버림 까닭은 옛 차례(못 채움 → 더미 끝 넘음 → 분포 합 → 앞뒤 겹침)로 내려고 갈래마다 따로 돌려준다. 더미 끝 넘음은 부르는 쪽이
+#   모든 게임 스레드의 첫 방으로 더미 시각을 맞춘 뒤 본다. $label = 게임 스레드가 여럿일 때 까닭 끝에 붙는 「(게임 스레드 k)」 · 하나면 빈 글
+function Thread-Window($secs, $blocks, [string]$label) {
+  $n = $secs.Count
+  $T = New-Object 'double[]' ($n + 1)                   # T[k] = k 번째 [구간] 줄 끝의 서버 시각(ms) · T[0] = 0
+  for ($k = 1; $k -le $n; $k++) { $T[$k] = $T[$k - 1] + $secs[$k - 1].elapsed }
+
+  # ③ 측정 구간 — 처음 입장의 마지막 방 만들기(첫 방 닫기 앞) + DiscardSec 뒤 첫 분포 경계부터 WindowSec 이 찬 분포 경계까지
+  $firstClose = 0
+  for ($k = 1; $k -le $n; $k++) { if ($secs[$k - 1].closed -gt 0) { $firstClose = $k; break } }
+  $firstMade = 0; $lastMade = 0
+  for ($k = 1; $k -le $n; $k++) {
+    if ($firstClose -gt 0 -and $k -ge $firstClose) { break }
+    if ($secs[$k - 1].made -gt 0) { if ($firstMade -eq 0) { $firstMade = $k }; $lastMade = $k }
+  }
+  $bounds = @($blocks.Values | Where-Object { $_.at -gt 0 } | Sort-Object { $_.at })
+  $w0 = $T[$lastMade] + $DiscardSec * 1000.0
+  $ka = $null; $kb = $null
+  foreach ($b in $bounds) { if ($T[$b.at] -ge $w0) { $ka = $b.at; break } }
+  # 줄 하나의 「지난」은 1000ms 에서 조금 모자랄 수 있다(줄은 ms 시계로 1초를 보고 찍고, 지난 값은 더 고운 시계다) — 길이 비교에 반 줄을 봐준다
+  $slack = 500.0
+  if ($null -ne $ka) { foreach ($b in $bounds) { if ($b.at -gt $ka -and $T[$b.at] - $T[$ka] -ge $WindowSec * 1000.0 - $slack) { $kb = $b.at; break } } }
+  if ($null -eq $kb) {
+    return @{ ok = $false; why = "측정 구간 $WindowSec 초를 못 채움(마지막 방 만들기 $([math]::Round($T[$lastMade] / 1000.0, 1))초 · [구간] $n 줄 · 서버 $([math]::Round($T[$n] / 1000.0, 1))초)$label" }
+  }
+  # 더미 시각 = 서버 시각 − Dofs. 첫 방 만들기 줄 안 어딘가가 첫 더미의 입장이다 — 더미가 소켓을 차리는 몫(더미 수에 비례)만큼 앞으로 2초 넓힌다
+  $r = @{ ok = $true; T = $T; ka = $ka; kb = $kb; firstMade = $firstMade; whyHist = $null; whyEdge = $null; edgeFirst = $null; edgeLast = $null }
+  $r.dMin = if ($firstMade -gt 0) { $T[$firstMade - 1] - 2000.0 } else { 0.0 }
+  $r.dMax = if ($firstMade -gt 0) { $T[$firstMade] } else { 0.0 }
+  $r.windowStartSec = [math]::Round($T[$ka] / 1000.0, 1); $r.windowEndSec = [math]::Round($T[$kb] / 1000.0, 1)
+
+  # ④ 측정 구간의 합
+  $r.main = Window-Stats $secs $bounds $ka $kb
+  if ($r.main.tickHistSum -ne $r.main.ticks) { $r.whyHist = "측정 구간의 [틱분포] 합 $($r.main.tickHistSum) ≠ [구간] 틱 $($r.main.ticks)$label" }
+  # 앞뒤 EdgeSec 몫 — load_series 가 M4 확인(5분) · M9(10분)에서 처음과 마지막을 견준다. 경계는 같은 분포 경계에 맞춘다
+  if ($EdgeSec -gt 0) {
+    $k1 = $null; $k2 = $null
+    foreach ($b in $bounds) {
+      if ($null -eq $k1 -and $b.at -gt $ka -and $T[$b.at] - $T[$ka] -ge $EdgeSec * 1000.0 - $slack) { $k1 = $b.at }
+      if ($b.at -ge $ka -and $b.at -lt $kb -and $T[$kb] - $T[$b.at] -ge $EdgeSec * 1000.0 - $slack) { $k2 = $b.at }   # 조건에 드는 마지막 경계
+    }
+    if ($null -ne $k1 -and $null -ne $k2 -and $k1 -le $k2) {
+      $r.edgeFirst = Edge-Of (Window-Stats $secs $bounds $ka $k1) $T[$ka] $T[$k1]
+      $r.edgeLast = Edge-Of (Window-Stats $secs $bounds $k2 $kb) $T[$k2] $T[$kb]
+    } else { $r.whyEdge = "앞뒤 $EdgeSec 초가 측정 구간 안에서 겹침$label" }
+  }
+  # 10초 칸마다 — 실행 전체(구간 밖도 · inWindow 로 가른다). load_series 가 M1 에서 틱합이 계속 오르는지 · 버리는 구간이 모자란지 본다
+  $blockSeries = New-Object System.Collections.ArrayList; $prev = 0
+  foreach ($b in $bounds) {
+    $w = Window-Stats $secs $bounds $prev $b.at
+    [void]$blockSeries.Add([ordered]@{ endSec = [math]::Round($T[$b.at] / 1000.0, 1); inWindow = ($b.at -gt $ka -and $b.at -le $kb)
+        tickSumMsPerSec = $w.partMsPerSec['틱합']; gameBusyPct = $w.gameBusyPct; completionP99Ms = $w.completionP99Ms })
+    $prev = $b.at
+  }
+  $r.blockSeries = @($blockSeries)
+  $r.lastMadeSec = [math]::Round($T[$lastMade] / 1000.0, 1)
+  # ★ 11-17 C-3a — 측정 구간 안 방 수 · 덜 찬 방 수의 최대(칸이 없는 옛 기록은 $null)
+  $r.roomsMax = $null; $r.underfilledMax = $null
+  for ($i = $ka; $i -lt $kb; $i++) {
+    $s = $secs[$i]
+    if ($null -ne $s.rooms -and ($null -eq $r.roomsMax -or $s.rooms -gt $r.roomsMax)) { $r.roomsMax = $s.rooms }
+    if ($null -ne $s.underfilled -and ($null -eq $r.underfilledMax -or $s.underfilled -gt $r.underfilledMax)) { $r.underfilledMax = $s.underfilled }
+  }
+  return $r
+}
+
 function Report-Run([string]$dir) {
   $rs = New-Object System.Collections.ArrayList          # 버림 까닭(2-3절)
   $o = [ordered]@{ dir = $dir; tag = (Split-Path -Leaf $dir); usable = $false; reasons = @(); over = @()
@@ -171,16 +245,24 @@ function Report-Run([string]$dir) {
   # ② 서버 출력
   $svPath = Join-Path $dir 'server.txt'; $duPath = Join-Path $dir 'dummy.txt'
   if (-not (Test-Path -LiteralPath $svPath)) { [void]$rs.Add('server.txt 없음'); $o.reasons = @($rs); return $o }
-  $secs = New-Object System.Collections.ArrayList
-  $blocks = @{}                                         # 분포 경계 = 그때까지 찍힌 [구간] 줄 수(문자열 키)
+  # ★ 11-17 C-3a — 게임 스레드마다 따로 모은다(열쇠 = 게임 스레드 번호 · 칸이 없는 옛 줄은 0). 분포 경계 = 그 게임 스레드의 [구간] 줄 수
+  $secsBy = @{}; $blocksBy = @{}
   $badLines = 0; $endSent = $null; $endDropEv = $null; $endDropReq = $null; $endInput = $null; $endRecvPieces = $null; $endRecvErr = $null
   foreach ($ln in [IO.File]::ReadAllLines($svPath, $utf8)) {
     if ($ln.StartsWith('[구간] ')) {
       $p = Parse-Section $ln
-      if ($null -eq $p) { $badLines++ } else { [void]$secs.Add($p) }
+      if ($null -eq $p) { $badLines++ }
+      else {
+        if (-not $secsBy.ContainsKey($p.thread)) { $secsBy[$p.thread] = New-Object System.Collections.ArrayList; $blocksBy[$p.thread] = @{} }
+        [void]$secsBy[$p.thread].Add($p)
+      }
       continue
     }
     if ($ln.StartsWith('[틱분포] ') -or $ln.StartsWith('[완료분포] ') -or $ln.StartsWith('[보내기분포] ')) {
+      $tm = $rxThread.Match($ln); $th = if ($tm.Success) { [int]$tm.Groups[1].Value } else { 0 }
+      if (-not $secsBy.ContainsKey($th)) { $secsBy[$th] = New-Object System.Collections.ArrayList; $blocksBy[$th] = @{} }
+      $secs = $secsBy[$th]                              # 분포 경계 = 그때까지 찍힌 [구간] 줄 수(문자열 키)
+      $blocks = $blocksBy[$th]
       $at = [string]$secs.Count
       if (-not $blocks.ContainsKey($at)) { $blocks[$at] = @{ at = $secs.Count; tick = $null; done = $null; send = $null; late = 0L; lateExtra = 0L } }
       # 같은 경계에 분포가 두 벌일 수 있다 — 마지막 [구간] 이 10번째 줄이면 Print 안에서 한 벌, PrintFinal 이 남은 표본으로 또 한 벌. 덮지 말고 더한다
@@ -200,67 +282,64 @@ function Report-Run([string]$dir) {
   }
   if ($badLines -gt 0) { [void]$rs.Add("[구간] 줄 ${badLines}개를 못 읽음(옛 꼴이거나 잘림)") }
   if ($null -eq $endSent -or $null -eq $endInput) { [void]$rs.Add('[종료] 줄 없음') }
-  $n = $secs.Count
-  $T = New-Object 'double[]' ($n + 1)                   # T[k] = k 번째 [구간] 줄 끝의 서버 시각(ms) · T[0] = 0
-  for ($k = 1; $k -le $n; $k++) { $T[$k] = $T[$k - 1] + $secs[$k - 1].elapsed }
+  if ($secsBy.Count -eq 0) { $secsBy[0] = New-Object System.Collections.ArrayList; $blocksBy[0] = @{} }   # [구간] 줄이 없으면 옛 셈처럼 「못 채움」으로
+  $threads = @($secsBy.Keys | Sort-Object)
+  $multi = $threads.Count -gt 1
 
-  # ③ 측정 구간 — 처음 입장의 마지막 방 만들기(첫 방 닫기 앞) + DiscardSec 뒤 첫 분포 경계부터 WindowSec 이 찬 분포 경계까지
-  $firstClose = 0
-  for ($k = 1; $k -le $n; $k++) { if ($secs[$k - 1].closed -gt 0) { $firstClose = $k; break } }
-  $firstMade = 0; $lastMade = 0
-  for ($k = 1; $k -le $n; $k++) {
-    if ($firstClose -gt 0 -and $k -ge $firstClose) { break }
-    if ($secs[$k - 1].made -gt 0) { if ($firstMade -eq 0) { $firstMade = $k }; $lastMade = $k }
+  # ③④ 게임 스레드마다(Thread-Window) — 하나라도 못 채우면 옛 셈처럼 그 까닭만 적고 끝
+  $tw = @{}
+  foreach ($k in $threads) { $tw[$k] = Thread-Window $secsBy[$k] $blocksBy[$k] $(if ($multi) { "(게임 스레드 $k)" } else { '' }) }
+  $failed = @($threads | Where-Object { -not $tw[$_].ok })
+  if ($failed.Count) { foreach ($k in $failed) { [void]$rs.Add($tw[$k].why) }; $o.reasons = @($rs); return $o }
+  # 판정 값은 가장 바쁜 게임 스레드의 것(계획 5-7 — 스레드 사이 평균으로는 한 스레드만 넘는 것을 못 본다). 같으면 번호가 작은 쪽
+  $busy = $threads[0]
+  foreach ($k in $threads) { if ($tw[$k].main.gameBusyPct -gt $tw[$busy].main.gameBusyPct) { $busy = $k } }
+  $B = $tw[$busy]
+  # 더미 시각은 모든 게임 스레드 중 첫 방 만들기로 맞춘다(첫 더미가 들어온 때) — 게임 스레드가 하나면 옛 셈과 같다
+  $dMin = $null; $dMax = $null
+  foreach ($k in $threads) {
+    if ($tw[$k].firstMade -le 0) { continue }
+    if ($null -eq $dMax -or $tw[$k].dMax -lt $dMax) { $dMin = $tw[$k].dMin; $dMax = $tw[$k].dMax }
   }
-  $bounds = @($blocks.Values | Where-Object { $_.at -gt 0 } | Sort-Object { $_.at })
-  $w0 = $T[$lastMade] + $DiscardSec * 1000.0
-  $ka = $null; $kb = $null
-  foreach ($b in $bounds) { if ($T[$b.at] -ge $w0) { $ka = $b.at; break } }
-  # 줄 하나의 「지난」은 1000ms 에서 조금 모자랄 수 있다(줄은 ms 시계로 1초를 보고 찍고, 지난 값은 더 고운 시계다) — 길이 비교에 반 줄을 봐준다
-  $slack = 500.0
-  if ($null -ne $ka) { foreach ($b in $bounds) { if ($b.at -gt $ka -and $T[$b.at] - $T[$ka] -ge $WindowSec * 1000.0 - $slack) { $kb = $b.at; break } } }
-  if ($null -eq $kb) {
-    [void]$rs.Add("측정 구간 $WindowSec 초를 못 채움(마지막 방 만들기 $([math]::Round($T[$lastMade] / 1000.0, 1))초 · [구간] $n 줄 · 서버 $([math]::Round($T[$n] / 1000.0, 1))초)")
-    $o.reasons = @($rs); return $o
-  }
-  # 더미 시각 = 서버 시각 − Dofs. 첫 방 만들기 줄 안 어딘가가 첫 더미의 입장이다 — 더미가 소켓을 차리는 몫(더미 수에 비례)만큼 앞으로 2초 넓힌다
-  $dMin = if ($firstMade -gt 0) { $T[$firstMade - 1] - 2000.0 } else { 0.0 }
-  $dMax = if ($firstMade -gt 0) { $T[$firstMade] } else { 0.0 }
-  if ($dummyCount -gt 0 -and $durSec -gt 0 -and $T[$kb] -gt $dMin + $durSec * 1000.0) {
-    [void]$rs.Add('측정 구간이 더미가 끝나는 때를 넘음(더미가 0a 를 보내는 구간이 섞임)')
-  }
-  $o.windowStartSec = [math]::Round($T[$ka] / 1000.0, 1); $o.windowEndSec = [math]::Round($T[$kb] / 1000.0, 1)
-
-  # ④ 측정 구간의 합
-  $main = Window-Stats $secs $bounds $ka $kb
-  if ($main.tickHistSum -ne $main.ticks) { [void]$rs.Add("측정 구간의 [틱분포] 합 $($main.tickHistSum) ≠ [구간] 틱 $($main.ticks)") }
-  foreach ($k in @($main.Keys)) { if ($k -ne 'tickHistSum') { $o[$k] = $main[$k] } }
-  # 앞뒤 EdgeSec 몫 — load_series 가 M4 확인(5분) · M9(10분)에서 처음과 마지막을 견준다. 경계는 같은 분포 경계에 맞춘다
-  if ($EdgeSec -gt 0) {
-    $k1 = $null; $k2 = $null
-    foreach ($b in $bounds) {
-      if ($null -eq $k1 -and $b.at -gt $ka -and $T[$b.at] - $T[$ka] -ge $EdgeSec * 1000.0 - $slack) { $k1 = $b.at }
-      if ($b.at -ge $ka -and $b.at -lt $kb -and $T[$kb] - $T[$b.at] -ge $EdgeSec * 1000.0 - $slack) { $k2 = $b.at }   # 조건에 드는 마지막 경계
+  if ($null -eq $dMax) { $dMin = 0.0; $dMax = 0.0 }
+  foreach ($k in $threads) {
+    if ($dummyCount -gt 0 -and $durSec -gt 0 -and $tw[$k].T[$tw[$k].kb] -gt $dMin + $durSec * 1000.0) {
+      [void]$rs.Add('측정 구간이 더미가 끝나는 때를 넘음(더미가 0a 를 보내는 구간이 섞임)' + $(if ($multi) { "(게임 스레드 $k)" } else { '' }))
     }
-    if ($null -ne $k1 -and $null -ne $k2 -and $k1 -le $k2) {
-      $o.edgeFirst = Edge-Of (Window-Stats $secs $bounds $ka $k1) $T[$ka] $T[$k1]
-      $o.edgeLast = Edge-Of (Window-Stats $secs $bounds $k2 $kb) $T[$k2] $T[$kb]
-    } else { [void]$rs.Add("앞뒤 $EdgeSec 초가 측정 구간 안에서 겹침") }
   }
-  # 10초 칸마다 — 실행 전체(구간 밖도 · inWindow 로 가른다). load_series 가 M1 에서 틱합이 계속 오르는지 · 버리는 구간이 모자란지 본다
-  $blockSeries = New-Object System.Collections.ArrayList; $prev = 0
-  foreach ($b in $bounds) {
-    $w = Window-Stats $secs $bounds $prev $b.at
-    [void]$blockSeries.Add([ordered]@{ endSec = [math]::Round($T[$b.at] / 1000.0, 1); inWindow = ($b.at -gt $ka -and $b.at -le $kb)
-        tickSumMsPerSec = $w.partMsPerSec['틱합']; gameBusyPct = $w.gameBusyPct; completionP99Ms = $w.completionP99Ms })
-    $prev = $b.at
-  }
-  $o.blockSeries = @($blockSeries)
-  $o.lastMadeSec = [math]::Round($T[$lastMade] / 1000.0, 1)
+  $o.windowStartSec = $B.windowStartSec; $o.windowEndSec = $B.windowEndSec
 
-  # ⑤ 실행 전체 — 끊김 · 넘침 · 보내기 실패 · 큐 버림(입장 구간의 것도 판정에 든다 · 2-2절 「3회 중 한 번이라도」)
+  # ④ 측정 구간의 합 — 가장 바쁜 게임 스레드
+  $main = $B.main
+  if ($multi) {
+    # 통신 몫(통신 바쁨 · 보내는 쪽 지연 · 받은 조각 · 통신 구간)은 게임 스레드 0 의 줄에만 있다 — 그 칸만 0 의 것으로 바꿔 넣는다
+    $Z = $tw[$threads[0]].main
+    $main = [ordered]@{}; foreach ($k in $B.main.Keys) { $main[$k] = $B.main[$k] }
+    foreach ($k in @('netBusyPct', 'recvPieces', 'sendSamples', 'sendP99Ms', 'sendHist')) { $main[$k] = $Z[$k] }
+    $parts = @{}
+    foreach ($p in $B.main.partMsPerSec.Keys) { if ($netParts -notcontains $p) { $parts[$p] = $B.main.partMsPerSec[$p] } }
+    foreach ($p in $Z.partMsPerSec.Keys) { if ($netParts -contains $p) { $parts[$p] = $Z.partMsPerSec[$p] } }
+    $sorted = [ordered]@{}; foreach ($p in @($parts.Keys | Sort-Object { - $parts[$_] })) { $sorted[$p] = $parts[$p] }
+    $main.partMsPerSec = $sorted
+  }
+  foreach ($k in $threads) { if ($tw[$k].whyHist) { [void]$rs.Add($tw[$k].whyHist) } }
+  foreach ($k in @($main.Keys)) { if ($k -ne 'tickHistSum') { $o[$k] = $main[$k] } }
+  if ($null -ne $B.edgeFirst) { $o.edgeFirst = $B.edgeFirst; $o.edgeLast = $B.edgeLast }
+  foreach ($k in $threads) { if ($tw[$k].whyEdge) { [void]$rs.Add($tw[$k].whyEdge) } }
+  $o.blockSeries = $B.blockSeries
+  $o.lastMadeSec = $B.lastMadeSec
+  if ($multi) {   # ★ 11-17 C-3a — 게임 스레드별 요약(하나면 안 싣는다 — 옛 report.json 과 같게)
+    $o.gameThreads = $threads.Count; $o.busiestGameThread = $busy
+    $o.perThread = @(foreach ($k in $threads) {
+        $m = $tw[$k].main
+        [ordered]@{ thread = $k; gameBusyPct = $m.gameBusyPct; completionP99Ms = $m.completionP99Ms; ticks = $m.ticks; lateRuns = $m.lateRuns
+          roomsMax = $tw[$k].roomsMax; underfilledMax = $tw[$k].underfilledMax; windowStartSec = $tw[$k].windowStartSec; windowEndSec = $tw[$k].windowEndSec }
+      })
+  }
+
+  # ⑤ 실행 전체 — 끊김 · 넘침 · 보내기 실패 · 큐 버림(입장 구간의 것도 판정에 든다 · 2-2절 「3회 중 한 번이라도」) · 모든 게임 스레드의 줄
   $timeouts = 0L; $overflow = 0L; $sendFail = 0L; $lastErr = 0; $left0a = 0L
-  foreach ($s in $secs) { $timeouts += $s.leaveTimeout; $overflow += $s.overflow; $sendFail += $s.sendFail; $left0a += $s.leave0a; if ($s.sendFail -gt 0) { $lastErr = $s.sendErr } }
+  foreach ($k in $threads) { foreach ($s in $secsBy[$k]) { $timeouts += $s.leaveTimeout; $overflow += $s.overflow; $sendFail += $s.sendFail; $left0a += $s.leave0a; if ($s.sendFail -gt 0) { $lastErr = $s.sendErr } } }
   $o.timeouts = $timeouts; $o.overflow = $overflow; $o.sendFail = $sendFail; $o.sendFailLastError = $lastErr; $o.left0a = $left0a
   $o.queueDrops = if ($null -ne $endDropEv) { $endDropEv + $endDropReq } else { $null }
   $o.serverRecvErrors = $endRecvErr
@@ -277,7 +356,7 @@ function Report-Run([string]$dir) {
           $s = [int]$mm.Groups[1].Value
           if ([int]$mm.Groups[2].Value -gt $maxEntered) { $maxEntered = [int]$mm.Groups[2].Value }
           # 더미 줄 s 는 더미 시각 (s−1, s]초 — 서버 구간과 조금이라도 겹치면 센다
-          if ($s * 1000.0 -gt $T[$ka] - $dMax -and ($s - 1) * 1000.0 -lt $T[$kb] - $dMin) { $lateIn += [int64]$mm.Groups[4].Value }
+          if ($s * 1000.0 -gt $B.T[$B.ka] - $dMax -and ($s - 1) * 1000.0 -lt $B.T[$B.kb] - $dMin) { $lateIn += [int64]$mm.Groups[4].Value }
           continue
         }
         if ($ln.StartsWith('[더미 요약] ')) { $sum = $ln }
@@ -305,7 +384,9 @@ function Report-Run([string]$dir) {
 
   # ⑦ 넘음(2-2절) — 3회 중앙값 · 한 번이라도는 load_series 가 정한다. 여기는 이 실행 하나의 값
   $over = New-Object System.Collections.ArrayList
-  if ($null -ne $o.completionP99Ms -and $o.completionP99Ms -gt $OverMs) { [void]$over.Add('틱 완료') }
+  $doneOver = ($null -ne $o.completionP99Ms -and $o.completionP99Ms -gt $OverMs)
+  if ($multi) { foreach ($k in $threads) { $v = $tw[$k].main.completionP99Ms; if ($null -ne $v -and $v -gt $OverMs) { $doneOver = $true } } }   # ★ C-3a — 한 게임 스레드만 넘어도 넘음
+  if ($doneOver) { [void]$over.Add('틱 완료') }
   if ($null -ne $o.sendP99Ms -and $o.sendP99Ms -gt $OverMs) { [void]$over.Add('보내는 쪽 지연') }
   if ($timeouts + $overflow -gt 0) { [void]$over.Add('끊김 · 넘침') }
   $lost = ($o.inputDiffPct -gt $LossPercent) -or ($o.pieceDiffPct -gt $LossPercent) -or ($o.queueDrops -gt 0) -or ($sendFail -gt 0)
@@ -333,10 +414,16 @@ foreach ($dir in @($RunDir | ForEach-Object { $_ -split ',' } | Where-Object { $
   $gameTop = @($keys | Where-Object { $netParts -notcontains $_ } | Select-Object -First 3 | ForEach-Object { "$_ $($r.partMsPerSec[$_])" }) -join ' · '
   $netTop = @($keys | Where-Object { $netParts -contains $_ } | Select-Object -First 2 | ForEach-Object { "$_ $($r.partMsPerSec[$_])" }) -join ' · '
   $top = "틱합 $($r.partMsPerSec['틱합']) · 게임 쪽 $gameTop · 통신 쪽 $netTop"
-  Write-Host ("[판정] {0} · 방 {1} × {2} · {3} · {4} · 틱 완료 느린 1% {5} · 보내기 느린 1% {6} · 밀림 {7} · 게임 바쁨 {8}% · 통신 바쁨 {9}% · 고리 나머지 {10}ms/초 · 시간 초과 {11} · 넘침 {12} · 입력 차이 {13}% · 조각 차이 {14}% · 큐 버림 {15} · 보내기 실패 {16} · 메모리 최대 {17}MB · CPU {18} · 구간 {19}~{20}초({21}초 · 틱 {22} · 받은 조각 {23}) · 큰 구간(ms/초) {24}" -f `
+  # ★ 11-17 C-3a — 게임 스레드가 여럿이면 끝에 덧붙임(가장 바쁜 번호 · 스레드별 바쁨 · 느린 1% · 덜 찬 방 최대). 하나면 빈 글 — 옛 줄과 같다
+  $thr = ''
+  if ($r.gameThreads) {
+    $per = @($r.perThread)
+    $thr = " · 게임 스레드 $($r.gameThreads)(가장 바쁜 $($r.busiestGameThread) · 바쁨 $(($per | ForEach-Object { "$($_.gameBusyPct)%" }) -join '/') · 느린 1% $(($per | ForEach-Object { Fmt $_.completionP99Ms '{0}ms' }) -join '/') · 덜 참 최대 $(($per | ForEach-Object { Fmt $_.underfilledMax }) -join '/'))"
+  }
+  Write-Host ("[판정] {0} · 방 {1} × {2} · {3} · {4} · 틱 완료 느린 1% {5} · 보내기 느린 1% {6} · 밀림 {7} · 게임 바쁨 {8}% · 통신 바쁨 {9}% · 고리 나머지 {10}ms/초 · 시간 초과 {11} · 넘침 {12} · 입력 차이 {13}% · 조각 차이 {14}% · 큐 버림 {15} · 보내기 실패 {16} · 메모리 최대 {17}MB · CPU {18} · 구간 {19}~{20}초({21}초 · 틱 {22} · 받은 조각 {23}) · 큰 구간(ms/초) {24}{25}" -f `
     $r.tag, $r.rooms, $r.roomSize, $state, $overText, (Fmt $r.completionP99Ms '{0}ms'), (Fmt $r.sendP99Ms '{0}ms'), $r.lateRuns,
     $r.gameBusyPct, $r.netBusyPct, $r.loopRestMsPerSec, $r.timeouts, $r.overflow, (Fmt $r.inputDiffPct), (Fmt $r.pieceDiffPct),
     (Fmt $r.queueDrops), $r.sendFail, $r.memPrivMaxMb, $(if ($r.cpuMhz) { $r.cpuMhz } else { '기록 없음' }),
-    $r.windowStartSec, $r.windowEndSec, $r.windowSec, $r.ticks, $r.recvPieces, $top)
+    $r.windowStartSec, $r.windowEndSec, $r.windowSec, $r.ticks, $r.recvPieces, $top, $thr)
 }
 exit $exit

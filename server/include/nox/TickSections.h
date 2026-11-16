@@ -3,6 +3,11 @@
 //   물음은 「인원을 늘릴 때 어느 구간이 먼저 차는가」다. 틱 전체 시간만으로는 답이 안 나와 틱 안을 나눠 잰다.
 //   스위치를 안 주면 시계를 읽지도 찍지도 않는다. 끊김 · 넘침 셈만 늘 돈다 — 드문 길의 정수 더하기이고,
 //   사건 기록을 꺼도 읽어야 하는 값이기 때문이다(변수 통제 플랜 5-3).
+// ★ 11-17 C-3a — 게임 스레드가 여럿이 된다(`Docs/SERVERCORE_UDP_PLAN_1116.md` 5-7). 게임 스레드가 쓰는 측정 전역
+//   (`g_gameSections` · `g_leaveTotal` ~ `g_aliasTaken` · `g_tickCompletion`)은 `thread_local` — 쓰는 자리 코드는 이름 그대로고
+//   게임 스레드마다 자기 `[구간]` 줄을 찍는다(줄 끝 `· 게임 스레드 k`). 통신 스레드 몫(`g_networkSections` · `g_sendFail` · `g_sendDelay`)은
+//   쓰는 스레드가 하나라 그대로 두고, 앞 값과 빼기를 게임 스레드마다 하면 같은 몫이 N번 찍히므로 게임 스레드 0 의 줄에만 싣는다.
+//   스위치 넷(`g_tickSections` 등)은 방을 만들기 전에 한 번 정하고 읽기만 해 프로세스 하나다
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -41,7 +46,7 @@ enum class TickSection : uint8_t {
     Count
 };
 
-// 게임 스레드 몫의 이번 1초 합(ms). 게임 스레드만 쓰고 읽는다. 네트워크 스레드가 쓰는 누계와 캐시 줄을 나눈다(같은 줄이면 두 스레드가 서로 캐시를 밀어내 재는 값에 끼어든다).
+// 게임 스레드 몫의 이번 1초 합(ms). 게임 스레드만 쓰고 읽는다(★ 11-17 C-3a — 게임 스레드마다 하나 `thread_local`). 네트워크 스레드가 쓰는 누계와 캐시 줄을 나눈다(같은 줄이면 두 스레드가 서로 캐시를 밀어내 재는 값에 끼어든다).
 struct alignas(64) CGameSectionTotals {
     double sectionMs[static_cast<size_t>(TickSection::Count)] = {};
     double afterMs = 0.0;                 // 뒷일 — `CRoomManager::RunTick` 에서 방마다 게임 틱 뒤
@@ -62,7 +67,7 @@ struct alignas(64) CGameSectionTotals {
     void AddRoomClose(double ms) { roomCloseMs += ms; ++roomCloses; if (ms > roomCloseMaxMs) roomCloseMaxMs = ms; }
     void Reset() { *this = CGameSectionTotals{}; }
 };
-inline CGameSectionTotals g_gameSections;
+inline thread_local CGameSectionTotals g_gameSections;
 
 // 네트워크 스레드 몫의 누계(ns). 쓰는 쪽은 네트워크 스레드 하나고 게임 스레드가 초당 한 번 읽어 앞 값과 뺀다.
 // 줄마다 쌓아 두었다 넘기는 지표 사본(`Publish` · 0.25초마다)을 쓰면 1초 줄 안에 0.75~1.25초 몫이 들어가 합이 흔들린다.
@@ -111,28 +116,36 @@ inline void AddNetworkSection(std::atomic<uint64_t>& total, SectionClock::time_p
 }
 
 // 프로세스 몫 누계 — 게임 스레드만 쓴다. 방이 닫혀도 안 사라지게 방 밖에 둔다.
-inline unsigned long long g_leaveTotal = 0;                // 끊김 = `[나감]` 줄을 내는 두 자리(서버 종료 답 0xc8 은 끊김이 아니라 뺀다)
-inline unsigned long long g_importantOverflowTotal = 0;    // 중요 메시지 대기열 넘침으로 끊은 수
+//   ★ 11-17 C-3a — 게임 스레드마다 하나(`thread_local` · 아래 여섯 다). 끝 줄(`[종료]`)은 그것을 읽는 스레드의 몫이다 —
+//   지금은 게임 스레드가 주 스레드 하나라 전과 같고, 여럿이 되면 게임 스레드마다 넘긴 값을 더해 찍는다(C-3d)
+inline thread_local unsigned long long g_leaveTotal = 0;                // 끊김 = `[나감]` 줄을 내는 두 자리(서버 종료 답 0xc8 은 끊김이 아니라 뺀다)
+inline thread_local unsigned long long g_importantOverflowTotal = 0;    // 중요 메시지 대기열 넘침으로 끊은 수
 // ★ 11-11 부하 측정 M0 조각 3 — 끊김을 까닭으로 나눈다(합 = `g_leaveTotal`). `g_leaveTotal` 은 더미가 스스로 나간 `0a` 도 세어
 //   「시간 초과로 끊긴 사람」 판정(측정 플랜 2-2절 넘음 셋째)에 그대로 못 쓴다.
 //   ⚠ 시간 초과 칸에는 두 넘침으로 끊은 것도 든다 — 둘 다 시간 초과와 같은 길로 끊는다(`Server.cpp` `ImportantOverflowCheck` · `UdpServer.cpp` 신뢰 대기열).
 //   전송 층 넘침 셈은 끊은 사람 수가 아니라 넘친 횟수라 빼서 「순수 시간 초과」를 낼 수 없다. 판정에서는 둘 다 넘음이라 가를 필요가 없다
-inline unsigned long long g_leaveTimeoutTotal = 0;   // 시간 초과(조용함 · 넘침)
-inline unsigned long long g_leaveCloseTotal = 0;     // 접속 닫기 `0a`
+inline thread_local unsigned long long g_leaveTimeoutTotal = 0;   // 시간 초과(조용함 · 넘침)
+inline thread_local unsigned long long g_leaveCloseTotal = 0;     // 접속 닫기 `0a`
 // ★ 11-11 부하 측정 M0 조각 5 — 받은 입력(`0x3f PLAYER_INPUT`) 수. 메시지 종류별 셈(`Server::seen_`)과 떼어 `--no-op-count` 여도 센다 —
 //   그 셈에서 읽던 때는 끄면 0 이 찍혀(실측 `s9_op` 더미 13,336 · 서버 0) 입력 손실 판정(측정 플랜 2-2절 넘음 넷째)이 늘 넘음이 됐다.
 //   종류별 셈과 같은 자리(`0x00` 에서 끊기 뒤)에서 센다. 게임 스레드만 쓴다. 방 밖에 두어 닫힌 방 몫도 남는다
-inline unsigned long long g_inputTotal = 0;
+inline thread_local unsigned long long g_inputTotal = 0;
 // ★ 11-13 — 판을 다시 연 뒤 첫 `CLIENT_READY` 전이라 버린 `a5 NEW_ALIAS` 수(`Session::aliasStale`) · 받아 쓴 수. 게임 스레드만 쓴다.
 //   0 옆에 받아 쓴 수를 같이 찍어 「버릴 일이 없었다」와 「못 셌다」를 가른다. 방 밖에 두어 닫힌 방 몫도 남는다
-inline unsigned long long g_aliasStaleDropped = 0;
-inline unsigned long long g_aliasTaken = 0;
+inline thread_local unsigned long long g_aliasStaleDropped = 0;
+inline thread_local unsigned long long g_aliasTaken = 0;
 
 // ★ 11-11 M0 조각 3 — `Print` 에 넘기는 통신 층 누계. 지표 사본(`CNetworkThread::LatestNetworkStats` · `LatestThreadStats`, 0.25초마다 갱신)에서 읽는다
 struct CSectionNetTotals {
     unsigned long long reliableOverflow = 0;   // 전송 층 신뢰 대기열 넘침(횟수)
     unsigned long long eventsDropped = 0;      // 이벤트 큐 한도를 넘어 버린 수
     unsigned long long requestsDropped = 0;    // 요청 큐 한도를 넘어 버린 수
+};
+// ★ 11-17 C-3a — `Print` 에 넘기는 그 게임 스레드의 방 수(C 플랜 7절 「덜 찬 방 수」). 덜 참 = 부하 판(`--load-rooms`)에서
+//   방 인원(`--load-room-size`)보다 세션이 적은 방 — 더미가 판 중에 나갔다 다른 게임 스레드로 다시 들어가면 생긴다(5-2). 부하 판이 아니면 0
+struct CSectionRoomTotals {
+    size_t rooms = 0;         // 지나간 양 — 덜 참 0 이 「방이 없었다」인지 가른다
+    size_t underfilled = 0;
 };
 
 // ★ 11-11 부하 측정 M0 조각 2 — 틱 완료 시간(`Docs/MO_MEASURE_PLAN_1111.md` 2-1절 · 한계 판정 값). 방의 틱이 돌기로 예정된 시각
@@ -152,7 +165,7 @@ struct CTickCompletion {
     void Add(uint32_t ms) { ++histogram[ms >= kSlots ? kSlots : ms]; ++samples; }
     void Reset() { *this = CTickCompletion{}; }
 };
-inline CTickCompletion g_tickCompletion;
+inline thread_local CTickCompletion g_tickCompletion;   // ★ 11-17 C-3a — 게임 스레드마다
 
 // 경계마다 `End(이 구간)` 을 부른다. 꺼져 있으면 시계를 안 읽는다
 class CTickSectionClock {
@@ -170,15 +183,19 @@ private:
 };
 
 // `[구간]` 줄(초당) · `[틱분포]` 줄(10초마다) · `[완료분포]` 줄(`[틱분포]` 바로 뒤 · 11-11 M0 조각 2). `--quiet` 와 상관없이 찍는다. 게임 스레드에서만 부른다.
+// ★ 11-17 C-3a — 게임 스레드마다 하나(그 스레드에서 만들고 부른다). 줄 끝에 `· CPU 조정 · 게임 스레드 k · 방 n(덜 참 m)` 을 덧붙이고
+//   (앞 칸 차례는 그대로 — 칸이 없는 옛 기록은 `tools/load_report.ps1` 이 게임 스레드 0 으로 읽는다) 분포 줄 끝에도 `· 게임 스레드 k`.
+//   통신 칸(재전송 · 보내기 · 받기 · 넘기기 · 통신 기다림 · 바쁨 · 보내기 실패) · CPU 통신 · 기록 · 조정 · `[보내기분포]` 는 게임 스레드 0 만 —
+//   다른 게임 스레드 줄의 그 칸은 0(넘기는 `CSectionNetTotals` 도 0 으로 — 부르는 쪽 몫)
 class CTickSectionReport {
 public:
-    // 핸들 — 게임 · 네트워크 · 판 기록 스레드(판 기록을 꺼서 없으면 nullptr)
-    CTickSectionReport(void* gameThread, void* networkThread, void* recorderThread, uint32_t nowMs);
+    // 핸들 — 게임 · 네트워크 · 판 기록 · 조정 스레드(판 기록을 꺼서 · 조정 스레드가 아직 없어 없으면 nullptr) · `gameIndex` = 게임 스레드 번호
+    CTickSectionReport(void* gameThread, void* networkThread, void* recorderThread, void* coordinatorThread, int gameIndex, uint32_t nowMs);
     void AddTick(double tickMs);
     bool Due(uint32_t nowMs) const { return static_cast<uint32_t>(nowMs - _lastPrintMs) >= kPrintEveryMs; }
-    void Print(uint32_t nowMs, const CSectionNetTotals& net);
+    void Print(uint32_t nowMs, const CSectionNetTotals& net, const CSectionRoomTotals& rooms);
     // 끝날 때 — 10초를 못 채운 나머지 틱까지 찍는다(분포 총합 = 틱 수가 실행 전체에서 맞게). 스레드를 join 하면 핸들이 닫히므로 그 전에 부른다
-    void PrintFinal(uint32_t nowMs, const CSectionNetTotals& net);
+    void PrintFinal(uint32_t nowMs, const CSectionNetTotals& net, const CSectionRoomTotals& rooms);
 
 private:
     static constexpr uint32_t kPrintEveryMs = 1000;
@@ -187,8 +204,10 @@ private:
 
     void PrintHistogram(uint32_t nowMs);
 
-    void* _threads[3];
-    double _cpuMsLast[3] = {};
+    static constexpr int kThreads = 4;   // ★ 11-17 C-3a — 게임 · 통신 · 기록 · 조정
+    void* _threads[kThreads];
+    double _cpuMsLast[kThreads] = {};
+    int _gameIndex = 0;                  // ★ 11-17 C-3a
     uint32_t _startMs;
     uint32_t _lastPrintMs;
     SectionClock::time_point _lastPrintAt;   // ★ 11-11 M0 조각 3 — 줄마다 실제로 지난 ms(서버가 밀리면 줄 간격이 1초보다 벌어진다 · 측정 플랜 2-3절)

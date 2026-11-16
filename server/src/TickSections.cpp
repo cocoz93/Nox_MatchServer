@@ -41,9 +41,12 @@ double ThreadCpuMs(void* thread) {
 
 }  // namespace
 
-CTickSectionReport::CTickSectionReport(void* gameThread, void* networkThread, void* recorderThread, uint32_t nowMs)
-    : _threads{gameThread, networkThread, recorderThread}, _startMs(nowMs), _lastPrintMs(nowMs), _lastPrintAt(SectionClock::now()) {
-    for (int i = 0; i < 3; ++i) _cpuMsLast[i] = ThreadCpuMs(_threads[i]);   // 첫 줄에 시작 비용이 안 들어가게
+CTickSectionReport::CTickSectionReport(void* gameThread, void* networkThread, void* recorderThread, void* coordinatorThread, int gameIndex,
+                                       uint32_t nowMs)
+    : _threads{gameThread, networkThread, recorderThread, coordinatorThread}, _gameIndex(gameIndex), _startMs(nowMs), _lastPrintMs(nowMs),
+      _lastPrintAt(SectionClock::now()) {
+    if (_gameIndex != 0) _threads[1] = _threads[2] = _threads[3] = nullptr;   // ★ 11-17 C-3a — 통신 · 기록 · 조정 CPU 는 게임 스레드 0 줄에만(없으면 0)
+    for (int i = 0; i < kThreads; ++i) _cpuMsLast[i] = ThreadCpuMs(_threads[i]);   // 첫 줄에 시작 비용이 안 들어가게
 }
 
 void CTickSectionReport::AddTick(double tickMs) {
@@ -55,8 +58,9 @@ void CTickSectionReport::AddTick(double tickMs) {
     ++_histogramTicks;
 }
 
-void CTickSectionReport::Print(uint32_t nowMs, const CSectionNetTotals& net) {
+void CTickSectionReport::Print(uint32_t nowMs, const CSectionNetTotals& net, const CSectionRoomTotals& rooms) {
     _lastPrintMs = nowMs;
+    const bool netCols = _gameIndex == 0;   // ★ 11-17 C-3a — 통신 몫 칸은 게임 스레드 0 줄에만(머리 주석은 `TickSections.h`)
     // ★ 11-11 부하 측정 M0 조각 3 — 실제로 지난 ms · 게임 스레드 바쁜 비율 · 고리 나머지(측정 플랜 2-2절)
     const SectionClock::time_point at = SectionClock::now();
     const double elapsedMs = std::chrono::duration<double, std::milli>(at - _lastPrintAt).count();
@@ -70,20 +74,21 @@ void CTickSectionReport::Print(uint32_t nowMs, const CSectionNetTotals& net) {
     ProcessMemoryMb(privateMb, workingMb);
     const auto sec = [&g](TickSection s) { return g.sectionMs[static_cast<size_t>(s)]; };
 
-    const uint64_t resend = g_networkSections.resendNs.load(std::memory_order_relaxed);
-    const uint64_t send = g_networkSections.sendNs.load(std::memory_order_relaxed);
-    const uint64_t recv = g_networkSections.recvNs.load(std::memory_order_relaxed);
-    const uint64_t recvCount = g_networkSections.recvCount.load(std::memory_order_relaxed);
-    const uint64_t handoff = g_networkSections.handoffNs.load(std::memory_order_relaxed);
+    // ★ 11-17 C-3a — 게임 스레드 0 이 아니면 통신 누계를 안 읽는다(앞 값 0 그대로 · 칸은 0)
+    const uint64_t resend = netCols ? g_networkSections.resendNs.load(std::memory_order_relaxed) : 0;
+    const uint64_t send = netCols ? g_networkSections.sendNs.load(std::memory_order_relaxed) : 0;
+    const uint64_t recv = netCols ? g_networkSections.recvNs.load(std::memory_order_relaxed) : 0;
+    const uint64_t recvCount = netCols ? g_networkSections.recvCount.load(std::memory_order_relaxed) : 0;
+    const uint64_t handoff = netCols ? g_networkSections.handoffNs.load(std::memory_order_relaxed) : 0;
     // ★ 11-11 부하 측정 M0 조각 4 — 통신 바쁜 비율 · 보내기 실패(머리 주석은 `TickSections.h`)
-    const uint64_t netWait = g_networkSections.waitNs.load(std::memory_order_relaxed);
+    const uint64_t netWait = netCols ? g_networkSections.waitNs.load(std::memory_order_relaxed) : 0;
     const double netWaitMs = NsToMs(netWait - _netWaitNsLast);
-    const double netBusyPct = elapsedMs > 0.0 ? 100.0 * (elapsedMs > netWaitMs ? elapsedMs - netWaitMs : 0.0) / elapsedMs : 0.0;
-    const uint64_t sendFail = g_sendFail.count.load(std::memory_order_relaxed);
-    const int sendFailError = g_sendFail.lastError.load(std::memory_order_relaxed);
+    const double netBusyPct = netCols && elapsedMs > 0.0 ? 100.0 * (elapsedMs > netWaitMs ? elapsedMs - netWaitMs : 0.0) / elapsedMs : 0.0;
+    const uint64_t sendFail = netCols ? g_sendFail.count.load(std::memory_order_relaxed) : 0;
+    const int sendFailError = netCols ? g_sendFail.lastError.load(std::memory_order_relaxed) : 0;
 
-    double cpuNow[3];
-    for (int i = 0; i < 3; ++i) cpuNow[i] = ThreadCpuMs(_threads[i]);
+    double cpuNow[kThreads];
+    for (int i = 0; i < kThreads; ++i) cpuNow[i] = ThreadCpuMs(_threads[i]);
 
     const unsigned long long overflowTotal = g_importantOverflowTotal + net.reliableOverflow;
     // ★ 11-11 M0 조각 3 — 끝에 덧붙임(앞 칸 차례는 그대로): 끊김 까닭 · 지난 · 기다림 · 바쁨 · 고리 나머지 · 넘김 지연 · 큐 버림 · 메모리
@@ -94,7 +99,8 @@ void CTickSectionReport::Print(uint32_t nowMs, const CSectionNetTotals& net) {
                 " · CPU 게임 %.0f 통신 %.0f 기록 %.0f · 끊김 %llu(시간 초과 %llu · 0a %llu) · 넘침 %llu"
                 " · 지난 %.1f · 기다림 %.1f · 바쁨 %.1f%% · 고리 나머지 %.1f · 넘김 지연 평균 %.2f 최대 %u"
                 " · 큐 버림 사건 %llu 요청 %llu · 메모리 개인 %.1fMB 작업 %.1fMB"
-                " · 통신 기다림 %.1f 바쁨 %.1f%% · 보내기 실패 %llu(마지막 오류 %d)\n",
+                " · 통신 기다림 %.1f 바쁨 %.1f%% · 보내기 실패 %llu(마지막 오류 %d)"
+                " · CPU 조정 %.0f · 게임 스레드 %d · 방 %zu(덜 참 %zu)\n",
                 static_cast<uint32_t>(nowMs - _startMs) / 1000u, _ticks, _tickSumMs, _tickMaxMs, g.eventMs, g.eventCount,
                 g.roomCreateMs, g.roomCreates, g.roomCreateMaxMs, g.roomCloseMs, g.roomCloses, g.roomCloseMaxMs, g.afterMs,
                 sec(TickSection::Front), sec(TickSection::Walk), sec(TickSection::Think), sec(TickSection::Cast), sec(TickSection::World),
@@ -107,13 +113,14 @@ void CTickSectionReport::Print(uint32_t nowMs, const CSectionNetTotals& net) {
                 overflowTotal - _overflowLast,
                 elapsedMs, g.waitMs, busyPct, restMs, handoffAvgMs, g.handoffLatMaxMs,
                 net.eventsDropped - _eventsDroppedLast, net.requestsDropped - _requestsDroppedLast, privateMb, workingMb,
-                netWaitMs, netBusyPct, static_cast<unsigned long long>(sendFail - _sendFailLast), sendFailError);
+                netWaitMs, netBusyPct, static_cast<unsigned long long>(sendFail - _sendFailLast), sendFailError,
+                cpuNow[3] - _cpuMsLast[3], _gameIndex, rooms.rooms, rooms.underfilled);
     std::fflush(stdout);
     _netWaitNsLast = netWait;
     _sendFailLast = sendFail;
 
     _resendNsLast = resend; _sendNsLast = send; _recvNsLast = recv; _recvCountLast = recvCount; _handoffNsLast = handoff;
-    for (int i = 0; i < 3; ++i) _cpuMsLast[i] = cpuNow[i];
+    for (int i = 0; i < kThreads; ++i) _cpuMsLast[i] = cpuNow[i];
     _leaveLast = g_leaveTotal;
     _leaveTimeoutLast = g_leaveTimeoutTotal;
     _leaveCloseLast = g_leaveCloseTotal;
@@ -127,10 +134,11 @@ void CTickSectionReport::Print(uint32_t nowMs, const CSectionNetTotals& net) {
     if (++_linesSinceHistogram >= kLinesPerHistogram) PrintHistogram(nowMs);
 }
 
-void CTickSectionReport::PrintFinal(uint32_t nowMs, const CSectionNetTotals& net) {
-    Print(nowMs, net);
+void CTickSectionReport::PrintFinal(uint32_t nowMs, const CSectionNetTotals& net, const CSectionRoomTotals& rooms) {
+    Print(nowMs, net, rooms);
     uint64_t sendSamples = 0;   // ★ 11-11 M0 조각 4 — 보내기 표본만 남아도(표본 = 칸의 합)
-    for (const std::atomic<uint64_t>& n : g_sendDelay.histogram) sendSamples += n.load(std::memory_order_relaxed);
+    if (_gameIndex == 0)        // ★ 11-17 C-3a — `[보내기분포]` 는 게임 스레드 0 만
+        for (const std::atomic<uint64_t>& n : g_sendDelay.histogram) sendSamples += n.load(std::memory_order_relaxed);
     if (_histogramTicks > 0 || g_tickCompletion.samples > 0 || sendSamples != _sendSamplesLast)   // ★ 11-11 M0 조각 2 — 완료 표본만 남아도
         PrintHistogram(nowMs);
 }
@@ -138,6 +146,8 @@ void CTickSectionReport::PrintFinal(uint32_t nowMs, const CSectionNetTotals& net
 void CTickSectionReport::PrintHistogram(uint32_t nowMs) {
     _linesSinceHistogram = 0;
     char b[64];
+    char threadTail[32];   // ★ 11-17 C-3a — 분포 줄 셋 끝에 덧붙이는 칸(`[구간]` 줄과 같은 「끝에 덧붙임」)
+    std::snprintf(threadTail, sizeof(threadTail), " · 게임 스레드 %d", _gameIndex);
     std::snprintf(b, sizeof(b), "[틱분포] 초 %u · 칸 1ms ·", static_cast<uint32_t>(nowMs - _startMs) / 1000u);
     std::string line = b;
     for (size_t i = 0; i < kHistogramSlots; ++i) {
@@ -147,6 +157,7 @@ void CTickSectionReport::PrintHistogram(uint32_t nowMs) {
     }
     std::snprintf(b, sizeof(b), " %zu이상:%llu", kHistogramSlots, _histogram[kHistogramSlots]);
     line += b;
+    line += threadTail;   // ★ 11-17 C-3a — 끝에 덧붙임
     std::printf("%s\n", line.c_str());
     std::fflush(stdout);
     for (unsigned long long& n : _histogram) n = 0;
@@ -166,9 +177,11 @@ void CTickSectionReport::PrintHistogram(uint32_t nowMs) {
     }
     std::snprintf(b, sizeof(b), " %zu이상:%llu", CTickCompletion::kSlots, c.histogram[CTickCompletion::kSlots]);
     line += b;
+    line += threadTail;   // ★ 11-17 C-3a
     std::printf("%s\n", line.c_str());
     std::fflush(stdout);
     c.Reset();
+    if (_gameIndex != 0) return;   // ★ 11-17 C-3a — `[보내기분포]` 는 게임 스레드 0 만(통신 스레드 누계 — 앞 값과 빼기를 한 곳에서)
 
     // ★ 11-11 부하 측정 M0 조각 4 — 보내는 쪽 지연 분포(머리 주석은 `TickSections.h` `CSendDelayTotals`). 통신 스레드가 쓰는 누계를 읽어 앞 값과 뺀다
     uint64_t sendNow[CSendDelayTotals::kSlots + 1];
@@ -189,6 +202,7 @@ void CTickSectionReport::PrintHistogram(uint32_t nowMs) {
     std::snprintf(b, sizeof(b), " %zu이상:%llu", CSendDelayTotals::kSlots,
                   static_cast<unsigned long long>(sendNow[CSendDelayTotals::kSlots] - _sendDelayLast[CSendDelayTotals::kSlots]));
     line += b;
+    line += threadTail;   // ★ 11-17 C-3a
     std::printf("%s\n", line.c_str());
     std::fflush(stdout);
     for (size_t i = 0; i <= CSendDelayTotals::kSlots; ++i) _sendDelayLast[i] = sendNow[i];
