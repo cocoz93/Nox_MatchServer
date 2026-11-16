@@ -12,13 +12,6 @@
 
 namespace nox {
 
-namespace {
-std::string IpOf(const std::string& addr) {   // "1.2.3.4:5678" → "1.2.3.4"
-    const size_t colon = addr.rfind(':');
-    return colon == std::string::npos ? addr : addr.substr(0, colon);
-}
-}  // namespace
-
 const char* RoomPhaseName(RoomPhase p) {
     switch (p) {
         case RoomPhase::Waiting: return "대기";
@@ -567,8 +560,9 @@ int CRoomManager::AdmitByToken(const NetworkEvent& ev, bool consume, JoinToken& 
     err = ConnectError::Closed;   // 토큰이 틀린 갈래는 모두 이 사유(10-10 — 원작이 명단 밖을 돌려보내는 메시지)
     if (!_hasKey) { ++_stats.tokenNoKey; why = "키 없음(설정 빠짐)"; return kNoRoom; }
     if (ev.token.empty()) { ++_stats.tokenMissing; why = "토큰 없음"; return kNoRoom; }
-    uint32_t ip = 0;
-    if (!ParseIpv4(IpOf(ev.addr), ip)) { ++_stats.tokenBadAddr; why = "주소"; return kNoRoom; }
+    // ★ 11-17 C-2 — 주소가 숫자라 IP 를 바로 쓴다(옛 글자 「ip:port」를 풀던 자리). ip 0 = 봇(소켓 없는 사람)이라 토큰 검증 대상이 아니다
+    const uint32_t ip = ev.addr.ip;
+    if (ip == 0) { ++_stats.tokenBadAddr; why = "주소"; return kNoRoom; }
     const uint32_t now = _unixNow();
     const JoinTokenCheck c = VerifyJoinToken(_key, ev.token.data(), ev.token.size(), now, ip, tok);
     ++_stats.tokenCheck[static_cast<int>(c)];
@@ -587,9 +581,9 @@ int CRoomManager::AdmitByToken(const NetworkEvent& ev, bool consume, JoinToken& 
 void CRoomManager::LogJoin(const char* what, const NetworkEvent& ev, int roomId, const JoinToken& tok, const char* why) const {
     if (!_logJoins) return;
     if (roomId == kNoRoom)
-        std::printf("[입장] %s — %s · 까닭 %s\n", what, ev.addr.c_str(), why);
+        std::printf("[입장] %s — %s · 까닭 %s\n", what, AddrText(ev.addr).c_str(), why);
     else
-        std::printf("[입장] %s — %s · 방 %d · 로비 이름 %s\n", what, ev.addr.c_str(), roomId, tok.account.c_str());
+        std::printf("[입장] %s — %s · 방 %d · 로비 이름 %s\n", what, AddrText(ev.addr).c_str(), roomId, tok.account.c_str());
     std::fflush(stdout);
 }
 

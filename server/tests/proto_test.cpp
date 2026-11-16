@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>      // ★ 11-17 C-2 — 못 읽는 시험 주소면 끝냄(`ToAddr`)
 #include <chrono>
 #include <cstring>
 #include <filesystem>   // ★ 10-19 MO 5단계 작업 3 — 기록기 시험의 임시 폴더
@@ -85,10 +86,27 @@ static void LoadRealAttackAnims(nox::CSyncHost& srv) {
 #include "nox/SoundNames.h"
 #include "nox/JoinBundle.h"
 
+// ★ 11-17 C-2 — 통신 층 주소는 숫자(`UdpAddr`)다. 시험은 주소를 글자로 들고(읽기 쉽게) 통신 층을 부를 때 푼다.
+//   못 읽는 글자는 시험 코드의 잘못이라 그 자리에서 끝낸다(말없이 다른 주소로 가면 엉뚱한 세션을 본다)
+static UdpAddr ToAddr(const std::string& text) {
+    UdpAddr a;
+    if (!nox::ParseAddr(text, a)) { std::printf("[FAIL] 못 읽는 시험 주소 '%s'\n", text.c_str()); std::exit(2); }
+    return a;
+}
+
 // ★ 10-08 조각 4 — 시험의 「사람」은 주소 글자다. 게임 쪽 함수는 세션 번호를 받으므로 통신 층에서 번호를 얻는다
 //   (없으면 만든다 — `DebugEnterGame` 이 쓰는 번호와 같다). 빈 글자는 「사람 없음」.
+//   ★ 11-17 C-2 — 주소로 못 읽는 이름("none" · "없는주소")은 옛 꼴처럼 게임 밖 세션 하나를 연다(「세션없음」 갈래 시험이 이것에 기댄다).
+//   통신 층 주소가 숫자라 이름마다 문서용 주소 192.0.2.1(RFC 5737)의 포트를 하나씩 준다 — 같은 이름이면 같은 주소
 static int64_t Sid(nox::CSyncHost& srv, const std::string& addr) {
-    return addr.empty() ? nox::kNoSession : srv.Network().OpenSession(addr);
+    if (addr.empty()) return nox::kNoSession;
+    UdpAddr a;
+    if (!nox::ParseAddr(addr, a)) {
+        static std::map<std::string, uint16_t> named;
+        const auto it = named.emplace(addr, static_cast<uint16_t>(1 + named.size())).first;
+        a = UdpAddr{0xC0000201u, it->second};
+    }
+    return srv.Network().OpenSession(a);
 }
 // ★ 10-09 조각 5d — 게임은 와이어를 안 만든다. 게임 함수가 쌓은 요청을 통신 층에 넘겨 나온 조각을 `o` 에 붙이고 그 함수의 값을 돌려준다
 //   (식 안의 게임 호출용 — 문장이면 바로 뒤에 `X.TakeOut(o)`). 인자 평가가 먼저라 게임 함수가 먼저 돈다.
@@ -486,7 +504,7 @@ bool A8TextAt(const std::vector<uint8_t>& x, size_t i, std::string& text) {
 std::vector<std::vector<uint8_t>> FlattenTo(const std::vector<nox::OutPacket>& out,
                                             const std::string& to) {
     std::vector<nox::OutPacket> mine;
-    for (const auto& p : out) if (p.to == to) mine.push_back(p);
+    for (const auto& p : out) if (nox::AddrText(p.to) == to) mine.push_back(p);
     return Flatten(mine);
 }
 
@@ -836,7 +854,7 @@ size_t CountBytes(const std::vector<nox::OutPacket>& out, const std::string& to,
                   const std::vector<uint8_t>& pat) {
     size_t hits = 0;
     for (const auto& p : out) {
-        if (p.to != to) continue;
+        if (nox::AddrText(p.to) != to) continue;
         const std::vector<uint8_t> b = Body(p);
         if (b.size() < pat.size()) continue;
         for (size_t i = 0; i + pat.size() <= b.size(); ++i)
@@ -939,7 +957,7 @@ static std::vector<uint8_t> FacingWire(const std::string& a, uint8_t facing) {
     srv.Tick(33, out);
     std::vector<uint8_t> all;
     for (const auto& p : out) {
-        if (p.to != a) continue;
+        if (nox::AddrText(p.to) != a) continue;
         const std::vector<uint8_t> b = Body(p);
         all.insert(all.end(), b.begin(), b.end());
     }
@@ -1225,7 +1243,7 @@ void TestManaSpend() {
         // ★ 09-14 — `45` 는 맨 메시지(netReportMana_4D8930 → sub_4E5450 → netSendPacket0)다. 껍데기(cc) 안에 든 45 는 옛 길
         for (const auto& p : out) {
             const auto body = Body(p);
-            if (p.to == a && body.size() > 4 && body[0] == static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT) && body[4] == static_cast<uint8_t>(nox::Op::REPORT_MANA))
+            if (nox::AddrText(p.to) == a && body.size() > 4 && body[0] == static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT) && body[4] == static_cast<uint8_t>(nox::Op::REPORT_MANA))
                 Check(false, "0x45 가 껍데기 안에 들어갔다(정답지 Packet0)");
         }
         // 성공 알림 — inform 1 <주문>(Kind1) · REPORT_SPELL_STAT <주문> 15(Unk21 깃발이 없는 주문)
@@ -2513,7 +2531,7 @@ void TestSpellDamage() {
             }
             if (m && mn >= 2 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_SPELL_START) && m[1] == 27) {
                 ++spellStarts;
-                Check(pk.to == a, "0x70 이 시전자 아닌 사람에게 갔다");
+                Check(nox::AddrText(pk.to) == a, "0x70 이 시전자 아닌 사람에게 갔다");
             }
         }
         Check(spellStarts == 1, "0x70 이 시전자에게 한 번 안 갔다");
@@ -2751,8 +2769,8 @@ void TestDirtyUnitHealth() {
             if (m[0] != static_cast<uint8_t>(nox::Op::REPORT_HEALTH)) continue;
             const uint16_t code = static_cast<uint16_t>(m[1] | (m[2] << 8));
             if (code != petCode) continue;
-            if (p.to == a) ++toOwner;
-            else if (p.to == b) ++toOther;
+            if (nox::AddrText(p.to) == a) ++toOwner;
+            else if (nox::AddrText(p.to) == b) ++toOther;
         }
         Check(toOwner >= 1, "내 소환수 체력이 주인에게 안 왔다");
         Check(toOther == 0, "남의 소환수 체력이 적에게 갔다");
@@ -2962,7 +2980,7 @@ void TestMelee() {
         ms += 33; srv.Tick(ms, out);
         bool seen = false;
         for (const auto& p : out) {
-            if (p.to != a) continue;
+            if (nox::AddrText(p.to) != a) continue;
             auto body = Body(p);
             if (body.empty() || body[0] != static_cast<uint8_t>(nox::Op::UPDATE_STREAM)) continue;
             nox::UpdateMsg m = nox::DecodeUpdate(body.data() + 1, body.size() - 1, nullptr);
@@ -3460,7 +3478,7 @@ static size_t ImportantStart(const std::vector<uint8_t>& b) {
 static bool FindImportantPacket(const std::vector<nox::OutPacket>& out, const std::string& to,
                                 uint16_t* frame, std::vector<uint16_t>* ids, size_t* entries = nullptr) {
     for (const auto& p : out) {
-        if (p.to != to) continue;
+        if (nox::AddrText(p.to) != to) continue;
         const std::vector<uint8_t> b = Body(p);
         const size_t imp0 = ImportantStart(b);
         if (imp0 == 0) continue;
@@ -3524,7 +3542,7 @@ void TestBundleOneDatagram() {
     std::vector<nox::OutPacket> warm;
     srv.Tick(ms, warm);                                       // 첫 부름은 시계만
     auto countTo = [](const std::vector<nox::OutPacket>& v, const std::string& to) {
-        size_t n = 0; for (const auto& p : v) if (p.to == to) ++n; return n;
+        size_t n = 0; for (const auto& p : v) if (nox::AddrText(p.to) == to) ++n; return n;
     };
     auto opsStr = [](const std::vector<uint8_t>& ops) {
         std::string s; char h[4];
@@ -3547,7 +3565,7 @@ void TestBundleOneDatagram() {
         ms += 34; srv.Tick(ms, out);
         const size_t n = countTo(out, a);
         std::vector<uint8_t> body;
-        for (const auto& p : out) if (p.to == a) body = Body(p);
+        for (const auto& p : out) if (nox::AddrText(p.to) == a) body = Body(p);
         const std::vector<uint8_t> ops = BundleOps(body);
         int i27 = -1, iA4 = -1, iAb = -1, iAa = -1, n27 = 0;
         for (size_t i = 0; i < ops.size(); ++i) {
@@ -3579,7 +3597,7 @@ void TestBundleOneDatagram() {
         ms += 34; srv.Tick(ms, out);
         bool abIn = false;
         for (const auto& p : out) {
-            if (p.to != a) continue;
+            if (nox::AddrText(p.to) != a) continue;
             const auto bb = Body(p);
             for (size_t q = 0; q + 5 <= bb.size(); ++q)
                 if (bb[q] == 0xab && bb[q + 1] == 0x99 && bb[q + 2] == 0x88 && bb[q + 3] == 0x77 && bb[q + 4] == 0x66) abIn = true;
@@ -3616,7 +3634,7 @@ void TestBundleOneDatagram() {
         const unsigned long long k0 = srv->bundleStat(BS::DirectCtrl);
         srv.OnPacket(a, ping.data(), ping.size(), out2);
         bool pong = false;
-        for (const auto& p : out2) if (p.to == a) { const auto bb = Body(p); if (!bb.empty() && bb[0] == static_cast<uint8_t>(nox::Op::CLIENT_PONG)) pong = true; }
+        for (const auto& p : out2) if (nox::AddrText(p.to) == a) { const auto bb = Body(p); if (!bb.empty() && bb[0] == static_cast<uint8_t>(nox::Op::CLIENT_PONG)) pong = true; }
         char msg[200];
         std::snprintf(msg, sizeof(msg), "③ 곧바로 — 채팅 a %d · 채팅 갈래 +%llu(기대 2) · 퐁 %d · 제어 갈래 +%llu",
                       (int)chatToA, srv->bundleStat(BS::DirectChat) - c0, (int)pong, srv->bundleStat(BS::DirectCtrl) - k0);
@@ -3676,7 +3694,7 @@ void TestBundleOneDatagram() {
         const unsigned long long ov0 = s2->bundleStat(BS::Overflow), ex0 = s2->bundleStat(BS::OverExtra), sz0 = s2->bundleStat(BS::OverSize);
         t2 += 34; s2.Tick(t2, out);
         std::vector<std::vector<uint8_t>> bodies;
-        for (const auto& p : out) if (p.to == c) bodies.push_back(Body(p));
+        for (const auto& p : out) if (nox::AddrText(p.to) == c) bodies.push_back(Body(p));
         int texts = 0; bool allTs = true, sameTs = true, allFit = true; int a4At = -1, aaAt = -1, a4Count = 0, aaCount = 0;
         for (size_t k = 0; k < bodies.size(); ++k) {
             const auto& bb = bodies[k];
@@ -3729,7 +3747,7 @@ void TestBundleOneDatagram() {
         m2 += 34; s2.Tick(m2, o2);
         size_t biggest = 0, n = 0, starts27 = 0;
         for (const auto& p : o2) {
-            if (p.to != a) continue;
+            if (nox::AddrText(p.to) != a) continue;
             ++n;
             const size_t pay = p.data.size() - nox::kWireHeaderSize;
             if (pay > biggest) biggest = pay;
@@ -3786,7 +3804,7 @@ void TestUpdateFitsWithTimestamp() {
         std::vector<nox::OutPacket> out;
         t += 34; s.Tick(t, out);
         for (const auto& p : out) {
-            if (p.to != c) continue;
+            if (nox::AddrText(p.to) != c) continue;
             const size_t len = Body(p).size();
             if (std::getenv("NOX_FIT_DBG")) {
                 const auto bb = Body(p);
@@ -3864,7 +3882,7 @@ void TestAliasClientDeadline() {
     auto nameOfPet = [&](const std::vector<nox::OutPacket>& out) -> int {
         int got = 0;
         for (const auto& p : out) {
-            if (p.to != a) continue;
+            if (nox::AddrText(p.to) != a) continue;
             const auto bb = Body(p);
             size_t q = 0;
             while (q < bb.size()) {
@@ -4066,7 +4084,7 @@ void TestImportantQueue() {
             std::vector<nox::OutPacket> oo;
             t += 34; s2.Tick(t, oo);
             for (const auto& p : oo) {
-                if (p.to != b) continue;
+                if (nox::AddrText(p.to) != b) continue;
                 const std::vector<uint8_t> body = Body(p);
                 const size_t imp0 = ImportantStart(body);            // ★ 09-30 묶음 안의 `aa` 다음 자리
                 if (imp0 == 0) continue;
@@ -6967,7 +6985,7 @@ void TestToxicCloud() {
         ms += 34; srv.Tick(ms, out);
         bool inStream = false;
         for (const auto& p : out) {
-            if (p.to != a) continue;
+            if (nox::AddrText(p.to) != a) continue;
             const auto body = Body(p);
             for (size_t i = 0; i + 1 < body.size(); ++i)
                 if (body[i] == static_cast<uint8_t>(nc) && body[i + 1] == static_cast<uint8_t>(nc >> 8)) inStream = true;
@@ -7113,7 +7131,7 @@ void TestBurn() {
         ms += 34; srv.Tick(ms, out);
         bool inStream = false;
         for (const auto& p : out) {
-            if (p.to != a) continue;
+            if (nox::AddrText(p.to) != a) continue;
             const auto body = Body(p);
             for (size_t i = 0; i + 1 < body.size(); ++i)
                 if (body[i] == static_cast<uint8_t>(nc) && body[i + 1] == static_cast<uint8_t>(nc >> 8)) inStream = true;
@@ -13603,7 +13621,7 @@ void TestMonsterAnimOnWire() {
     auto petEntry = [&](const std::vector<nox::OutPacket>& out) {
         Seen r;
         for (const auto& p : out) {
-            if (p.to != a) continue;
+            if (nox::AddrText(p.to) != a) continue;
             auto body = Body(p);
             if (body.empty() || body[0] != static_cast<uint8_t>(nox::Op::UPDATE_STREAM)) continue;
             nox::UpdateMsg m = nox::DecodeUpdate(body.data() + 1, body.size() - 1, nullptr);
@@ -14223,7 +14241,7 @@ void TestRoundFreeze() {
             srv.OnPacket(b, walk.data(), walk.size(), out);
             ms += 34; srv.Tick(ms, out);
             for (const auto& p : out) {
-                if (p.to != a) continue;
+                if (nox::AddrText(p.to) != a) continue;
                 for (uint8_t op : BundleOps(Body(p))) {
                     if (op == 0x27) *saw27 = true;
                     if (op == 0xa4) *sawA4 = true;
@@ -14330,7 +14348,7 @@ void TestReopenMap() {
         out.clear();
         ms += 34; srv.Tick(ms, out);
         for (const auto& p : out) {
-            if (p.to != a) continue;
+            if (nox::AddrText(p.to) != a) continue;
             for (uint8_t op : BundleOps(Body(p))) { if (op == 0x27) s27 = true; if (op == 0xa4) sA4 = true; }
         }
         for (const auto& m : FlattenTo(out, a)) if (!m.empty() && m[0] == static_cast<uint8_t>(nox::Op::PLAYER_RESPAWN)) sE9 = true;
@@ -14345,7 +14363,7 @@ void TestReopenMap() {
     auto inner = [&](const std::vector<nox::OutPacket>& v) {
         std::vector<std::vector<uint8_t>> ms;
         for (const auto& p : v) {
-            if (p.to != a) continue;
+            if (nox::AddrText(p.to) != a) continue;
             const auto b = Body(p);
             size_t q = 0;
             while (q < b.size()) {
@@ -14390,7 +14408,7 @@ void TestReopenMap() {
         out.clear();
         ms += 34; srv.Tick(ms, out);
         for (const auto& p : out) {
-            if (p.to != a) continue;
+            if (nox::AddrText(p.to) != a) continue;
             for (uint8_t op : BundleOps(Body(p))) { if (op == 0x27) s27 = true; if (op == 0xa4) sA4 = true; }
         }
     }
@@ -15199,7 +15217,7 @@ void TestPlayerExp() {
         bool inEnvelope = false;
         bool sequenced = false;
         for (const auto& pk : out) {
-            if (pk.to != a) continue;
+            if (nox::AddrText(pk.to) != a) continue;
             const std::vector<uint8_t> b = Body(pk);
             const size_t imp0 = ImportantStart(b);             // ★ 09-30 묶음 안의 `aa` 다음 자리
             if (imp0 == 0) continue;
@@ -15299,7 +15317,7 @@ void TestSpellAward() {
         srv.Tick(34, out);
         bool sequenced = false;
         for (const auto& pk : out) {
-            if (pk.to != a) continue;
+            if (nox::AddrText(pk.to) != a) continue;
             const std::vector<uint8_t> b = Body(pk);
             const size_t imp0 = ImportantStart(b);             // ★ 09-30 묶음 안의 `aa` 다음 자리
             if (imp0 == 0) continue;
@@ -15468,7 +15486,7 @@ void TestLessonScore() {
         srv.Tick(34, out);
         bool sequenced = false;
         for (const auto& pk : out) {
-            if (pk.to != a) continue;
+            if (nox::AddrText(pk.to) != a) continue;
             const std::vector<uint8_t> bb = Body(pk);
             const size_t imp0 = ImportantStart(bb);             // ★ 09-30 묶음 안의 `aa` 다음 자리
             if (imp0 == 0) continue;
@@ -15642,7 +15660,7 @@ void TestAbilities() {
         srv.Tick(34, out);
         bool awardSeq = false, stateRaw = false;
         for (const auto& pk : out) {
-            if (pk.to != a) continue;
+            if (nox::AddrText(pk.to) != a) continue;
             const std::vector<uint8_t> b = Body(pk);
             const size_t imp0 = ImportantStart(b);             // ★ 09-30 묶음 안의 `aa` 다음 자리
             if (imp0 == 0) continue;
@@ -18774,7 +18792,7 @@ void TestGuideAward() {
         srv.Tick(34, out);
         bool sequenced = false;
         for (const auto& pk : out) {
-            if (pk.to != a) continue;
+            if (nox::AddrText(pk.to) != a) continue;
             const std::vector<uint8_t> b = Body(pk);
             const size_t imp0 = ImportantStart(b);             // ★ 09-30 묶음 안의 `aa` 다음 자리
             if (imp0 == 0) continue;
@@ -24641,7 +24659,7 @@ void TestReconnectAfterClose() {
     auto accepts = [](const std::vector<nox::OutPacket>& out, const std::string& to) {
         int n = 0;   // 접속 수락 = 머리 2 + `1f 00 01 번호4 키` 10바이트(키 0 이라 평문 그대로)
         for (const auto& p : out)
-            if (p.to == to && p.data.size() == 10 && p.data[2] == static_cast<uint8_t>(nox::Op::ACCEPTED)) ++n;
+            if (nox::AddrText(p.to) == to && p.data.size() == 10 && p.data[2] == static_cast<uint8_t>(nox::Op::ACCEPTED)) ++n;
         return n;
     };
     // ① 정상 종료 — `0x0a CLIENT_CLOSE` 뒤 Tick 이 걷어낸다
@@ -24653,7 +24671,7 @@ void TestReconnectAfterClose() {
         const uint8_t close[3] = { 0x00, 0x00, static_cast<uint8_t>(nox::Op::CLIENT_CLOSE) };
         std::vector<nox::OutPacket> o2; srv.OnPacket(a, close, sizeof(close), o2);
         std::vector<nox::OutPacket> t; srv.Tick(1000, t); srv.Tick(1100, t);   // 첫 Tick 은 시계만 잡는다
-        const bool gone = !srv.Network().IsKeyed(a);
+        const bool gone = !srv.Network().IsKeyed(ToAddr(a));
         std::vector<nox::OutPacket> o3; srv.OnPacket(a, conn, sizeof(conn), o3);
         char m[160];
         std::snprintf(m, sizeof(m), "① 닫은 뒤 다시 접속 — 첫 수락 %d · 닫은 뒤 키 지움 %d · 다시 수락 %d",
@@ -24667,7 +24685,7 @@ void TestReconnectAfterClose() {
         srv.Network().SetXorKey(0);
         std::vector<nox::OutPacket> o1; srv.OnPacket(b, conn, sizeof(conn), o1);
         std::vector<nox::OutPacket> o2; srv->DebugKickPlayer(Sid(srv, b)); srv.TakeOut(o2);
-        const bool gone = !srv.Network().IsKeyed(b);
+        const bool gone = !srv.Network().IsKeyed(ToAddr(b));
         std::vector<nox::OutPacket> o3; srv.OnPacket(b, conn, sizeof(conn), o3);
         char m[160];
         std::snprintf(m, sizeof(m), "② 내보낸 뒤 다시 접속 — 첫 수락 %d · 내보낸 뒤 키 지움 %d · 다시 수락 %d",
@@ -24689,10 +24707,10 @@ void TestSessionIds() {
     std::vector<nox::OutPacket> o0;
     srv.OnPacket(a, conn, sizeof(conn), o0);
     srv.OnPacket(b, conn, sizeof(conn), o0);
-    const int64_t sa = srv.Network().SessionIdOf(a), sb = srv.Network().SessionIdOf(b);
+    const int64_t sa = srv.Network().SessionIdOf(ToAddr(a)), sb = srv.Network().SessionIdOf(ToAddr(b));
     {
         std::vector<nox::OutPacket> o1; srv.Network().RequestSendMsg(sb, /*reliable=*/false, 0, body, sizeof(body), o1);
-        const bool toB = o1.size() == 1 && o1[0].to == b;
+        const bool toB = o1.size() == 1 && nox::AddrText(o1[0].to) == b;
         char m[200];
         std::snprintf(m, sizeof(m), "① 번호 a %lld · b %lld · b 번호로 보낸 조각 %zu개가 b 주소로 %d · a 번호의 주소 %s",
                       (long long)sa, (long long)sb, o1.size(), (int)toB, srv.Network().AddrOf(sa).c_str());
@@ -24702,7 +24720,7 @@ void TestSessionIds() {
         std::vector<nox::OutPacket> o2; srv->DebugKickPlayer(sb); srv.TakeOut(o2);
         const bool addrGone = srv.Network().AddrOf(sb).empty();
         std::vector<nox::OutPacket> o3; srv.OnPacket(b, conn, sizeof(conn), o3);
-        const int64_t sb2 = srv.Network().SessionIdOf(b);
+        const int64_t sb2 = srv.Network().SessionIdOf(ToAddr(b));
         std::vector<nox::OutPacket> o4; srv.Network().RequestSendMsg(sb, /*reliable=*/false, 0, body, sizeof(body), o4);
         char m[200];
         std::snprintf(m, sizeof(m), "② 내보낸 뒤 — 옛 번호 주소 비움 %d · 다시 접속 번호 %lld(옛 %lld) · 옛 번호로 보낸 조각 %zu · 버림 %llu",
@@ -24730,14 +24748,14 @@ void TestPreConnectSweep() {
         const size_t inGame = srv->SessionCount();
         std::vector<nox::OutPacket> t1; srv.Tick(100000, t1);              // 첫 Tick — 게임 시계만 잡는다
         srv.Tick(100100, t1);   // 게임 틱이 처음 도는 때 — 통신 층 `Tick` 은 여기서 처음 불려 시계를 잡는다
-        const bool keptAtFirst = srv.Network().SessionIdOf(a) != nox::kNoSession;
+        const bool keptAtFirst = srv.Network().SessionIdOf(ToAddr(a)) != nox::kNoSession;
         std::vector<nox::OutPacket> t2; srv.Tick(131200, t2);
         int toA = 0;
-        for (const auto& q : t2) if (q.to == a) ++toA;
+        for (const auto& q : t2) if (nox::AddrText(q.to) == a) ++toA;
         char m[200];
         std::snprintf(m, sizeof(m), "① 접속 시도만 — 게임 사람 %zu · 첫 Tick 뒤 남음 %d · 31초 뒤 통신 세션 %lld · 걷어낸 셈 %llu · 그 상대에게 간 조각 %d",
-                      inGame, (int)keptAtFirst, (long long)srv.Network().SessionIdOf(a), srv.Network().unannouncedSwept(), toA);
-        Check(inGame == 0 && keptAtFirst && srv.Network().SessionIdOf(a) == nox::kNoSession &&
+                      inGame, (int)keptAtFirst, (long long)srv.Network().SessionIdOf(ToAddr(a)), srv.Network().unannouncedSwept(), toA);
+        Check(inGame == 0 && keptAtFirst && srv.Network().SessionIdOf(ToAddr(a)) == nox::kNoSession &&
               srv.Network().unannouncedSwept() == 1 && toA == 0, m);
     }
     {
@@ -24746,12 +24764,12 @@ void TestPreConnectSweep() {
         srv.Network().SetXorKey(0);
         std::vector<nox::OutPacket> t; srv.Tick(100000, t); srv.Tick(100100, t);
         std::vector<nox::OutPacket> o0; srv.OnPacket(b, conn, sizeof(conn), o0);
-        const int64_t sb = srv.Network().SessionIdOf(b);
+        const int64_t sb = srv.Network().SessionIdOf(ToAddr(b));
         for (uint32_t ms = 105100; ms <= 131100; ms += 5000) { srv.DebugTouch(sb); srv.Tick(ms, t); }
         char m[200];
         std::snprintf(m, sizeof(m), "② 접속한 상대 31초 — 통신 세션 %lld(처음 %lld) · 게임 사람 %zu · 걷어낸 셈 %llu",
-                      (long long)srv.Network().SessionIdOf(b), (long long)sb, srv->SessionCount(), srv.Network().unannouncedSwept());
-        Check(sb != nox::kNoSession && srv.Network().SessionIdOf(b) == sb && srv->SessionCount() == 1 &&
+                      (long long)srv.Network().SessionIdOf(ToAddr(b)), (long long)sb, srv->SessionCount(), srv.Network().unannouncedSwept());
+        Check(sb != nox::kNoSession && srv.Network().SessionIdOf(ToAddr(b)) == sb && srv->SessionCount() == 1 &&
               srv.Network().unannouncedSwept() == 0, m);
     }
     {
@@ -24764,8 +24782,8 @@ void TestPreConnectSweep() {
         srv.Tick(131200, t);
         char m[200];
         std::snprintf(m, sizeof(m), "③ 접속 뒤 조용 — 게임 사람 %zu → %zu · 통신 세션 %lld · 통신 층 셈 %llu",
-                      before, srv->SessionCount(), (long long)srv.Network().SessionIdOf(c), srv.Network().unannouncedSwept());
-        Check(before == 1 && srv->SessionCount() == 0 && srv.Network().SessionIdOf(c) == nox::kNoSession &&
+                      before, srv->SessionCount(), (long long)srv.Network().SessionIdOf(ToAddr(c)), srv.Network().unannouncedSwept());
+        Check(before == 1 && srv->SessionCount() == 0 && srv.Network().SessionIdOf(ToAddr(c)) == nox::kNoSession &&
               srv.Network().unannouncedSwept() == 0, m);
     }
     {
@@ -24779,8 +24797,8 @@ void TestPreConnectSweep() {
         }
         char m[200];
         std::snprintf(m, sizeof(m), "④ 10초마다 접속 시도 40초 — 통신 세션 %lld · 걷어낸 셈 %llu",
-                      (long long)srv.Network().SessionIdOf(e), srv.Network().unannouncedSwept());
-        Check(srv.Network().SessionIdOf(e) != nox::kNoSession && srv.Network().unannouncedSwept() == 0, m);
+                      (long long)srv.Network().SessionIdOf(ToAddr(e)), srv.Network().unannouncedSwept());
+        Check(srv.Network().SessionIdOf(ToAddr(e)) != nox::kNoSession && srv.Network().unannouncedSwept() == 0, m);
     }
     std::printf("  10-08 조각 4c — 접속 시도만 한 상대는 게임에 안 들고 통신 층이 30초 뒤 조용히 걷음 · 접속한 상대는 게임이 걷음\n");
 }
@@ -24808,8 +24826,8 @@ void TestSessionTimeout() {
         nox::CUdpServer net;
         net.SetXorKey(0);
         std::vector<nox::OutPacket> o; std::vector<Ev> got, ev;
-        net.OnDatagram(a, conn, sizeof(conn), o, got);              // 접속 — CONNECTED 를 넘겼다
-        const int64_t sa = net.SessionIdOf(a);
+        net.OnDatagram(ToAddr(a), conn, sizeof(conn), o, got);              // 접속 — CONNECTED 를 넘겼다
+        const int64_t sa = net.SessionIdOf(ToAddr(a));
         net.Tick(100000, o, ev);                                     // 첫 Tick — 그 전에 본 상대도 지금부터 센다
         net.Tick(129900, o, ev);
         const int at29 = timeouts(ev, sa);
@@ -24817,25 +24835,25 @@ void TestSessionTimeout() {
         const int at30 = timeouts(ev, sa);
         net.Tick(140000, o, ev);
         const int at40 = timeouts(ev, sa);
-        const bool kept = net.SessionIdOf(a) == sa;
+        const bool kept = net.SessionIdOf(ToAddr(a)) == sa;
         net.RequestDisconnectSession(sa);
         std::snprintf(m, sizeof(m), "① 통신 층 — 시간 초과 이벤트 29.9초 %d · 30.1초 %d · 40초 %d(누적) · 게임이 지우기 전 세션 남음 %d · 셈 %llu",
                       at29, at30, at40, (int)kept, net.sessionTimedOut());
         Check(sa != nox::kNoSession && at29 == 0 && at30 == 1 && at40 == 1 && kept && net.sessionTimedOut() == 1 &&
-              net.SessionIdOf(a) == nox::kNoSession, m);
+              net.SessionIdOf(ToAddr(a)) == nox::kNoSession, m);
     }
     {
         const std::string b = "10.10.9.2:10902";
         nox::CUdpServer net;
         net.SetXorKey(0);
         std::vector<nox::OutPacket> o; std::vector<Ev> got, ev;
-        net.OnDatagram(b, conn, sizeof(conn), o, got);
-        const int64_t sb = net.SessionIdOf(b);
+        net.OnDatagram(ToAddr(b), conn, sizeof(conn), o, got);
+        const int64_t sb = net.SessionIdOf(ToAddr(b));
         net.Tick(100000, o, ev);
         net.RequestSetSessionTimeout(sb, 90000);
         net.Tick(131000, o, ev);
         const int at31 = timeouts(ev, sb);
-        net.OnDatagram(b, empty, sizeof(empty), o, got);            // 131초에 받음 — 여기서부터 다시 센다
+        net.OnDatagram(ToAddr(b), empty, sizeof(empty), o, got);            // 131초에 받음 — 여기서부터 다시 센다
         net.Tick(221000, o, ev);
         const int at221 = timeouts(ev, sb);
         net.Tick(221100, o, ev);
@@ -24848,7 +24866,7 @@ void TestSessionTimeout() {
         const std::string c = "10.10.9.3:10903";
         nox::CUdpServer net;
         std::vector<nox::OutPacket> o; std::vector<Ev> ev;
-        const int64_t sc = net.OpenSession(c);                       // 소켓 없이 세운 사람
+        const int64_t sc = net.OpenSession(ToAddr(c));                       // 소켓 없이 세운 사람
         net.Tick(100000, o, ev);
         net.Tick(400000, o, ev);
         const int quiet300 = timeouts(ev, sc);
@@ -24874,16 +24892,16 @@ void TestSessionTimeout() {
         std::vector<uint8_t> acc(156, 0);                            // `tools/smoke.ps1` 4.5 와 같은 꼴 — 머리 `01 05` + `20` + 자리 153
         acc[0] = 0x01; acc[1] = 0x05; acc[2] = static_cast<uint8_t>(nox::Op::CLIENT_ACCEPT);
         std::vector<nox::OutPacket> o1; srv.OnPacket(d, acc.data(), acc.size(), o1);
-        const int64_t sd = srv.Network().SessionIdOf(d);
+        const int64_t sd = srv.Network().SessionIdOf(ToAddr(d));
         const bool inGame = srv->IsInGame(sd);
         std::vector<nox::OutPacket> t31; srv.Tick(131200, t31);
         const size_t at31 = srv->SessionCount();
         std::vector<nox::OutPacket> t91; srv.Tick(191200, t91);
         std::snprintf(m, sizeof(m), "④ 진짜 접속 경로로 판에 듦 %d — 31초 사람 %zu · 91초 사람 %zu · 그 사람에게 시간 초과 알림 %d · 통신 세션 %lld · 셈 %llu",
-                      (int)inGame, at31, srv->SessionCount(), toWho(t91, d, kTimeoutOp), (long long)srv.Network().SessionIdOf(d),
+                      (int)inGame, at31, srv->SessionCount(), toWho(t91, d, kTimeoutOp), (long long)srv.Network().SessionIdOf(ToAddr(d)),
                       srv.Network().sessionTimedOut());
         Check(inGame && at31 == 1 && srv->SessionCount() == 0 && toWho(t91, d, kTimeoutOp) == 1 &&
-              srv.Network().SessionIdOf(d) == nox::kNoSession && srv.Network().sessionTimedOut() == 1, m);
+              srv.Network().SessionIdOf(ToAddr(d)) == nox::kNoSession && srv.Network().sessionTimedOut() == 1, m);
     }
     {
         const std::string e = "10.10.9.5:10905";
@@ -24929,7 +24947,7 @@ void TestTimerHeap() {
         std::vector<nox::OutPacket> o; std::vector<Ev> ev;
         net.Tick(1000, o, ev);                                       // 시계 — 옛 1초 살핌은 2000·3000·4000 …
         net.Tick(1500, o, ev);
-        std::vector<nox::OutPacket> c0; net.OnDatagram("10.10.9.11:10911", conn, sizeof(conn), c0, ev);   // 1500 에 접속 수락(신뢰 0)
+        std::vector<nox::OutPacket> c0; net.OnDatagram(ToAddr("10.10.9.11:10911"), conn, sizeof(conn), c0, ev);   // 1500 에 접속 수락(신뢰 0)
         uint32_t due = 0;
         const bool hasDue = net.NextTimerDue(due);
         std::vector<uint32_t> at;                                     // 다시 보낸 시각
@@ -24950,11 +24968,11 @@ void TestTimerHeap() {
         net.SetXorKey(0);
         std::vector<nox::OutPacket> o; std::vector<Ev> got, ev;
         net.Tick(1000, o, ev);
-        net.OnDatagram(a, conn, sizeof(conn), o, got);
-        net.OnDatagram(a, empty, sizeof(empty), o, got);
+        net.OnDatagram(ToAddr(a), conn, sizeof(conn), o, got);
+        net.OnDatagram(ToAddr(a), empty, sizeof(empty), o, got);
         for (uint32_t ms = 2000; ms <= 20000; ms += 1000) {          // 1초마다 받음 — 마감이 계속 밀린다
             net.Tick(ms, o, ev);
-            net.OnDatagram(a, empty, sizeof(empty), o, got);
+            net.OnDatagram(ToAddr(a), empty, sizeof(empty), o, got);
         }
         const size_t timers = net.TimerCount();
         net.Tick(31000, o, ev);                                      // 처음 건 마감(31001) 직전
@@ -24974,8 +24992,8 @@ void TestTimerHeap() {
         net.SetXorKey(0);
         std::vector<nox::OutPacket> o; std::vector<Ev> got, ev;
         net.Tick(1000, o, ev);
-        net.OnDatagram(b, conn, sizeof(conn), o, got);
-        net.RequestSetSessionTimeout(net.SessionIdOf(b), 5000);     // 30초 → 5초
+        net.OnDatagram(ToAddr(b), conn, sizeof(conn), o, got);
+        net.RequestSetSessionTimeout(net.SessionIdOf(ToAddr(b)), 5000);     // 30초 → 5초
         net.Tick(6000, o, ev);
         const int at6 = timeouts(ev);
         net.Tick(6001, o, ev);
@@ -24989,9 +25007,9 @@ void TestTimerHeap() {
         net.SetXorKey(0);
         std::vector<nox::OutPacket> o; std::vector<Ev> got, ev;
         net.Tick(1000, o, ev);
-        std::vector<nox::OutPacket> o0; net.OnDatagram(c, conn, sizeof(conn), o0, got);   // 1000 — 마감 3000
+        std::vector<nox::OutPacket> o0; net.OnDatagram(ToAddr(c), conn, sizeof(conn), o0, got);   // 1000 — 마감 3000
         net.Tick(2000, o, ev);
-        std::vector<nox::OutPacket> o1; net.OnDatagram(c, nack, sizeof(nack), o1, got);  // 2000 — 바로 다시 보냄 · 새 마감 4000
+        std::vector<nox::OutPacket> o1; net.OnDatagram(ToAddr(c), nack, sizeof(nack), o1, got);  // 2000 — 바로 다시 보냄 · 새 마감 4000
         std::vector<nox::OutPacket> o2; net.Tick(3000, o2, ev);
         std::vector<nox::OutPacket> o3; net.Tick(3999, o3, ev);
         std::vector<nox::OutPacket> o4; net.Tick(4000, o4, ev);
@@ -25006,12 +25024,12 @@ void TestTimerHeap() {
         net.SetXorKey(0);
         std::vector<nox::OutPacket> o; std::vector<Ev> got, ev;
         net.Tick(1000, o, ev);
-        net.OnDatagram(e, conn, sizeof(conn), o, got);              // 1000 — 시간 초과 마감 31001 · 접속 수락 재시도 3000
-        net.OnDatagram(e, ok, sizeof(ok), o, got);                  // 접속 수락 확인 — 재시도 항목은 3000 에 버려진다
-        net.RequestSetSessionTimeout(net.SessionIdOf(e), 5000);     // 더 이른 마감 6001 — 31001 은 버릴 항목이 된다
+        net.OnDatagram(ToAddr(e), conn, sizeof(conn), o, got);              // 1000 — 시간 초과 마감 31001 · 접속 수락 재시도 3000
+        net.OnDatagram(ToAddr(e), ok, sizeof(ok), o, got);                  // 접속 수락 확인 — 재시도 항목은 3000 에 버려진다
+        net.RequestSetSessionTimeout(net.SessionIdOf(ToAddr(e)), 5000);     // 더 이른 마감 6001 — 31001 은 버릴 항목이 된다
         for (uint32_t ms = 2000; ms <= 40000; ms += 2000) {          // 2초마다 받음 — 5초 한도 안
             net.Tick(ms, o, ev);
-            net.OnDatagram(e, ok, sizeof(ok), o, got);
+            net.OnDatagram(ToAddr(e), ok, sizeof(ok), o, got);
         }
         std::snprintf(m, sizeof(m), "⑥ 한도를 5초로 줄이고 2초마다 받으며 40초 — 시간 초과 %d · 타이머 %zu개", timeouts(ev), net.TimerCount());
         Check(timeouts(ev) == 0 && net.TimerCount() == 1, m);
@@ -25045,25 +25063,25 @@ void TestJoinBoundary() {
         nox::CUdpServer net;
         std::vector<nox::OutPacket> o, r; std::vector<Ev> ev, tev;
         net.Tick(1000, o, tev);
-        net.OnDatagram(a, tryJoin.data(), tryJoin.size(), o, ev);
-        const int64_t sa = net.SessionIdOf(a);
+        net.OnDatagram(ToAddr(a), tryJoin.data(), tryJoin.size(), o, ev);
+        const int64_t sa = net.SessionIdOf(ToAddr(a));
         const bool asked = ev.size() == 1 && ev[0].type == Ev::Type::JOIN_REQUESTED && ev[0].sessionId == sa &&
                            ev[0].body.size() == 97 && ev[0].body[1] == 'J';
         const int okBefore = ops(o, kOk);
         net.RespondJoin(sa, true, {}, r);
         net.Tick(31002, o, tev);
         std::snprintf(m, sizeof(m), "① 접속 시도 — 게임에 물음 %d · 답 전 JOIN_OK %d · 허락 뒤 %d · 31초 뒤 걷힘 %d(셈 %llu) · 물은 수 %llu",
-                      (int)asked, okBefore, ops(r, kOk), (int)(net.SessionIdOf(a) == nox::kNoSession), net.unannouncedSwept(),
+                      (int)asked, okBefore, ops(r, kOk), (int)(net.SessionIdOf(ToAddr(a)) == nox::kNoSession), net.unannouncedSwept(),
                       net.joinRequested());
-        Check(asked && okBefore == 0 && ops(r, kOk) == 1 && net.SessionIdOf(a) == nox::kNoSession &&
+        Check(asked && okBefore == 0 && ops(r, kOk) == 1 && net.SessionIdOf(ToAddr(a)) == nox::kNoSession &&
               net.unannouncedSwept() == 1 && net.joinRequested() == 1, m);
     }
     {
         const std::string b = "10.10.9.22:10922";
         nox::CUdpServer net;
         std::vector<nox::OutPacket> o, r; std::vector<Ev> ev;
-        net.OnDatagram(b, tryJoin.data(), tryJoin.size(), o, ev);
-        net.RespondJoin(net.SessionIdOf(b), false, { kFail }, r);
+        net.OnDatagram(ToAddr(b), tryJoin.data(), tryJoin.size(), o, ev);
+        net.RespondJoin(net.SessionIdOf(ToAddr(b)), false, { kFail }, r);
         std::snprintf(m, sizeof(m), "② 거절 — 거절 메시지 %d · JOIN_OK %d · 거절 셈 %llu", ops(r, kFail), ops(r, kOk), net.joinRejected());
         Check(ops(r, kFail) == 1 && ops(r, kOk) == 0 && net.joinRejected() == 1, m);
     }
@@ -25072,8 +25090,8 @@ void TestJoinBoundary() {
         nox::CUdpServer net;
         std::vector<nox::OutPacket> o, r; std::vector<Ev> ev, tev;
         net.Tick(1000, o, tev);
-        net.OnDatagram(c, tryJoin.data(), tryJoin.size(), o, ev);
-        const int64_t sc = net.SessionIdOf(c);
+        net.OnDatagram(ToAddr(c), tryJoin.data(), tryJoin.size(), o, ev);
+        const int64_t sc = net.SessionIdOf(ToAddr(c));
         net.Tick(31002, o, tev);                                     // 답하기 전에 걷혔다
         net.RespondJoin(sc, true, {}, r);
         std::snprintf(m, sizeof(m), "③ 걷힌 뒤 답 — 나간 조각 %zu · 셈 %llu", r.size(), net.joinRespondNoSession());
@@ -25084,9 +25102,9 @@ void TestJoinBoundary() {
         nox::CUdpServer net;
         net.SetXorKey(0);
         std::vector<nox::OutPacket> o; std::vector<Ev> ev;
-        net.OnDatagram(d, conn, sizeof(conn), o, ev);                // 접속 — 키를 받았다
+        net.OnDatagram(ToAddr(d), conn, sizeof(conn), o, ev);                // 접속 — 키를 받았다
         ev.clear();
-        net.OnDatagram(d, tryJoin.data(), tryJoin.size(), o, ev);
+        net.OnDatagram(ToAddr(d), tryJoin.data(), tryJoin.size(), o, ev);
         int asked = 0;
         for (const auto& e : ev) if (e.type == Ev::Type::JOIN_REQUESTED) ++asked;
         std::snprintf(m, sizeof(m), "④ 붙은 뒤 접속 시도 — 게임에 물음 %d · 물은 수 %llu", asked, net.joinRequested());
@@ -25120,15 +25138,15 @@ void TestNetworkRequest() {
     std::vector<nox::OutPacket> o; std::vector<nox::NetworkEvent> got, ev;
     net.Tick(1000, o, ev);
     const std::string a = "10.10.9.31:10931";
-    net.OnDatagram(a, conn, sizeof(conn), o, got);                  // 1000 — 접속 수락이 스트림 0 신뢰 순번 0 을 썼다
-    const int64_t sa = net.SessionIdOf(a);
+    net.OnDatagram(ToAddr(a), conn, sizeof(conn), o, got);                  // 1000 — 접속 수락이 스트림 0 신뢰 순번 0 을 썼다
+    const int64_t sa = net.SessionIdOf(ToAddr(a));
     {
         Req r;
         r.type = Req::Type::SEND_MSG; r.sessionId = sa; r.reliable = true; r.stream = 0; r.body = { 0xc6 };
         std::vector<nox::OutPacket> s1; net.OnRequest(r, s1);
         r.reliable = false; r.body = { 0x27, 1, 2 };
         std::vector<nox::OutPacket> s2; net.OnRequest(r, s2);
-        const bool rel = s1.size() == 1 && s1[0].to == a && s1[0].data.size() == 3 &&
+        const bool rel = s1.size() == 1 && nox::AddrText(s1[0].to) == a && s1[0].data.size() == 3 &&
                          s1[0].data[0] == 0x80 && s1[0].data[1] == 1 && s1[0].data[2] == 0xc6;
         const bool unrel = s2.size() == 1 && s2[0].data.size() == 5 && s2[0].data[0] == 0x00 && s2[0].data[1] == 1 &&
                            s2[0].data[2] == 0x27 && s2[0].data[3] == 1 && s2[0].data[4] == 2;
@@ -25139,16 +25157,16 @@ void TestNetworkRequest() {
     }
     {
         const std::string b = "10.10.9.32:10932", c = "10.10.9.33:10933";
-        net.OnDatagram(b, tryJoin.data(), tryJoin.size(), o, got);
-        net.OnDatagram(c, tryJoin.data(), tryJoin.size(), o, got);
-        Req yes; yes.type = Req::Type::RESPOND_JOIN; yes.sessionId = net.SessionIdOf(b); yes.accept = true;
-        Req no; no.type = Req::Type::RESPOND_JOIN; no.sessionId = net.SessionIdOf(c); no.accept = false;
+        net.OnDatagram(ToAddr(b), tryJoin.data(), tryJoin.size(), o, got);
+        net.OnDatagram(ToAddr(c), tryJoin.data(), tryJoin.size(), o, got);
+        Req yes; yes.type = Req::Type::RESPOND_JOIN; yes.sessionId = net.SessionIdOf(ToAddr(b)); yes.accept = true;
+        Req no; no.type = Req::Type::RESPOND_JOIN; no.sessionId = net.SessionIdOf(ToAddr(c)); no.accept = false;
         no.body = { static_cast<uint8_t>(nox::Op::SERVER_JOIN_FAIL) };
         std::vector<nox::OutPacket> jy; net.OnRequest(yes, jy);
         std::vector<nox::OutPacket> jn; net.OnRequest(no, jn);
-        const bool okYes = jy.size() == 1 && jy[0].to == b && jy[0].data.size() == 3 &&
+        const bool okYes = jy.size() == 1 && nox::AddrText(jy[0].to) == b && jy[0].data.size() == 3 &&
                            jy[0].data[2] == static_cast<uint8_t>(nox::Op::SERVER_JOIN_OK);
-        const bool okNo = jn.size() == 1 && jn[0].to == c && jn[0].data.size() == 3 &&
+        const bool okNo = jn.size() == 1 && nox::AddrText(jn[0].to) == c && jn[0].data.size() == 3 &&
                           jn[0].data[2] == static_cast<uint8_t>(nox::Op::SERVER_JOIN_FAIL);
         std::snprintf(m, sizeof(m), "② 접속 답 — 허락 %d · 거절 %d(거절 셈 %llu)", (int)okYes, (int)okNo, net.joinRejected());
         Check(okYes && okNo && net.joinRejected() == 1, m);
@@ -25169,8 +25187,8 @@ void TestNetworkRequest() {
         Req r; r.type = Req::Type::SEND_MSG; r.sessionId = sa; r.body = { 0x27 };
         std::vector<nox::OutPacket> s; net.OnRequest(r, s);
         std::snprintf(m, sizeof(m), "④ 끊기 — 세션 %lld · 그 뒤 보내기 조각 %zu · 버린 셈 %llu",
-                      (long long)net.SessionIdOf(a), s.size(), net.sendNoSession());
-        Check(net.SessionIdOf(a) == nox::kNoSession && s.empty() && net.sendNoSession() == 1, m);
+                      (long long)net.SessionIdOf(ToAddr(a)), s.size(), net.sendNoSession());
+        Check(net.SessionIdOf(ToAddr(a)) == nox::kNoSession && s.empty() && net.sendNoSession() == 1, m);
     }
     std::printf("  10-09 조각 5d-1a — 통신 요청 넷(보내기·접속 답·한도·끊기)을 OnRequest 하나로 받음\n");
 }
@@ -25183,7 +25201,7 @@ void TestSyncHostOrder() {
     const uint8_t conn[3] = { 0xff, 0x00, 0x00 };
     auto accepts = [](const std::vector<nox::OutPacket>& out, const std::string& to) {
         int n = 0;
-        for (const auto& p : out) if (p.to == to && p.data.size() == 10 && p.data[2] == static_cast<uint8_t>(nox::Op::ACCEPTED)) ++n;
+        for (const auto& p : out) if (nox::AddrText(p.to) == to && p.data.size() == 10 && p.data[2] == static_cast<uint8_t>(nox::Op::ACCEPTED)) ++n;
         return n;
     };
     char m[200];
@@ -25192,10 +25210,10 @@ void TestSyncHostOrder() {
         nox::CSyncHost srv;
         srv.Network().SetXorKey(0);
         std::vector<nox::OutPacket> o1; srv.OnPacket(a, conn, sizeof(conn), o1);
-        const int64_t s1 = srv.Network().SessionIdOf(a);
+        const int64_t s1 = srv.Network().SessionIdOf(ToAddr(a));
         srv->DebugKickPlayer(s1);                                    // 요청만 쌓인다(받지 않음)
         std::vector<nox::OutPacket> o2; srv.OnPacket(a, conn, sizeof(conn), o2);
-        const int64_t s2 = srv.Network().SessionIdOf(a);
+        const int64_t s2 = srv.Network().SessionIdOf(ToAddr(a));
         std::snprintf(m, sizeof(m), "① 끊기가 쌓인 채 접속 — 새 수락 %d · 세션 %lld → %lld", accepts(o2, a), (long long)s1, (long long)s2);
         Check(accepts(o2, a) == 1 && s2 != s1 && s2 != nox::kNoSession, m);
     }
@@ -25205,11 +25223,11 @@ void TestSyncHostOrder() {
         srv.Network().SetXorKey(0);
         std::vector<nox::OutPacket> t; srv.Tick(1000, t); srv.Tick(1033, t);   // 게임 시계 · 통신 층 시계
         std::vector<nox::OutPacket> o1; srv.OnPacket(b, conn, sizeof(conn), o1);   // 접속 수락 — 확인이 없으면 3033 에 다시 보낸다
-        srv->DebugKickPlayer(srv.Network().SessionIdOf(b));
+        srv->DebugKickPlayer(srv.Network().SessionIdOf(ToAddr(b)));
         std::vector<nox::OutPacket> o2; srv.Tick(3100, o2);
         std::snprintf(m, sizeof(m), "② 끊기가 쌓인 채 틱 — 다시 보낸 접속 수락 %d · 통신 세션 %lld",
-                      accepts(o2, b), (long long)srv.Network().SessionIdOf(b));
-        Check(accepts(o2, b) == 0 && srv.Network().SessionIdOf(b) == nox::kNoSession, m);
+                      accepts(o2, b), (long long)srv.Network().SessionIdOf(ToAddr(b)));
+        Check(accepts(o2, b) == 0 && srv.Network().SessionIdOf(ToAddr(b)) == nox::kNoSession, m);
     }
     std::printf("  10-09 조각 5d-1b — 한 스레드 조립은 쌓인 게임 요청을 받기·틱보다 먼저 통신 층에 넘김(옛 그 자리 호출과 같은 차례)\n");
 }
@@ -25230,7 +25248,7 @@ void TestReliableSeqWrap() {
     };
     auto ackNext = [](nox::CUdpServer& net, const std::string& a, uint8_t next, std::vector<Ev>& ev) {
         const uint8_t hdr[2] = { 0x00, next };                      // 스트림 0 비신뢰 머리만 — 「다음에 받을 번호」
-        std::vector<nox::OutPacket> o; net.OnDatagram(a, hdr, sizeof(hdr), o, ev);
+        std::vector<nox::OutPacket> o; net.OnDatagram(ToAddr(a), hdr, sizeof(hdr), o, ev);
     };
     auto timeouts = [](const std::vector<Ev>& ev) {
         int n = 0;
@@ -25242,8 +25260,8 @@ void TestReliableSeqWrap() {
         std::vector<nox::OutPacket> o; std::vector<Ev> ev;
         net.Tick(1000, o, ev);
         const std::string a = "10.10.9.41:10941";
-        net.OnDatagram(a, conn, sizeof(conn), o, ev);              // 접속 수락 = 스트림 0 신뢰 순번 0
-        const int64_t sa = net.SessionIdOf(a);
+        net.OnDatagram(ToAddr(a), conn, sizeof(conn), o, ev);              // 접속 수락 = 스트림 0 신뢰 순번 0
+        const int64_t sa = net.SessionIdOf(ToAddr(a));
         ackNext(net, a, 1, ev);                                     // 0 받음
         // 순번 1~252 — 실제처럼 틱마다 확인이 온다고 보고 100개씩 끊어 확인한다(확인 없이 128 을 넘기면 ② 의 넘침 길이다)
         sendRel(net, sa, 100); ackNext(net, a, 101, ev);
@@ -25265,8 +25283,8 @@ void TestReliableSeqWrap() {
         std::vector<nox::OutPacket> o; std::vector<Ev> ev;
         net.Tick(1000, o, ev);
         const std::string b = "10.10.9.42:10942";
-        net.OnDatagram(b, conn, sizeof(conn), o, ev);              // 접속 — 게임에 넘긴 상대(announced)
-        const int64_t sb = net.SessionIdOf(b);
+        net.OnDatagram(ToAddr(b), conn, sizeof(conn), o, ev);              // 접속 — 게임에 넘긴 상대(announced)
+        const int64_t sb = net.SessionIdOf(ToAddr(b));
         ackNext(net, b, 1, ev);
         sendRel(net, sb, 129);                                      // 확인 없이 한도(128) + 1
         std::vector<Ev> ev1; net.Tick(1001, o, ev1);
@@ -25291,8 +25309,8 @@ void TestUdpStats() {
     net.SetXorKey(0);
     std::vector<nox::OutPacket> o; std::vector<nox::NetworkEvent> ev;
     net.Tick(1000, o, ev);
-    net.OnDatagram("10.10.9.51:10951", conn, sizeof(conn), o, ev);                 // 접속 수락 대기 1 · 타이머 둘(다시 보내기 · 시간 초과)
-    net.OnDatagram("10.10.9.52:10952", tryJoin.data(), tryJoin.size(), o, ev);     // 입장 요청 1 · 타이머 하나(접속 전 걷기)
+    net.OnDatagram(ToAddr("10.10.9.51:10951"), conn, sizeof(conn), o, ev);                 // 접속 수락 대기 1 · 타이머 둘(다시 보내기 · 시간 초과)
+    net.OnDatagram(ToAddr("10.10.9.52:10952"), tryJoin.data(), tryJoin.size(), o, ev);     // 입장 요청 1 · 타이머 하나(접속 전 걷기)
     const nox::CUdpStats s1 = net.Stats();
     const bool same = s1.reliablePending == net.reliablePending() && s1.timerCount == net.TimerCount() &&
                       s1.joinRequested == net.joinRequested() && s1.handled == net.handled() &&
@@ -25370,7 +25388,7 @@ void TestRoomManager() {
         nox::CRoomManager rooms;
         const int r0 = rooms.CreateRoom(RoomSettings{});   // ★ 10-14 작업 9d — 방 관리자는 방 없이 시작한다
         rooms.SetOpenEntry(r0);   // ★ 10-10 토큰 작업 2 — 혼자 쓰는 방 관리자의 기본은 「모두 거절」이다
-        Ev c; c.type = Ev::Type::CONNECTED; c.sessionId = 11; c.addr = "10.10.9.61:10961";
+        Ev c; c.type = Ev::Type::CONNECTED; c.sessionId = 11; c.addr = ToAddr("10.10.9.61:10961");
         rooms.OnNetworkEvent(c);
         Ev a; a.type = Ev::Type::RECEIVED; a.sessionId = 11; a.addr = c.addr;
         a.body.assign(154, 0); a.body[0] = static_cast<uint8_t>(nox::Op::CLIENT_ACCEPT);   // 실물 접속 수락과 같은 길이(머리 2 + 154)
@@ -26183,7 +26201,7 @@ void TestIntroOnce() {
         return ip + ":2";
     };
     const std::string A = join("amy", "10.72.0.1", 721), B = join("bob", "10.72.0.2", 722);
-    const int64_t sa = srv.Network().SessionIdOf(A), sb = srv.Network().SessionIdOf(B);
+    const int64_t sa = srv.Network().SessionIdOf(ToAddr(A)), sb = srv.Network().SessionIdOf(ToAddr(B));
     for (int i = 0; i < 15; ++i) { now += 34; srv.Tick(now, o); }
     auto sent2d = [&]() { return g.newPlayerInfo(0) + g.newPlayerInfo(1) + g.newPlayerInfo(2); };
     const unsigned long long s1 = sent2d(), once1 = g.introOnce(0), deferred1 = g.introOnce(2);
@@ -26505,7 +26523,7 @@ void TestLoadEntry() {
     using RM = nox::CRoomManager;
     char m[360];
     auto joinEv = [](int64_t sid) { Ev e; e.type = Ev::Type::JOIN_REQUESTED; e.sessionId = sid; e.body.assign(97, 0); return e; };
-    auto connEv = [](int64_t sid) { Ev e; e.type = Ev::Type::CONNECTED; e.sessionId = sid; e.addr = "10.50.0.1:" + std::to_string(20000 + sid); return e; };
+    auto connEv = [](int64_t sid) { Ev e; e.type = Ev::Type::CONNECTED; e.sessionId = sid; e.addr = ToAddr("10.50.0.1:" + std::to_string(20000 + sid)); return e; };
     struct Reply { int accept = 0, reject = 0, disconnect = 0; };
     auto drain = [](RM& rooms) {
         std::vector<Rq> rq;
@@ -26687,7 +26705,8 @@ void TestSeatCountsSameAsScan() {
     using RM = nox::CRoomManager;
     uint32_t seed = 616;
     auto rnd = [&](uint32_t n) { seed = seed * 1103515245u + 12345u; return ((seed >> 8) & 0xFFFFFFu) % n; };
-    auto connEv = [](int64_t sid) { Ev e; e.type = Ev::Type::CONNECTED; e.sessionId = sid; e.addr = "10.61.0.1:" + std::to_string(20000 + sid); return e; };
+    // ★ 11-17 C-2 — 주소가 숫자라 세션 번호(100만대)를 포트에 못 넣는다 — 10.61.0.0 에 세션 번호를 더한다(세션마다 다른 주소 · 기록용)
+    auto connEv = [](int64_t sid) { Ev e; e.type = Ev::Type::CONNECTED; e.sessionId = sid; e.addr = UdpAddr{0x0A3D0000u + static_cast<uint32_t>(sid), 20000}; return e; };
     size_t steps = 0, mismatch = 0, maxSeats = 0, maxRooms = 0;
     size_t loadSeat = 0, openSeat = 0, openFull = 0, openNoRoom = 0, admitWrong = 0, directNew = 0, directMove = 0, directSame = 0, directGhost = 0, tokenSeat = 0;
     size_t kickLeft = 0, closeLeft = 0, emptyClosed = 0;
@@ -26895,7 +26914,7 @@ void TestRooms() {
         h.OnPacket(p1, tj.data(), tj.size(), out);
         const auto cn = WithTail(std::vector<uint8_t>(conn, conn + sizeof(conn)), tail);
         h.OnPacket(p2, cn.data(), cn.size(), out);
-        const int64_t sid = h.Network().SessionIdOf(p2);
+        const int64_t sid = h.Network().SessionIdOf(ToAddr(p2));
         const auto ac = AcceptPkt("Jack");
         h.OnPacket(p2, ac.data(), ac.size(), out);
         return sid;
@@ -26912,13 +26931,13 @@ void TestRooms() {
         std::snprintf(m, sizeof(m), "① 토큰 둘 → 방 둘 — 방 0 사람 %zu · 방 %d 사람 %zu · A 방 %d · B 방 %d · 접속 답 %d·%d · 접속 시도 주소의 방 %d · 시작 프레임 %u·%u(방 %u·%u) · 꼬리 %llu",
                       rooms.Game(0).inGameCount(), r1, rooms.Game(r1).inGameCount(), rooms.RoomOfSession(sa), rooms.RoomOfSession(sb),
                       msgs(oa, "10.20.0.1:1001", kOk, 1), msgs(ob, "10.20.0.2:2001", kOk, 1),
-                      rooms.RoomOfSession(srv.Network().SessionIdOf("10.20.0.1:1001")),
+                      rooms.RoomOfSession(srv.Network().SessionIdOf(ToAddr("10.20.0.1:1001"))),
                       rooms.Game(0).DebugSessionFrame(sa), rooms.Game(r1).DebugSessionFrame(sb), rooms.Game(0).frame(), rooms.Game(r1).frame(),
                       srv.Network().Stats().joinTrailers);
         Check(r1 == 1 && rooms.Game(0).inGameCount() == 1 && rooms.Game(r1).inGameCount() == 1 &&
               rooms.RoomOfSession(sa) == 0 && rooms.RoomOfSession(sb) == r1 &&
               msgs(oa, "10.20.0.1:1001", kOk, 1) == 1 && msgs(ob, "10.20.0.2:2001", kOk, 1) == 1 &&
-              rooms.RoomOfSession(srv.Network().SessionIdOf("10.20.0.1:1001")) == RM::kNoRoom &&
+              rooms.RoomOfSession(srv.Network().SessionIdOf(ToAddr("10.20.0.1:1001"))) == RM::kNoRoom &&
               rooms.Game(0).DebugSessionFrame(sa) == rooms.Game(0).frame() && rooms.Game(0).frame() != 0 &&
               rooms.Game(r1).DebugSessionFrame(sb) == rooms.Game(r1).frame() &&
               srv.Network().Stats().joinTrailers == 4 && rooms.Stats().joinAccepted == 2 && rooms.Stats().assigned == 2 &&
@@ -26942,10 +26961,10 @@ void TestRooms() {
         std::vector<nox::OutPacket> o2; srv.TakeOut(o2);
         std::snprintf(m, sizeof(m), "⑦ 다시 들어오기 · 나감 두 길 — 옛 A 방 %d · 새 세션 %lld 방 %d · B 방 %d · B 통신 세션 %lld · 나감 %llu · 방 0 사람 %zu · 방 1 사람 %zu",
                       rooms.RoomOfSession(sa), (long long)sa2, rooms.RoomOfSession(sa2), rooms.RoomOfSession(sb),
-                      (long long)srv.Network().SessionIdOf("10.20.0.2:2002"), rooms.Stats().left,
+                      (long long)srv.Network().SessionIdOf(ToAddr("10.20.0.2:2002")), rooms.Stats().left,
                       rooms.Game(0).inGameCount(), rooms.Game(r1).inGameCount());
         Check(rooms.RoomOfSession(sa) == RM::kNoRoom && sa2 != sa && rooms.RoomOfSession(sa2) == r1 &&
-              rooms.RoomOfSession(sb) == RM::kNoRoom && srv.Network().SessionIdOf("10.20.0.2:2002") == nox::kNoSession &&
+              rooms.RoomOfSession(sb) == RM::kNoRoom && srv.Network().SessionIdOf(ToAddr("10.20.0.2:2002")) == nox::kNoSession &&
               rooms.Stats().left == 2 && rooms.Game(0).inGameCount() == 0 && rooms.Game(r1).inGameCount() == 1, m);
         // ⑧ 방 만들기 · 닫기 — 방 2 에 C → 닫으면 C 에게 서버 닫힘 · 세션표 · 통신 층에서 빠짐 · 방 0 · 1 그대로
         const int r2 = rooms.CreateRoom(RoomSettings{});
@@ -26957,10 +26976,10 @@ void TestRooms() {
         std::vector<nox::OutPacket> o3; srv.TakeOut(o3);
         std::snprintf(m, sizeof(m), "⑧ 방 만들기 · 닫기 — 방 2 에 듦 %d · 방 2 닫기 %d · 다시 닫기 %d · C 서버 닫힘 %d · C 방 %d · C 통신 세션 %lld · 방 수 %zu · 방 1 사람 %zu",
                       (int)inR2, (int)closed2, (int)closedAgain, msgs(o3, "10.20.0.3:3002", static_cast<uint8_t>(nox::Op::SERVER_CLOSE), 1),
-                      rooms.RoomOfSession(sc), (long long)srv.Network().SessionIdOf("10.20.0.3:3002"), rooms.RoomCount(),
+                      rooms.RoomOfSession(sc), (long long)srv.Network().SessionIdOf(ToAddr("10.20.0.3:3002")), rooms.RoomCount(),
                       rooms.Game(r1).inGameCount());
         Check(inR2 && closed2 && !closedAgain && msgs(o3, "10.20.0.3:3002", static_cast<uint8_t>(nox::Op::SERVER_CLOSE), 1) == 1 &&
-              rooms.RoomOfSession(sc) == RM::kNoRoom && srv.Network().SessionIdOf("10.20.0.3:3002") == nox::kNoSession &&
+              rooms.RoomOfSession(sc) == RM::kNoRoom && srv.Network().SessionIdOf(ToAddr("10.20.0.3:3002")) == nox::kNoSession &&
               rooms.RoomCount() == 2 && !rooms.HasRoom(r2) && rooms.Game(r1).inGameCount() == 1, m);
         // ⑪ 토큰의 방이 닫힘 — 접속 시도에서 거절(받아 놓고 CONNECT 때 끊지 않는다)
         std::vector<nox::OutPacket> o4;
@@ -26990,12 +27009,12 @@ void TestRooms() {
         srv.OnPacket("10.22.0.9:9001", tj.data(), tj.size(), o);
         std::vector<nox::OutPacket> o2;
         srv.OnPacket("10.22.0.9:9002", conn, sizeof(conn), o2);
-        const int64_t afterConn = srv.Network().SessionIdOf("10.22.0.9:9002");
+        const int64_t afterConn = srv.Network().SessionIdOf(ToAddr("10.22.0.9:9002"));
         const auto ac = AcceptPkt("Mallory");
         srv.OnPacket("10.22.0.9:9002", ac.data(), ac.size(), o2);   // 끊긴 주소의 입장 — 새 세션이 생기지만 방은 없다(버림)
         // ★ 10-17 덤 — 옛 기대(「새 세션이 생기지만 방은 없다」 · 방 관리자 버림 1)는 아무도 안 지우는 빈 세션을 남겼다(`TestLateDatagramAfterDrop`).
         //   이제 통신 층이 처음 보는 주소의 접속 밖 조각(여기선 게임 메시지 `CLIENT_ACCEPT`)을 세션 없이 버린다 → 통신 층 버림 1 · 방 관리자 버림 0 · 그 주소 세션 없음
-        const int64_t afterAccept = srv.Network().SessionIdOf("10.22.0.9:9002");
+        const int64_t afterAccept = srv.Network().SessionIdOf(ToAddr("10.22.0.9:9002"));
         std::snprintf(m, sizeof(m), "④ 토큰 없음 — 거절(0x13 사유 4) %d · 받음 %d · CONNECT 뒤 통신 세션 %lld · 방 0 세션 %zu · 거절 %llu · 끊음 %llu · 토큰 없음 %llu · 방 관리자 버림 %llu · 통신 층 버림 %llu · 입장 뒤 통신 세션 %lld",
                       errClosedTo(o, "10.22.0.9:9001"), msgs(o, "10.22.0.9:9001", kOk, 1), (long long)afterConn,
                       rooms.Game(0).SessionCount(), rooms.Stats().joinRejected, rooms.Stats().connectRejected, rooms.Stats().tokenMissing,
@@ -27084,7 +27103,7 @@ void TestRooms() {
         const auto tj = TryJoinPkt("Jack");
         srv.OnPacket("10.28.0.1:1001", tj.data(), tj.size(), o);
         srv.OnPacket("10.28.0.1:1002", conn, sizeof(conn), o);
-        const int64_t s = srv.Network().SessionIdOf("10.28.0.1:1002");
+        const int64_t s = srv.Network().SessionIdOf(ToAddr("10.28.0.1:1002"));
         std::snprintf(m, sizeof(m), "⑬ 열린 방식 — 열림 %d · 받음 %d · 방 %d · 토큰 셈(없음 %llu · 통과 %llu)",
                       (int)rooms.OpenEntry(), msgs(o, "10.28.0.1:1001", kOk, 1), rooms.RoomOfSession(s), rooms.Stats().tokenMissing,
                       check(rooms, C::Ok));
@@ -27095,10 +27114,10 @@ void TestRooms() {
         using Ev = nox::NetworkEvent;
         nox::CRoomManager rooms;
         const int r0 = rooms.CreateRoom(RoomSettings{});   // ★ 10-14 작업 9d — 방 관리자는 방 없이 시작한다
-        Ev j; j.type = Ev::Type::JOIN_REQUESTED; j.sessionId = 1; j.addr = "10.29.0.1:1001"; j.body.assign(97, 0);
+        Ev j; j.type = Ev::Type::JOIN_REQUESTED; j.sessionId = 1; j.addr = ToAddr("10.29.0.1:1001"); j.body.assign(97, 0);
         j.token = std::vector<uint8_t>(nox::kJoinTokenSize, 0);
         rooms.OnNetworkEvent(j);
-        Ev c; c.type = Ev::Type::CONNECTED; c.sessionId = 2; c.addr = "10.29.0.1:1002";
+        Ev c; c.type = Ev::Type::CONNECTED; c.sessionId = 2; c.addr = ToAddr("10.29.0.1:1002");
         rooms.OnNetworkEvent(c);
         std::vector<nox::NetworkRequest> rq; rooms.SwapOutNetworkRequests(rq);
         const bool rejected = rq.size() == 2 && rq[0].type == nox::NetworkRequest::Type::RESPOND_JOIN && !rq[0].accept &&
@@ -27116,9 +27135,9 @@ void TestRooms() {
         rooms.SetOpenEntry(a);
         const bool closedA = rooms.CloseRoom(a);
         const int b = rooms.CreateRoom(RoomSettings{});
-        Ev j; j.type = Ev::Type::JOIN_REQUESTED; j.sessionId = 1; j.addr = "10.30.0.1:1001"; j.body.assign(97, 0);
+        Ev j; j.type = Ev::Type::JOIN_REQUESTED; j.sessionId = 1; j.addr = ToAddr("10.30.0.1:1001"); j.body.assign(97, 0);
         rooms.OnNetworkEvent(j);
-        Ev c; c.type = Ev::Type::CONNECTED; c.sessionId = 2; c.addr = "10.30.0.1:1002";
+        Ev c; c.type = Ev::Type::CONNECTED; c.sessionId = 2; c.addr = ToAddr("10.30.0.1:1002");
         rooms.OnNetworkEvent(c);
         std::vector<nox::NetworkRequest> rq; rooms.SwapOutNetworkRequests(rq);
         const bool rejected = rq.size() == 2 && rq[0].type == nox::NetworkRequest::Type::RESPOND_JOIN && !rq[0].accept &&
@@ -27339,7 +27358,7 @@ void TestRoomRules() {
     auto connect = [&](nox::CSyncHost& h, const std::vector<uint8_t>& tail, const std::string& p2, std::vector<nox::OutPacket>& out) {
         const auto cn = WithTail(std::vector<uint8_t>(conn, conn + sizeof(conn)), tail);
         h.OnPacket(p2, cn.data(), cn.size(), out);
-        const int64_t sid = h.Network().SessionIdOf(p2);
+        const int64_t sid = h.Network().SessionIdOf(ToAddr(p2));
         const auto ac = AcceptPkt("Jack");
         h.OnPacket(p2, ac.data(), ac.size(), out);
         return sid;
@@ -27371,7 +27390,7 @@ void TestRoomRules() {
             for (char ch : s) { pat.push_back(static_cast<uint8_t>(ch)); pat.push_back(0); }
             int n = 0;
             for (const auto& p : o) {
-                if (p.to != "10.40.0.1:1002") continue;
+                if (nox::AddrText(p.to) != "10.40.0.1:1002") continue;
                 const std::vector<uint8_t> bd = Body(p);
                 if (std::search(bd.begin(), bd.end(), pat.begin(), pat.end()) != bd.end()) ++n;
             }
@@ -27497,7 +27516,7 @@ void TestRoomChatCommands() {
         h.OnPacket(p1, tj.data(), tj.size(), out);
         const auto cn = WithTail(std::vector<uint8_t>(conn, conn + sizeof(conn)), tail);
         h.OnPacket(p2, cn.data(), cn.size(), out);
-        const int64_t sid = h.Network().SessionIdOf(p2);
+        const int64_t sid = h.Network().SessionIdOf(ToAddr(p2));
         const auto ac = AcceptPkt("Jack");
         h.OnPacket(p2, ac.data(), ac.size(), out);
         return sid;
@@ -27636,7 +27655,7 @@ void TestRoomMatchSwitch() {
         h.OnPacket(p1, tj.data(), tj.size(), out);
         const auto cn = WithTail(std::vector<uint8_t>(conn, conn + sizeof(conn)), tail);
         h.OnPacket(p2, cn.data(), cn.size(), out);
-        const int64_t sid = h.Network().SessionIdOf(p2);
+        const int64_t sid = h.Network().SessionIdOf(ToAddr(p2));
         const auto ac = AcceptPkt("Jack");
         h.OnPacket(p2, ac.data(), ac.size(), out);
         return sid;
@@ -27780,11 +27799,11 @@ void TestRoomMatchSwitch() {
     const auto o3 = say(A, "!start");
     std::snprintf(m, sizeof(m), "③⑤ 두 바퀴 — USE_MAP estate A %d · 방 %s · 전환 %llu · 시작 셈 %llu · 같은 연결(세션 A %lld→%lld · B %lld→%lld · 방 %d·%d)",
                   useMapTo(o3, A, "estate.map"), nox::RoomPhaseName(room.Phase()), game.mapSwitches(), room.CmdCount(O::Started), (long long)sa,
-                  (long long)srv.Network().SessionIdOf(A), (long long)sb, (long long)srv.Network().SessionIdOf(B), rooms.RoomOfSession(sa),
+                  (long long)srv.Network().SessionIdOf(ToAddr(A)), (long long)sb, (long long)srv.Network().SessionIdOf(ToAddr(B)), rooms.RoomOfSession(sa),
                   rooms.RoomOfSession(sb));
     Check(useMapTo(o3, A, "estate.map") >= 1 && game.MapFileName() == "estate.map" && room.Phase() == nox::RoomPhase::Playing &&
           game.mapSwitches() == 3 && room.CmdCount(O::Started) == 2 &&
-          srv.Network().SessionIdOf(A) == sa && srv.Network().SessionIdOf(B) == sb && rooms.RoomOfSession(sa) == r && rooms.RoomOfSession(sb) == r, m);
+          srv.Network().SessionIdOf(ToAddr(A)) == sa && srv.Network().SessionIdOf(ToAddr(B)) == sb && rooms.RoomOfSession(sa) == r && rooms.RoomOfSession(sb) == r, m);
     // ④ 대전 맵 없는 방
     const std::string C = "10.43.0.3:3002", D = "10.43.0.4:4002";
     std::vector<nox::OutPacket> jc;
@@ -28090,7 +28109,7 @@ void TestScoreboardOn() {
     auto onCount = [](const std::vector<nox::OutPacket>& out, const std::string& to, int* cc = nullptr, int* stuck = nullptr) {
         int n = 0;
         for (const auto& p : out) {
-            if (p.to != to) continue;
+            if (nox::AddrText(p.to) != to) continue;
             const std::vector<uint8_t> b = Body(p);
             size_t q = ImportantStart(b);
             if (q == 0) continue;
@@ -28843,7 +28862,7 @@ void TestRoomMapCommand() {
         h.OnPacket(p1, tj.data(), tj.size(), out);
         const auto cn = WithTail(std::vector<uint8_t>(conn, conn + sizeof(conn)), tail);
         h.OnPacket(p2, cn.data(), cn.size(), out);
-        const int64_t sid = h.Network().SessionIdOf(p2);
+        const int64_t sid = h.Network().SessionIdOf(ToAddr(p2));
         const auto ac = AcceptPkt("Jack");
         h.OnPacket(p2, ac.data(), ac.size(), out);
         return sid;
@@ -29139,7 +29158,7 @@ void TestRankRoom() {
         tryJoin(h, tail, p1, out);
         const auto cn = WithTail(std::vector<uint8_t>(conn, conn + sizeof(conn)), tail);
         h.OnPacket(p2, cn.data(), cn.size(), out);
-        const int64_t sid = h.Network().SessionIdOf(p2);
+        const int64_t sid = h.Network().SessionIdOf(ToAddr(p2));
         const auto ac = AcceptPkt("Jack");
         h.OnPacket(p2, ac.data(), ac.size(), out);
         if (ready) h.OnPacket(p2, readyPkt, sizeof(readyPkt), out);
@@ -29504,7 +29523,7 @@ void TestRoomMatchSwitchRealMaps() {
         srv.OnPacket(p1, tj.data(), tj.size(), out);
         const auto cn = WithTail(std::vector<uint8_t>(conn, conn + sizeof(conn)), tail);
         srv.OnPacket(p2, cn.data(), cn.size(), out);
-        const int64_t sid = srv.Network().SessionIdOf(p2);
+        const int64_t sid = srv.Network().SessionIdOf(ToAddr(p2));
         const auto ac = AcceptPkt("Jack");
         srv.OnPacket(p2, ac.data(), ac.size(), out);
         return sid;
@@ -29759,7 +29778,7 @@ void TestJoinStartByMode() {
         srv.OnPacket(a, acc.data(), acc.size(), oa);
         uint16_t codeB = 0;
         for (const auto& p : oa) {
-            if (p.to != a) continue;
+            if (nox::AddrText(p.to) != a) continue;
             const std::vector<uint8_t> bd = Body(p);
             const size_t off = (!bd.empty() && bd[0] == 0xa9) ? 6 : 0;
             if (bd.size() < off + 87 + nox::kNewPlayerSize - 6 || bd[off] != 0x28 || bd[off + 5] != 0x2c) continue;
@@ -29771,13 +29790,13 @@ void TestJoinStartByMode() {
         srv.OnPacket(b, conn, sizeof(conn), ob);
         srv.OnPacket(b, acc.data(), acc.size(), ob);
         for (const auto& p : ob) {
-            if (p.to != b) continue;
+            if (nox::AddrText(p.to) != b) continue;
             const std::vector<uint8_t> bd = Body(p);
             const size_t off = (!bd.empty() && bd[0] == 0xa9) ? 6 : 0;
             if (bd.size() < off + 12 || bd[off] != 0x28 || bd[off + 5] != 0x2c) continue;
             codeB = static_cast<uint16_t>(bd[off + 6] | (bd[off + 7] << 8));
         }
-        const int64_t sa = srv.Network().SessionIdOf(a), sb = srv.Network().SessionIdOf(b);
+        const int64_t sa = srv.Network().SessionIdOf(ToAddr(a)), sb = srv.Network().SessionIdOf(ToAddr(b));
         r.obsA = srv->IsObserver(sa);
         r.obsB = srv->IsObserver(sb);
         // 소개(`2d`·`6a`)는 중요 대기열로 간다 — 클라 준비(`c0`)를 친 뒤 틱을 돌려 내보낸다
@@ -29788,7 +29807,7 @@ void TestJoinStartByMode() {
         for (int k = 0; k < 10; ++k) { now += 34; srv.Tick(now, o); }
         // 한 데이터그램에 중요 메시지 여럿이 실린다 — `cc <순번2> <길이> <속>` 을 바이트로 훑는다(속 길이까지 맞아야 센다)
         for (const auto& p : o) {
-            if (p.to != a) continue;
+            if (nox::AddrText(p.to) != a) continue;
             const std::vector<uint8_t> bd = Body(p);
             for (size_t q = 0; q + 7 <= bd.size(); ++q) {
                 if (bd[q] != static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT)) continue;
@@ -29838,33 +29857,33 @@ void TestInGameNameIsAccount() {
         acc[3 + nox::kInfoClassAt] = 1;
         std::vector<nox::OutPacket> oa, ob;
         srv.OnPacket(a, conn, sizeof(conn), oa);
-        srv->SetAccountName(srv.Network().SessionIdOf(a), accA);
+        srv->SetAccountName(srv.Network().SessionIdOf(ToAddr(a)), accA);
         srv.OnPacket(a, acc.data(), acc.size(), oa);
         for (const auto& p : oa) {
-            if (p.to != a) continue;
+            if (nox::AddrText(p.to) != a) continue;
             const std::vector<uint8_t> bd = Body(p);
             const size_t off = (!bd.empty() && bd[0] == 0xa9) ? 6 : 0;
             if (bd.size() < off + 81 + 3 + 97 || bd[off] != 0x28 || bd[off + 5] != 0x2c || bd[off + 81] != 0x2d) continue;
             r.own.assign(bd.begin() + off + 81 + 3, bd.begin() + off + 81 + 3 + 97);
         }
         srv.OnPacket(b, conn, sizeof(conn), ob);
-        srv->SetAccountName(srv.Network().SessionIdOf(b), accB);
+        srv->SetAccountName(srv.Network().SessionIdOf(ToAddr(b)), accB);
         srv.OnPacket(b, acc.data(), acc.size(), ob);
         uint16_t codeB = 0;
         for (const auto& p : ob) {
-            if (p.to != b) continue;
+            if (nox::AddrText(p.to) != b) continue;
             const std::vector<uint8_t> bd = Body(p);
             const size_t off = (!bd.empty() && bd[0] == 0xa9) ? 6 : 0;
             if (bd.size() < off + 12 || bd[off] != 0x28 || bd[off + 5] != 0x2c) continue;
             codeB = static_cast<uint16_t>(bd[off + 6] | (bd[off + 7] << 8));
         }
-        srv->DebugImportantReal(srv.Network().SessionIdOf(a), /*ready=*/true);
-        srv->DebugImportantReal(srv.Network().SessionIdOf(b), /*ready=*/true);
+        srv->DebugImportantReal(srv.Network().SessionIdOf(ToAddr(a)), /*ready=*/true);
+        srv->DebugImportantReal(srv.Network().SessionIdOf(ToAddr(b)), /*ready=*/true);
         std::vector<nox::OutPacket> o;
         uint32_t now = 100034;
         for (int k = 0; k < 10; ++k) { now += 34; srv.Tick(now, o); }
         for (const auto& p : o) {
-            if (p.to != a) continue;
+            if (nox::AddrText(p.to) != a) continue;
             const std::vector<uint8_t> bd = Body(p);
             for (size_t q = 0; q + 4 + nox::kNewPlayerSize <= bd.size(); ++q) {
                 if (bd[q] != static_cast<uint8_t>(nox::Op::SEQ_IMPORTANT) || bd[q + 3] != nox::kNewPlayerSize ||
@@ -29913,7 +29932,7 @@ void TestRoomIdWide() {
             Ev c;
             c.type = Ev::Type::CONNECTED;
             c.sessionId = 200 + i;
-            c.addr = ip + ":2";
+            c.addr = ToAddr(ip + ":2");
             c.token.assign(tail.begin(), tail.begin() + nox::kJoinTokenSize);
             rooms.OnNetworkEvent(c);
             home += rooms.RoomOfSession(200 + i) == ids[i] ? 1 : 0;
@@ -29950,7 +29969,7 @@ void TestJoinTrailer() {
         std::vector<nox::OutPacket> out;
         std::vector<nox::NetworkEvent> ev;
         const auto tj = WithTail(TryJoinPkt("Jack"), tail);
-        net.OnDatagram("10.30.0.1:1001", tj.data(), tj.size(), out, ev);
+        net.OnDatagram(ToAddr("10.30.0.1:1001"), tj.data(), tj.size(), out, ev);
         const bool one = ev.size() == 1 && ev[0].type == nox::NetworkEvent::Type::JOIN_REQUESTED;
         const bool same = one && ev[0].token.size() == nox::kJoinTokenSize && std::equal(ev[0].token.begin(), ev[0].token.end(), tail.begin());
         std::snprintf(m, sizeof(m), "꼬리 ① 접속 시도 — 이벤트 %zu(접속 시도 %d) · 본문 %zu · 토큰 그대로 %d · 읽은 메시지 %llu · 멈춤 %llu · 나간 답 %zu · 꼬리 %llu",
@@ -29965,21 +29984,21 @@ void TestJoinTrailer() {
         std::vector<nox::NetworkEvent> ev;
         const uint8_t conn[3] = { 0xff, 0x00, 0x00 };
         const auto cn = WithTail(std::vector<uint8_t>(conn, conn + sizeof(conn)), tail);
-        net.OnDatagram("10.30.0.1:1002", cn.data(), cn.size(), out, ev);
+        net.OnDatagram(ToAddr("10.30.0.1:1002"), cn.data(), cn.size(), out, ev);
         const bool one = ev.size() == 1 && ev[0].type == nox::NetworkEvent::Type::CONNECTED;
         const bool same = one && ev[0].token.size() == nox::kJoinTokenSize && std::equal(ev[0].token.begin(), ev[0].token.end(), tail.begin());
         std::snprintf(m, sizeof(m), "꼬리 ② CONNECT — 이벤트 %zu(CONNECTED %d) · 토큰 그대로 %d · 읽은 메시지 %llu · 멈춤 %llu · 나간 조각 %zu · 키 %d",
                       ev.size(), (int)one, (int)same, seenTotal(net.Stats()), net.Stats().stopped, out.size(),
-                      (int)net.IsKeyed("10.30.0.1:1002"));
+                      (int)net.IsKeyed(ToAddr("10.30.0.1:1002")));
         Check(one && same && seenTotal(net.Stats()) == 1 && net.Stats().stopped == 0 && out.size() == 1 &&
-              net.IsKeyed("10.30.0.1:1002"), m);
+              net.IsKeyed(ToAddr("10.30.0.1:1002")), m);
     }
     {   // ③ 꼬리 없는 접속 시도 — 토큰 빈 것 · 본문 97 · 꼬리 셈 0
         nox::CUdpServer net;
         std::vector<nox::OutPacket> out;
         std::vector<nox::NetworkEvent> ev;
         const auto tj = TryJoinPkt("Jack");
-        net.OnDatagram("10.30.0.2:1001", tj.data(), tj.size(), out, ev);
+        net.OnDatagram(ToAddr("10.30.0.2:1001"), tj.data(), tj.size(), out, ev);
         std::snprintf(m, sizeof(m), "꼬리 ③ 꼬리 없음 — 이벤트 %zu · 토큰 %zu바이트 · 본문 %zu · 꼬리 %llu",
                       ev.size(), ev.empty() ? 0 : ev[0].token.size(), ev.empty() ? 0 : ev[0].body.size(), net.Stats().joinTrailers);
         Check(ev.size() == 1 && ev[0].token.empty() && ev[0].body.size() == 97 && net.Stats().joinTrailers == 0, m);
@@ -29996,7 +30015,7 @@ void TestReliableResend() {
     auto acceptsIn = [](const std::vector<nox::OutPacket>& out, const std::string& to, uint8_t key) {
         int n = 0;
         for (const auto& p : out)
-            if (p.to == to && p.data.size() == 10 && (p.data[0] ^ key) == 0x80 && (p.data[2] ^ key) == 0x1f) ++n;
+            if (nox::AddrText(p.to) == to && p.data.size() == 10 && (p.data[0] ^ key) == 0x80 && (p.data[2] ^ key) == 0x1f) ++n;
         return n;
     };
     auto tickRange = [&](nox::CSyncHost& srv, uint32_t from, uint32_t to, const std::string& who, uint8_t key) {
@@ -30696,7 +30715,7 @@ void TestMissileComplexWire() {
     auto findEntry = [&](const std::vector<nox::OutPacket>& out, uint16_t wire, uint8_t* b0,
                          uint8_t* b1 = nullptr) {
         for (const auto& pk : out) {
-            if (pk.to != a) continue;
+            if (nox::AddrText(pk.to) != a) continue;
             auto body = Body(pk);
             if (body.empty() || body[0] != static_cast<uint8_t>(nox::Op::UPDATE_STREAM)) continue;
             nox::UpdateMsg m = nox::DecodeUpdate(body.data() + 1, body.size() - 1, nullptr);
@@ -30724,7 +30743,7 @@ void TestMissileComplexWire() {
             static_cast<uint8_t>(wy),      static_cast<uint8_t>(wy >> 8),
         };
         for (const auto& pk : out) {
-            if (pk.to != a) continue;
+            if (nox::AddrText(pk.to) != a) continue;
             auto body = Body(pk);
             if (body.empty() || body[0] != static_cast<uint8_t>(nox::Op::UPDATE_STREAM)) continue;
             if (body.size() < sizeof(sig)) continue;
@@ -31839,7 +31858,7 @@ void TestMusicWire() {
         srv->MusicPlay(1, 2); srv.TakeOut(out);
         bool wrapped = false;
         for (const auto& pkt : out) {
-            if (pkt.to != a) continue;
+            if (nox::AddrText(pkt.to) != a) continue;
             for (size_t i = 0; i + 1 < pkt.data.size(); ++i)
                 if (pkt.data[i] == 0xcc) { wrapped = true; break; }
         }
@@ -32146,7 +32165,7 @@ void TestOutgoingKeepsLink() {
     auto acksTo = [&](const std::vector<nox::OutPacket>& out) {   // 나간 클라에게 간 스트림 0 비신뢰 가운데 머리 순번이 `ae` 순번 + 1
         int n = 0;
         for (const auto& pk : out)
-            if (pk.to == a && pk.data.size() >= 2 && (pk.data[0] & 0x80) == 0 && (pk.data[0] & 0x7F) == 0 &&
+            if (nox::AddrText(pk.to) == a && pk.data.size() >= 2 && (pk.data[0] & 0x80) == 0 && (pk.data[0] & 0x7F) == 0 &&
                 pk.data[1] == static_cast<uint8_t>(aeSeq + 1)) ++n;
         return n;
     };
@@ -32165,7 +32184,7 @@ void TestOutgoingKeepsLink() {
         const size_t inGame = r.srv->PlayerCount();
         tick(r, o1, 2);
         const int acks = acksTo(o1);
-        const bool netAlive = r.srv.Network().SessionIdOf(a) == r.sa;
+        const bool netAlive = r.srv.Network().SessionIdOf(ToAddr(a)) == r.sa;
         const bool seated = r.srv.Rooms().RoomOfSession(r.sa) != kNoRoom;
         const size_t sess = r.srv->SessionCount(), links = r.srv->LeftLinkCount();
         std::snprintf(m, sizeof(m), "ⓐⓑⓔ ae 뒤 세 틱 — 남에게 ae %zu · 31 %zu · 판 사람 %zu · 나간 클라 확인 %d · 통신 층 %d · 방 자리 %d · 게임 자리 %zu · 남은 연결 %zu",
@@ -32183,10 +32202,10 @@ void TestOutgoingKeepsLink() {
         r.srv.OnPacket(a, close0a, sizeof(close0a), o2);
         tick(r, o2, 1);
         std::snprintf(m, sizeof(m), "ⓒ 0a 뒤 — 세션 %zu · 남은 연결 %zu · 통신 층 %lld · 방 자리 %d · 남에게 ae %zu · 셈 판에서 빠짐 %llu · 접속 닫기 %llu · 시간 초과 %llu · 빠진 뒤 닫힘 %llu",
-                      r.srv->SessionCount(), r.srv->LeftLinkCount(), (long long)r.srv.Network().SessionIdOf(a), r.srv.Rooms().RoomOfSession(r.sa),
+                      r.srv->SessionCount(), r.srv->LeftLinkCount(), (long long)r.srv.Network().SessionIdOf(ToAddr(a)), r.srv.Rooms().RoomOfSession(r.sa),
                       countTo(o2, b, nox::Op::OUTGOING_CLIENT, 3), r.srv->leaveBy(LB::Outgoing), r.srv->leaveBy(LB::CloseMsg),
                       r.srv->leaveBy(LB::Timeout), r.srv->closedAfterOut());
-        Check(r.srv->SessionCount() == 1 && r.srv->LeftLinkCount() == 0 && r.srv.Network().SessionIdOf(a) == 0 &&
+        Check(r.srv->SessionCount() == 1 && r.srv->LeftLinkCount() == 0 && r.srv.Network().SessionIdOf(ToAddr(a)) == 0 &&
               r.srv.Rooms().RoomOfSession(r.sa) == kNoRoom &&
               countTo(o2, b, nox::Op::OUTGOING_CLIENT, 3) == 0 && r.srv->leaveBy(LB::Outgoing) == 1 &&
               r.srv->leaveBy(LB::CloseMsg) == 1 && r.srv->leaveBy(LB::Timeout) == 0 && r.srv->closedAfterOut() == 1, m);
@@ -32198,15 +32217,15 @@ void TestOutgoingKeepsLink() {
         r.srv.OnPacket(a, ae, sizeof(ae), o);
         tick(r, o, 1);
         tick(r, o, 735);                                   // `ae` 뒤 약 25초
-        const bool at25 = r.srv.Network().SessionIdOf(a) == r.sa && r.srv->LeftLinkCount() == 1 &&
+        const bool at25 = r.srv.Network().SessionIdOf(ToAddr(a)) == r.sa && r.srv->LeftLinkCount() == 1 &&
                           r.srv.Rooms().RoomOfSession(r.sa) != kNoRoom;
         o.clear();
         tick(r, o, 300);                                   // 약 35초
         const size_t c6 = countTo(o, a, nox::Op::TIMEOUT_NOTIFICATION, 1);
         std::snprintf(m, sizeof(m), "ⓓ ae 뒤 조용 — 25초 남음 %d · 35초 남은 연결 %zu · 통신 층 %lld · 방 자리 %d · c6 %zu · 셈 시간 초과 %llu · 빠진 뒤 닫힘 %llu · 판 사람 %zu",
-                      (int)at25, r.srv->LeftLinkCount(), (long long)r.srv.Network().SessionIdOf(a), r.srv.Rooms().RoomOfSession(r.sa), c6,
+                      (int)at25, r.srv->LeftLinkCount(), (long long)r.srv.Network().SessionIdOf(ToAddr(a)), r.srv.Rooms().RoomOfSession(r.sa), c6,
                       r.srv->leaveBy(LB::Timeout), r.srv->closedAfterOut(), r.srv->PlayerCount());
-        Check(at25 && r.srv->LeftLinkCount() == 0 && r.srv.Network().SessionIdOf(a) == 0 && r.srv.Rooms().RoomOfSession(r.sa) == kNoRoom &&
+        Check(at25 && r.srv->LeftLinkCount() == 0 && r.srv.Network().SessionIdOf(ToAddr(a)) == 0 && r.srv.Rooms().RoomOfSession(r.sa) == kNoRoom &&
               c6 == 1 && r.srv->leaveBy(LB::Timeout) == 1 && r.srv->closedAfterOut() == 1 && r.srv->PlayerCount() == 1, m);
         // ⓓ' 교차(덤 `0974668` 와) — 시간 초과로 닫은 뒤에도 클라가 살아 보내면(늦은 `0a` · 게임 조각) 빈 세션을 안 만든다
         const unsigned long long dropBefore = r.srv.Network().Stats().droppedNoSession;
@@ -32215,9 +32234,9 @@ void TestOutgoingKeepsLink() {
         r.srv.OnPacket(a, lateGame, sizeof(lateGame), o);
         tick(r, o, 1);
         std::snprintf(m, sizeof(m), "ⓓ' 닫은 뒤 늦은 둘 — 통신 층 %lld · 버림 %llu → %llu · 게임 자리 %zu · 남은 연결 %zu",
-                      (long long)r.srv.Network().SessionIdOf(a), dropBefore, r.srv.Network().Stats().droppedNoSession, r.srv->SessionCount(),
+                      (long long)r.srv.Network().SessionIdOf(ToAddr(a)), dropBefore, r.srv.Network().Stats().droppedNoSession, r.srv->SessionCount(),
                       r.srv->LeftLinkCount());
-        Check(r.srv.Network().SessionIdOf(a) == 0 && r.srv.Network().Stats().droppedNoSession == dropBefore + 2 &&
+        Check(r.srv.Network().SessionIdOf(ToAddr(a)) == 0 && r.srv.Network().Stats().droppedNoSession == dropBefore + 2 &&
               r.srv->SessionCount() == 1 && r.srv->LeftLinkCount() == 0, m);
     }
     // ⓕ
@@ -32228,10 +32247,10 @@ void TestOutgoingKeepsLink() {
         r.srv.OnPacket(a, close0a, sizeof(close0a), o);
         tick(r, o, 1);
         std::snprintf(m, sizeof(m), "ⓕ ae · 0a 한 틱 — 세션 %zu · 통신 층 %lld · 방 자리 %d · 남에게 ae %zu · 31 %zu · 셈 판에서 빠짐 %llu · 접속 닫기 %llu · 빠진 뒤 닫힘 %llu",
-                      r.srv->SessionCount(), (long long)r.srv.Network().SessionIdOf(a), r.srv.Rooms().RoomOfSession(r.sa),
+                      r.srv->SessionCount(), (long long)r.srv.Network().SessionIdOf(ToAddr(a)), r.srv.Rooms().RoomOfSession(r.sa),
                       countTo(o, b, nox::Op::OUTGOING_CLIENT, 3), countTo(o, b, nox::Op::DESTROY_OBJECT, 3), r.srv->leaveBy(LB::Outgoing),
                       r.srv->leaveBy(LB::CloseMsg), r.srv->closedAfterOut());
-        Check(r.srv->SessionCount() == 1 && r.srv->LeftLinkCount() == 0 && r.srv.Network().SessionIdOf(a) == 0 &&
+        Check(r.srv->SessionCount() == 1 && r.srv->LeftLinkCount() == 0 && r.srv.Network().SessionIdOf(ToAddr(a)) == 0 &&
               r.srv.Rooms().RoomOfSession(r.sa) == kNoRoom &&
               countTo(o, b, nox::Op::OUTGOING_CLIENT, 3) == 1 && countTo(o, b, nox::Op::DESTROY_OBJECT, 3) == 1 &&
               r.srv->leaveBy(LB::Outgoing) == 1 && r.srv->leaveBy(LB::CloseMsg) == 1 && r.srv->closedAfterOut() == 1, m);
@@ -32276,20 +32295,20 @@ void TestLateDatagramAfterDrop() {
         srv.DebugTouch(sa);
         srv->DebugSetClosing(sa);                          // 접속 닫기로 걷힘
         now += 34; srv.Tick(now, out);
-        r.afterDrop = srv.Network().SessionIdOf(a);
+        r.afterDrop = srv.Network().SessionIdOf(ToAddr(a));
         const uint8_t late[3] = { 0x00, 0x05, op };
         srv.OnPacket(a, late, sizeof(late), out);
-        r.atLate = srv.Network().SessionIdOf(a);
+        r.atLate = srv.Network().SessionIdOf(ToAddr(a));
         r.dropped = srv.Network().Stats().droppedNoSession;
         const std::vector<uint8_t> tj = TryJoinPkt("ctl");  // 대조군 — 새 주소의 접속 시도는 받아 준다
         srv.OnPacket(c, tj.data(), tj.size(), out);
-        r.joinCtl = srv.Network().SessionIdOf(c);
+        r.joinCtl = srv.Network().SessionIdOf(ToAddr(c));
         // 대조군 둘 — 정품 클라의 첫 조각인 서버 찾기(`_evidence/20260905_server_bidir.txt` 첫 RECV 바이트 그대로)도 받아 준다
         const uint8_t disc[12] = { 0x00, 0x00, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0xe4, 0x54, 0x39, 0x05 };
         srv.OnPacket(d, disc, sizeof(disc), out);
-        r.discCtl = srv.Network().SessionIdOf(d);
+        r.discCtl = srv.Network().SessionIdOf(ToAddr(d));
         for (int t = 0; t < 1800; ++t) { now += 34; srv.Tick(now, out); }
-        r.after61 = srv.Network().SessionIdOf(a);
+        r.after61 = srv.Network().SessionIdOf(ToAddr(a));
         return r;
     };
     const R p = run(static_cast<uint8_t>(nox::Op::CLIENT_CLOSE)), x = run(static_cast<uint8_t>(nox::Op::CLIENT_CLOSE) ^ 0x70);
@@ -32753,7 +32772,7 @@ void TestGameServerReady() {
     const uint8_t want[17] = { static_cast<uint8_t>(nox::Op::STAT_MULTIPLIERS), 0, 0, 0x80, 0x3f, 0, 0, 0x80, 0x3f, 0, 0, 0x80, 0x3f, 0, 0, 0x80, 0x3f };
     bool found = false;
     for (const auto& p : o) {
-        if (p.to != a) continue;
+        if (nox::AddrText(p.to) != a) continue;
         const auto body = Body(p);
         for (size_t i = 0; i + sizeof(want) <= body.size() && !found; ++i)
             if (std::memcmp(body.data() + i, want, sizeof(want)) == 0) found = true;
@@ -32854,7 +32873,7 @@ void TestSnapshotSeqRenumber() {
     //   그 손잡이가 죽는다. 값으로 복사해 둔다(2026-09-09 이 시험이 그 탓에 헛돌았다).
     std::vector<uint8_t> got;
     for (const auto& p : out) {
-        if (p.to != a) continue;
+        if (nox::AddrText(p.to) != a) continue;
         std::vector<uint8_t> b = Body(p);
         if (b.size() == snap.size()) got = b;
     }
@@ -35014,7 +35033,7 @@ void TestReliableAckStream() {
     //   ⚠ 스트림 0 까지 봐야 한다 — 스트림 1 만 보면 이 결함을 못 잡는다(그게 원래 상태였다).
     int nPlain = 0, nAcked = 0, nStream0 = 0;
     for (const auto& pk : out) {
-        if (pk.to != a || pk.data.size() < 2) continue;
+        if (nox::AddrText(pk.to) != a || pk.data.size() < 2) continue;
         const uint8_t b0 = pk.data[0];
         if (b0 & 0x80) continue;                 // 신뢰는 자기 순번을 쓴다
         ++nPlain;

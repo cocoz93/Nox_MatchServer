@@ -40,6 +40,7 @@ public:
 
     // 받은 데이터그램 하나 — 통신 층 → 일 → 게임 → 요청 → 통신 층. 나간 조각은 `out` 에 붙인다.
     //   돌려주는 값 = 이 조각에서 읽은 메시지 수(통신 층이 읽은 접속 제어 + 게임이 읽은 게임 메시지).
+    //   ★ 11-17 C-2 — `from` 은 글자 주소("a.b.c.d:port" · 봇 "botN" — `ParseAddr`). 못 읽으면 앞서 쌓인 요청만 옮기고 0
     size_t OnPacket(const std::string& from, const uint8_t* data, size_t n, std::vector<OutPacket>& out);
     // 틱 — 게임 시계(`BeginTick`) → 틱이 돌면 통신 층 Tick(다시 보내기 · 시간 초과 알림 → 게임) → 게임 일(`RunTick`) → 요청.
     //   돌려주는 값 = 이번에 지나간 틱 수.
@@ -48,6 +49,7 @@ public:
     void TakeOut(std::vector<OutPacket>& out);
 
     // 소켓 없이 사람을 세운다(시험·진단) — 통신 층이 번호를 매기고(`OpenSession`) 게임에 세운다. 돌려주는 값 = 세션 번호.
+    //   ★ 11-17 C-2 — 주소는 `OnPacket` 과 같은 글자. 못 읽으면 `kNoSession`
     int64_t DebugEnterGame(const std::string& address, uint16_t netCode, bool observer = false,
                            CharClass cls = CharClass::Wizard);
     // 그 세션에서 지금 무언가를 받은 것으로 친다(통신 층 시간 초과 시계만 — 10-d 시험용).

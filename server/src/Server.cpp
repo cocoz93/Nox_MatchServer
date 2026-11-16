@@ -3285,7 +3285,7 @@ size_t Server::OnNetworkEvent(const NetworkEvent& ev) {
         return 0;
     }
     Session& s = SessionFor(ev.sessionId);
-    if (s.addrText.empty()) s.addrText = ev.addr;   // ★ 10-09 조각 5d — 주소(기록용)는 이벤트가 나른다
+    if (s.addrText.empty()) s.addrText = nox::AddrText(ev.addr);   // ★ 10-09 조각 5d — 주소(기록용)는 이벤트가 나른다
     switch (ev.type) {
         case NetworkEvent::Type::CONNECTED:
             if (ev.scripted) {

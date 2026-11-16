@@ -30,33 +30,66 @@ bool OpensSession(const uint8_t* data, size_t n) {
 }
 }  // namespace
 
+std::string AddrText(const UdpAddr& a) {
+    if (a.ip == 0) return "bot" + std::to_string(a.port);
+    return Ipv4ToString(a.ip) + ":" + std::to_string(a.port);
+}
+
+bool ParseAddr(const std::string& text, UdpAddr& out) {
+    // 숫자 꼬리(포트 · 봇 번호) — 1~5자리 · 65,535 까지
+    auto number = [](const std::string& s, size_t from, uint16_t& v) {
+        if (from >= s.size() || s.size() - from > 5) return false;
+        uint32_t n = 0;
+        for (size_t i = from; i < s.size(); ++i) {
+            if (s[i] < '0' || s[i] > '9') return false;
+            n = n * 10 + static_cast<uint32_t>(s[i] - '0');
+        }
+        if (n > 0xffff) return false;
+        v = static_cast<uint16_t>(n);
+        return true;
+    };
+    if (text.compare(0, 3, "bot") == 0) {
+        uint16_t index = 0;
+        if (!number(text, 3, index)) return false;
+        out = UdpAddr{0, index};
+        return true;
+    }
+    const size_t colon = text.rfind(':');
+    if (colon == std::string::npos) return false;
+    uint32_t ip = 0;
+    uint16_t port = 0;
+    if (!ParseIpv4(text.substr(0, colon), ip) || ip == 0 || !number(text, colon + 1, port)) return false;
+    out = UdpAddr{ip, port};
+    return true;
+}
+
 // ★ 10-08 조각 4 — 처음 보는 주소에 세션 번호를 매긴다. 게임은 이 번호로만 사람을 가른다(`Docs/LAYERS_DESIGN.md` 조각 4).
 //   지운 뒤 같은 주소로 다시 오면 새 번호다.
-CUdpSession& CUdpServer::SessionFor(const std::string& addr) {
-    auto it = _sessions.find(addr);
+CUdpSession& CUdpServer::SessionFor(const UdpAddr& addr) {
+    const uint64_t key = addr.Key();
+    auto it = _sessions.find(key);
     if (it != _sessions.end()) return it->second;
     CUdpSession s;
     s.addr = addr;
     s.sessionId = _nextSessionId++;
-    _addrOf.emplace(s.sessionId, addr);
-    return _sessions.emplace(addr, s).first->second;
+    _addrOf.emplace(s.sessionId, key);
+    return _sessions.emplace(key, s).first->second;
 }
 
-int64_t CUdpServer::OpenSession(const std::string& addr) {
+int64_t CUdpServer::OpenSession(const UdpAddr& addr) {
     CUdpSession& s = SessionFor(addr);
     s.announced = true;   // 소켓 없이 게임에 세우는 사람 — 게임이 지운다
     return s.sessionId;
 }
 
-int64_t CUdpServer::SessionIdOf(const std::string& addr) const {
-    auto it = _sessions.find(addr);
+int64_t CUdpServer::SessionIdOf(const UdpAddr& addr) const {
+    auto it = _sessions.find(addr.Key());
     return it == _sessions.end() ? 0 : it->second.sessionId;
 }
 
-const std::string& CUdpServer::AddrOf(int64_t sessionId) const {
-    static const std::string kNone;
+std::string CUdpServer::AddrOf(int64_t sessionId) const {
     auto it = _addrOf.find(sessionId);
-    return it == _addrOf.end() ? kNone : it->second;
+    return it == _addrOf.end() ? std::string() : AddrText(_sessions.at(it->second).addr);
 }
 
 void CUdpServer::RequestDisconnectSession(int64_t sessionId) {
@@ -158,12 +191,12 @@ void CUdpServer::ArmIdle(CUdpSession& s) {
     PushTimer(t);
 }
 
-size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size_t n,
+size_t CUdpServer::OnDatagram(const UdpAddr& from, const uint8_t* data, size_t n,
                               std::vector<OutPacket>& out, std::vector<NetworkEvent>& events) {
     // ★ 10-17 덤 — 지운 주소에서 늦게 온 조각(나간 클라의 `0a` · 키 걸린 게임 조각)이 빈 세션을 만들면, 키가 없어 게임 메시지로 잘못 읽히고
     //   「게임에 넘김」이 붙은 채 방 관리자는 모르는 세션이라 버리기만 해서(`RoomManager.cpp` `droppedUnknown`) 아무도 안 지웠다
     //   (`proto_test` `TestLateDatagramAfterDrop` — 61초 뒤에도 남음). 처음 보는 주소는 접속 전 몫만 받는다(`OpensSession`)
-    if (_sessions.count(from) == 0 && !OpensSession(data, n)) {
+    if (_sessions.count(from.Key()) == 0 && !OpensSession(data, n)) {
         ++_stats.droppedNoSession;
         return 0;
     }

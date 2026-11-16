@@ -743,7 +743,11 @@ int main(int argc, char** argv) {
     world.files = &gameFiles;
     world.tables = gameTables;
     world.maps = &maps;
-    world.openSession = [&udp](const std::string& addr) { return udp.OpenSession(addr); };
+    // ★ 11-17 C-2 — 봇 주소 글자("botN")를 숫자 주소로 풀어 연다(통신 층 열쇠는 숫자)
+    world.openSession = [&udp](const std::string& addr) {
+        UdpAddr a;
+        return nox::ParseAddr(addr, a) ? udp.OpenSession(a) : nox::kNoSession;
+    };
     rooms.SetWorldData(world);
     rooms.SetLogRooms(true);   // ★ 10-14 작업 9e — 방을 만들고 닫을 때 한 줄(`[방] N 만듦` · `닫음`)
     rooms.SetRankOneMap(opt.rankOneMap);   // ★ 매칭 손보기 3
@@ -770,7 +774,7 @@ int main(int argc, char** argv) {
     }
     if (const int rc = ConfigureNetwork(udp, opt, tmpl, room0 ? room0->Extras() : noRoom)) return rc;
     // 초당 `[성장]` 줄의 봇 번호 — 통신 층 값이라 스레드를 띄우기 전에 읽어 둔다
-    if (room0) room0->SetBotSession(net.Network().SessionIdOf("bot0"));
+    if (room0) room0->SetBotSession(net.Network().SessionIdOf(UdpAddr{0, 0}));   // 봇 0 = ip 0 · port 0(`AddrText` "bot0")
 
     // ★ 10-09 조각 5d-2b — 소켓은 네트워크 스레드가 연다(옛 이 자리의 `WSAStartup` · `socket` · `bind` — 실패 문구 그대로)
     {

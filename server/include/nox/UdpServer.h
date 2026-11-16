@@ -17,11 +17,19 @@
 #include <utility>
 #include <vector>
 
+#include "UdpEndpoint.h"   // ServerCore — 주소 `UdpAddr`(IPv4 · 호스트 바이트 차례)
+
 namespace nox {
+
+// ★ 11-17 C-2 — 주소는 숫자(`UdpAddr`)다. 옛 「ip:port」 글자는 데이터그램마다 짓고 글자로 지도를 찾았다.
+//   글자는 줄을 찍을 때 · 시험 · 재생 대본(덤프의 주소 글자)에서만 쓴다 — 아래 둘이 그 경계다.
+//   글자 꼴 = "a.b.c.d:port". 봇(`BotAddr` "botN")은 ip 0 · port N — 소켓에서 받는 주소는 ip 0 이 없어 안 겹치고, 통신 스레드는 ip 0 에 보내지 않는다.
+std::string AddrText(const UdpAddr& a);
+bool ParseAddr(const std::string& text, UdpAddr& out);   // 못 읽으면 false(빈 글자 포함)
 
 // 나갈 조각 하나 — 받는 주소와 와이어 바이트(머리 포함 · XOR 뒤).
 struct OutPacket {
-    std::string to;
+    UdpAddr to;
     std::vector<uint8_t> data;
 };
 
@@ -98,7 +106,7 @@ struct NetworkEvent {
     };
     Type type = Type::RECEIVED;
     int64_t sessionId = 0;          // 게임이 사람을 가르는 번호(10-08 조각 4)
-    std::string addr;               // 그 세션의 주소 — 기록용
+    UdpAddr addr;                   // 그 세션의 주소 — 기록용(글자는 `AddrText`)
     std::vector<uint8_t> body;      // RECEIVED · JOIN_REQUESTED(오프코드 뺀 본문 97바이트 — `MsgServerTryJoin`)
     std::vector<uint8_t> token;     // ★ 10-10 토큰 작업 2 — JOIN_REQUESTED · CONNECTED: 그 데이터그램 꼬리의 입장 토큰 53바이트(없으면 빈 것)
     DisconnectReason reason = DisconnectReason::CLIENT_CLOSE;   // DISCONNECTED
@@ -160,7 +168,7 @@ constexpr uint32_t kDefaultSessionTimeoutMs = 30000;
 
 // 통신 층의 상대 하나 — 원본 netstr `Conn` 자리. 주소:포트로 가른다.
 struct CUdpSession {
-    std::string addr;
+    UdpAddr addr;
     int64_t sessionId = 0;   // 처음 볼 때 매긴 번호(1부터) — 게임 쪽 이름표(10-08 조각 4)
     // ★ 10-08 조각 4c — 게임에 이벤트를 넘긴 적이 있나(없으면 서버 찾기·접속 시도만 한 상대 — 통신 층이 걷어낸다) · 마지막으로 받은 때
     bool announced = false;
@@ -268,7 +276,7 @@ public:
     // ── 받기·보내기 ──────────────────────────────────────────
     // 데이터그램 하나. 앞에서부터 0x20 미만 오프코드는 접속 제어라 여기서 답하고(`out`),
     // 처음 0x20 이상이 나온 자리부터는 `RECEIVED` 로 게임에 넘긴다. 돌려주는 값 = 여기서 읽은 접속 제어 메시지 수.
-    size_t OnDatagram(const std::string& from, const uint8_t* data, size_t n,
+    size_t OnDatagram(const UdpAddr& from, const uint8_t* data, size_t n,
                       std::vector<OutPacket>& out, std::vector<NetworkEvent>& events);
 
     // ★ 10-09 조각 5d — 게임이 쌓은 요청 하나를 처리한다(아래 같은 이름 함수로 나눠 보냄). 나갈 조각은 `out` 에.
@@ -294,9 +302,9 @@ public:
 
     // ★ 10-08 조각 4 — 세션 번호. 처음 보는 주소에 1부터 매긴다.
     //   `OpenSession` 은 그 주소의 번호(없으면 만든다) — 소켓 없이 사람을 세우는 시험·진단 진입(`DebugEnterGame`)이 쓴다.
-    int64_t OpenSession(const std::string& addr);
-    int64_t SessionIdOf(const std::string& addr) const;   // 없으면 0
-    const std::string& AddrOf(int64_t sessionId) const;    // 없으면 빈 문자열 — 기록용
+    int64_t OpenSession(const UdpAddr& addr);
+    int64_t SessionIdOf(const UdpAddr& addr) const;   // 없으면 0
+    std::string AddrOf(int64_t sessionId) const;      // 없으면 빈 문자열 — 기록용(글자 `AddrText`)
 
     // ★ 10-09 조각 5a — 이 세션의 시간 초과 한도(ms). 한도는 게임 규칙이라 게임이 판에 들고 날 때 알린다
     //   (원본 `server.go:440-443` — 판에 들어 입력을 받으면 90초 · 아니면 30초). 없는 세션이면 무시한다.
@@ -322,18 +330,18 @@ public:
     // ── 조회 ────────────────────────────────────────────────
     // ⚠⚠ 열쇠 상태를 **같이** 봐야 한다 — 복호가 어긋나면 쓰레기 바이트가
     //   **그럴듯한 오프코드로 보인다.** 「메시지 N개」만 보면 속는다.
-    bool IsKeyed(const std::string& addr) const {
-        auto it = _sessions.find(addr);
+    bool IsKeyed(const UdpAddr& addr) const {
+        auto it = _sessions.find(addr.Key());
         return it != _sessions.end() && it->second.keyed;
     }
-    uint8_t KeyOf(const std::string& addr) const {
-        auto it = _sessions.find(addr);
+    uint8_t KeyOf(const UdpAddr& addr) const {
+        auto it = _sessions.find(addr.Key());
         return it == _sessions.end() ? 0 : it->second.xorKey;
     }
     // 이 상대에게 준 XOR 키. 아직 안 줬으면 0.
     // 덤프의 SEND 를 사람이 읽으려면 이게 필요하다.
-    uint8_t KeyFor(const std::string& addr) const {
-        auto it = _sessions.find(addr);
+    uint8_t KeyFor(const UdpAddr& addr) const {
+        auto it = _sessions.find(addr.Key());
         return it == _sessions.end() ? 0 : (it->second.keyed ? it->second.xorKey : 0);
     }
 
@@ -384,7 +392,7 @@ public:
     CUdpStats Stats() const;
 
 private:
-    CUdpSession& SessionFor(const std::string& addr);
+    CUdpSession& SessionFor(const UdpAddr& addr);
     // 그 상대에게 몸통 하나를 조각으로(`RequestSendMsg` 몸통 · 접속 제어 답도 이걸 쓴다).
     void SendOn(CUdpSession& s, bool reliable, uint8_t stream,
                 const uint8_t* msg, size_t n, std::vector<OutPacket>& out);
@@ -431,8 +439,10 @@ private:
     // ★ 10-08 조각 4c — 게임에 안 넘긴 상대를 걷어내는 조용한 시간. 옛 게임 쪽 값(판에 안 든 사람 30초 · 지금 `kSessionTimeoutMs`) 그대로
     static constexpr uint32_t kUnannouncedIdleMs = 30000;
 
-    std::map<std::string, CUdpSession> _sessions;
-    std::map<int64_t, std::string> _addrOf;   // 세션 번호 → 주소(`_sessions` 의 열쇠)
+    // ★ 11-17 C-2 — 열쇠는 `UdpAddr::Key()`(64비트). 정렬 지도 그대로 둔다(구체화 C-③) — 차례대로 도는 세 곳(`CloseAll` ·
+    //   `Tick` 의 시계 처음 잡기 · 대기 조각 세기 `reliablePending`)은 차례에 뜻이 없고, 정렬 지도라 도는 차례가 늘 같다(글자 열쇠 때와는 다른 차례)
+    std::map<uint64_t, CUdpSession> _sessions;
+    std::map<int64_t, uint64_t> _addrOf;   // 세션 번호 → 주소 열쇠(`_sessions` 의 열쇠)
     int64_t _nextSessionId = 1;
     CUdpStats _stats;   // ★ 10-09 조각 5d-2a — 지표 한 묶음(사본은 `Stats`)
 

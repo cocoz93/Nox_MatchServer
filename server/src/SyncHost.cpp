@@ -5,8 +5,10 @@ namespace nox {
 
 size_t CSyncHost::OnPacket(const std::string& from, const uint8_t* data, size_t n, std::vector<OutPacket>& out) {
     TakeOut(out);   // 앞서 쌓인 요청부터 — 옛 게임은 요청마다 그 자리에서 통신 층에 넘겼다
+    UdpAddr addr;   // ★ 11-17 C-2 — 글자 주소(시험 · 재생 대본)를 여기서 푼다. 못 읽는 글자는 소켓에서 안 생기는 것이라 버린다
+    if (!ParseAddr(from, addr)) return 0;
     std::vector<NetworkEvent> events;
-    size_t count = _network.OnDatagram(from, data, n, out, events);
+    size_t count = _network.OnDatagram(addr, data, n, out, events);
     for (const NetworkEvent& ev : events) count += _rooms.OnNetworkEvent(ev);
     TakeOut(out);
     return count;
@@ -32,7 +34,9 @@ void CSyncHost::TakeOut(std::vector<OutPacket>& out) {
 }
 
 int64_t CSyncHost::DebugEnterGame(const std::string& address, uint16_t netCode, bool observer, CharClass cls) {
-    const int64_t sid = _network.OpenSession(address);
+    UdpAddr addr;   // ★ 11-17 C-2 — 글자 주소를 푼다(못 읽으면 아무도 안 세움)
+    if (!ParseAddr(address, addr)) return kNoSession;
+    const int64_t sid = _network.OpenSession(addr);
     _rooms.AssignDirect(sid, _roomId);   // ★ 10-09 플랜 B 작업 6b — 세션표에도 적는다(닫힌 방식에서도 그 사람의 이벤트가 방 0 으로)
     return _rooms.Game(_roomId).DebugEnterGame(sid, address, netCode, observer, cls);
 }

@@ -103,7 +103,13 @@ int main(int argc, char** argv) {
     if (!f) { std::printf("덤프를 못 연다: %s\n", path); return 1; }
 
     // 내가 만들었지만 아직 덤프와 맞춰보지 않은 것들. 상대별로 줄 세운다.
+    //   ★ 11-17 C-2 — 열쇠는 덤프의 주소 글자 그대로(나간 조각의 숫자 주소는 `AddrText` 로 글자로 바꿔 넣는다)
     std::map<std::string, std::vector<std::vector<uint8_t>>> pending;
+    // 덤프의 주소 글자로 그 상대에게 준 XOR 키 — 못 읽는 글자면 0(키 안 줌과 같다)
+    auto keyFor = [&host](const std::string& peer) -> uint8_t {
+        UdpAddr a;
+        return nox::ParseAddr(peer, a) ? host.Network().KeyFor(a) : 0;
+    };
 
     unsigned long long nLines = 0, nRecv = 0, nSend = 0;
     unsigned long long nSame = 0, nDiff = 0, nMissing = 0, nExtra = 0;
@@ -149,7 +155,7 @@ int main(int argc, char** argv) {
             }
             out.clear();
             host.OnPacket(ln.peer, ln.data.data(), ln.data.size(), out);
-            for (auto& p : out) pending[p.to].push_back(std::move(p.data));
+            for (auto& p : out) pending[nox::AddrText(p.to)].push_back(std::move(p.data));
             continue;
         }
 
@@ -162,7 +168,7 @@ int main(int argc, char** argv) {
             //    `0x57`·`0x0d` 로 흩어져 「깃발 승자 27,619건」 같은 통계가 나왔다.
             ++nMissing;
             if (ln.data.size() >= 3)
-                ++missingByOp[static_cast<uint8_t>(ln.data[2] ^ host.Network().KeyFor(ln.peer))];
+                ++missingByOp[static_cast<uint8_t>(ln.data[2] ^ keyFor(ln.peer))];
             continue;
         }
         std::vector<uint8_t> mine = std::move(q.front());
@@ -181,7 +187,7 @@ int main(int argc, char** argv) {
         // 그 둘 말고 다 같으면 실패로 세지 않되, **몇 자리가 남았는지는 드러내 둔다.**
         // ⚠ 키를 준 뒤의 조각은 **암호문**이다. 오프코드를 볼 때 풀어야 한다.
         //   (자리는 그대로라 「어디가 다른가」는 암호문에서 세도 된다)
-        const uint8_t peerKey = host.Network().KeyFor(ln.peer);
+        const uint8_t peerKey = keyFor(ln.peer);
         bool joinUnknownOnly = false;
         if (mine.size() == ln.data.size() && mine.size() == 218 &&
             (mine[2] ^ peerKey) == static_cast<uint8_t>(nox::Op::INFORM)) {

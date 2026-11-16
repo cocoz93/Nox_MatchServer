@@ -11,7 +11,6 @@
 #include <set>
 
 #include "nox/Clock.h"
-#include "nox/JoinToken.h"   // `Ipv4ToString`
 #include "nox/Opcode.h"
 #include "nox/TickSections.h"
 
@@ -22,12 +21,16 @@ namespace nox {
 namespace {
 // ★ 10-09 플랜 A 5d 자가검증 ② — 시계는 게임 루프와 같은 `nox::NowMs`(`Clock.h` — 옛 이 자리 `GetTickCount64` 는 15.6ms 단위)
 
-std::string KeyOf(const sockaddr_in& a) {
-    char ip[64] = {};
-    inet_ntop(AF_INET, &a.sin_addr, ip, sizeof(ip));
-    char buf[96];
-    std::snprintf(buf, sizeof(buf), "%s:%d", ip, ntohs(a.sin_port));
-    return std::string(buf);
+// ★ 11-17 C-2 — 받은 주소를 숫자로(옛 `KeyOf` 는 데이터그램마다 「ip:port」 글자를 지었다) · 보낼 때는 거꾸로
+UdpAddr AddrOfSock(const sockaddr_in& a) {
+    return UdpAddr{ ntohl(a.sin_addr.s_addr), ntohs(a.sin_port) };
+}
+sockaddr_in SockOf(const UdpAddr& a) {
+    sockaddr_in s = {};
+    s.sin_family = AF_INET;
+    s.sin_addr.s_addr = htonl(a.ip);
+    s.sin_port = htons(a.port);
+    return s;
 }
 }  // namespace
 
@@ -128,7 +131,7 @@ void CNetworkThread::LobbyToEvents(const std::vector<TcpLineEvent>& in, std::vec
                 ev.type = NetworkEvent::Type::LOBBY_OPENED;
                 ev.lobbyPeerIp = e.peerIp;
                 ev.lobbyLocalIp = e.localIp;
-                ev.addr = Ipv4ToString(e.peerIp) + ":tcp" + std::to_string(e.port);   // 기록용(세션 주소와 겹치지 않게)
+                // ★ 11-17 C-2 — `addr` 는 싣지 않는다(옛 「ip:tcp포트」 기록용 글자 · 읽는 곳 없음). 상대는 `lobbyPeerIp` 가 나른다
                 break;
             case TcpLineEvent::Type::LINE:
                 ++_threadStats.lobbyLinesIn;
@@ -214,7 +217,6 @@ void CNetworkThread::Run() {
     WSAEVENT evs[3] = { static_cast<WSAEVENT>(_sockEvent), static_cast<WSAEVENT>(_wakeEvent), static_cast<WSAEVENT>(_lobby.WaitHandle()) };
     const bool lobbyTcp = _lobbyPort != 0;
     const DWORD nEvs = lobbyTcp ? 3 : 2;
-    std::map<std::string, sockaddr_in> addrOf;   // 주소 글자 → 진짜 주소(이 스레드 것)
     std::vector<OutPacket> out;
     std::vector<NetworkEvent> events;
     std::vector<NetworkRequest> reqs;
@@ -301,8 +303,7 @@ void CNetworkThread::Run() {
             if (n <= 0) continue;
             ++got;
             ++_threadStats.datagramsIn;
-            const std::string who = KeyOf(from);
-            addrOf[who] = from;
+            const UdpAddr who = AddrOfSock(from);
             const size_t evBefore = events.size(), outBefore = out.size();
             const size_t ctl = _network.OnDatagram(who, in, static_cast<size_t>(n), out, events);
             // ★★ **클라가 처음 보낸 오프코드를 그때그때 알린다**(옛 `main` 의 같은 줄 — 접속 제어 쪽. ⚠ `--quiet` 여도 찍는다)
@@ -328,7 +329,7 @@ void CNetworkThread::Run() {
                 }
                 // ★ 10-09 조각 5d-2b — 게임 메시지 수는 게임 스레드가 다음 틱에 읽으므로 여기서는 「게임으로 넘김」만 센다
                 std::printf("[받음 %llu] %s  %d바이트 → 접속 제어 %zu개 · 게임으로 넘김 %zu · 보낸 조각 %zu개\n",
-                            _threadStats.datagramsIn, who.c_str(), n, ctl, passed, made);
+                            _threadStats.datagramsIn, AddrText(who).c_str(), n, ctl, passed, made);
                 // 뜯었는데 답이 없으면 무엇을 봤는지 · 열쇠 상태(옛 `main` 의 같은 줄 — 복호가 어긋나면 쓰레기가 오프코드로 보인다)
                 if (ctl > 0 && made == 0 && passed == 0 && n > 3) {
                     std::string line = "     ↳ 본 것:";
@@ -374,11 +375,12 @@ void CNetworkThread::Run() {
         // ★ 10-09 조각 5d-2c — 닫기면 키를 준 상대마다 `SERVER_CLOSE`(쌓인 요청 뒤에)
         if (stopping && _closeOnStop.load()) _network.CloseAll(out);
         // ⑤ 나갈 것 전부(주소를 모르는 상대 — 소켓 없는 봇 — 는 건너뛴다)
+        //   ★ 11-17 C-2 — 봇은 ip 0(`AddrText`). 옛 꼴은 이 스레드가 받아 본 주소 지도에 없으면 건너뛰었다 — 지도에 없는 상대는 봇뿐이었다
         for (const OutPacket& p : out) {
-            auto it = addrOf.find(p.to);
-            if (it == addrOf.end()) continue;
+            if (p.to.ip == 0) continue;
+            const sockaddr_in to = SockOf(p.to);
             if (sendto(s, reinterpret_cast<const char*>(p.data.data()), static_cast<int>(p.data.size()), 0,
-                       reinterpret_cast<sockaddr*>(&it->second), sizeof(it->second)) == SOCKET_ERROR) {
+                       reinterpret_cast<const sockaddr*>(&to), sizeof(to)) == SOCKET_ERROR) {
                 // ★ 11-11 부하 측정 M0 조각 4 — 보내기 실패를 센다(`TickSections.h` `CSendFailTotals` · 옛 꼴은 결과를 안 봤다)
                 AddRelaxed(g_sendFail.count, 1);
                 g_sendFail.lastError.store(WSAGetLastError(), std::memory_order_relaxed);
