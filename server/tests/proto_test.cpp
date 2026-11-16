@@ -12,6 +12,7 @@
 #include <cstring>
 #include <filesystem>   // ★ 10-19 MO 5단계 작업 3 — 기록기 시험의 임시 폴더
 #include <fstream>
+#include <limits>       // ★ 11-16 방 번호 플랜 — 방 번호 끝(int 최댓값)
 #include <map>
 #include <set>
 #include <string>
@@ -25414,7 +25415,7 @@ void TestRoomManager() {
 
 // ── 10-09 플랜 B 작업 6b · 10-10 토큰 작업 2 — 방 나누기(`ROOMS_DESIGN.md` · `TOKEN_DESIGN.md` 「시험」 표) ─────────
 //   진짜 접속 경로(접속 시도 → CONNECT → 입장)를 데이터그램으로 돌린다. 접속 시도는 임시 포트, CONNECT · 입장은 다른 포트(클라 그대로).
-//   ★ 10-10 — 방은 이름표가 아니라 입장 토큰으로 정한다. 클라 DLL 처럼 접속 시도와 CONNECT 끝에 꼬리(토큰 51 · `NXT1`)를 붙인다.
+//   ★ 10-10 — 방은 이름표가 아니라 입장 토큰으로 정한다. 클라 DLL 처럼 접속 시도와 CONNECT 끝에 꼬리(토큰 53 · `NXT1`)를 붙인다.
 //   ① 토큰 둘 → 방 둘 · 포트 바뀜 ② 같은 방 대조 ③ 방끼리 안 섞임(크리처 · 판 끝 · 방 이벤트) ④ 토큰 없음(접속 시도 거절 · CONNECT 끊김)
 //   ⑤ IP 다름 ⑥ 일회용(같은 토큰 두 번째 CONNECT) ⑦ 다시 들어오기 · 나감 두 길 ⑧ 방 만들기 · 닫기 ⑨ 만료 · 서명
 //   ⑩ 정품 접속 시도 100바이트 + 꼬리 ⑪ 토큰의 방이 닫힘 ⑫ 키 받은 뒤 패킷 꼬리는 안 뗌 ⑬ 열린 방식(검사 끄기) ⑭ 아무것도 안 정함 → 모두 거절
@@ -25454,11 +25455,11 @@ nox::JoinKey RoomsKey() {
     for (size_t i = 0; i < k.size(); ++i) k[i] = static_cast<uint8_t>(0xa0 + i);
     return k;
 }
-// 클라 DLL 이 붙이는 꼬리 — 토큰 51 + `NXT1`
+// 클라 DLL 이 붙이는 꼬리 — 토큰 53 + `NXT1`(★ 11-16 판 2)
 std::vector<uint8_t> Trailer(int room, const std::string& ip, uint64_t nonce, uint32_t expires = kRoomsNow + nox::kJoinTokenLifetimeSec,
                              const nox::JoinKey& key = RoomsKey()) {
     nox::JoinToken t;
-    t.roomId = static_cast<uint16_t>(room);
+    t.roomId = static_cast<uint32_t>(room);   // ★ 11-16 방 번호 플랜 — 4바이트 칸(옛 16비트 자르기)
     nox::ParseIpv4(ip, t.clientIp);
     t.expiresAt = expires;
     t.nonce = nonce;
@@ -25512,7 +25513,7 @@ int MakeLobbyLikeRoom(nox::CRoomManager& rooms, const MapCatalog& cat, const std
 // ★ 10-16 작업 12a — 로비 이름을 정한 꼬리(구성원 · 방장 시험)
 std::vector<uint8_t> TrailerAs(const std::string& account, int room, const std::string& ip, uint64_t nonce) {
     nox::JoinToken t;
-    t.roomId = static_cast<uint16_t>(room);
+    t.roomId = static_cast<uint32_t>(room);   // ★ 11-16 방 번호 플랜
     nox::ParseIpv4(ip, t.clientIp);
     t.expiresAt = kRoomsNow + nox::kJoinTokenLifetimeSec;
     t.nonce = nonce;
@@ -29892,6 +29893,50 @@ void TestInGameNameIsAccount() {
     std::printf("  판 안 이름 — 내 묶음 · 남 소개 모두 로비 이름 · 없으면 캐릭터 이름\n");
 }
 
+// ── ★ 11-16 방 번호 플랜 — 16비트를 넘는 방 번호(`Docs/ROOM_ID_WIDEN_PLAN_1116.md` 5절) ─────────
+//   ① 첫 방 번호 65,534 로 방 넷(65,534 ~ 65,537) → 토큰 꼬리 넷이 각자 제 방으로(옛 16비트 칸이면 65,536 → 0 · 65,537 → 1 이라 「방 없음」)
+//   ② int 최댓값 바로 앞(2,147,483,646)에서 시작 → 첫 방은 만들고 둘째 방은 거절(번호가 넘치지 않게 · 셈 `roomIdExhausted`)
+void TestRoomIdWide() {
+    using Ev = nox::NetworkEvent;
+    char m[300];
+    {
+        nox::CRoomManager rooms;
+        rooms.SetJoinKey(RoomsKey());
+        rooms.SetUnixClock([] { return kRoomsNow; });
+        rooms.SetFirstRoomId(65534);
+        int ids[4] = {};
+        for (int& id : ids) id = rooms.CreateRoom(RoomSettings{});
+        int home = 0;
+        for (int i = 0; i < 4; ++i) {
+            const std::string ip = "10.116.0." + std::to_string(i + 1);
+            const auto tail = Trailer(ids[i], ip, 0x1116000000000001ull + i);
+            Ev c;
+            c.type = Ev::Type::CONNECTED;
+            c.sessionId = 200 + i;
+            c.addr = ip + ":2";
+            c.token.assign(tail.begin(), tail.begin() + nox::kJoinTokenSize);
+            rooms.OnNetworkEvent(c);
+            home += rooms.RoomOfSession(200 + i) == ids[i] ? 1 : 0;
+        }
+        std::snprintf(m, sizeof(m), "① 방 번호 %d ~ %d · 제 방에 든 꼬리 %d/4 · 넣음 %llu · 방 없음 %llu",
+                      ids[0], ids[3], home, rooms.Stats().assigned, rooms.Stats().tokenNoRoom);
+        Check(ids[0] == 65534 && ids[3] == 65537 && home == 4 && rooms.Stats().assigned == 4 && rooms.Stats().tokenNoRoom == 0, m);
+    }
+    {
+        nox::CRoomManager rooms;
+        rooms.SetFirstRoomId(std::numeric_limits<int>::max() - 1);
+        const int a = rooms.CreateRoom(RoomSettings{});
+        int rc = 0;
+        const int b = rooms.CreateRoom(RoomSettings{}, &rc);
+        std::snprintf(m, sizeof(m), "② 끝 앞 첫 방 %d · 둘째 %d(rc %d) · 방 수 %zu · 만든 방 %llu · 번호 끝 거절 %llu",
+                      a, b, rc, rooms.RoomCount(), rooms.Stats().roomsCreated, rooms.Stats().roomIdExhausted);
+        Check(a == std::numeric_limits<int>::max() - 1 && b == nox::CRoomManager::kNoRoom && rc != 0 && rooms.RoomCount() == 1 &&
+                  rooms.Stats().roomsCreated == 1 && rooms.Stats().roomIdExhausted == 1,
+              m);
+    }
+    std::printf("  11-16 방 번호 플랜 — 65,536 넘는 방도 토큰이 제 방으로 · int 최댓값 앞에서 방 만들기 멈춤\n");
+}
+
 void TestJoinTrailer() {
     char m[260];
     auto seenTotal = [](const nox::CUdpStats& s) {
@@ -29900,7 +29945,7 @@ void TestJoinTrailer() {
         return n;
     };
     const auto tail = Trailer(0, "10.30.0.1", 0x9e3779b97f4a7c15ull);   // 0 바이트가 없는 일회용 번호
-    {   // ① 접속 시도 + 꼬리 — 이벤트 하나 · 본문 97 · 토큰 51 그대로 · 읽은 메시지 1(0x0e) · 멈춤 0 · 바로 나간 답 0
+    {   // ① 접속 시도 + 꼬리 — 이벤트 하나 · 본문 97 · 토큰 53 그대로 · 읽은 메시지 1(0x0e) · 멈춤 0 · 바로 나간 답 0
         nox::CUdpServer net;
         std::vector<nox::OutPacket> out;
         std::vector<nox::NetworkEvent> ev;
@@ -35680,6 +35725,7 @@ int main() {
     TestStatMult();               // ★ 11-10 부하 실험 3-2절
     TestInGameNameIsAccount();   // ★ 11-05
     TestJoinTrailer();
+    TestRoomIdWide();             // ★ 11-16 방 번호 플랜
     TestReliableResend();
     TestNewPlayerGearBits();
     TestNewPlayerRealInfo();

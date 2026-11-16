@@ -161,7 +161,7 @@ nox::JoinKey LobbyTestKey() {
 constexpr uint32_t kLobbyTestNow = 1760064016;   // 시험 시계(유닉스 초)
 
 // ★ 10-14 작업 8d — 로비는 방 목록을 갖지 않고 채널이 준다(`ILobbyRooms`). 시험은 가짜 — 옛 설정 `[rooms]` 의 「방장 이름 = 게임 방 번호」 자리
-nox::wol::LobbyRoom FakeRoom(uint16_t id, const char* host) {
+nox::wol::LobbyRoom FakeRoom(uint32_t id, const char* host) {   // ★ 11-16 방 번호 32비트
     nox::wol::LobbyRoom r;
     r.gameRoomId = id;
     r.host = host;   // ★ 10-16 결함 ② — 옛 `creator`(채널 · 353 방장 자리는 지금 방장)
@@ -1050,7 +1050,7 @@ void RankQueueUnitTests() {
         return k;
     };
     // 그 접속의 참가 답이 제 채널 · 353 방장 = 그 사람 · 토큰이 게임 방 `room` 으로 풀리나
-    auto joinedOwn = [&](const std::vector<Out>& o, int conn, const std::string& nick, uint16_t room) {
+    auto joinedOwn = [&](const std::vector<Out>& o, int conn, const std::string& nick, uint32_t room) {   // ★ 11-16 방 번호 32비트
         bool chan = false, host = false, tokOk = false;
         for (const auto& x : o) {
             if (x.conn != conn) continue;
@@ -1775,6 +1775,34 @@ void MirrorUnitTests() {
     Check(reqOli && again.size() == 1 && l4.find("#quinn's_game") != std::string::npos && l4.find("#oli's_game") != std::string::npos &&
               lb.Stats().rankRoomsHidden == 2,
           "⑫ 랭크 요청 실패 → 그 요청 번호의 늦은 답 방도 · 새 일반 방도 보임 = " + l4);
+    // ★ 11-16 방 번호 플랜 — 16비트를 넘는 방 번호(70,000): 게임 서버가 알린 번호가 거울 · 로비 방 · 참가 토큰까지 그대로
+    //   (옛 16비트 자르기 `RoomMirror` 면 4,464 · 옛 연결 줄 상한 0xffff 면 ROOM 줄을 버려 참가 답이 안 나간다)
+    {
+        login4(40, "wide");
+        std::vector<Out> d;
+        mirror.TakeOut(d);
+        out.clear();
+        lb.OnLine(40, "JOINGAME #wide's_game 1 ", out);
+        std::vector<Out> s;
+        mirror.TakeOut(s);
+        nox::LinkLine cw;
+        const bool askedW = s.size() == 1 && s[0].conn == a3.conn && nox::ParseLinkLine(s[0].line, cw) == nox::LinkParse::Ok &&
+                            cw.kind == nox::LinkKind::Create;
+        send(a3, nox::LinkRoomLine(room(70000, "wide", 0)));
+        send(a3, nox::LinkCreated(cw.req, 70000));   // `send` 가 `out` 을 비우고 받으므로 여기 `out` = CREATED 뒤 클라로 간 줄
+        std::string hex;
+        for (const auto& x : out) {
+            const auto t = Tokens(x.line);
+            if (x.conn == 40 && t.size() == 3 && t[0] == "NOXTOKEN") hex = t[2];
+        }
+        const nox::JoinKey keyA3 = nox::GameServerTokenKey(LobbyTestKey(), a3.epoch, a3.ip, a3.port);
+        uint8_t rawW[nox::kJoinTokenSize] = {};
+        nox::JoinToken tokW;
+        const bool okTok = nox::ParseHex(hex, rawW, sizeof(rawW)) &&
+                           nox::VerifyJoinToken(keyA3, rawW, sizeof(rawW), kLobbyTestNow, peer, tokW) == nox::JoinTokenCheck::Ok;
+        Check(askedW && okTok && tokW.roomId == 70000 && hex.size() == 2 * nox::kJoinTokenSize,
+              "★ 방 70,000 → 거울 · 참가 토큰 방 = " + std::to_string(okTok ? tokW.roomId : 0) + "(16진 " + std::to_string(hex.size()) + "자 · 106)");
+    }
 }
 
 // ── ★ 7단계 — 게임 서버 연결 살아 있음(`RoomMirror::Tick` — `Docs/ACCOUNT_DB_DESIGN.md` 조각 2) ──

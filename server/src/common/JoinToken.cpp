@@ -113,18 +113,18 @@ static uint64_t GetLE(const uint8_t* p, size_t n) {
     return v;
 }
 
-// 몸통 35바이트 — 서명은 이 바이트 위에 한다
+// 몸통 37바이트 — 서명은 이 바이트 위에 한다(자리는 `JoinToken.h` 머리)
 static void PackBody(const JoinToken& t, uint8_t body[kJoinTokenBodySize]) {
     std::memset(body, 0, kJoinTokenBodySize);
     body[0] = t.version;
-    PutLE(body + 1, t.roomId, 2);
-    body[3] = static_cast<uint8_t>(t.clientIp >> 24);
-    body[4] = static_cast<uint8_t>(t.clientIp >> 16);
-    body[5] = static_cast<uint8_t>(t.clientIp >> 8);
-    body[6] = static_cast<uint8_t>(t.clientIp);
-    PutLE(body + 7, t.expiresAt, 4);
-    PutLE(body + 11, t.nonce, 8);
-    std::memcpy(body + 19, t.account.data(), t.account.size() < kJoinAccountSize ? t.account.size() : kJoinAccountSize);
+    PutLE(body + 1, t.roomId, 4);
+    body[5] = static_cast<uint8_t>(t.clientIp >> 24);
+    body[6] = static_cast<uint8_t>(t.clientIp >> 16);
+    body[7] = static_cast<uint8_t>(t.clientIp >> 8);
+    body[8] = static_cast<uint8_t>(t.clientIp);
+    PutLE(body + 9, t.expiresAt, 4);
+    PutLE(body + 13, t.nonce, 8);
+    std::memcpy(body + 21, t.account.data(), t.account.size() < kJoinAccountSize ? t.account.size() : kJoinAccountSize);
 }
 
 static bool Mac(const JoinKey& key, const uint8_t body[kJoinTokenBodySize], uint8_t mac[kJoinTokenMacSize]) {
@@ -149,12 +149,12 @@ JoinTokenCheck VerifyJoinToken(const JoinKey& key, const uint8_t* data, size_t l
     if (diff != 0) return JoinTokenCheck::BadMac;
 
     out.version = data[0];
-    out.roomId = static_cast<uint16_t>(GetLE(data + 1, 2));
-    out.clientIp = (static_cast<uint32_t>(data[3]) << 24) | (static_cast<uint32_t>(data[4]) << 16) |
-                   (static_cast<uint32_t>(data[5]) << 8) | data[6];
-    out.expiresAt = static_cast<uint32_t>(GetLE(data + 7, 4));
-    out.nonce = GetLE(data + 11, 8);
-    const char* acc = reinterpret_cast<const char*>(data + 19);
+    out.roomId = static_cast<uint32_t>(GetLE(data + 1, 4));
+    out.clientIp = (static_cast<uint32_t>(data[5]) << 24) | (static_cast<uint32_t>(data[6]) << 16) |
+                   (static_cast<uint32_t>(data[7]) << 8) | data[8];
+    out.expiresAt = static_cast<uint32_t>(GetLE(data + 9, 4));
+    out.nonce = GetLE(data + 13, 8);
+    const char* acc = reinterpret_cast<const char*>(data + 21);
     out.account.assign(acc, strnlen(acc, kJoinAccountSize));
 
     if (out.version != kJoinTokenVersion) return JoinTokenCheck::BadVersion;

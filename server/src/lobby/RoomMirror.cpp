@@ -270,7 +270,7 @@ void RoomMirror::Tick(std::vector<Out>& out) {
 
 LobbyRoom RoomMirror::ToLobbyRoom(const Server& s, const LinkRoom& r) const {
     LobbyRoom lr;
-    lr.gameRoomId = static_cast<uint16_t>(r.id);
+    lr.gameRoomId = r.id;   // ★ 11-16 방 번호 플랜 — 자르지 않는다(옛 16비트 자르기)
     lr.host = r.host.empty() ? r.creator : r.host;
     lr.name = r.name;
     lr.map = r.map;

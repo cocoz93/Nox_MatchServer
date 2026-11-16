@@ -216,9 +216,9 @@ int main(int argc, char** argv)
         bind(game, (sockaddr*)&any, sizeof(any)); bind(other, (sockaddr*)&any, sizeof(any)); bind(cli, (sockaddr*)&any, sizeof(any));
         RecvTimeout(game); RecvTimeout(other);
         const u_short gamePort = PortOf(game), otherPort = PortOf(other);
-        unsigned char raw[51];
-        char hex[103];
-        for (int i = 0; i < 51; ++i) { raw[i] = (unsigned char)(i * 5 + 1); sprintf(hex + 2 * i, "%02x", raw[i]); }
+        unsigned char raw[53];   // ★ 11-16 판 2 토큰(`JoinToken.h` kJoinTokenSize — 방 칸 4바이트 · 옛 51)
+        char hex[107];
+        for (int i = 0; i < 53; ++i) { raw[i] = (unsigned char)(i * 5 + 1); sprintf(hex + 2 * i, "%02x", raw[i]); }
 
         SOCKET lsl = socket(AF_INET, SOCK_STREAM, 0);
         bind(lsl, (sockaddr*)&any, sizeof(any)); listen(lsl, 1);
@@ -236,6 +236,23 @@ int main(int argc, char** argv)
             atLobby.append(b, r);
         }
         Check(atLobby == std::string("NOXCLIENT 7\r\n") + cvers, "lobby: NOXCLIENT 7 goes out before CVERS");   // ★ 매칭 손보기 6 — 판 5(수락 단계) · ★ 11-06 판 7(귓속말)
+
+        // ★ 11-16 판 2 토큰 — 옛 꼴(16진 102자 = 토큰 51) 줄은 떼되 쥐지 않는다 → 게임 서버로 가는 접속 시도에 꼬리가 안 붙는다
+        {
+            const std::string oldLine = std::string("NOXTOKEN 127.0.0.1:") + std::to_string(gamePort) + " " + std::string(hex, 102) + "\r\n: 375 u\r\n";
+            send(lsv, oldLine.data(), (int)oldLine.size(), 0);
+            std::string og;
+            while (og.size() < 9) {
+                char b[64]; int r = recv(lc, b, sizeof(b), 0);
+                if (r <= 0) break;
+                og.append(b, r);
+            }
+            char j0[100]; memset(j0, 0, sizeof(j0)); j0[2] = 0x0e; j0[4] = 'J';
+            sockaddr_in tg = Loopback(gamePort);
+            sendto(cli, j0, sizeof(j0), 0, (sockaddr*)&tg, sizeof(tg));
+            char gb0[512]; const int n0 = recvfrom(game, gb0, sizeof(gb0), 0, NULL, NULL);
+            Check(og == ": 375 u\r\n" && n0 == 100, "token v2: old 102-hex NOXTOKEN line removed, not held (join to game server = 100, no tail)");
+        }
 
         // 토큰 줄을 둘로 나눠 보낸다(TCP 가 줄을 자르는 경우) — 클라는 토큰 줄 없이 앞뒤 줄만 받아야 한다
         const std::string line = std::string("NOXTOKEN 127.0.0.1:") + std::to_string(gamePort) + " " + hex + "\r\n";
@@ -417,11 +434,11 @@ int main(int argc, char** argv)
         sockaddr_in toGame = Loopback(gamePort), toOther = Loopback(otherPort);
         Check(sendto(cli, join, sizeof(join), 0, (sockaddr*)&toGame, sizeof(toGame)) == (int)sizeof(join), "tail: sendto returns caller length 100");
         char gb[512]; int n1 = recvfrom(game, gb, sizeof(gb), 0, NULL, NULL);
-        Check(n1 == 155 && memcmp(gb, join, 100) == 0 && memcmp(gb + 100, raw, 51) == 0 && memcmp(gb + 151, "NXT1", 4) == 0,
-              "tail: join to game server = 100 + token 51 + NXT1");
+        Check(n1 == 157 && memcmp(gb, join, 100) == 0 && memcmp(gb + 100, raw, 53) == 0 && memcmp(gb + 153, "NXT1", 4) == 0,
+              "tail: join to game server = 100 + token 53 + NXT1");
         sendto(cli, (const char*)connPkt, 3, 0, (sockaddr*)&toGame, sizeof(toGame));
         int n2 = recvfrom(game, gb, sizeof(gb), 0, NULL, NULL);
-        Check(n2 == 58 && memcmp(gb, connPkt, 3) == 0 && memcmp(gb + 3, raw, 51) == 0, "tail: CONNECT to game server = 3 + tail 55");
+        Check(n2 == 60 && memcmp(gb, connPkt, 3) == 0 && memcmp(gb + 3, raw, 53) == 0, "tail: CONNECT to game server = 3 + tail 57");
         sendto(cli, join, sizeof(join), 0, (sockaddr*)&toOther, sizeof(toOther));
         int n3 = recvfrom(other, gb, sizeof(gb), 0, NULL, NULL);
         Check(n3 == 100, "tail: join to another server = no tail");

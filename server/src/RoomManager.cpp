@@ -3,6 +3,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <limits>   // ★ 11-16 방 번호 끝(int 최댓값)
 
 #include "nox/Clock.h"
 #include "nox/Messages.h"
@@ -29,6 +30,17 @@ const char* RoomPhaseName(RoomPhase p) {
 // ★ 10-14 플랜 B 작업 9d — 방 만들기 입구(옛 빈 방 만들기 + `main` 이 방 0 에만 세계를 차리던 것). 방 번호는 세계 차리기가 된 뒤에 매긴다
 int CRoomManager::CreateRoom(const RoomSettings& settings, int* buildRc) {
     const SectionClock::time_point secStart = g_tickSections ? SectionClock::now() : SectionClock::time_point{};   // ★ 11-10 부하 실험 — 방 만들기 시간(더미 플랜 5-1절)
+    // ★ 11-16 방 번호 플랜 2-2 — 번호는 올리기만 한다(다시 안 씀 · 판 번호 `<epoch>-<방>-<판>` 이 안 겹치게). int 최댓값에서 멈춘다 —
+    //   더 올리면 넘침(정의되지 않은 동작)이고, 토큰 · 로비 연결의 방 칸 상한(`LobbyLink.cpp` `kMaxRoomId`)도 이 값이다
+    if (_nextRoomId == std::numeric_limits<int>::max()) {
+        ++_stats.roomIdExhausted;
+        if (buildRc) *buildRc = 2;
+        if (_logRooms) {
+            std::printf("[방] 못 만듦 — 방 번호가 끝(%d)에 닿음 · 게임 서버를 다시 켜야 한다\n", _nextRoomId);
+            std::fflush(stdout);
+        }
+        return kNoRoom;
+    }
     const int id = _nextRoomId;
     auto room = std::make_unique<CRoom>(id);
     room->SetSettings(settings);
@@ -561,10 +573,14 @@ int CRoomManager::AdmitByToken(const NetworkEvent& ev, bool consume, JoinToken& 
     const JoinTokenCheck c = VerifyJoinToken(_key, ev.token.data(), ev.token.size(), now, ip, tok);
     ++_stats.tokenCheck[static_cast<int>(c)];
     if (c != JoinTokenCheck::Ok) { why = JoinTokenCheckName(c); return kNoRoom; }
-    if (!HasRoom(tok.roomId)) { ++_stats.tokenNoRoom; why = "방 없음"; return kNoRoom; }
-    if (!RoomAdmits(tok.roomId, tok.account, why, err)) return kNoRoom;   // ★ 10-16 작업 12a — 일회용 번호를 쓰기 전에(거절된 토큰은 안 씀)
+    // ★ 11-16 방 번호 플랜 2-2 — 토큰의 방 칸은 4바이트(`uint32_t`) · 방 번호는 int 라 int 로 쓰기 전에 범위를 본다(서명이 맞으면 로비가 준 값이라 보통은 안에 든다)
+    if (tok.roomId > static_cast<uint32_t>(std::numeric_limits<int>::max()) || !HasRoom(static_cast<int>(tok.roomId))) {
+        ++_stats.tokenNoRoom; why = "방 없음"; return kNoRoom;
+    }
+    const int roomId = static_cast<int>(tok.roomId);
+    if (!RoomAdmits(roomId, tok.account, why, err)) return kNoRoom;   // ★ 10-16 작업 12a — 일회용 번호를 쓰기 전에(거절된 토큰은 안 씀)
     if (consume && !_ledger.Consume(tok.nonce, tok.expiresAt, now)) { ++_stats.tokenReused; why = "이미 쓴 토큰"; return kNoRoom; }
-    return tok.roomId;
+    return roomId;
 }
 
 // 입장 판정 한 줄(`SetLogJoins`) — 두 스레드가 한 표준 출력에 찍으므로 한 줄은 `printf` 한 번(플랜 A 자가검증 ①)

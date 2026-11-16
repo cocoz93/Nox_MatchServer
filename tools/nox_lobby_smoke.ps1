@@ -152,7 +152,7 @@ try {
   $j = ReadUntil $k '366'
   $kinds = ($j | ForEach-Object { Kind $_ }) -join ','
   $nt = if ($j.Count -ge 1) { $j[0].Split(' ') } else { @() }
-  Check ($kinds -eq '?,user:JOINGAME,332,353,366' -and $nt[0] -eq 'NOXTOKEN' -and $nt[1] -eq '127.0.0.2:18590' -and $nt[2] -match '^[0-9a-f]{102}$') "ROOM + CREATED → 클라에 참가 답(NOXTOKEN 게임 서버 등록 주소 · 원래 답 넷) ($kinds · $($nt[1]))"
+  Check ($kinds -eq '?,user:JOINGAME,332,353,366' -and $nt[0] -eq 'NOXTOKEN' -and $nt[1] -eq '127.0.0.2:18590' -and $nt[2] -match '^[0-9a-f]{106}$') "ROOM + CREATED → 클라에 참가 답(NOXTOKEN 게임 서버 등록 주소 · 원래 답 넷) ($kinds · $($nt[1]))"
 
   # ③-2 답 없는 새 방 — 게임 서버가 CREATE 에 답하지 않으면 로비 한도(5초 kRoomRequestTimeoutMs)에 접는다(실행 파일 루프의 Tick)
   Send $k2 @("JOINGAME #bob's_game 1 ")

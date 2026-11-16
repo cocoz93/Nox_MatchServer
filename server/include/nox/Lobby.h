@@ -100,7 +100,7 @@ constexpr uint16_t kDefaultChatPort = 4020;   // ★ 11-06 귓속말 — 채팅 
 // ★ 10-14 플랜 B 작업 8d — 로비가 그리는 방 하나. 채널이 방 관리자의 돌고 있는 방(`CRoomManager::ListRooms`)에서 채운다
 //   (옛 설정 파일 `[rooms]` 의 「방장 이름 = 게임 방 번호」 자리)
 struct LobbyRoom {
-    uint16_t gameRoomId = 0;   // 게임 서버의 방 번호 — 입장 토큰에 싣는다
+    uint32_t gameRoomId = 0;   // 게임 서버의 방 번호 — 입장 토큰에 싣는다(★ 11-16 16 → 32비트 · 방 번호 플랜)
     std::string host;          // 방장의 로비 이름 — 채널 `#<방장>'s_game` · 353 의 방장 자리(@)
                                //   ★ 10-16 결함 ② — 옛 이름 `creator`(만든 사람). 방장이 바뀌면 채널도 따라간다(채널이 `RoomFact::host` 로 채움)
     std::string name;          // 방 이름(UTF-8) — 방 정보의 이름 칸(비면 방장 이름 — 옛 「방 정보 이름도 방장 이름」) · 실을 때 접속의 코드페이지로

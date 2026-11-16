@@ -177,7 +177,7 @@ size_t CUdpServer::OnDatagram(const std::string& from, const uint8_t* data, size
     std::vector<uint8_t> buf(data, data + n);
     if (s.keyed && !_inboundPlain) ApplyXor(buf.data(), buf.size(), s.xorKey);
 
-    // ★ 10-10 토큰 작업 2 — 키 받기 전 데이터그램 끝의 입장 토큰 꼬리(`… 토큰 51 · NXT1`)를 쪼개기 전에 뗀다
+    // ★ 10-10 토큰 작업 2 — 키 받기 전 데이터그램 끝의 입장 토큰 꼬리(`… 토큰 53 · NXT1`)를 쪼개기 전에 뗀다
     //   (`Docs/TOKEN_DESIGN.md`). 녹스 패킷엔 길이 칸이 없어 남겨 두면 꼬리 바이트를 다음 메시지로 잘못 읽는다 — 길이 모르는 번호에서
     //   멈춰 답을 안 하거나(아래 「깨끗하게 쪼개지는지」), 핑 같은 접속 제어로 처리한다. 둘째 자리 `00` 에서 끝나면 티가 안 나기도 한다
     //   (10-10 처음 짠 시험이 그래서 못 잡았다 — `proto_test` `TestJoinTrailer`).

@@ -55,7 +55,7 @@
 //   ② 로비 연결의 받기에서 `NOXTOKEN <게임 서버 IP:포트> <토큰 16진>` 줄을 떼어 쥔다(`LobbyLineFilter.h` — 줄이 나뉘어 와도)
 //      로비 모듈(WOLAPI.dll)은 원래 답만 본다
 //   ③ 쥔 지 60초 안에 그 게임 서버 주소로 가는 접속 시도(100바이트 · 셋째 `0x0e`)와 CONNECT(`ff 00 00`)에
-//      꼬리(토큰 51 · `NXT1`)를 붙여 보낸다. 다른 주소(LAN 판 등)로 가는 것엔 안 붙인다 — 그 서버는 꼬리를 모른다
+//      꼬리(토큰 53 · `NXT1`)를 붙여 보낸다. 다른 주소(LAN 판 등)로 가는 것엔 안 붙인다 — 그 서버는 꼬리를 모른다
 //   ④ closesocket — 로비 연결 상태를 지운다(소켓 번호는 다시 쓰인다)
 //   ★ 로그인 암호 조각 5 의 3 — `NOXCLIENT 3`. 로비 연결의 보내기는 `CLoginRewriter`(Lobby 모드)를 거친다: `NICK` 을 기억해 두고 `apgar <암호> 0` 의 암호 자리를
 //      로그인 서버(nox_auth · 로비 IP:8443 · `AuthClient.h`)가 준 로그인 토큰(또는 실패 표시)으로 바꿔 보낸다. 평문 암호는 TLS 안에서만 나간다(`Docs/LOGIN_AUTH_DESIGN.md`).
@@ -377,7 +377,7 @@ FWD(1120) FWD(1130) FWD(1140) FWD(1141) FWD(1142)
 static const char kNoxClientHello[] = "NOXCLIENT 7\r\n";
 static wchar_t g_rankWaitNote[100];   // ★ 11-05 플랜1 — 기다림 글 앞에 얹는 경고(머리 주석 `g_rankWaitBuf`)
 static const DWORD kTokenHoldMs = 60000;                   // 토큰을 쥐고 있는 시간(토큰 만료 30초보다 넉넉히 — 판정은 서버가 한다)
-static const size_t kTokenRaw = 51;                        // `JoinToken.h` kJoinTokenSize
+static const size_t kTokenRaw = 53;                        // `JoinToken.h` kJoinTokenSize(★ 11-16 판 2 — 방 칸 4바이트 · 옛 51)
 static CRITICAL_SECTION g_tokCs;
 static std::map<SOCKET, LobbyLineFilter*> g_lobby;         // 로비 연결(첫 보내기가 `CVERS `) → 줄 떼기 상태
 struct PendingToken {
@@ -914,7 +914,7 @@ static int HexNib(char c)
     return -1;
 }
 
-// `NOXTOKEN a.b.c.d:port <16진 102자>` → g_tok
+// `NOXTOKEN a.b.c.d:port <16진 106자>` → g_tok(★ 11-16 판 2 토큰 · 옛 102자 줄은 꼴이 틀려 버린다)
 static void OnTokenLine(const std::string& line, const char* who)
 {
     unsigned a, b, c, d, port;

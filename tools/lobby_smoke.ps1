@@ -123,7 +123,7 @@ try {
     $g = ReadUntil $k '366'
     Check ((($g | ForEach-Object { Kind $_ }) -join ',') -eq '?,user:JOINGAME,332,353,366') "새 방 — NOXTOKEN · JOINGAME · 332 · 353 · 366 (받은 줄 $($g.Count))"
     $nt = $g[0].Split(' ')
-    Check ($nt.Count -eq 3 -and $nt[0] -eq 'NOXTOKEN' -and $nt[1] -eq "127.0.0.1:$UdpPort" -and $nt[2] -match '^[0-9a-f]{102}$') "NOXTOKEN = 게임 서버 127.0.0.1:$UdpPort(등록 주소 0 → 클라가 로비에 붙은 주소 · 등록 포트) · 토큰 16진 102자"
+    Check ($nt.Count -eq 3 -and $nt[0] -eq 'NOXTOKEN' -and $nt[1] -eq "127.0.0.1:$UdpPort" -and $nt[2] -match '^[0-9a-f]{106}$') "NOXTOKEN = 게임 서버 127.0.0.1:$UdpPort(등록 주소 0 → 클라가 로비에 붙은 주소 · 등록 포트) · 토큰 16진 106자"
     Check (($g | Where-Object { (Kind $_) -eq '353' }) -like '*:@wn,0,2130706433 wn,0,2130706433') '353 방장 = 만든 사람(wn) · 게임 서버 = 127.0.0.1'
     $tokA = $nt[2]
     Send $k @('LIST 37 37')
@@ -141,13 +141,13 @@ try {
     Send $k2 @("JOINGAME #wn's_game 1 ")
     $g2 = ReadUntil $k2 '366'
     $tokB = if ($g2.Count -ge 1) { $g2[0].Split(' ')[2] } else { '' }
-    function RoomOf([string]$hex) { if ($hex.Length -lt 6) { return -1 }; [Convert]::ToInt32($hex.Substring(2, 2), 16) + 256 * [Convert]::ToInt32($hex.Substring(4, 2), 16) }
+    function RoomOf([string]$hex) { if ($hex.Length -lt 10) { return -1 }; [Convert]::ToInt64($hex.Substring(8, 2) + $hex.Substring(6, 2) + $hex.Substring(4, 2) + $hex.Substring(2, 2), 16) }   # ★ 11-16 판 2 토큰 — 방 칸 [1..4] 4바이트 작은 끝수
     Check ($l4.Count -eq 1 -and $g2.Count -eq 5 -and (RoomOf $tokA) -eq (RoomOf $tokB) -and (RoomOf $tokA) -ge 0) "bob — 목록 1줄 · 같은 방 토큰(방 $(RoomOf $tokA) · $(RoomOf $tokB))"
     Send $k2 @('QUIT')
     $null = ReadUntil $k2 '607'
     $k2.c.Close()
 
-    # UDP 접속 시도 + 토큰 꼬리(DLL 이 붙이는 꼴 — 토큰 51 + NXT1) → 0x14 SERVER_JOIN_OK — 로비가 게임 서버의 「이 실행」 키로 서명했고
+    # UDP 접속 시도 + 토큰 꼬리(DLL 이 붙이는 꼴 — 토큰 53 + NXT1) → 0x14 SERVER_JOIN_OK — 로비가 게임 서버의 「이 실행」 키로 서명했고
     #   게임 서버가 같은 식으로 뽑은 키로 확인한다(LobbyLink.h 「키」). 서명 한 바이트를 바꾼 토큰은 받지 않는다
     $tryJoinHex = '00000e004a00610063006b00000000000000000000000000000000001c13616e01980309000000000000000049018501f07a' +
                   '69000000020a3132333435363738393031323334353637383930000000009a030100000000007465737465720000d0af0000'   # 정품 접속 시도 100바이트(proto_test RecordedTryJoin)
@@ -164,7 +164,7 @@ try {
     }
     $ok = TryJoin $tokA
     Check ($null -ne $ok -and $ok.Length -eq 3 -and $ok[2] -eq 0x14) "UDP 접속 시도 + 새 방 토큰 → 0x14 SERVER_JOIN_OK ($(if ($ok) { ($ok | ForEach-Object { $_.ToString('x2') }) -join ' ' } else { '답 없음' }))"
-    $bad = $tokB.Substring(0, 100) + $(if ($tokB.Substring(100, 2) -eq '00') { '01' } else { '00' })   # 서명 마지막 바이트를 바꿈
+    $bad = $tokB.Substring(0, 104) + $(if ($tokB.Substring(104, 2) -eq '00') { '01' } else { '00' })   # 서명 마지막 바이트를 바꿈(★ 11-16 106자 — 크기는 그대로라 「서명」 갈래로 막힌다)
     $no = TryJoin $bad
     Check (-not ($null -ne $no -and $no.Length -eq 3 -and $no[2] -eq 0x14)) '서명을 바꾼 토큰 → JOIN_OK 아님'
 

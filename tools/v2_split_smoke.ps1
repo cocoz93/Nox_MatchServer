@@ -90,7 +90,7 @@ function JoinOk([string]$tokHex, [string]$to) {
   $u.Close()
   return ($null -ne $r -and $r.Length -eq 3 -and $r[2] -eq 0x14)
 }
-function RoomOf([string]$hex) { if ($hex.Length -lt 6) { return -1 }; [Convert]::ToInt32($hex.Substring(2, 2), 16) + 256 * [Convert]::ToInt32($hex.Substring(4, 2), 16) }
+function RoomOf([string]$hex) { if ($hex.Length -lt 10) { return -1 }; [Convert]::ToInt64($hex.Substring(8, 2) + $hex.Substring(6, 2) + $hex.Substring(4, 2) + $hex.Substring(2, 2), 16) }   # ★ 11-16 판 2 토큰 — 방 칸 [1..4] 4바이트 작은 끝수
 function StartGs([string]$ip, [string]$log) {
   $p = Start-Process -FilePath $Exe -PassThru -WindowStyle Hidden -RedirectStandardOutput $log -ArgumentList @(
     '--port', $UdpPort, '--bind', $ip, '--register-ip', $ip, '--config', "`"$ini`"", '--lobby', "127.0.0.1:$LinkPort", '--quiet', '--no-results')

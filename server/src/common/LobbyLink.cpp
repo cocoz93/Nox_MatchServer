@@ -15,7 +15,9 @@ static_assert(sizeof(kWords) / sizeof(kWords[0]) == static_cast<size_t>(LinkKind
 const char* const kSaveWords[] = {"ok", "dup", "bad"};
 static_assert(sizeof(kSaveWords) / sizeof(kSaveWords[0]) == static_cast<size_t>(SaveOutcome::kCount), "SAVED 끝 칸 표 = 갈래 수");
 
-constexpr uint32_t kMaxRoomId = 0xffff;   // 입장 토큰의 방 칸이 16비트(`JoinToken.h`)
+// ★ 11-16 방 번호 플랜 — 게임 서버의 방 번호(`int`) 최댓값. 입장 토큰의 방 칸은 4바이트(`JoinToken.h` 판 2) · 옛 값 0xffff 는
+//   토큰 칸이 16비트이던 때라 방 번호 65,536 부터 ROOM · CREATED 줄을 버려 참가 답이 안 나갔다(`Docs/ROOM_ID_WIDEN_PLAN_1116.md` 1절 · 11-16 실측)
+constexpr uint32_t kMaxRoomId = 0x7fffffff;
 
 // 빈칸 하나마다 자른다 — 빈 칸도 남긴다(빈칸 두 개 · 꼬리 빈칸은 칸 수가 달라져 걸린다)
 std::vector<std::string_view> Split(std::string_view s) {

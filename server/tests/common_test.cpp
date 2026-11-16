@@ -3,7 +3,7 @@
 //   ① HMAC-SHA256 — RFC 4231 시험 값 둘(서명이 표준과 같은 값을 내나)
 //   ② 16진·IPv4 글자 풀기
 //   ③ 토큰 — 서명한 것이 그대로 풀리나 · 검증 갈래 일곱이 각각 나오나(개수로)
-//   ④ 꼬리 찾기 — 접속 시도(100바이트)·CONNECT(3바이트) 뒤 55바이트
+//   ④ 꼬리 찾기 — 접속 시도(100바이트)·CONNECT(3바이트) 뒤 57바이트(★ 11-16 판 2)
 //   ⑤ 일회용 장부
 //   ⑥ 설정 파일 — 구역·주석·BOM·대소문자·차례 · 틀린 꼴은 줄 번호와 함께 실패
 //   ⑦ TCP 줄 부품(작업 8a) — 루프백 접속 · 줄 나누기(CRLF · LF · 나뉘어 온 줄) · 보내기 CRLF · 끊김 갈래 넷(본체는 `tcp_lines_test.cpp`)
@@ -109,12 +109,14 @@ void TestToken() {
     Check(nox::SignJoinToken(key, t, raw), "서명");
 
     // 바이트 배치 — 문서(TOKEN_DESIGN.md 「토큰 모양」)와 같아야 로비·게임 서버가 서로 다른 판으로 빌드돼도 맞는다
-    Check(raw[0] == 1 && raw[1] == 1 && raw[2] == 0, "배치: 판 1 · 방 1(작은 끝수)");
-    Check(raw[3] == 0x7f && raw[4] == 0 && raw[5] == 0 && raw[6] == 1, "배치: IP 127.0.0.1 차례대로");
-    Check(raw[7] == static_cast<uint8_t>(t.expiresAt) && raw[10] == static_cast<uint8_t>(t.expiresAt >> 24),
+    // ★ 11-16 판 2 — 방 칸 4바이트([1..4]) · 뒤 칸이 모두 2바이트씩 밀림(`JoinToken.h` 머리)
+    Check(nox::kJoinTokenSize == 53 && nox::kJoinTrailerSize == 57, "크기: 토큰 53 · 꼬리 57(판 2)");
+    Check(raw[0] == 2 && raw[1] == 1 && raw[2] == 0 && raw[3] == 0 && raw[4] == 0, "배치: 판 2 · 방 1(4바이트 작은 끝수)");
+    Check(raw[5] == 0x7f && raw[6] == 0 && raw[7] == 0 && raw[8] == 1, "배치: IP 127.0.0.1 차례대로");
+    Check(raw[9] == static_cast<uint8_t>(t.expiresAt) && raw[12] == static_cast<uint8_t>(t.expiresAt >> 24),
           "배치: 만료 작은 끝수");
-    Check(raw[11] == 0xef && raw[18] == 0x01, "배치: 일회용 번호 작은 끝수");
-    Check(std::memcmp(raw + 19, "wn9457", 6) == 0 && raw[25] == 0 && raw[34] == 0, "배치: 로비 이름 · 0 채움");
+    Check(raw[13] == 0xef && raw[20] == 0x01, "배치: 일회용 번호 작은 끝수");
+    Check(std::memcmp(raw + 21, "wn9457", 6) == 0 && raw[27] == 0 && raw[36] == 0, "배치: 로비 이름 · 0 채움");
 
     nox::JoinToken got;
     Check(nox::VerifyJoinToken(key, raw, sizeof(raw), now, ip, got) == nox::JoinTokenCheck::Ok, "맞는 토큰 → 통과");
@@ -132,13 +134,26 @@ void TestToken() {
     };
     using C = nox::JoinTokenCheck;
     Check(run(raw, sizeof(raw), now, ip, key) == C::Ok, "통과");
-    Check(run(raw, sizeof(raw) - 1, now, ip, key) == C::BadSize, "50바이트 → 크기");
+    Check(run(raw, sizeof(raw) - 1, now, ip, key) == C::BadSize, "52바이트 → 크기");
+    Check(run(raw, 51, now, ip, key) == C::BadSize, "★ 11-16 옛 판 1 토큰 크기(51바이트) → 크기");
     {
-        nox::JoinToken v2 = t;
-        v2.version = 2;
+        nox::JoinToken v1 = t;   // ★ 11-16 — 크기는 맞고 판 칸만 옛 값
+        v1.version = 1;
         uint8_t r2[nox::kJoinTokenSize];
-        nox::SignJoinToken(key, v2, r2);
-        Check(run(r2, sizeof(r2), now, ip, key) == C::BadVersion, "판 2 → 판");
+        nox::SignJoinToken(key, v1, r2);
+        Check(run(r2, sizeof(r2), now, ip, key) == C::BadVersion, "크기 53 · 판 1 → 판");
+    }
+    {   // ★ 11-16 방 번호 플랜 — 16비트를 넘는 방 번호가 서명 → 풀기를 지나 그대로(옛 칸이면 65,536 → 0 · 70,000 → 4,464)
+        int same = 0;
+        const uint32_t rooms[] = {65536u, 70000u, 2147483647u};
+        for (uint32_t r : rooms) {
+            nox::JoinToken w = t;
+            w.roomId = r;
+            uint8_t rw[nox::kJoinTokenSize];
+            nox::JoinToken o;
+            same += nox::SignJoinToken(key, w, rw) && nox::VerifyJoinToken(key, rw, sizeof(rw), now, ip, o) == C::Ok && o.roomId == r;
+        }
+        Check(same == 3, "★ 방 65,536 · 70,000 · 2,147,483,647 → 서명 · 풀기 뒤 같은 값(셋 다)");
     }
     {
         uint8_t r3[nox::kJoinTokenSize];
@@ -190,13 +205,13 @@ void TestTrailer() {
     const uint8_t* at = nullptr;
     size_t kept = 0;
     Check(nox::FindJoinTrailer(pkt.data(), pkt.size(), 3, at, kept) && kept == 100 && at == pkt.data() + 100,
-          "접속 시도 100 + 꼬리 55 → 100 남김");
+          "접속 시도 100 + 꼬리 57 → 100 남김");
     Check(!nox::FindJoinTrailer(join.data(), join.size(), 3, at, kept), "꼬리 없음 → 못 찾음");
 
     std::vector<uint8_t> conn = { 0xff, 0x00, 0x00 };
     conn.insert(conn.end(), tok.begin(), tok.end());
     conn.insert(conn.end(), nox::kJoinTrailerMagic, nox::kJoinTrailerMagic + 4);
-    Check(nox::FindJoinTrailer(conn.data(), conn.size(), 3, at, kept) && kept == 3, "CONNECT 3 + 꼬리 55 → 3 남김");
+    Check(nox::FindJoinTrailer(conn.data(), conn.size(), 3, at, kept) && kept == 3, "CONNECT 3 + 꼬리 57 → 3 남김");
     Check(!nox::FindJoinTrailer(conn.data() + 1, conn.size() - 1, 3, at, kept), "남길 몫이 3바이트 모자람 → 못 찾음");
 
     std::vector<uint8_t> wrong = pkt;
@@ -462,11 +477,25 @@ void TestLobbyLink() {
               bad("SAVED 1-0-1 ok a -2147483649 0", P::BadNumber) && bad("SAVED 1-0-1 ok ~ 1000 10", P::BadText) &&
               bad("SAVED 1-0-1 ok a~b 1000 10", P::BadText),
           "★ SAVED 꼬리 — 세 칸 아님 · 꼬리 빈칸 → 칸 수 · -0 · 수 아님 · + 붙음 · int32 위 · 아래 밖 → 수 · 빈 이름 · 날 ~ → 글 칸");
-    Check(bad("ROOM_GONE 65536", P::BadNumber) && bad("ROOM_GONE 01", P::BadNumber) && bad("ROOM_GONE -1", P::BadNumber) &&
+    Check(bad("ROOM_GONE 2147483648", P::BadNumber) && bad("ROOM_GONE 01", P::BadNumber) && bad("ROOM_GONE -1", P::BadNumber) &&
               bad("ROOM_GONE +1", P::BadNumber) && bad("CREATED 4294967296 1", P::BadNumber) &&
               bad("REGISTER 1 0.0.0.0 0", P::BadNumber) && bad("REGISTER 1 0.0.0.0 65536", P::BadNumber) &&
               bad("ROOM 1 2 8 2 a b c d e f", P::BadNumber),
-          "수 — 방 65536 · 앞 0 · 부호 · 32비트 넘음 · 포트 0 · 포트 65536 · 판 중 2");
+          "수 — 방 2147483648(int 위) · 앞 0 · 부호 · 32비트 넘음 · 포트 0 · 포트 65536 · 판 중 2");
+    {   // ★ 11-16 방 번호 플랜 — 방 번호를 싣는 연결 줄 넷(ROOM · ROOM_GONE · RANK_NOSHOW · CREATED): 16비트 위 70,000 · int 최댓값은 읽히고 그 위는 수 실패
+        int ok = 0, over = 0;
+        for (const char* n : {"70000", "2147483647"}) {
+            const std::string s = n;
+            nox::LinkLine x;
+            ok += nox::ParseLinkLine("ROOM " + s + " 2 8 0 a b c d e f", x) == P::Ok && x.room.id == std::stoul(s);
+            ok += nox::ParseLinkLine("ROOM_GONE " + s, x) == P::Ok && x.room.id == std::stoul(s);
+            ok += nox::ParseLinkLine("RANK_NOSHOW " + s + " a", x) == P::Ok && x.room.id == std::stoul(s);
+            ok += nox::ParseLinkLine("CREATED 1 " + s, x) == P::Ok && x.room.id == std::stoul(s);
+        }
+        over += bad("ROOM 2147483648 2 8 0 a b c d e f", P::BadNumber) + bad("ROOM_GONE 2147483648", P::BadNumber) +
+                bad("RANK_NOSHOW 2147483648 a", P::BadNumber) + bad("CREATED 1 2147483648", P::BadNumber);
+        Check(ok == 8 && over == 4, "★ 방 번호 줄 넷 — 70,000 · 2,147,483,647 → 읽힘(8) · 2,147,483,648 → 수 실패(4)");
+    }
     Check(bad("CREATE 1 a~b", P::BadText) && bad("CREATE 1 %4", P::BadText) && bad("CREATE 1 %zz", P::BadText) &&
               bad("CREATE 1 ", P::BadText) && bad(std::string("CREATE 1 a\x01", 11), P::BadText),
           "글 칸 — 날 ~ · % 뒤 모자람 · 16진 아님 · 빈 칸 · 제어 바이트");

@@ -288,6 +288,7 @@ struct CRoomStats {
     unsigned long long left = 0;               // 방이 끊은 세션(나감 · 내보냄 · 시간 초과 — 끊기 요청)
     unsigned long long roomsCreated = 0;       // ★ 10-14 작업 9d — 만든 방(세계 차리기까지 된 것)
     unsigned long long roomBuildFailed = 0;    // ★ 10-14 작업 9d — 세계 차리기가 실패해 안 만든 방
+    unsigned long long roomIdExhausted = 0;    // ★ 11-16 방 번호 플랜 2-2 — 다음 방 번호가 int 최댓값에 닿아 안 만든 방
     unsigned long long openNoRoom = 0;         // ★ 10-14 작업 9d — 열린 방식인데 정해 준 방이 없어 거절 · 끊음
     unsigned long long roomsClosed = 0;
     unsigned long long emptyRoomsClosed = 0;   // ★ 10-14 작업 9e — 그 가운데 빈 방이라 닫은 것

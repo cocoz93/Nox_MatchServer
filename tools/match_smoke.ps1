@@ -114,7 +114,7 @@ function RankReply($x) {   # 묶인 뒤 온 참가 답(NOXTOKEN · JOINGAME · 3
   $x.lines = $g
   if ($g.Count -ge 1 -and $g[0].StartsWith('NOXTOKEN ')) { $x.tok = $g[0].Split(' ')[2] }
 }
-function RoomOf([string]$hex) { if ($hex.Length -lt 6) { return -1 }; [Convert]::ToInt32($hex.Substring(2, 2), 16) + 256 * [Convert]::ToInt32($hex.Substring(4, 2), 16) }
+function RoomOf([string]$hex) { if ($hex.Length -lt 10) { return -1 }; [Convert]::ToInt64($hex.Substring(8, 2) + $hex.Substring(6, 2) + $hex.Substring(4, 2) + $hex.Substring(2, 2), 16) }   # ★ 11-16 판 2 토큰 — 방 칸 [1..4] 4바이트 작은 끝수
 
 # ── 패킷 클라 ──────────────────────────────────────────────
 $tryJoinHex = '00000e004a00610063006b00000000000000000000000000000000001c13616e01980309000000000000000049018501f07a' +
@@ -317,7 +317,7 @@ try {
     $chanB = @($b.lines | Where-Object { $_ -like ":bob!u@h JOINGAME * :#bob's_game" }).Count
     $hostA = @($a.lines | Where-Object { $_ -like ": 353 u = #alice's_game :@alice,0,*" }).Count
     $hostB = @($b.lines | Where-Object { $_ -like ": 353 u = #bob's_game :@bob,0,*" }).Count
-    Check ($quiet -and $a.tok.Length -eq 102 -and $b.tok.Length -eq 102 -and (RoomOf $a.tok) -eq (RoomOf $b.tok) -and (RoomOf $a.tok) -ge 0 -and
+    Check ($quiet -and $a.tok.Length -eq 106 -and $b.tok.Length -eq 106 -and (RoomOf $a.tok) -eq (RoomOf $b.tok) -and (RoomOf $a.tok) -ge 0 -and
            $chanA -eq 1 -and $chanB -eq 1 -and $hostA -eq 1 -and $hostB -eq 1) `
       "① 랭크 줄 — alice 혼자일 땐 답 없음 $quiet · bob 이 서자 둘 다 참가 답(각자 제 채널 $chanA · $chanB · 353 방장 = 자기 $hostA · $hostB) · 같은 방 토큰(방 $(RoomOf $a.tok) · $(RoomOf $b.tok))"
     # ★ 매칭 손보기 7 — 셋째 사람(carl)의 목록에 랭크 방 줄(326)이 없음(방은 게임 서버에 있음 — 로비 끝 줄 「목록에서 뺀 랭크 방 1」)
@@ -332,7 +332,7 @@ try {
   } else {
     $a = LoginJoin 'alice' "#alice's_game" $tokA   # ★ 조각 6b — -Auth 가 아니면 토큰이 빈 것 = 아이디만 옛 꼴
     $b = LoginJoin 'bob' "#alice's_game" $tokB
-    Check ($a.tok.Length -eq 102 -and $b.tok.Length -eq 102) "① 로그인 → alice 새 방 · bob 그 방 — 토큰 둘($($a.tok.Length) · $($b.tok.Length))"
+    Check ($a.tok.Length -eq 106 -and $b.tok.Length -eq 106) "① 로그인 → alice 새 방 · bob 그 방 — 토큰 둘($($a.tok.Length) · $($b.tok.Length))"
   }
   if ($Auth) {   # ★ 레이팅 조각 4 — 토큰 로그인은 점수를 묻는다(판 전이라 둘 다 랭크 판 없음 · 376 바로 앞 줄)
     $none = RatingLine 'Rating 1000 - No ranked games yet'
