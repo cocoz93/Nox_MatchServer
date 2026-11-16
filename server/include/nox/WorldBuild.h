@@ -195,6 +195,7 @@ struct ServerOptions {
     bool noEventLog = false;    // `--no-event-log` — 사건 기록을 끈다(더미 플랜 5-2절)
     bool noFirstSeen = false;   // `--no-first-seen` — 「처음 본 종류」 알림을 끈다
     bool noOpCount = false;     // `--no-op-count` — 메시지 종류별 셈을 끈다
+    int gameThreads = 1;        // ★ 11-17 C-3d-4 `--game-threads N` — 게임 스레드 수(1 ~ `CNetworkThread::kMaxGameThreads` · C 플랜 5-8). 방 관리자도 N 개(방 번호 % N == k)
     bool udpRio = false;        // ★ 11-17 C-2 `--udp-rio` — UDP 부품의 RIO 팔(기본 보통 = 옛 꼴과 같은 `recvfrom` · `sendto` — `CNetworkThread::SetUdpOptions`)
     // ★ 10-19 MO 5단계 작업 3 — 판 결과 기록(`Docs/MATCH_RESULT_DESIGN.md` 「10-19 정한 것」). 기본 켜짐 — 비면 실행 파일 옆 `results\matches.jsonl`
     std::string resultsPath;    // `--results <파일>`

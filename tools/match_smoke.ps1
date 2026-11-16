@@ -16,10 +16,11 @@
 #   -Rank — ★ 랭크 매칭 조각 6 — ① 을 랭크 줄로: 로비 `--rank-min 2 --rank-max 2` · alice · bob 이 DLL 판 4 꼴(`NOXCLIENT 4` · `NOXRANK JOIN` + 내 방 참가)로 줄 섬 →
 #          둘이 차는 순간 묶여 랭크 방(CREATE 꼬리 명단) → 각자 제 채널(#alice's_game · #bob's_game)로 같은 방 토큰 · ③ 은 `!start` 없이 명단이 다 게임에 들면 저절로 판 ·
 #          판 결과 ranked true · 판 끝 뒤 그 방은 일반 방(게임 서버 기록) · 로비 끝 줄 랭크 셈
+#   -GameThreads N — ★ 11-17 C-3d-4 — 게임 서버를 `--game-threads N` 으로(로비 연결은 게임 스레드 수와 상관없이 조정 스레드 · 같은 확인을 그대로 본다)
 # 패킷 꼴은 smoke.ps1(접속 · 게임 진입 · 클릭) · v2_split_smoke.ps1(정품 접속 시도 100바이트 + 토큰 꼬리)과 같다.
 #   클라 머리 둘째 바이트 = 받은 서버 신뢰 순번(되받기) — smoke.ps1 은 짧아 고정값이지만 판은 수십 초라 따라간다 · 0.5초마다 핑
 # 끝은 닫기 이벤트(게임 서버 · 로비 — 끝 줄 셈을 찍고 나감) · 강제 종료는 응답이 없을 때만
-param([int]$LobbyPort = 14600, [int]$LinkPort = 14610, [int]$UdpPort = 18641, [switch]$Db, [switch]$Auth, [switch]$Ranked, [switch]$Rank, [string]$Exe = '', [string]$LobbyExe = '', [string]$AuthExe = '', [switch]$KeepLogs)
+param([int]$LobbyPort = 14600, [int]$LinkPort = 14610, [int]$UdpPort = 18641, [switch]$Db, [switch]$Auth, [switch]$Ranked, [switch]$Rank, [int]$GameThreads = 1, [string]$Exe = '', [string]$LobbyExe = '', [string]$AuthExe = '', [switch]$KeepLogs)
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 $bin = Join-Path $repo 'build\Release'
@@ -292,6 +293,7 @@ Start-Sleep -Milliseconds 500
 $gsArgs = @('--port', $UdpPort, '--bind', '127.0.0.1', '--config', "`"$ini`"", '--lobby', "127.0.0.1:$LinkPort", '--quiet',
   '--battle-score-limit', '1', '--debug-kill', '300', '--results', "`"$res`"")
 if ($Ranked) { $gsArgs += '--ranked-all' }
+if ($GameThreads -gt 1) { $gsArgs += @('--game-threads', $GameThreads) }   # ★ 11-17 C-3d-4
 $gp = Start-Process -FilePath $Exe -PassThru -WindowStyle Hidden -RedirectStandardOutput $glog -ArgumentList $gsArgs
 $null = $gp.Handle
 $clients = @()

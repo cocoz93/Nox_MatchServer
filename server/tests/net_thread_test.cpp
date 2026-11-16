@@ -502,6 +502,24 @@ std::vector<std::pair<bool, std::string>> RunGameThreadRouteChecks() {
                           o.QueueCount() == 1 && o.LobbyQueue() == 0, m });
     }
 
+    // ⑩-4b ★ 11-17 C-3d-4 — 게임 스레드 하나 + 로비 큐 따로(조정 스레드 · C 플랜 원칙 3) — 로비 사건만 큐 1 · 나머지는 큐 0 · 지도 · 셈 안 씀.
+    //   같은 사건을 따로 아닌 판(⑩-4)과 견준다 — 로비 사건 하나만 갈린다
+    {
+        nox::CSessionOwners o;
+        o.Configure(1, nox::OwnerRule::Token, 0, /*lobbyApart=*/true);
+        W w1 = W::Lobby, w2 = W::Single, w3 = W::Lobby, w4 = W::Single;
+        const int k1 = o.Route(Ev(T::CONNECTED, 1, TokenForRoom(3)), &w1);
+        const int k2 = o.Route(Ev(T::LOBBY_LINE, 0), &w2);
+        const int k3 = o.Route(Ev(T::RECEIVED, 1), &w3);
+        const int k4 = o.Route(Ev(T::LOBBY_OPENED, 0), &w4);
+        std::snprintf(m, sizeof(m), "⑩-4b 하나 + 로비 따로 — 토큰 방 3 → %d %s · 로비 줄 → %d %s · 받음 → %d %s · 로비 붙음 → %d %s · 지도 %zu · 셈 %llu · 큐 수 %d · 로비 큐 %d · 따로 %d",
+                      k1, WhyName(w1), k2, WhyName(w2), k3, WhyName(w3), k4, WhyName(w4), o.Size(), o.byToken + o.noToken + o.byLoad + o.threadZero,
+                      o.QueueCount(), o.LobbyQueue(), (int)o.LobbyApart());
+        r.push_back({ k1 == 0 && w1 == W::Single && k2 == 1 && w2 == W::Lobby && k3 == 0 && w3 == W::Single && k4 == 1 && w4 == W::Lobby &&
+                          o.Size() == 0 && o.byToken + o.noToken + o.byLoad + o.threadZero == 0 && o.QueueCount() == 2 && o.LobbyQueue() == 1 &&
+                          o.LobbyApart(), m });
+    }
+
     // ⑩-5 부하 판 — 방 인원 10 · N = 2 · 새 세션 25 → 0 열 · 1 열 · 0 다섯(15 / 10) · 이미 아는 세션은 차례를 안 먹음 → 26번째 새 세션 = 차례 25 → 0.
     //   N = 3 · 30 → 10 / 10 / 10(셋째 열이 2 로 가나 — 나머지가 하나 어긋나면 갈린다)
     {
@@ -554,6 +572,19 @@ std::vector<std::pair<bool, std::string>> RunGameThreadRouteChecks() {
         std::snprintf(m, sizeof(m), "⑩-7 게임 스레드 수 — 거절 0 %d · 상한 넘음 %d · 방 인원 없음 %d · 처음 큐 하나 %d · 받음 %d · 큐 %d(3) · 로비 큐 %d(2) · 손잡이 %d",
                       (int)r0, (int)r1, (int)r2, (int)before, (int)ok, n.QueueCount(), n.LobbyQueue(), (int)handles);
         r.push_back({ r0 && r1 && r2 && before && ok && n.QueueCount() == 3 && n.LobbyQueue() == 2 && handles, m });
+    }
+
+    // ⑩-7b ★ 11-17 C-3d-4 — 하나 + 로비 따로 → 큐 둘 · 로비 큐 1 · 손잡이 0 · 1 있음(서로 다름) · 2 없음. 따로 없이 다시 정하면 옛 꼴(큐 하나)
+    {
+        nox::CNetworkThread n;
+        std::string e;
+        const bool ok = n.SetGameThreads(1, nox::OwnerRule::Token, 0, e, /*lobbyApart=*/true);
+        const int qc = n.QueueCount(), lq = n.LobbyQueue();
+        const bool handles = n.EventsReadyHandle(0) && n.EventsReadyHandle(1) && !n.EventsReadyHandle(2) && n.EventsReadyHandle(0) != n.EventsReadyHandle(1);
+        const bool back = n.SetGameThreads(1, nox::OwnerRule::Token, 0, e);
+        std::snprintf(m, sizeof(m), "⑩-7b 하나 + 로비 따로 — 받음 %d · 큐 %d(2) · 로비 큐 %d(1) · 손잡이 %d · 따로 없이 다시 → 큐 %d(1) · 로비 큐 %d(0)",
+                      (int)ok, qc, lq, (int)handles, n.QueueCount(), n.LobbyQueue());
+        r.push_back({ ok && qc == 2 && lq == 1 && handles && back && n.QueueCount() == 1 && n.LobbyQueue() == 0, m });
     }
 
     // ⑩-8 실물 — N = 2 · 토큰 규칙. 소켓 A 가 꼬리(방 1)를 단 CONNECT → CONNECTED 는 큐 1 로만(큐 1 손잡이가 켜지고 큐 0 은 꺼진 채) ·
@@ -648,13 +679,15 @@ std::vector<std::pair<bool, std::string>> RunGameThreadRouteChecks() {
     }
 
     // ⑩-9 실물 — N = 2 로비 — 로비 사건은 로비 큐(2)로만 · 조정 스레드 몫 큐(2)로 넣은 줄이 로비에 간다
-    {
+    //   ★ 11-17 C-3d-4 — 같은 시험을 N = 1 + 로비 따로(로비 큐 1)로 한 번 더(⑩-9b) — 게임 큐는 모두 비어야 한다
+    auto lobbyQueueCase = [&](int gameThreads, bool apart, const char* tag) {
         nox::CTcpLines srv;
         std::vector<nox::TcpLineEvent> se;
         std::string e;
         const bool listening = srv.Listen(0x7f000001u, 0, e);
         nox::CNetworkThread n;
-        const bool set = n.SetGameThreads(2, nox::OwnerRule::Token, 0, e);
+        const bool set = n.SetGameThreads(gameThreads, nox::OwnerRule::Token, 0, e, apart);
+        const int lqi = n.LobbyQueue();
         const bool started = n.Open("127.0.0.1", 0, e) && n.ConnectLobby(0x7f000001u, srv.ListenPort(0), e);
         n.Start();
         auto pollSrv = [&](size_t want, int ms) {
@@ -665,11 +698,12 @@ std::vector<std::pair<bool, std::string>> RunGameThreadRouteChecks() {
                 srv.Flush(se);
             }
         };
-        std::vector<nox::NetworkEvent> lq, g0, g1;
+        std::vector<nox::NetworkEvent> lq, g0;
+        size_t gameQueued = 0;   // 게임 큐(0 ~ N-1)에 온 사건 — 0 이어야 한다
         auto drainLobby = [&](size_t want, int ms) {
             for (int i = 0; i < ms / 10 && lq.size() < want; ++i) {
                 std::vector<nox::NetworkEvent> got;
-                n.SwapOutNetworkEvents(2, got);
+                n.SwapOutNetworkEvents(lqi, got);
                 for (auto& ev : got) lq.push_back(std::move(ev));
                 if (lq.size() < want) std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
@@ -688,14 +722,19 @@ std::vector<std::pair<bool, std::string>> RunGameThreadRouteChecks() {
         rq[0].lobbyLine = "AUTH c3b";
         n.PushRequests(n.LobbyQueue(), rq);
         pollSrv(1, 2000);
-        n.SwapOutNetworkEvents(0, g0);
-        n.SwapOutNetworkEvents(1, g1);
+        for (int q = 0; q < gameThreads; ++q) {
+            g0.clear();
+            n.SwapOutNetworkEvents(q, g0);
+            gameQueued += g0.size();
+        }
         n.Stop();
-        const bool ok = listening && set && started && lq.size() == 2 && lq[0].type == T::LOBBY_OPENED && lq[1].type == T::LOBBY_LINE &&
-                        lq[1].lobbyLine == "HELLO c3b" && g0.empty() && g1.empty() && se.size() == 1 && se[0].line == "AUTH c3b";
-        std::snprintf(m, sizeof(m), "⑩-9 로비 큐 — 로비 큐 사건 %zu(2 — 붙음 · 줄) · 게임 큐 0 %zu · 1 %zu(0 · 0) · 로비 큐로 넣은 줄이 로비에 %d",
-                      lq.size(), g0.size(), g1.size(), (int)(se.size() == 1 && se[0].line == "AUTH c3b"));
+        const bool ok = listening && set && started && lqi == gameThreads && lq.size() == 2 && lq[0].type == T::LOBBY_OPENED &&
+                        lq[1].type == T::LOBBY_LINE && lq[1].lobbyLine == "HELLO c3b" && gameQueued == 0 && se.size() == 1 && se[0].line == "AUTH c3b";
+        std::snprintf(m, sizeof(m), "%s 로비 큐 %d — 로비 큐 사건 %zu(2 — 붙음 · 줄) · 게임 큐 %d개에 %zu(0) · 로비 큐로 넣은 줄이 로비에 %d",
+                      tag, lqi, lq.size(), gameThreads, gameQueued, (int)(se.size() == 1 && se[0].line == "AUTH c3b"));
         r.push_back({ ok, m });
-    }
+    };
+    lobbyQueueCase(2, false, "⑩-9");
+    lobbyQueueCase(1, true, "⑩-9b N=1 따로");
     return r;
 }

@@ -26,8 +26,9 @@ namespace {
 
 // ── ★ 11-17 C-3b — 세션 주인 지도(`NetworkThread.h` `CSessionOwners`) ──
 
-void CSessionOwners::Configure(int gameThreads, OwnerRule rule, int loadRoomSize) {
+void CSessionOwners::Configure(int gameThreads, OwnerRule rule, int loadRoomSize, bool lobbyApart) {
     _n = gameThreads < 1 ? 1 : gameThreads;
+    _lobbyApart = lobbyApart;
     _rule = rule;
     _loadRoomSize = loadRoomSize;
     _arrivals = 0;
@@ -46,11 +47,11 @@ int CSessionOwners::OwnerByToken(const std::vector<uint8_t>& token, int n, bool&
 int CSessionOwners::Route(const NetworkEvent& ev, Why* why) {
     Why w = Why::Single;
     int k = 0;
-    if (_n == 1) {
-        // 하나면 지도를 안 쓴다 — 모두 큐 0(옛 꼴)
-    } else if (IsLobbyEvent(ev.type)) {
+    if (IsLobbyEvent(ev.type) && LobbyApart()) {   // ★ 11-17 C-3d-4 — 하나여도 따로면 로비 큐(옛 꼴은 여럿일 때만 이 갈래)
         w = Why::Lobby;
         k = LobbyQueue();
+    } else if (_n == 1) {
+        // 하나면 지도를 안 쓴다 — 모두 큐 0(옛 꼴)
     } else {
         const auto it = _owner.find(ev.sessionId);
         if (it != _owner.end()) {
@@ -120,11 +121,11 @@ CNetworkThread::~CNetworkThread() {
     if (_wsaUp) WSACleanup();
 }
 
-bool CNetworkThread::SetGameThreads(int n, OwnerRule rule, int loadRoomSize, std::string& err) {
+bool CNetworkThread::SetGameThreads(int n, OwnerRule rule, int loadRoomSize, std::string& err, bool lobbyApart) {
     if (_thread.joinable()) { err = "시작한 뒤에는 게임 스레드 수를 정할 수 없다"; return false; }
     if (n < 1 || n > kMaxGameThreads) { err = "게임 스레드 수는 1 ~ " + std::to_string(kMaxGameThreads); return false; }
     if (rule == OwnerRule::LoadArrival && loadRoomSize < 1) { err = "부하 판 주인 정하기에 방 인원이 없다"; return false; }
-    _owners.Configure(n, rule, loadRoomSize);
+    _owners.Configure(n, rule, loadRoomSize, lobbyApart);
     MakeQueues(_owners.QueueCount());
     return true;
 }
@@ -341,6 +342,7 @@ void CNetworkThread::Run() {
     UdpDatagram batch[kUdpRecvBatch];            // ★ 11-17 C-2 — 받은 것(부품 칸을 가리킨다 · 다음 `Receive` 까지 유효)
     // ★ 11-17 C-3b — 게임 스레드가 여럿인가(시작 뒤로 안 바뀐다) · 큐마다 이 깸에 넣을 사건
     const bool multi = _owners.GameThreads() > 1;
+    const bool route = _owners.QueueCount() > 1;   // ★ 11-17 C-3d-4 — 하나여도 로비 큐가 따로면 사건마다 큐를 고른다(주인 지도는 여럿일 때만)
     std::vector<std::vector<NetworkEvent>> stage(_eventQs.size());
     Publish();
     for (;;) {
@@ -488,9 +490,9 @@ void CNetworkThread::Run() {
         }
         // ④ 이벤트를 큐로 — 넣은 시각을 찍는다(게임 스레드가 넘김 지연을 잰다)
         //   ★ 11-17 C-3b — 게임 스레드가 여럿이면 사건마다 큐 번호를 정해(`CSessionOwners::Route`) 큐마다 모았다가 큐마다 한 번 잠근다.
-        //   하나면 모두 큐 0(옛 꼴 — 주인 지도를 안 쓴다)
+        //   하나면 모두 큐 0(옛 꼴 — 주인 지도를 안 쓴다) · ★ 11-17 C-3d-4 — 하나여도 로비 큐가 따로면 로비 사건만 그 큐로(`Route`)
         if (!events.empty()) {
-            if (multi) {
+            if (route) {
                 for (NetworkEvent& ev : events) stage[static_cast<size_t>(_owners.Route(ev))].push_back(std::move(ev));
             } else {
                 stage[0].swap(events);

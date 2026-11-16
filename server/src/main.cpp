@@ -13,6 +13,7 @@
 //   nox_server.exe [--port 18590] [--name "MY SERVER"] [--selftest] [--quiet]
 //                  --config <설정 파일>([token] key) | --no-join-token(토큰 검사 끄기 — 시험 도구 · LAN 실행)
 //                  [--lobby 127.0.0.1[:4010] [--register-ip a.b.c.d]] [--bind a.b.c.d] — ★ 10-20 v2 작업 4b 로비 프로세스에 붙기(`LobbyClient.h`)
+//                  [--game-threads N] — ★ 11-17 C-3d-4 게임 스레드 수(기본 1 · `Docs/SERVERCORE_UDP_PLAN_1116.md` 5-8)
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
@@ -28,6 +29,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <thread>       // ★ 11-17 C-3d-4 — 게임 스레드 1 ~ N-1 · 조정 스레드
 #include <vector>
 
 #include "nox/Messages.h"
@@ -43,6 +45,7 @@
 #include "nox/TickSections.h"   // ★ 11-10 부하 실험 — 구간 시간
 #include "nox/GameThread.h"     // ★ 11-17 C-3d-2 — 게임 스레드 고리
 #include "nox/LobbyClient.h"    // ★ 10-20 v2 작업 4b — 로비 프로세스에 붙기
+#include "nox/LobbyRoomsQueue.h"   // ★ 11-17 C-3d-4 — 조정 스레드(로비 연결) ↔ 게임 스레드(방) 큐
 #include "nox/MatchRecorder.h"  // ★ 10-19 MO 5단계 작업 3 — 판 결과 기록기
 #include "nox/IniFile.h"
 #include "nox/Clock.h"
@@ -211,6 +214,8 @@ int main(int argc, char** argv) {
             opt.noOpCount = true;                       // ★ 11-10 부하 실험
         } else if (a == "--udp-rio") {
             opt.udpRio = true;                          // ★ 11-17 C-2 — UDP 부품 RIO 팔(기본 보통 · 팔 둘을 같은 판으로 견주려고)
+        } else if (a == "--game-threads" && i + 1 < argc) {
+            opt.gameThreads = std::atoi(argv[++i]);     // ★ 11-17 C-3d-4 — 게임 스레드 수(범위 밖이면 아래에서 멈춘다)
         } else if (a == "--battle-maps" && i + 1 < argc) {
             // ★ 10-16 작업 13a — 대전 맵 후보(같은 꼴) — 로비가 새 방마다 하나를 정해 두고 `!start` 때 그 맵으로 바꾼다
             const std::string list = argv[++i];
@@ -681,6 +686,29 @@ int main(int argc, char** argv) {
         std::printf("[멈춤] --first-room-id 는 0~2147483647\n");
         return 2;
     }
+    if (opt.gameThreads < 1 || opt.gameThreads > nox::CNetworkThread::kMaxGameThreads) {   // ★ 11-17 C-3d-4
+        std::printf("[멈춤] --game-threads 는 1~%d (받은 값 %d)\n", nox::CNetworkThread::kMaxGameThreads, opt.gameThreads);
+        return 2;
+    }
+    // ★ 11-17 C-3d-4 — 손실 파일럿 CSV 는 방마다 같은 경로를 따로 열어 이어 쓴다 — 게임 스레드끼리는 「끝으로 옮김 + 쓰기」가 겹쳐 덮을 수 있다
+    //   (C-3d-1 걸림 ③ · 코드 읽음 · 실측 아님). 진단 판 전용이라 가장 작은 고침 = 같이 못 쓰게
+    if (opt.gameThreads > 1 && !opt.room.pilotLatPath.empty()) {
+        std::printf("[멈춤] --pilot-lat 은 --game-threads 1 에서만 — 방마다 같은 파일을 이어 써서 게임 스레드끼리 덮을 수 있다\n");
+        return 2;
+    }
+    // ★ 11-17 C-3d-4 — 게임 스레드 k 의 방 관리자(0 은 위 `rooms` · 1 ~ N-1 은 여기). 방 번호는 「% N == k」(`SetRoomIdSlice`) ·
+    //   판 번호 앞자리는 `rooms` 것 하나(로비 연결 키 · 판 번호가 같은 값을 본다 — 따로 만들면 초가 바뀌는 자리에서 갈린다)
+    std::vector<std::unique_ptr<nox::CRoomManager>> moreRooms;
+    for (int k = 1; k < opt.gameThreads; ++k) {
+        moreRooms.push_back(std::make_unique<nox::CRoomManager>());
+        moreRooms.back()->SetEpoch(rooms.Epoch());
+    }
+    std::vector<nox::CRoomManager*> allRooms{ &rooms };
+    for (const auto& m : moreRooms) allRooms.push_back(m.get());
+    if (opt.gameThreads > 1) {
+        for (int k = 0; k < opt.gameThreads; ++k) allRooms[static_cast<size_t>(k)]->SetRoomIdSlice(k, opt.gameThreads);
+        std::printf("옵션: 게임 스레드 %d개 — 방 번호 %% %d 로 나눔 · 세션은 그 방 번호의 스레드로\n", opt.gameThreads, opt.gameThreads);
+    }
     nox::SetStatMult(opt.statMult);   // 방을 만들기 전에 한 번
     nox::g_tickSections = opt.tickSections;   // 방을 만들기 전에 한 번
     if (opt.tickSections) std::printf("옵션: 구간 시간 켬 — 초당 [구간] 줄 · 10초마다 [틱분포] 줄\n");
@@ -717,8 +745,11 @@ int main(int argc, char** argv) {
         lobbyClientCfg.epoch = rooms.Epoch();
         lobbyClientCfg.registerIp = registerIp;
         lobbyClientCfg.port = static_cast<uint16_t>(opt.port);
-        rooms.SetJoinKey(opt.lobbyAddr.empty() ? joinKey : nox::CLobbyClient::TokenKeyFor(lobbyClientCfg));
-        rooms.SetLogJoins(true);
+        const auto roomKey = opt.lobbyAddr.empty() ? joinKey : nox::CLobbyClient::TokenKeyFor(lobbyClientCfg);
+        for (nox::CRoomManager* rm : allRooms) {   // ★ 11-17 C-3d-4 — 방 관리자마다 같은 키
+            rm->SetJoinKey(roomKey);
+            rm->SetLogJoins(true);
+        }
         std::printf("입장: 토큰 방식 — 설정 %s%s\n", opt.configPath.c_str(),
                     opt.lobbyAddr.empty() ? "" : " · 이 게임 서버의 이 실행 키(로비에 붙기)");
     }
@@ -751,13 +782,13 @@ int main(int argc, char** argv) {
         UdpAddr a;
         return nox::ParseAddr(addr, a) ? udp.OpenSession(a) : nox::kNoSession;
     };
-    rooms.SetWorldData(world);
-    rooms.SetLogRooms(true);   // ★ 10-14 작업 9e — 방을 만들고 닫을 때 한 줄(`[방] N 만듦` · `닫음`)
-    rooms.SetRankOneMap(opt.rankOneMap);   // ★ 매칭 손보기 3
-    if (opt.firstRoomId != 0) {   // ★ 11-16 방 번호 플랜 조각 1 — 첫 방을 만들기 전에(시험용)
-        rooms.SetFirstRoomId(opt.firstRoomId);
-        std::printf("옵션: 첫 방 번호 %d (--first-room-id · 시험용)\n", opt.firstRoomId);
+    rooms.SetWorldData(world);   // 봇을 여는 함수는 첫 방(방 관리자 0)에만 — 다른 방 관리자는 아래에서 그 함수를 비운 뒤
+    for (nox::CRoomManager* rm : allRooms) {   // ★ 11-17 C-3d-4 — 방 관리자마다
+        rm->SetLogRooms(true);   // ★ 10-14 작업 9e — 방을 만들고 닫을 때 한 줄(`[방] N 만듦` · `닫음`)
+        rm->SetRankOneMap(opt.rankOneMap);   // ★ 매칭 손보기 3
+        if (opt.firstRoomId != 0) rm->SetFirstRoomId(opt.firstRoomId);   // ★ 11-16 방 번호 플랜 조각 1 — 첫 방을 만들기 전에(시험용 · 몫이 있으면 그 몫으로 올림)
     }
+    if (opt.firstRoomId != 0) std::printf("옵션: 첫 방 번호 %d (--first-room-id · 시험용)\n", opt.firstRoomId);
     // ★ 10-14 작업 8d — 로비 방식(`--lobby-port`)은 방 없이 시작한다 — 방은 로비가 만든다(작업 10 · `Docs/ROOMS_DESIGN.md` 흐름 1)
     // ★ 10-20 v2 작업 4b — 로비에 붙기(`--lobby`)도 방 없이 시작한다(새 방은 로비가 묻고 `CLobbyClient` 가 만든다)
     // ★ 11-10 부하 실험 — 실험 옵션도 방 없이 시작한다(접속 때 만드는 것까지 부하에 넣는다 · Docs/MO_DUMMY_PLAN_1109.md 3-1절)
@@ -770,7 +801,7 @@ int main(int argc, char** argv) {
         room0 = &rooms.Room(roomId);
     }
     world.openSession = nullptr;
-    rooms.SetWorldData(world);
+    for (nox::CRoomManager* rm : allRooms) rm->SetWorldData(world);   // ★ 11-17 C-3d-4 — 방 관리자마다
     WorldExtras noRoom;   // 로비 방식 — 서버 찾기 답의 맵 이름은 녹음 틀 그대로
     if (LoadMode(opt)) {  // ★ 11-10 부하 실험 — 첫 방이 없어 이름이 안 채워지므로 `--map` 에서 넣는다(정품 클라의 서버 목록에 뜨게)
         if (const auto m = maps.Find(MapKeyOf(opt.room.mapPath))) noRoom.lanMapName = LanMapNameOf(m->fileName);
@@ -782,6 +813,14 @@ int main(int argc, char** argv) {
     // ★ 10-09 조각 5d-2b — 소켓은 네트워크 스레드가 연다(옛 이 자리의 `WSAStartup` · `socket` · `bind` — 실패 문구 그대로)
     {
         std::string netErr;
+        // ★ 11-17 C-3d-4 — 게임 스레드 수 · 세션 주인 정하는 법(게임 쪽 입장 차례와 같게 — 부하 판 → 열린 방 → 토큰 · `OwnerRule`).
+        //   로비에 붙으면 게임 스레드가 하나여도 로비 큐를 따로 둔다 — 로비 사건은 조정 스레드가 받는다(C 플랜 2절 원칙 3)
+        const nox::OwnerRule ownerRule = LoadMode(opt) ? nox::OwnerRule::LoadArrival
+                                       : opt.noJoinToken ? nox::OwnerRule::ThreadZero : nox::OwnerRule::Token;
+        if (!net.SetGameThreads(opt.gameThreads, ownerRule, opt.loadRoomSize, netErr, LobbyMode(opt))) {
+            std::printf("[멈춤] 게임 스레드를 정하지 못했다 — %s\n", netErr.c_str());
+            return 2;
+        }
         net.SetUdpOptions(opt.udpRio, 0, 0);   // ★ 11-17 C-2 — 칸 수 0 = 팔마다 기본(`NetworkThread.h` `kUdp*Slots*` — 값의 까닭은 거기)
         if (!net.Open(opt.bindIp, static_cast<uint16_t>(opt.port), netErr)) {   // ★ 10-20 — `--bind`(비면 모든 주소)
             std::printf("%s\n", netErr.c_str());
@@ -822,21 +861,34 @@ int main(int argc, char** argv) {
         }
         RoomSettings loadFrame = opt.room;
         nox::ApplyLobbyRoomFrame(loadFrame, waitMaps.front(), battleMaps, battleMaps.empty() ? std::string() : battleMaps.front(), /*maxPlayers=*/0);
-        rooms.SetLoadEntry(loadFrame, opt.loadRooms, opt.loadRoomSize);
+        // ★ 11-17 C-3d-4 — 열린 방 상한을 게임 스레드마다 나눈 몫(`LoadRoomShare` — 통신 스레드 `OwnerRule::LoadArrival` 과 같은 나눔 · 하나면 전체)
+        for (int k = 0; k < opt.gameThreads; ++k)
+            allRooms[static_cast<size_t>(k)]->SetLoadEntry(loadFrame, nox::CRoomManager::LoadRoomShare(opt.loadRooms, k, opt.gameThreads), opt.loadRoomSize);
         std::printf("입장: 실험 방 틀 — 대기 %s · 대전 맵 %zu개 %s\n", waitKeys.c_str(), battleMaps.size(), battleKeys.empty() ? "(없음 — 판을 못 연다)" : battleKeys.c_str());
     }
     // ★ 10-14 플랜 B 작업 8d — 채널 안 로비(`CChannelLobby` · `--lobby-port`)는 ★ 10-20 v2 작업 4b-2 에서 걷었다 —
     //   로비는 따로 된 프로세스(`nox_lobby`)이고 이 게임 서버는 그 연결 포트에 붙는다(아래)
     // ★ 10-20 MO 6단계 v2 작업 4b — 로비 프로세스에 붙기(`--lobby`). 네트워크 스레드가 로비 연결 포트에 붙고(끊기면 다시)
-    //   게임 스레드의 `CLobbyClient` 가 확인 · 등록 · 방 알림 · 새 방 · 판 결과를 맡는다(`LobbyClient.h` 머리)
+    //   `CLobbyClient` 가 확인 · 등록 · 방 알림 · 새 방 · 판 결과를 맡는다(`LobbyClient.h` 머리)
+    // ★ 11-17 C-3d-4 — 로비 연결은 조정 스레드가 쥐고(게임 스레드 수와 상관없이 — C 플랜 2절 원칙 3 · 5-1) 방은 큐로만 만진다
+    //   (`LobbyRoomsQueue.h` — 조정 몫 `CQueuedLobbyRooms` · 게임 스레드 몫 `CLobbyRoomsAgent` · 고리 `CLobbyCoordinator`). 로비에 안 붙으면 조정 스레드가 없다
+    std::unique_ptr<nox::CLobbyRoomsHub> lobbyHub;
+    std::unique_ptr<nox::CQueuedLobbyRooms> lobbyRooms;
     std::unique_ptr<nox::CLobbyClient> lobbyClient;
+    std::unique_ptr<nox::CLobbyCoordinator> coordinator;
+    std::vector<std::unique_ptr<nox::CLobbyRoomsAgent>> lobbyAgents;
     if (!opt.lobbyAddr.empty()) {
         std::string linkErr;
         if (!net.ConnectLobby(lobbyIp, lobbyLinkPort, linkErr)) {
             std::printf("[멈춤] 로비에 붙기를 정하지 못했다 — %s\n", linkErr.c_str());
             return 1;
         }
-        lobbyClient = std::make_unique<nox::CLobbyClient>(rooms, lobbyClientCfg, opt.room, waitMaps, battleMaps);
+        lobbyHub = std::make_unique<nox::CLobbyRoomsHub>(opt.gameThreads);
+        lobbyRooms = std::make_unique<nox::CQueuedLobbyRooms>(*lobbyHub, opt.rankOneMap);
+        lobbyClient = std::make_unique<nox::CLobbyClient>(*lobbyRooms, lobbyClientCfg, opt.room, waitMaps, battleMaps);
+        coordinator = std::make_unique<nox::CLobbyCoordinator>(*lobbyHub, *lobbyRooms, *lobbyClient);
+        for (int k = 0; k < opt.gameThreads; ++k)
+            lobbyAgents.push_back(std::make_unique<nox::CLobbyRoomsAgent>(*lobbyHub, k, *allRooms[static_cast<size_t>(k)]));
         lobbyClient->SetVerbose(!opt.quiet);
         std::printf("로비 연결: %s:%u 에 붙음(끊기면 %u초 뒤 다시) · 등록 주소 %s · 실행 %u · 방 없이 시작(방은 로비가 묻는다) · 대기 맵 %zu개 %s · 대전 맵 %zu개 %s\n",
                     nox::Ipv4ToString(lobbyIp).c_str(), lobbyLinkPort, nox::CNetworkThread::kLobbyRetryMs / 1000,
@@ -884,32 +936,57 @@ int main(int argc, char** argv) {
     HANDLE stopEvent = CreateEventW(nullptr, TRUE, FALSE, stopName);
 
     // ★ 10-09 조각 5d-2b — 게임 스레드. ★ 11-17 C-3d-2 — 고리 · 틱 타이머 · 판 결과 꺼내기 · 초당 줄 · `[구간]` 보고기는 `nox/GameThread.h` 로 옮겼다(줄 · 차례 그대로).
-    //   게임 스레드 하나(기본)는 이 스레드가 돌고, 로비 연결은 그 걸이로 돈다(로비 사건 · 판 결과 · 바퀴 끝). 크래시 덤프는 이 실행 파일 몫이라 걸이로
-    nox::CGameThread::Config gtCfg;
-    gtCfg.index = 0;
-    gtCfg.quiet = opt.quiet;
-    gtCfg.tickSections = opt.tickSections;
-    gtCfg.recorderThread = recorder ? recorder->ThreadHandle() : nullptr;
-    gtCfg.recorder = recorder.get();
-    gtCfg.stopRequested = [stopEvent]() { return g_stopRequested.load() || WaitForSingleObject(stopEvent, 0) == WAIT_OBJECT_0; };   // ★ 5d-2c — 닫기 신호
-    nox::CGameThread::Hooks gtHooks;
-    if (lobbyClient) {
-        nox::CLobbyClient* const lc = lobbyClient.get();
-        gtHooks.lobbyEvent = [lc](const nox::NetworkEvent& ev, std::vector<nox::NetworkRequest>& out) { lc->OnNetworkEvent(ev, out); };
-        gtHooks.matchResult = [lc](const nox::RoomEvent& e, std::vector<nox::NetworkRequest>& out) {
-            lc->OnMatchResult(nox::MatchIdOf(e.result), nox::FormatMatchResultJson(e.result), out, e.roomId);
-        };
-        gtHooks.afterTurn = [lc](std::vector<nox::NetworkRequest>& out) { lc->AfterTick(out); };
+    //   크래시 덤프는 이 실행 파일 몫이라 걸이로. ★ 11-17 C-3d-4 — 게임 스레드 0 은 이 스레드가 돌고 1 ~ N-1 은 새 스레드.
+    //   로비에 붙으면 조정 스레드가 로비 연결을 돌리고, 게임 스레드는 걸이로 명령(바퀴 머리) · 판 결과 · 바뀐 방 사실(바퀴 끝)을 큐에 넘긴다
+    const std::function<bool()> stopRequested = [stopEvent]() { return g_stopRequested.load() || WaitForSingleObject(stopEvent, 0) == WAIT_OBJECT_0; };   // ★ 5d-2c — 닫기 신호
+    // ★ 11-17 C-3d-4 — 조정 스레드는 게임 스레드보다 먼저 띄운다(`[구간]` 보고기가 게임 스레드 `Run` 머리에서 그 핸들을 쥔다)
+    std::thread coordinatorThread;
+    if (coordinator) {
+        nox::CLobbyCoordinator* const co = coordinator.get();
+        const int lobbyQueue = net.LobbyQueue();
+        coordinatorThread = std::thread([co, &net, lobbyQueue, stopRequested]() { co->Run(net, lobbyQueue, stopRequested); });
     }
-    gtHooks.debugCrash = []() { CRASH("--debug-crash"); };
-    nox::CGameThread gameThread(net, rooms, std::move(gtCfg), std::move(gtHooks));
+    std::vector<std::unique_ptr<nox::CGameThread>> gameThreads;
+    for (int k = 0; k < opt.gameThreads; ++k) {
+        nox::CGameThread::Config gtCfg;
+        gtCfg.index = k;
+        gtCfg.quiet = opt.quiet;
+        gtCfg.processLines = k == 0;   // ★ 11-17 C-3d-4 — 초당 통신 · 스레드 줄은 프로세스 몫이라 게임 스레드 0 만
+        gtCfg.tickSections = opt.tickSections;
+        gtCfg.recorderThread = recorder ? recorder->ThreadHandle() : nullptr;   // 통신 · 기록 · 조정 CPU 는 게임 스레드 0 줄에만 찍힌다(`CTickSectionReport`)
+        gtCfg.coordinatorThread = coordinatorThread.joinable() ? coordinatorThread.native_handle() : nullptr;   // ★ 11-17 C-3d-4
+        gtCfg.recorder = recorder.get();
+        gtCfg.stopRequested = stopRequested;
+        gtCfg.commandsReady = lobbyHub ? lobbyHub->CommandsReadyHandle(k) : nullptr;   // ★ 11-17 C-3d-4 — 명령이 오면 깬다(방이 없어도)
+        nox::CGameThread::Hooks gtHooks;
+        if (!lobbyAgents.empty()) {
+            nox::CLobbyRoomsAgent* const ag = lobbyAgents[static_cast<size_t>(k)].get();
+            gtHooks.turnStart = [ag]() { ag->RunCommands(); };
+            // 판 결과는 쌓아 두었다가 바퀴 끝 묶음에 — 조정 스레드가 그 바퀴의 방 바뀜보다 먼저 RESULT 를 낸다(옛 차례 · `CLobbyCoordinator::Turn`)
+            gtHooks.matchResult = [ag](const nox::RoomEvent& e, std::vector<nox::NetworkRequest>&) {
+                ag->AddMatch(nox::MatchIdOf(e.result), nox::FormatMatchResultJson(e.result), e.roomId);
+            };
+            gtHooks.afterTurn = [ag](std::vector<nox::NetworkRequest>&) { ag->Report(); };
+        }
+        gtHooks.debugCrash = []() { CRASH("--debug-crash"); };
+        gameThreads.push_back(std::make_unique<nox::CGameThread>(net, *allRooms[static_cast<size_t>(k)], std::move(gtCfg), std::move(gtHooks)));
+    }
+    // 1 ~ N-1 — 고리 뒤 `Finish` 도 그 스레드에서(끝 셈이 그 스레드의 `thread_local` · 마지막 `[구간]` 은 `net.Stop` 이 핸들을 닫기 전에)
+    std::vector<std::thread> moreGameThreads;
+    for (size_t k = 1; k < gameThreads.size(); ++k) {
+        nox::CGameThread* const gt = gameThreads[k].get();
+        moreGameThreads.emplace_back([gt]() { gt->Run(); gt->Finish(); });
+    }
+    nox::CGameThread& gameThread = *gameThreads.front();
     gameThread.Run();
     gameThread.Finish();   // 마지막 `[구간]`(`net.Stop` 이 스레드 핸들을 닫기 전에) · 끝 셈 담기(이 스레드의 `thread_local`)
+    for (std::thread& t : moreGameThreads) t.join();   // 닫기 신호는 모두 같은 것을 본다 — 늦어도 한 틱(조정 스레드는 33ms) 뒤 빠진다
+    if (coordinatorThread.joinable()) coordinatorThread.join();
     // ★ 10-09 조각 5d-2c — 정상 종료(`Docs/LAYERS_DESIGN.md` 「네트워크 스레드」) — 쌓인 요청을 넘기고 → 네트워크 스레드가 그것을 보낸 뒤
     //   키를 준 사람마다 `SERVER_CLOSE` 를 보내고 멈춘다 → 끝(종료 코드 0). 지금 게임에는 닫을 때 저장할 것이 없다.
     std::printf("[종료] 닫기 신호 — 쌓인 요청을 보내고 사람마다 SERVER_CLOSE 를 보낸 뒤 네트워크 스레드를 멈춘다\n");
     std::fflush(stdout);
-    gameThread.FlushRequests();
+    for (const auto& gt : gameThreads) gt->FlushRequests();   // ★ 11-17 C-3d-4 — 게임 스레드마다(모두 끝난 뒤라 이 스레드가 만져도 된다)
     net.Stop(/*closeSessions=*/true);
     {
         const nox::CUdpStats ns = net.LatestNetworkStats();
@@ -918,11 +995,16 @@ int main(int argc, char** argv) {
                     ns.serverCloseSent, ts.datagramsOut, ts.eventsDropped, ts.requestsDropped);
         // 부하 실험(더미 플랜 5-3) — 더미의 sentInput 합 · recvDgram 합과 견주는 값. 소켓 · 큐에서 소리 없이 사라진 몫이 여기서 드러난다
         {
-            const auto& seenAll = gameThread.FinalTotals().seen;
             // ★ 11-11 부하 측정 M0 조각 5 — 입력은 스위치와 상관없이 센 값(`TickSections.h` `g_inputTotal`). 메시지 전체는 종류별 셈이라 `--no-op-count` 면 0
-            unsigned long long msgs = 0;
-            const unsigned long long inputs = gameThread.FinalTotals().inputs;   // ★ 11-17 C-3d-2 — 게임 스레드의 `thread_local` 누계를 그 스레드가 담았다(`CGameThread::Finish`)
-            for (const auto& kv : seenAll) msgs += kv.second;
+            // ★ 11-17 C-3d-2 — 게임 스레드의 `thread_local` 누계를 그 스레드가 담았다(`CGameThread::Finish`) · ★ C-3d-4 — 게임 스레드마다 더한다
+            unsigned long long msgs = 0, inputs = 0, aliasTaken = 0, aliasStale = 0;
+            for (const auto& gt : gameThreads) {
+                const nox::CGameThread::Totals& t = gt->FinalTotals();
+                for (const auto& kv : t.seen) msgs += kv.second;
+                inputs += t.inputs;
+                aliasTaken += t.aliasTaken;
+                aliasStale += t.aliasStaleDropped;
+            }
             std::printf("[종료] 받은 것 — 입력(0x3f) %llu · 메시지 전체 %llu · 받은 조각 %llu · 한 번에 비운 조각 최대 %llu · 받기 오류 %llu\n",
                         inputs, msgs, ts.datagramsIn, ts.maxDatagramsPerWake, ts.recvErrors);
             // ★ 11-17 C-2 — UDP 부품 셈(RIO 칸 수 · 큰 칸 크기의 근거 — 구체화 C-① · C-②). 위 줄은 `tools/load_report.ps1` 이 읽어 꼴을 그대로 두고 줄을 더한다
@@ -930,7 +1012,19 @@ int main(int argc, char** argv) {
                         net.UdpRio() ? "RIO" : "보통", ts.maxDatagramsOutPerWake, ts.maxDatagramOutBytes,
                         ts.udpOversizeDropped, ts.udpRecvFail, ts.udpSendFail, ts.udpFlushes);
             // ★ 11-13 — 판을 다시 연 뒤 준비 전이라 버린 별칭 알림(`Session::aliasStale`) · 받아 쓴 수를 같이(0 이 「없었다」인지 가른다)
-            std::printf("[종료] 별칭 알림(a5) — 받아 씀 %llu · 판 다시 연 뒤 준비 전이라 버림 %llu\n", gameThread.FinalTotals().aliasTaken, gameThread.FinalTotals().aliasStaleDropped);
+            std::printf("[종료] 별칭 알림(a5) — 받아 씀 %llu · 판 다시 연 뒤 준비 전이라 버림 %llu\n", aliasTaken, aliasStale);
+            // ★ 11-17 C-3d-4 — 게임 스레드가 여럿이면 스레드별 몫 · 세션 주인 정하기 셈(갈래마다 — 0 옆에 지나간 양). 하나면 안 찍는다(옛 줄 그대로)
+            if (gameThreads.size() > 1) {
+                std::string per;
+                char pb[96];
+                for (size_t k = 0; k < gameThreads.size(); ++k) {
+                    std::snprintf(pb, sizeof(pb), " %zu:입력 %llu·판 %llu", k, gameThreads[k]->FinalTotals().inputs, gameThreads[k]->MatchResults());
+                    per += pb;
+                }
+                std::printf("[종료] 게임 스레드 %zu개 —%s · 세션 주인 토큰 %llu · 토큰 없음 %llu · 부하 %llu · 0번 %llu · 끊어 지움 %llu · 걷어 지움 %llu · 남은 지도 %zu · 없는 큐 번호 %llu\n",
+                            gameThreads.size(), per.c_str(), ts.ownerByToken, ts.ownerNoToken, ts.ownerByLoad, ts.ownerThreadZero, ts.ownerForgot,
+                            ts.ownerPruned, ts.owners, ts.queueIndexBad);
+            }
         }
         // ★ 10-20 v2 작업 4b — 로비 연결의 셈(0 옆에 지나간 양 — 네트워크 스레드가 센 TCP 줄 · 시도 수도)
         if (lobbyClient) {
@@ -946,18 +1040,28 @@ int main(int argc, char** argv) {
                         ts.lobbyConnects, ts.lobbyConnectFailed, ls.pingsIn, ls.pingsOut, ls.deadLinks, ts.lobbyCloseRequests,
                         ls.savedOk, ls.savedDup, ls.savedBad, ls.savedUnknown, ls.resultsHeldDown, ls.resultsResent, ls.resultsDropped,
                         lobbyClient->HeldResults(), ls.ratingNotices, ls.ratingNoRoom, ls.ratingNotHere);
+            // ★ 11-17 C-3d-4 — 조정 스레드 셈(바퀴 · 받은 묶음 · 넘긴 판 결과 · 끝날 때 답을 다 못 받은 명령 · 답 없는 새 방 · 모르는 답 · 없는 스레드로 낸 명령)
+            size_t createsLeft = 0;
+            for (int k = 0; k < opt.gameThreads; ++k) createsLeft += lobbyRooms->CreatesInFlight(k);
+            std::printf("[조정 스레드] 끝 — 바퀴 %llu · 받은 묶음 %llu · 넘긴 판 결과 %llu · 답 못 받은 명령 %zu · 답 없는 새 방 %zu · 모르는 답 %llu · 없는 스레드 명령 %llu\n",
+                        coordinator->Turns(), coordinator->ReportsTaken(), coordinator->MatchesPassed(), lobbyRooms->CommandsWaiting(), createsLeft,
+                        lobbyRooms->UnknownReplies(), lobbyHub->CommandsBadThread());
         }
         std::fflush(stdout);
     }
     // ★ 10-19 MO 5단계 작업 3 — 남은 판 결과를 넘기고 기록기 큐를 다 쓴 뒤 닫는다(0 옆에 지나간 양 — 받음 · 씀 · 실패)
-    gameThread.DrainRoomEvents();
+    unsigned long long matchResults = 0;
+    for (const auto& gt : gameThreads) {   // ★ 11-17 C-3d-4 — 게임 스레드마다
+        gt->DrainRoomEvents();
+        matchResults += gt->MatchResults();
+    }
     if (recorder) {
         recorder->Stop();
         const nox::CMatchRecorder::Stats rs = recorder->GetStats();
-        std::printf("[결과 기록] 끝 — 판 결과 %llu · 받음 %llu · 씀 %llu · 실패 %llu · %s\n", gameThread.MatchResults(), rs.pushed, rs.written, rs.writeFailed,
+        std::printf("[결과 기록] 끝 — 판 결과 %llu · 받음 %llu · 씀 %llu · 실패 %llu · %s\n", matchResults, rs.pushed, rs.written, rs.writeFailed,
                     recorder->Path().c_str());
     } else {
-        std::printf("[결과 기록] 끝 — 판 결과 %llu(기록 꺼짐)\n", gameThread.MatchResults());
+        std::printf("[결과 기록] 끝 — 판 결과 %llu(기록 꺼짐)\n", matchResults);
     }
     std::fflush(stdout);
     if (stopEvent) CloseHandle(stopEvent);

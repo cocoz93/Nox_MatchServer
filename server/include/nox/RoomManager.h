@@ -425,6 +425,8 @@ public:
         for (auto& kv : _rooms) kv.second->SetUnixClock(_unixNow);
     }
     uint32_t Epoch() const { return _epoch; }   // ★ 10-19 — 방 관리자를 만든 유닉스 초(판 번호 앞자리)
+    // ★ 11-17 C-3d-4 — 게임 스레드가 여럿이면 방 관리자들이 판 번호 앞자리 하나를 같이 쓴다(첫 방을 만들기 전에 · 있는 방은 안 바꾼다)
+    void SetEpoch(uint32_t e) { _epoch = e; }
     void SetLogJoins(bool on) { _logJoins = on; }   // 입장 판정을 한 줄씩 찍는다(`main` 이 켠다 — 시험은 조용히)
 
     // ── 세션표 ──

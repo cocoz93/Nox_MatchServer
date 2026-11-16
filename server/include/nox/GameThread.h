@@ -1,10 +1,11 @@
 ﻿// GameThread.h — 게임 스레드 하나의 고리(★ 11-17 C-3d-2 — 옛 `main.cpp` 의 게임 루프를 그대로 옮겼다 · C 플랜 `Docs/SERVERCORE_UDP_PLAN_1116.md` 5절)
 //
 // 게임 스레드 하나 = 방 관리자 하나(`CRoomManager` — 제 몫의 방만) + 통신 스레드의 제 사건 큐 · 요청 큐(번호 `Config::index`).
-// 한 바퀴: 닫기 신호 → 사건 꺼내기(로비 사건은 걸이 · 나머지는 방 관리자) → 판 차리기 → 틱 앞 요청 → 틱 → 판 결과 → 방 진단 →
-//          초당 통신 · 스레드 줄 → `[구간]` → 바퀴 끝 걸이(로비 연결 `AfterTick`) → 「사건 들어옴 · 다음 틱 마감」 중 먼저 오는 것을 기다림.
-// 게임 스레드가 하나(기본)면 옛 `main.cpp` 고리와 줄 · 차례가 같다 — 로비 연결은 이 스레드의 걸이로 돈다(`main.cpp` 가 건다).
-// 여럿이면 로비 사건은 조정 스레드가 받고(C-3d-3) 이 스레드는 판 결과만 걸이로 넘긴다(C-3d-4).
+// 한 바퀴: 닫기 신호 → 사건 꺼내기(로비 사건은 걸이 · 나머지는 방 관리자) → 바퀴 머리 걸이(조정 스레드 명령) → 판 차리기 → 틱 앞 요청 →
+//          틱 → 판 결과 → 방 진단 → 초당 통신 · 스레드 줄 → `[구간]` → 바퀴 끝 걸이 → 「사건 들어옴 · 명령 들어옴 · 다음 틱 마감」 중 먼저 오는 것을 기다림.
+// 로비에 안 붙으면(부하 판 · 단독 · 녹음) 걸이가 없어 옛 `main.cpp` 고리와 줄 · 차례가 같다.
+// ★ 11-17 C-3d-4 — 로비에 붙으면 게임 스레드 수와 상관없이 로비 사건은 조정 스레드가 받고(`LobbyRoomsQueue.h` · C 플랜 2절 원칙 3),
+//   이 스레드는 걸이로 명령을 돌리고(바퀴 머리) 판 결과 · 바뀐 방 사실을 한 묶음으로 넘긴다(바퀴 끝). 거는 것은 `main.cpp`.
 //
 // 걸이로 받는 까닭 — 로비 연결 · 크래시 덤프 처리기는 실행 파일 몫이다. `CrashDump.h` 는 넣기만 하면 전역 처리기를 걸어서
 // 이 파일(`nox_proto` — 시험 · 재생 도구도 링크한다)에 넣으면 그 도구들의 죽는 꼴까지 바뀐다.
@@ -36,12 +37,16 @@ public:
         bool tickSections = false;             // `--tick-sections` — `[구간]` 줄
         void* recorderThread = nullptr;        // `[구간]` CPU 칸(게임 스레드 0 줄에만 쓴다 — `CTickSectionReport`)
         void* coordinatorThread = nullptr;
+        void* commandsReady = nullptr;         // ★ 11-17 C-3d-4 — 조정 스레드 명령 큐에 넣으면 켜지는 이벤트(`CLobbyRoomsHub::CommandsReadyHandle`) — 같이 기다린다 · 없으면 옛 꼴
         CMatchRecorder* recorder = nullptr;    // 판 결과 기록기(없으면 줄만)
         std::function<bool()> stopRequested;   // 닫기 신호 — 바퀴 맨 위에서 본다
     };
     struct Hooks {
         // 로비 사건(`IsLobbyEvent`) — 비면 버린다(옛 꼴: 로비 연결이 없을 때와 같음). 낸 줄은 `out` 에(이 스레드가 넘긴다)
         std::function<void(const NetworkEvent& ev, std::vector<NetworkRequest>& out)> lobbyEvent;
+        // ★ 11-17 C-3d-4 — 바퀴 머리(사건 뒤 · 판 차리기 앞 · 사건이 없어도) — 조정 스레드 명령(`CLobbyRoomsAgent::RunCommands`).
+        //   옛 꼴에서 로비의 새 방 · 계정 명령이 사건 처리 안에서 돌던 자리 바로 뒤라 같은 바퀴의 판 차리기 · 틱이 새 방을 본다
+        std::function<void()> turnStart;
         // 판 결과(출력 줄 · 기록기 뒤) — 로비 연결에(`CLobbyClient::OnMatchResult`)
         std::function<void(const RoomEvent& e, std::vector<NetworkRequest>& out)> matchResult;
         // 바퀴 끝(틱 블록 밖 · 방이 없어도) — 로비 연결 `AfterTick`

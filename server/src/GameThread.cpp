@@ -112,6 +112,7 @@ void CGameThread::Run() {
         ++_loopTurns;
         _net.SwapOutNetworkEvents(_cfg.index, _netEvents);
         if (!_netEvents.empty()) HandleEvents();
+        if (_hooks.turnStart) _hooks.turnStart();   // ★ 11-17 C-3d-4 — 조정 스레드 명령(새 방 · 계정 명령 · 점수 알림)
 
         // ★ 10-12 플랜 B 작업 7c — 판 차리기는 방마다(`StartModeIfReady` — 옛 이 자리의 블록을 옮김)
         _rooms.ForEachRoom([&](CRoom& room) { room.StartModeIfReady(); });
@@ -276,13 +277,16 @@ void CGameThread::Wait() {
         if (left > 0) {
             LARGE_INTEGER rel;
             rel.QuadPart = -static_cast<LONGLONG>(left) * 10000;   // 100ns 단위 · 음수 = 지금부터
-            const HANDLE waits[2] = { static_cast<HANDLE>(_net.EventsReadyHandle(_cfg.index)), tickTimer };
+            // ★ 11-17 C-3d-4 — 명령 큐 이벤트가 있으면 가운데에 끼운다(사건 · 명령 · 틱 마감 — 틱 마감이 늘 끝)
+            const HANDLE cmd = static_cast<HANDLE>(_cfg.commandsReady);
+            const HANDLE waits[3] = { static_cast<HANDLE>(_net.EventsReadyHandle(_cfg.index)), cmd ? cmd : tickTimer, tickTimer };
+            const DWORD nWaits = cmd ? 3 : 2;
             // ★ 11-11 부하 측정 M0 조각 3 — 기다린 시간(바쁜 비율 · `TickSections.h` `CGameSectionTotals::waitMs`). 이 두 자리와 아래 방 없을 때 한 자리
             const SectionClock::time_point waitStart = _sectionReport ? SectionClock::now() : SectionClock::time_point{};
             if (tickTimer && SetWaitableTimer(tickTimer, &rel, 0, nullptr, nullptr, FALSE))
-                WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+                WaitForMultipleObjects(nWaits, waits, FALSE, INFINITE);
             else
-                WaitForSingleObject(waits[0], static_cast<DWORD>(left));   // 타이머가 없으면 이벤트만 시간 한도로(헛돌지 않게)
+                WaitForMultipleObjects(cmd ? 2 : 1, waits, FALSE, static_cast<DWORD>(left));   // 타이머가 없으면 이벤트(· 명령)만 시간 한도로(헛돌지 않게)
             if (_sectionReport) g_gameSections.waitMs += MsSince(waitStart);
         }
     } else {
@@ -290,7 +294,12 @@ void CGameThread::Wait() {
         //   옛 꼴은 기다리지 않고 헛돌았다(10-20 실측 — 방 없는 게임 서버가 5초에 CPU 4.8초). 로비 방식은 방 없이 시작해 늘 이 꼴로 쉰다
         constexpr DWORD kIdleWaitMs = 33;   // 한 틱(30Hz)
         const SectionClock::time_point waitStart = _sectionReport ? SectionClock::now() : SectionClock::time_point{};   // ★ 11-11 M0 조각 3
-        WaitForSingleObject(static_cast<HANDLE>(_net.EventsReadyHandle(_cfg.index)), kIdleWaitMs);
+        if (const HANDLE cmd = static_cast<HANDLE>(_cfg.commandsReady)) {   // ★ 11-17 C-3d-4 — 방이 없을 때도 명령(새 방)에 깬다
+            const HANDLE waits[2] = { static_cast<HANDLE>(_net.EventsReadyHandle(_cfg.index)), cmd };
+            WaitForMultipleObjects(2, waits, FALSE, kIdleWaitMs);
+        } else {
+            WaitForSingleObject(static_cast<HANDLE>(_net.EventsReadyHandle(_cfg.index)), kIdleWaitMs);
+        }
         if (_sectionReport) g_gameSections.waitMs += MsSince(waitStart);
     }
 }

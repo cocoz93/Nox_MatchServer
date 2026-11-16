@@ -25344,7 +25344,7 @@ void TestNetworkThread() {
     {
         const auto checks = RunGameThreadRouteChecks();
         for (const auto& kv : checks) Check(kv.first, kv.second.c_str());
-        Check(checks.size() == 11, "게임 스레드 나눔 확인 수 11(⑩-1 ~ ⑩-7 일곱 + ⑩-8 실물 셋 + ⑩-9 로비 큐 — 본체가 끝까지 돌았나)");
+        Check(checks.size() == 14, "게임 스레드 나눔 확인 수 14(⑩-1 ~ ⑩-7 일곱 + ⑩-8 실물 셋 + ⑩-9 로비 큐 + ★ C-3d-4 하나 + 로비 따로 ⑩-4b · ⑩-7b · ⑩-9b — 본체가 끝까지 돌았나)");
     }
 
     // ★ 10-14 작업 8c — 로비 TCP 사건(세션 번호 없음)은 방 관리자 · 게임에 와도 자리를 만들지 않는다(나누는 자리가 틀려도 세션 0 이 안 생기게)

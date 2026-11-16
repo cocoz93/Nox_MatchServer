@@ -99,11 +99,13 @@ public:
     enum class Why : uint8_t { Single, Lobby, Known, Token, NoToken, LoadArrival, ThreadZero };
 
     // n ≥ 1. 하나면 지도를 안 쓴다(모두 큐 0 — 옛 꼴)
-    void Configure(int gameThreads, OwnerRule rule, int loadRoomSize);
+    //   ★ 11-17 C-3d-4 — `lobbyApart` = 하나여도 로비 큐를 따로(조정 스레드가 로비 사건을 받는다 · C 플랜 2절 원칙 3). 여럿이면 늘 따로
+    void Configure(int gameThreads, OwnerRule rule, int loadRoomSize, bool lobbyApart = false);
     int GameThreads() const { return _n; }
-    // 큐 번호 — 게임 스레드 k = k · 로비 큐 = N(하나면 0 — 로비 사건도 게임 스레드 0 이 받던 옛 꼴)
-    int QueueCount() const { return _n == 1 ? 1 : _n + 1; }
-    int LobbyQueue() const { return _n == 1 ? 0 : _n; }
+    bool LobbyApart() const { return _n > 1 || _lobbyApart; }
+    // 큐 번호 — 게임 스레드 k = k · 로비 큐 = N(따로가 아니면 0 — 로비 사건도 게임 스레드 0 이 받던 옛 꼴)
+    int QueueCount() const { return LobbyApart() ? _n + 1 : 1; }
+    int LobbyQueue() const { return LobbyApart() ? _n : 0; }
     // 사건이 갈 큐 번호. 처음 보는 세션이면 규칙대로 정해 기억한다
     int Route(const NetworkEvent& ev, Why* why = nullptr);
     // 토큰의 방 번호 % n — 길이가 53바이트가 아니면 `hadToken` 거짓 · 0
@@ -128,6 +130,7 @@ public:
 
 private:
     int _n = 1;
+    bool _lobbyApart = false;                      // ★ 11-17 C-3d-4
     OwnerRule _rule = OwnerRule::Token;
     int _loadRoomSize = 0;
     unsigned long long _arrivals = 0;              // 부하 판 — 주인을 정한 새 세션 수(도착 차례)
@@ -194,7 +197,8 @@ public:
 
     // ★ 11-17 C-3b — 게임 스레드 수 · 주인 정하는 법(시작 전에만 · 1 ~ `kMaxGameThreads`). 큐를 다시 만든다 — 그 전에 넣은 것은 버린다.
     //   `loadRoomSize` 는 `OwnerRule::LoadArrival` 일 때만(1 이상)
-    bool SetGameThreads(int n, OwnerRule rule, int loadRoomSize, std::string& err);
+    //   ★ 11-17 C-3d-4 — `lobbyApart` = 하나여도 로비 큐를 따로(`CSessionOwners::Configure`) · 큐 수가 둘 이상이면 사건마다 큐를 고른다
+    bool SetGameThreads(int n, OwnerRule rule, int loadRoomSize, std::string& err, bool lobbyApart = false);
     int GameThreads() const { return _owners.GameThreads(); }
     int QueueCount() const { return _owners.QueueCount(); }   // 이벤트 큐 · 요청 큐 수(같다)
     int LobbyQueue() const { return _owners.LobbyQueue(); }   // 로비 사건이 오는 큐 · 조정 스레드가 요청을 넣는 큐
