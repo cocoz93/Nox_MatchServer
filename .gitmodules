@@ -1,0 +1,6 @@
+[submodule "third_party/ServerCore"]
+	path = third_party/ServerCore
+	url = https://github.com/cocoz93/ServerCore.git
+[submodule "third_party/LockFree"]
+	path = third_party/LockFree
+	url = https://github.com/cocoz93/LockFree.git

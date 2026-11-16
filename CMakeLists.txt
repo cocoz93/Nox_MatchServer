@@ -62,6 +62,15 @@ target_include_directories(nox_proto PUBLIC server/include)
 target_link_libraries(nox_proto PUBLIC nox_common)   # 입장 토큰 — 통신 층 꼬리 떼기 · 방 관리자 검증
 # ★ 10-20 v2 작업 4b-2 — 채널 안 로비를 걷어 nox_proto 는 로비 규약(nox_lobby_core)에 더 기대지 않는다(게임 서버는 연결 줄 LobbyLink 만 — nox_common)
 
+# ★ 11-17 C-2 — ServerCore 의 UDP 부품(`CUdpEndpoint` · 주소 `UdpAddr`)을 쓴다. 서브모듈 둘(third_party/ServerCore · third_party/LockFree —
+#   ServerCore 가 LockFree 를 형제 폴더에서 찾는다). EXCLUDE_FROM_ALL — 녹스가 링크하는 것만 빌드한다.
+#   ⚠ 링크는 `$<LINK_ONLY:…>` 로만 — ServerCore 의 바닥 라이브러리가 컴파일 설정(UNICODE · /sdl · /GL · spdlog 매크로)을 PUBLIC 으로
+#   퍼뜨려 그냥 링크하면 녹스 소스 전부가 다른 설정으로 컴파일된다(전후 측정을 견줄 수 없게 됨). 녹스가 여는 머리는 `UdpEndpoint.h` 하나이고
+#   그 머리는 표준 머리만 열어 매크로에 따라 꼴이 바뀌지 않으므로, 머리 경로만 열고 설정은 안 받는다
+add_subdirectory(third_party/ServerCore EXCLUDE_FROM_ALL)
+target_include_directories(nox_proto PUBLIC third_party/ServerCore/Network)
+target_link_libraries(nox_proto INTERFACE $<LINK_ONLY:ServerNetworkLib>)   # INTERFACE — 정적 라이브러리라 스스로 링크하지 않고 쓰는 실행 파일이 링크한다(PUBLIC 이면 11-17 첫 빌드처럼 nox_proto 자신에게 UNICODE · /sdl 이 걸려 C4996 오류)
+
 add_executable(nox_server server/src/main.cpp)
 target_link_libraries(nox_server PRIVATE nox_proto)
 

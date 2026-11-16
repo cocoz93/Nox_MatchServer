@@ -36,7 +36,10 @@ _evidence/
 
 # ── 참고용으로 받아둔 남의 저장소 ─────────────────────────
 # 내 코드와 섞이면 나중에 가릴 수 없다.
-third_party/
+third_party/*
+# ★ 11-17 C-2 — 내 저장소 둘은 서브모듈로 가져다 쓴다(ServerCore 가 LockFree 를 형제 폴더에서 찾는다)
+!third_party/ServerCore
+!third_party/LockFree
 vendor/
 
 # ── 빌드 ──────────────────────────────────────────────────
