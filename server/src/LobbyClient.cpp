@@ -23,6 +23,11 @@ std::string Printable(const std::string& s) {
 
 CLobbyClient::CLobbyClient(CRoomManager& rooms, Config cfg, RoomSettings roomTemplate, std::vector<std::string> waitMaps,
                            std::vector<std::string> battleMaps)
+    : _ownedRooms(std::make_unique<CDirectLobbyRooms>(rooms)), _rooms(*_ownedRooms), _cfg(cfg), _authKey(LinkAuthKey(cfg.tokenKey)),
+      _template(std::move(roomTemplate)), _waitMaps(std::move(waitMaps)), _battleMaps(std::move(battleMaps)), _rng(std::random_device{}()) {}
+
+CLobbyClient::CLobbyClient(ILobbyRooms& rooms, Config cfg, RoomSettings roomTemplate, std::vector<std::string> waitMaps,
+                           std::vector<std::string> battleMaps)
     : _rooms(rooms), _cfg(cfg), _authKey(LinkAuthKey(cfg.tokenKey)), _template(std::move(roomTemplate)), _waitMaps(std::move(waitMaps)),
       _battleMaps(std::move(battleMaps)), _rng(std::random_device{}()) {}
 
@@ -31,20 +36,88 @@ std::string CLobbyClient::RoomNameFor(const std::string& nick) {
     return nick.substr(0, kRoomNameNickBytes) + "'s game";
 }
 
-bool CLobbyClient::ToLinkRoom(const RoomFact& f, LinkRoom& lr) {
+bool CRoomFactDiff::ToLinkRoom(const RoomFact& f, LinkRoom& lr) {
     if (f.creator.empty()) return false;   // 로비가 만들지 않은 방(실행 인자의 방) — 목록에 안 낸다
     lr.id = static_cast<uint32_t>(f.roomId);
     lr.creator = f.creator;
     // ★ 10-16 결함 ② — 채널 · 목록 이름은 **지금 방장**(`RoomFact::host`). 만든 사람에 묶어 두면 판 중에 나간 옛 방장의
     //   `Host Game`(제 이름 채널)이 그 방(판 중)으로 가 거절됐다. 방장이 만든 사람이면 방 설정의 이름 그대로
     lr.host = f.host.empty() ? f.creator : f.host;
-    lr.name = lr.host == f.creator ? f.name : RoomNameFor(lr.host);
+    lr.name = lr.host == f.creator ? f.name : CLobbyClient::RoomNameFor(lr.host);
     lr.map = f.mapKey;
     lr.battleMap = f.battleMapName;   // ★ 11-06 플랜1 조각 6
     lr.mode = f.mode;
     lr.players = static_cast<uint32_t>(f.players);
     lr.maxPlayers = static_cast<uint32_t>(std::max(f.maxPlayers, 0));
     lr.playing = f.phase == RoomPhase::Playing;
+    return true;
+}
+
+// ★ 11-17 C-3c — 옛 `CLobbyClient::SendChanged` 의 줄 짓기 · 견주기 그대로(보내기만 뺐다 — 보내는 것은 `CLobbyClient`)
+std::string CRoomFactDiff::UiLine(const MemberUiFact& f) {
+    LinkRoomUi u;
+    u.name = f.account;
+    u.state = f.rankArriving ? RoomUiState::RankArriving : f.phase == RoomPhase::Playing ? RoomUiState::Playing : RoomUiState::Waiting;
+    u.host = f.host;
+    u.canStart = f.canStart;
+    u.scoreLimit = f.scoreLimit;
+    u.timeLimitMin = (f.timeLimitSec + 59) / 60;   // ★ 11-07 T1 — 초 → 분(올림 · 정품 `af` 19번과 같은 셈 `Server::WireSettings`)
+    u.map = f.battleMap;
+    return LinkRoomUiLine(u);
+}
+
+void CRoomFactDiff::Diff(const std::vector<RoomFact>& rooms, const std::vector<MemberUiFact>& ui, LobbyFactChanges& out) {
+    std::map<uint32_t, std::string> now;
+    for (const RoomFact& f : rooms) {
+        LinkRoom lr;
+        if (!ToLinkRoom(f, lr)) continue;
+        now[lr.id] = LinkRoomLine(lr);
+    }
+    for (const auto& kv : now) {
+        const auto s = _rooms.find(kv.first);
+        if (s != _rooms.end() && s->second == kv.second) continue;
+        out.rooms.emplace_back(kv.first, kv.second);
+    }
+    for (const auto& kv : _rooms)
+        if (!now.count(kv.first)) out.roomsGone.push_back(kv.first);
+    _rooms.swap(now);
+    // ★ 11-04 플랜1 — 방 안 화면 상태(방 줄과 같은 꼴 — 달라진 사람만)
+    std::map<std::string, std::string> uiNow;
+    for (const MemberUiFact& f : ui) uiNow[f.account] = UiLine(f);
+    for (const auto& kv : uiNow) {
+        const auto s = _ui.find(kv.first);
+        if (s != _ui.end() && s->second == kv.second) continue;
+        out.ui.emplace_back(kv.first, kv.second);
+    }
+    for (const auto& kv : _ui)
+        if (!uiNow.count(kv.first)) out.uiGone.push_back(kv.first);
+    _ui.swap(uiNow);
+}
+
+void CDirectLobbyRooms::CreateRoom(uint32_t req, const RoomSettings& s) {
+    LobbyCreateResult r;
+    r.req = req;
+    r.roomId = _rooms.CreateRoom(s);
+    _done.push_back(r);
+}
+
+void CDirectLobbyRooms::TakeCreateResults(std::vector<LobbyCreateResult>& out) {
+    out.insert(out.end(), _done.begin(), _done.end());
+    _done.clear();
+}
+
+bool CDirectLobbyRooms::NoticeRatings(int roomId, const std::vector<std::pair<std::string, std::string>>& notes, std::vector<size_t>& sent) {
+    if (roomId < 0 || !_rooms.HasRoom(roomId)) return false;
+    CRoom& room = _rooms.Room(roomId);
+    for (const auto& note : notes) {
+        size_t n = 0;
+        for (const RoomMember& m : room.Members()) {
+            if (m.account != note.first) continue;
+            room.Game().SendNoticeBoxTo(m.sessionId, note.second);   // ★ 10-31 — 말풍선(`SendNoticeTo`) → 정품 알림창
+            ++n;
+        }
+        sent.push_back(n);
+    }
     return true;
 }
 
@@ -64,8 +137,7 @@ void CLobbyClient::OnNetworkEvent(const NetworkEvent& ev, std::vector<NetworkReq
             ++_stats.linksUp;
             _conn = ev.lobbyConn;
             _stage = Stage::WaitHello;
-            _sent.clear();
-            _sentUi.clear();   // ★ 11-04 플랜1 — 새 로비엔 다시 다 알린다
+            // ★ 11-17 C-3c — 새 로비엔 다시 다 알린다 — 사본은 비우지 않고 등록 때 전부 보낸다(`SendAll` · 옛 꼴은 여기서 지난번 보낸 것을 비움)
             _lastRecvMs = _nowMs();   // ★ 7단계 — 붙은 때부터 잰다(HELLO 도 안 오는 로비 — 멈춘 로비의 대기 줄에 붙음 — 도 한도에 끊는다)
             _nextPingMs = _lastRecvMs + kLinkPingEveryMs;
             _closeAsked = false;
@@ -114,7 +186,7 @@ void CLobbyClient::OnLine(const std::string& line, std::vector<NetworkRequest>& 
             _stage = Stage::Registered;
             std::printf("[로비 연결] 등록 — 실행 %u · 클라가 붙을 주소 %s:%u\n", _cfg.epoch,
                         _cfg.registerIp ? Ipv4ToString(_cfg.registerIp).c_str() : "(로비 쪽 주소)", _cfg.port);
-            SendChanged(out);   // 붙을 때 지난번 보낸 것을 비웠으므로 로비 방 전부
+            SendAll(out);   // 로비 방 전부(★ 11-17 C-3c — 옛 꼴은 붙을 때 지난번 보낸 것을 비워 `SendChanged` 로 전부)
             // ★ 7단계 조각 3 — 쥔 판 결과 전부(끊긴 동안 끝난 판 · 보냈는데 답을 못 받은 판 — 로비는 판 번호로 겹침을 거른다)
             if (!_held.empty()) {
                 const uint32_t now = _nowMs();
@@ -132,7 +204,7 @@ void CLobbyClient::OnLine(const std::string& line, std::vector<NetworkRequest>& 
             return;
         case LinkKind::ClientGone: {   // ★ 11-03 — 시간 초과 한도만 줄인다(`Server::ClientLobbyGone`)
             ++_stats.clientGoneIn;
-            const size_t n = _rooms.OnClientLobbyGone(l.text);
+            const size_t n = _rooms.ClientLobbyGone(l.text);
             _stats.clientGoneShortened += n;
             std::printf("[로비 연결] CLIENT_GONE %s — 들어 있던 세션 %zu개 한도 줄임\n", Printable(l.text).c_str(), n);
             return;
@@ -191,23 +263,52 @@ void CLobbyClient::OnCreate(const LinkLine& l, std::vector<NetworkRequest>& out)
     ++_stats.creates;
     if (l.ranked) ++_stats.createsRanked;
     std::string why;
-    const int id = creator.empty() ? CRoomManager::kNoRoom : CreateRoomFor(creator, l.ranked, l.roster, why, l.rosterRatings);
+    RoomSettings s;
+    const bool ok = !creator.empty() && RoomSettingsFor(creator, l.ranked, l.roster, why, s, l.rosterRatings);
     if (creator.empty()) why = "만든 사람 없음";
-    if (id == CRoomManager::kNoRoom) {
-        ++_stats.createFailed;
-        std::printf("[로비 연결] 새 방 실패 — 요청 %u · 만든 사람 %s · %s\n", req, Printable(creator).c_str(), why.c_str());
-        Send(LinkCreateFailed(req, why), out);
+    if (!ok) {
+        CreateFailed(req, creator, why, out);
         return;
     }
-    if (l.ranked) {   // ★ 랭크 매칭 조각 5 — 명단은 기록에(판 시작 규칙은 방이 — 조각 6)
-        std::string names;
-        for (const std::string& n : l.roster) names += (names.empty() ? "" : ",") + n;
-        std::printf("[로비 연결] 랭크 방 %d — 요청 %u · 명단 %s(%zu명)\n", id, req, Printable(names).c_str(), l.roster.size());
+    // ★ 11-17 C-3c — 만들어라 → 결과(5-4). 한 스레드 판은 여기서 결과가 곧바로 있다 · 여럿이면 게임 스레드가 답한 뒤 `AfterTick`
+    PendingCreate& p = _pending[req];
+    p.creator = creator;
+    p.ranked = l.ranked;
+    p.roster = l.roster;
+    _rooms.CreateRoom(req, s);
+    FinishCreates(out);
+}
+
+void CLobbyClient::CreateFailed(uint32_t req, const std::string& creator, const std::string& why, std::vector<NetworkRequest>& out) {
+    ++_stats.createFailed;
+    std::printf("[로비 연결] 새 방 실패 — 요청 %u · 만든 사람 %s · %s\n", req, Printable(creator).c_str(), why.c_str());
+    Send(LinkCreateFailed(req, why), out);
+}
+
+void CLobbyClient::FinishCreates(std::vector<NetworkRequest>& out) {
+    std::vector<LobbyCreateResult> done;
+    _rooms.TakeCreateResults(done);
+    for (const LobbyCreateResult& d : done) {
+        PendingCreate p;
+        const auto it = _pending.find(d.req);
+        if (it != _pending.end()) {
+            p = std::move(it->second);
+            _pending.erase(it);
+        }
+        if (d.roomId == CRoomManager::kNoRoom) {
+            CreateFailed(d.req, p.creator, "방 차리기 실패(게임 서버 [방] 줄)", out);
+            continue;
+        }
+        if (p.ranked) {   // ★ 랭크 매칭 조각 5 — 명단은 기록에(판 시작 규칙은 방이 — 조각 6)
+            std::string names;
+            for (const std::string& n : p.roster) names += (names.empty() ? "" : ",") + n;
+            std::printf("[로비 연결] 랭크 방 %d — 요청 %u · 명단 %s(%zu명)\n", d.roomId, d.req, Printable(names).c_str(), p.roster.size());
+        }
+        // 규약 — 답 앞에 그 방의 ROOM(로비 거울이 그 방을 먼저 알아야 참가 답 · 토큰을 낸다)
+        SendChanged(out);
+        ++_stats.created;
+        Send(LinkCreated(d.req, static_cast<uint32_t>(d.roomId)), out);
     }
-    // 규약 — 답 앞에 그 방의 ROOM(로비 거울이 그 방을 먼저 알아야 참가 답 · 토큰을 낸다)
-    SendChanged(out);
-    ++_stats.created;
-    Send(LinkCreated(req, static_cast<uint32_t>(id)), out);
 }
 
 void ApplyLobbyRoomFrame(RoomSettings& s, const std::string& waitMap, const std::vector<std::string>& battleMaps,
@@ -227,13 +328,13 @@ void ApplyLobbyRoomFrame(RoomSettings& s, const std::string& waitMap, const std:
 // ★ 10-14 작업 10a — 새 방: 틀 + 만든 사람 · 이름 · 대기 맵(무작위) · 채팅 모드 · 비면 닫음 → 방 관리자의 만들기 입구
 // ★ 10-20 v2 작업 4b — 옛 `CChannelLobby::CreateRoomFor` 몸통 그대로(로비가 이제 다른 프로세스라 연결 줄 `CREATE` 로 묻는다).
 //   못 만든 까닭은 `CREATE_FAILED` 로 로비 기록에 실린다
-int CLobbyClient::CreateRoomFor(const std::string& creator, bool ranked, const std::vector<std::string>& roster, std::string& why,
-                                const std::vector<int32_t>& ratings) {
+bool CLobbyClient::RoomSettingsFor(const std::string& creator, bool ranked, const std::vector<std::string>& roster, std::string& why,
+                                   RoomSettings& s, const std::vector<int32_t>& ratings) {
     if (_waitMaps.empty()) {
         why = "대기 맵 후보 없음(--wait-maps)";
-        return CRoomManager::kNoRoom;
+        return false;
     }
-    RoomSettings s = _template;
+    s = _template;
     s.creator = creator;
     s.ranked = s.ranked || ranked;   // ★ 랭크 매칭 조각 5 — 틀이 랭크(`--ranked-all` 시험)면 그대로
     s.roster = roster;
@@ -252,60 +353,52 @@ int CLobbyClient::CreateRoomFor(const std::string& creator, bool ranked, const s
     }
     // ★ 랭크 매칭 조각 6 — 랭크 방은 명단 전부를 받는다(일반 방 8 은 10-16 사용자 결정 · 랭크 최대는 로비 설정 — 기본 12 · 10-30 사용자)
     if (ranked && roster.size() > static_cast<size_t>(s.maxPlayers)) s.maxPlayers = static_cast<int>(roster.size());
-    const int id = _rooms.CreateRoom(s);
-    if (id == CRoomManager::kNoRoom) why = "방 차리기 실패(게임 서버 [방] 줄)";
-    return id;
+    return true;   // ★ 11-17 C-3c — 만들기 · 그 실패 까닭(「방 차리기 실패」)은 `FinishCreates`
+}
+
+void CLobbyClient::AbsorbChanges(LobbyFactChanges& ch) {
+    _rooms.CollectChanges(ch);
+    for (const auto& kv : ch.rooms) _roomLines[kv.first] = kv.second;
+    for (const uint32_t id : ch.roomsGone) _roomLines.erase(id);
+    for (const auto& kv : ch.ui) _uiLines[kv.first] = kv.second;
+    for (const std::string& n : ch.uiGone) _uiLines.erase(n);
 }
 
 void CLobbyClient::SendChanged(std::vector<NetworkRequest>& out) {
+    LobbyFactChanges ch;
+    AbsorbChanges(ch);   // 끊긴 동안에도 사본은 고친다(등록 때 `SendAll`)
     if (_stage != Stage::Registered) return;
-    std::map<uint32_t, std::string> now;
-    for (const RoomFact& f : _rooms.ListRooms()) {
-        LinkRoom lr;
-        if (!ToLinkRoom(f, lr)) continue;
-        now[lr.id] = LinkRoomLine(lr);
-    }
-    for (const auto& kv : now) {
-        const auto s = _sent.find(kv.first);
-        if (s != _sent.end() && s->second == kv.second) continue;
+    for (const auto& kv : ch.rooms) {
         ++_stats.roomLines;
         Send(kv.second, out);
     }
-    for (const auto& kv : _sent) {
-        if (now.count(kv.first)) continue;
+    for (const uint32_t id : ch.roomsGone) {
         ++_stats.roomGoneLines;
-        Send(LinkRoomGone(kv.first), out);
+        Send(LinkRoomGone(id), out);
     }
-    _sent.swap(now);
     // ★ 11-04 플랜1 — 방 안 화면 상태(방 줄과 같은 꼴 — 달라진 사람만)
-    std::map<std::string, std::string> ui;
-    for (const MemberUiFact& f : _rooms.ListMemberUi()) {
-        LinkRoomUi u;
-        u.name = f.account;
-        u.state = f.rankArriving ? RoomUiState::RankArriving : f.phase == RoomPhase::Playing ? RoomUiState::Playing : RoomUiState::Waiting;
-        u.host = f.host;
-        u.canStart = f.canStart;
-        u.scoreLimit = f.scoreLimit;
-        u.timeLimitMin = (f.timeLimitSec + 59) / 60;   // ★ 11-07 T1 — 초 → 분(올림 · 정품 `af` 19번과 같은 셈 `Server::WireSettings`)
-        u.map = f.battleMap;
-        ui[u.name] = LinkRoomUiLine(u);
-    }
-    for (const auto& kv : ui) {
-        const auto s = _sentUi.find(kv.first);
-        if (s != _sentUi.end() && s->second == kv.second) continue;
-        Send(kv.second, out);
-    }
-    for (const auto& kv : _sentUi) {
-        if (ui.count(kv.first)) continue;
+    for (const auto& kv : ch.ui) Send(kv.second, out);
+    for (const std::string& n : ch.uiGone) {
         LinkRoomUi gone;
-        gone.name = kv.first;
+        gone.name = n;
         Send(LinkRoomUiLine(gone), out);
     }
-    _sentUi.swap(ui);
+}
+
+void CLobbyClient::SendAll(std::vector<NetworkRequest>& out) {
+    if (_stage != Stage::Registered) return;
+    LobbyFactChanges ch;
+    AbsorbChanges(ch);
+    for (const auto& kv : _roomLines) {
+        ++_stats.roomLines;
+        Send(kv.second, out);
+    }
+    for (const auto& kv : _uiLines) Send(kv.second, out);
 }
 
 void CLobbyClient::AfterTick(std::vector<NetworkRequest>& out) {
     LinkTick(out);
+    FinishCreates(out);   // ★ 11-17 C-3c — 늦게 온 새 방 결과(한 스레드 판은 없다)
     SendChanged(out);
     SendRankNoShows(out);
 }
@@ -392,24 +485,21 @@ std::string CLobbyClient::RatingNoticeText(int32_t after, int32_t delta) {
 
 void CLobbyClient::NoticeRatings(int roomId, const std::vector<LinkRatingChange>& ratings) {
     if (ratings.empty()) return;
-    if (roomId < 0 || !_rooms.HasRoom(roomId)) {
+    // ★ 11-17 C-3c — 보내기는 틀이(그 방의 게임 스레드) · 수와 기록 줄은 여기서(옛 꼴과 같은 줄 · 같은 차례)
+    std::vector<std::pair<std::string, std::string>> notes;
+    for (const LinkRatingChange& c : ratings) notes.emplace_back(c.account, RatingNoticeText(c.after, c.delta));
+    std::vector<size_t> sent;
+    if (!_rooms.NoticeRatings(roomId, notes, sent) || sent.size() != notes.size()) {
         _stats.ratingNoRoom += ratings.size();
         std::printf("[로비 연결] 점수 알림 %zu명 — 판의 방 %d 이 없음(닫힘) · 안 보냄\n", ratings.size(), roomId);
         std::fflush(stdout);
         return;
     }
-    CRoom& room = _rooms.Room(roomId);
-    for (const LinkRatingChange& c : ratings) {
-        const std::string text = RatingNoticeText(c.after, c.delta);
-        size_t n = 0;
-        for (const RoomMember& m : room.Members()) {
-            if (m.account != c.account) continue;
-            room.Game().SendNoticeBoxTo(m.sessionId, text);   // ★ 10-31 — 말풍선(`SendNoticeTo`) → 정품 알림창
-            ++n;
-        }
+    for (size_t i = 0; i < notes.size(); ++i) {
+        const size_t n = sent[i];
         if (n == 0) ++_stats.ratingNotHere;
         _stats.ratingNotices += n;
-        std::printf("[로비 연결] 방 %d 점수 알림 — %s 「%s」 %zu명\n", roomId, Printable(c.account).c_str(), text.c_str(), n);
+        std::printf("[로비 연결] 방 %d 점수 알림 — %s 「%s」 %zu명\n", roomId, Printable(notes[i].first).c_str(), notes[i].second.c_str(), n);
     }
     std::fflush(stdout);
 }

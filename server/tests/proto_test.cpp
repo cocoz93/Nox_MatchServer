@@ -25812,6 +25812,213 @@ void TestLobbyClient() {
     std::printf("  10-20 MO 6단계 v2 작업 4b — 게임 서버의 로비 연결: 확인 · 등록 · 로비 방만 알림 · 바뀐 방만 · 새 방 · 판 결과 · 다시 붙기\n");
 }
 
+// ── ★ 11-17 C-3c — 로비 연결이 방에 닿는 틀(`ILobbyRooms`) · 방 사실 견주기(`CRoomFactDiff`) ─────────
+//   게임 스레드가 여럿이면 방이 다른 스레드에 있어 새 방 결과 · 바뀐 사실이 늦게 온다(`Docs/SERVERCORE_UDP_PLAN_1116.md` 5-4 ~ 5-6).
+//   한 스레드 판은 위 `TestLobbyClient` 가 옛 꼴 그대로 본다 — 여기는 가짜 틀로 그 늦음을 만든다
+//   ① 견주기 — 새 방 · 바뀜 · 사라짐(방 번호 차례 · 만든 사람 없는 방 빠짐 · 지금 방장 이름) · 사람 화면 상태(이름 차례 · 분 올림) · 안 바뀌면 빈 것
+//   ② 새 방 결과가 늦게 옴 — CREATE 에 줄 없음 → 틱 뒤 ROOM 다음 CREATED(둘 한꺼번에도 ROOM 둘이 먼저) · 실패 결과 → CREATE_FAILED
+//   ③ 끊긴 동안 틱에 온 바뀜 + 틱 없이 바뀜 → 다시 붙으면 사본 전부(방 번호 차례 · 사라진 방 빠짐 · 사람 화면 상태 · 나간 사람 빠짐) · 그 뒤 틱은 줄 없음
+//   ④ 계정 명령 · 점수 알림이 틀로 — 처리 수 · 사람마다 보낸 수 · 방 없음
+namespace {
+class CFakeLobbyRooms final : public nox::ILobbyRooms {
+public:
+    bool RankOneMap() const override { return false; }
+    void CreateRoom(uint32_t req, const RoomSettings& s) override { asked.emplace_back(req, s); }
+    void TakeCreateResults(std::vector<nox::LobbyCreateResult>& out) override {
+        out.insert(out.end(), ready.begin(), ready.end());
+        ready.clear();
+    }
+    void CollectChanges(nox::LobbyFactChanges& out) override {
+        ++collects;
+        out.rooms.insert(out.rooms.end(), next.rooms.begin(), next.rooms.end());
+        out.roomsGone.insert(out.roomsGone.end(), next.roomsGone.begin(), next.roomsGone.end());
+        out.ui.insert(out.ui.end(), next.ui.begin(), next.ui.end());
+        out.uiGone.insert(out.uiGone.end(), next.uiGone.begin(), next.uiGone.end());
+        next = nox::LobbyFactChanges{};
+    }
+    void TakeRankNoShows(std::vector<nox::CRoomManager::RankNoShow>&) override {}
+    size_t ClientLobbyGone(const std::string& account) override {
+        gone.push_back(account);
+        return 2;
+    }
+    size_t KickAccount(const std::string& account) override {
+        kicked.push_back(account);
+        return 0;
+    }
+    bool NoticeRatings(int roomId, const std::vector<std::pair<std::string, std::string>>& notes, std::vector<size_t>& sent) override {
+        noticeRooms.push_back(roomId);
+        if (roomId != 7) return false;   // 방 7 만 있다
+        for (const auto& n : notes) {
+            noticeTexts.push_back(n.second);
+            sent.push_back(n.first == "amy" ? 1 : 0);   // amy 만 그 방에 있다
+        }
+        return true;
+    }
+    std::vector<std::pair<uint32_t, RoomSettings>> asked;   // 받은 만들기(요청 번호 · 설정)
+    std::vector<nox::LobbyCreateResult> ready;               // 다음 `TakeCreateResults` 에 줄 결과
+    nox::LobbyFactChanges next;                              // 다음 `CollectChanges` 에 줄 바뀜
+    int collects = 0;
+    std::vector<std::string> gone, kicked, noticeTexts;
+    std::vector<int> noticeRooms;
+};
+}  // namespace
+
+void TestLobbyRoomsSeam() {
+    using Ev = nox::NetworkEvent;
+    using Rq = nox::NetworkRequest;
+    char m[400];
+
+    // ① 견주기 단독
+    {
+        auto fact = [](int id, const std::string& creator, size_t players) {
+            nox::RoomFact f;
+            f.roomId = id;
+            f.creator = creator;
+            f.name = creator.empty() ? "plain" : creator + "'s game";
+            f.mapKey = "so_lod";
+            f.mode = "chat";
+            f.players = players;
+            f.maxPlayers = 8;
+            return f;
+        };
+        auto ui = [](const std::string& name, uint32_t sec) {
+            nox::MemberUiFact u;
+            u.account = name;
+            u.timeLimitSec = sec;
+            return u;
+        };
+        nox::CRoomFactDiff d;
+        nox::RoomFact a = fact(2, "amy", 1), b = fact(1, "bob", 0), plain = fact(0, "", 0), c = fact(70000, "dan", 0);
+        c.battleMapName = "Estate";
+        nox::LobbyFactChanges c1, c2, c3, c4;
+        d.Diff({a, plain, b}, {ui("zed", 0), ui("amy", 60)}, c1);
+        a.host = "cat";   // 방장이 바뀜 — 목록 이름은 지금 방장
+        a.players = 2;
+        a.phase = nox::RoomPhase::Playing;
+        d.Diff({c, a}, {ui("amy", 61)}, c2);   // bob 방 닫힘 · dan 방 새로(방 번호 65,536 넘음) · zed 나감 · amy 1분 → 2분
+        d.Diff({c, a}, {ui("amy", 61)}, c3);   // 안 바뀜
+        d.Diff({c, a}, {ui("amy", 120)}, c4);  // 61초 = 2분(올림) — 줄이 같다
+        auto none = [](const nox::LobbyFactChanges& x) { return x.rooms.empty() && x.roomsGone.empty() && x.ui.empty() && x.uiGone.empty(); };
+        const bool ok1 = c1.rooms.size() == 2 && c1.rooms[0].first == 1 && c1.rooms[0].second == "ROOM 1 0 8 0 bob's%20game bob bob so_lod chat ~" &&
+                         c1.rooms[1].first == 2 && c1.rooms[1].second == "ROOM 2 1 8 0 amy's%20game amy amy so_lod chat ~" && c1.roomsGone.empty() &&
+                         c1.ui.size() == 2 && c1.ui[0].first == "amy" && c1.ui[1].first == "zed" && c1.ui[0].second.rfind("ROOMUI amy ", 0) == 0 &&
+                         c1.uiGone.empty();
+        const bool ok2 = c2.rooms.size() == 2 && c2.rooms[0].first == 2 && c2.rooms[0].second == "ROOM 2 2 8 1 cat's%20game amy cat so_lod chat ~" &&
+                         c2.rooms[1].first == 70000 && c2.rooms[1].second == "ROOM 70000 0 8 0 dan's%20game dan dan so_lod chat Estate" &&
+                         c2.roomsGone.size() == 1 && c2.roomsGone[0] == 1 && c2.ui.size() == 1 && c2.ui[0].first == "amy" &&
+                         !c1.ui.empty() && c2.ui[0].second != c1.ui[0].second && c2.uiGone.size() == 1 && c2.uiGone[0] == "zed";
+        std::snprintf(m, sizeof(m), "① 견주기 — 처음 방 %zu · 사람 %zu %d | 다음 방 %zu · 사라짐 %zu · 사람 %zu · 나감 %zu %d | 안 바뀜 빈 것 %d · 61초 = 120초 빈 것 %d · 쥔 방 %zu",
+                      c1.rooms.size(), c1.ui.size(), (int)ok1, c2.rooms.size(), c2.roomsGone.size(), c2.ui.size(), c2.uiGone.size(), (int)ok2,
+                      (int)none(c3), (int)none(c4), d.Rooms());
+        Check(ok1 && ok2 && none(c3) && none(c4) && d.Rooms() == 2, m);
+    }
+
+    CFakeLobbyRooms fake;
+    nox::CLobbyClient::Config cfg;
+    for (size_t i = 0; i < cfg.tokenKey.size(); ++i) cfg.tokenKey[i] = static_cast<uint8_t>(i + 1);
+    cfg.epoch = 1760000000u;
+    cfg.registerIp = 0x7f000002u;
+    cfg.port = 18590;
+    nox::CLobbyClient lc(fake, cfg, RoomSettings{}, {"wait_a.map"}, {"bat_a.map"});
+    lc.SetSeed(3);
+    lc.SetClock([] { return 1000u; });
+    auto ev = [](Ev::Type t, int c, const std::string& line) {
+        Ev e;
+        e.type = t;
+        e.lobbyConn = c;
+        e.lobbyLine = line;
+        e.lobbyWhy = "test";
+        return e;
+    };
+    auto lines = [](const std::vector<Rq>& q) {
+        std::vector<std::string> v;
+        for (const Rq& r : q) v.push_back(r.type == Rq::Type::LOBBY_SEND ? r.lobbyLine : std::string("?"));
+        return v;
+    };
+    auto join = [](const std::vector<std::string>& v, size_t from) {
+        std::string s;
+        for (size_t i = from; i < v.size(); ++i) s += (s.empty() ? "" : " | ") + v[i];
+        return s;
+    };
+    const std::string nonce = "00112233445566778899aabbccddeeff";
+    std::vector<Rq> rq;
+
+    // ② 새 방 결과가 늦게 옴
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_OPENED, 3, ""), rq);
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 3, nox::LinkHello(nonce)), rq);
+    const auto l0 = lines(rq);   // AUTH · REGISTER(사본이 비었다)
+    rq.clear();
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 3, nox::LinkCreate(50, "bob")), rq);
+    const bool asked = rq.empty() && fake.asked.size() == 1 && fake.asked[0].first == 50 && fake.asked[0].second.creator == "bob" &&
+                       fake.asked[0].second.roomName == "bob's game" && fake.asked[0].second.mapPath == "wait_a.map" &&
+                       fake.asked[0].second.battleMapPath == "bat_a.map" && fake.asked[0].second.closeWhenEmpty && lc.Stats().creates == 1 &&
+                       lc.Stats().created == 0;
+    fake.ready.push_back(nox::LobbyCreateResult{50, 7});
+    fake.next.rooms.emplace_back(7u, "ROOM 7 a");
+    fake.next.ui.emplace_back("zed", "ROOMUI zed y");   // ③ 에서 끊긴 동안 나간다
+    lc.AfterTick(rq);
+    const auto l1 = lines(rq);
+    rq.clear();
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 3, nox::LinkCreate(51, "carl")), rq);
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 3, nox::LinkCreate(52, "dora")), rq);
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 3, nox::LinkCreate(53, "erin")), rq);
+    const bool quiet3 = rq.empty() && fake.asked.size() == 4;
+    fake.ready = {nox::LobbyCreateResult{51, nox::CRoomManager::kNoRoom}, nox::LobbyCreateResult{52, 8}, nox::LobbyCreateResult{53, 9}};
+    fake.next.rooms = {{8u, "ROOM 8 b"}, {9u, "ROOM 9 c"}};
+    lc.AfterTick(rq);
+    const auto l2 = lines(rq);
+    nox::LinkLine fl;
+    const bool failOk = !l2.empty() && nox::ParseLinkLine(l2[0], fl) == nox::LinkParse::Ok && fl.kind == nox::LinkKind::CreateFailed && fl.req == 51 &&
+                        fl.text == "방 차리기 실패(게임 서버 [방] 줄)";
+    const bool ok2 = l0.size() == 2 && asked && l1.size() == 3 && l1[0] == "ROOM 7 a" && l1[1] == "ROOMUI zed y" && l1[2] == "CREATED 50 7" && quiet3 && failOk && l2.size() == 5 &&
+                     l2[1] == "ROOM 8 b" && l2[2] == "ROOM 9 c" && l2[3] == "CREATED 52 8" && l2[4] == "CREATED 53 9" && lc.Stats().created == 3 &&
+                     lc.Stats().createFailed == 1;
+    std::snprintf(m, sizeof(m), "② 늦은 결과 — 등록 줄 %zu · CREATE 에 줄 없음 · 설정 %d | 틱 뒤 [%s] | 셋 → 줄 없음 %d · [실패 %d | %s] · 셈 만듦 %llu · 실패 %llu",
+                  l0.size(), (int)asked, join(l1, 0).c_str(), (int)quiet3, (int)failOk, join(l2, 1).c_str(), lc.Stats().created, lc.Stats().createFailed);
+    Check(ok2, m);
+
+    // ③ 끊긴 동안 · 틱 없이 바뀜 → 다시 붙으면 사본 전부
+    rq.clear();
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_CLOSED, 3, ""), rq);
+    fake.next.roomsGone = {8u};
+    fake.next.ui = {{"amy", "ROOMUI amy x"}};
+    fake.next.uiGone = {"zed"};
+    const int before = fake.collects;
+    lc.AfterTick(rq);   // 끊김 — 줄 없음(사본만 고침)
+    const bool downQuiet = rq.empty() && fake.collects == before + 1;
+    fake.next.rooms = {{9u, "ROOM 9 d"}};   // 붙는 사이 틱 없이 바뀜
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_OPENED, 4, ""), rq);
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 4, nox::LinkHello(nonce)), rq);
+    const auto l3 = lines(rq);
+    rq.clear();
+    lc.AfterTick(rq);
+    const bool quietAfter = rq.empty();
+    const bool ok3 = downQuiet && l3.size() == 5 && l3[0].rfind("AUTH ", 0) == 0 && l3[2] == "ROOM 7 a" && l3[3] == "ROOM 9 d" && l3[4] == "ROOMUI amy x" &&
+                     quietAfter && lc.Stats().roomLines == 5 && lc.Stats().roomGoneLines == 0;
+    std::snprintf(m, sizeof(m), "③ 끊김 → 줄 없음 %d · 다시 붙음 → [%s] · 그 뒤 틱 줄 없음 %d · 셈 ROOM %llu · ROOM_GONE %llu", (int)downQuiet,
+                  join(l3, 2).c_str(), (int)quietAfter, lc.Stats().roomLines, lc.Stats().roomGoneLines);
+    Check(ok3, m);
+
+    // ④ 계정 명령 · 점수 알림
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 4, nox::LinkClientGone("amy")), rq);
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 4, nox::LinkKick("zed")), rq);
+    lc.OnMatchResult("1760000000-0-1", "{}", rq, 7);
+    lc.OnMatchResult("1760000000-0-2", "{}", rq, 4);
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 4, nox::LinkSavedLine("1760000000-0-1", nox::SaveOutcome::Ok, {{"amy", 1010, 10}, {"zed", 990, -10}})), rq);
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 4, nox::LinkSavedLine("1760000000-0-2", nox::SaveOutcome::Ok, {{"amy", 1020, 10}})), rq);
+    const nox::CLobbyClientStats& s = lc.Stats();
+    const bool ok4 = s.clientGoneIn == 1 && s.clientGoneShortened == 2 && s.kickIn == 1 && s.kickedSessions == 0 && fake.gone.size() == 1 &&
+                     fake.gone[0] == "amy" && fake.kicked.size() == 1 && fake.kicked[0] == "zed" && fake.noticeRooms.size() == 2 && fake.noticeRooms[0] == 7 &&
+                     fake.noticeRooms[1] == 4 && fake.noticeTexts.size() == 2 && fake.noticeTexts[0] == nox::CLobbyClient::RatingNoticeText(1010, 10) &&
+                     fake.noticeTexts[1] == nox::CLobbyClient::RatingNoticeText(990, -10) && s.ratingNotices == 1 && s.ratingNotHere == 1 &&
+                     s.ratingNoRoom == 1 && lc.HeldResults() == 0;
+    std::snprintf(m, sizeof(m), "④ CLIENT_GONE 셈 %llu · 줄임 %llu · KICK 셈 %llu · 내보냄 %llu · 점수 알림 방 %zu곳 · 알림 %llu · 방에 없음 %llu · 방 없음 %llu · 쥔 것 %zu",
+                  s.clientGoneIn, s.clientGoneShortened, s.kickIn, s.kickedSessions, fake.noticeRooms.size(), s.ratingNotices, s.ratingNotHere,
+                  s.ratingNoRoom, lc.HeldResults());
+    Check(ok4, m);
+    std::printf("  11-17 C-3c — 로비 연결이 방에 닿는 틀: 견주기 · 늦은 새 방 결과 · 다시 붙을 때 사본 전부 · 계정 명령 · 점수 알림\n");
+}
+
 // ── ★ 7단계 조각 2 — 게임 서버 쪽 연결 살아 있음(`CLobbyClient::LinkTick` — `Docs/ACCOUNT_DB_DESIGN.md`) ─────────
 //   ① 등록 뒤 `kLinkPingEveryMs` 마다 PING 한 줄(한도 전 · 같은 때 다시 없음) ② 로비의 PING → 셈만(맞지 않는 줄 아님)
 //   ③ 받은 줄이 `kLinkDeadMs` 동안 없으면 LOBBY_CLOSE 한 번(끊김 사건 전까지 다시 안 냄) ④ 끊긴 동안 아무것도 안 냄 ·
@@ -29513,7 +29720,7 @@ void TestRoomMatchSwitchRealMaps() {
     wd.tables = tables;
     wd.maps = &cat;
     rooms.SetWorldData(wd);
-    RoomSettings rs;   // `CLobbyClient::CreateRoomFor`(옛 `CChannelLobby::CreateRoomFor`) 와 같은 칸
+    RoomSettings rs;   // `CLobbyClient::RoomSettingsFor`(옛 `CChannelLobby::CreateRoomFor`) 와 같은 칸
     rs.creator = "alice";
     rs.roomName = "alice's game";
     rs.mapPath = waitPath;
@@ -35746,6 +35953,7 @@ int main() {
     TestLobbyClientAlive();   // ★ 7단계 조각 2
     TestLobbyClientHeld();    // ★ 7단계 조각 3
     TestLobbyClientRatingNotice();   // ★ 매칭 손보기 1
+    TestLobbyRoomsSeam();            // ★ 11-17 C-3c
     TestIntroOnce();                 // ★ 10-31 남 소개 맵 한 번에 한 통(입장문 되풀이)
     TestRankOneMap();                // ★ 매칭 손보기 3
     TestMatchRecordRoundTrip();   // ★ 7단계 조각 4

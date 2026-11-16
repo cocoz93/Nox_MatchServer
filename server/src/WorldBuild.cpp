@@ -2223,7 +2223,7 @@ int BuildRoomWorld(nox::Server& srv, const RoomSettings& opt, const GameFiles& f
             srv.Log("[진단스위치] 파일럿 신뢰 보고 %d ms 마다\n", opt.pilotReliableMs);
         }
         if (!opt.pilotLatPath.empty()) {   // ★ 11-03 손실 파일럿 — 중요 메시지 전달 지연 CSV(프로세스가 끝날 때 OS 가 닫는다 · 줄마다 flush)
-            //   ★ 11-03 오후 — 이어 쓰기("ab") · 머리줄은 빈 파일일 때만. 로비가 만드는 방마다 이 설정이 복사돼(`CLobbyClient::CreateRoomFor` 의 `_template`)
+            //   ★ 11-03 오후 — 이어 쓰기("ab") · 머리줄은 빈 파일일 때만. 로비가 만드는 방마다 이 설정이 복사돼(`CLobbyClient::RoomSettingsFor` 의 `_template`)
             //   같은 경로를 방마다 다시 여는데, "wb" 는 앞 방 기록을 지우고 두 방이 제 위치에 겹쳐 썼다(tools/mo_host.ps1 -PilotLat · 사람 28)
             FILE* f = std::fopen(opt.pilotLatPath.c_str(), "ab");
             if (f) {

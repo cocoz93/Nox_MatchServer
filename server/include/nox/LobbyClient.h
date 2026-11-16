@@ -20,12 +20,19 @@
 //   (10-21 결정 — 7단계 설계에서 넣기 · 옛 꼴은 연결이 없으면 셈만 하고 버렸다 · 사람 판 49)
 //
 // 소켓은 모른다 — 게임 스레드 한 곳에서만 부른다(로비 사건 · 틱 뒤 · 판 결과). 시간은 살아 있음 몫만(`SetClock` · 기본 `NowMs`).
+// ★ 11-17 C-3c — 방은 틀(`ILobbyRooms`)로만 만진다(`Docs/SERVERCORE_UDP_PLAN_1116.md` 5-4 ~ 5-6). 게임 스레드가 여럿이 되면 방이
+//   스레드마다 나뉘어 이 객체(조정 스레드)가 방 관리자를 직접 못 부른다 — 그때는 명령 · 알림으로 닿는 틀을 끼운다(C-3d).
+//   한 스레드 판(`CDirectLobbyRooms` — 옛 생성자가 만든다)은 그 자리에서 부르고 결과도 곧바로 있어 줄 · 차례가 옛 꼴과 같다.
+//   - 새 방은 「만들어라(요청 번호 · 설정) → 결과」 두 걸음(5-4). 결과가 오면 그 방의 ROOM 다음 CREATED(같은 객체가 차례대로 낸다)
+//   - 방 사실은 「지난번 모은 것과 다른 것만」(`CRoomFactDiff` — 게임 스레드가 자기 방만 견준다 5-6). 이 객체는 합친 사본을 쥐고
+//     등록 때 사본 전부 · 등록 뒤엔 바뀐 것만 보낸다(옛 꼴의 「지난번 보낸 것 `_sent`」 자리)
 #pragma once
 
 #include <cstdint>
 #include <deque>
 #include <functional>
 #include <map>
+#include <memory>
 #include <random>
 #include <string>
 #include <vector>
@@ -42,6 +49,38 @@ namespace nox {
 //   대기 맵 · 채팅 모드 · 대전 맵 후보 · 아레나 · 맵을 직접 차림 · 비면 닫음 · 봇 없음.
 void ApplyLobbyRoomFrame(RoomSettings& s, const std::string& waitMap, const std::vector<std::string>& battleMaps,
                          const std::string& battleMap, int maxPlayers);
+
+// ★ 11-17 C-3c — 방 사실 바뀜(지난번 모은 것과 다른 것만 · `CRoomFactDiff::Diff`). 줄은 연결 줄 꼴 그대로(`LobbyLink.h`)
+struct LobbyFactChanges {
+    std::vector<std::pair<uint32_t, std::string>> rooms;      // 새로 생겼거나 바뀐 방의 ROOM 줄(방 번호 차례)
+    std::vector<uint32_t> roomsGone;                          // 사라진 방(방 번호 차례)
+    std::vector<std::pair<std::string, std::string>> ui;     // 새로 생겼거나 바뀐 사람의 ROOMUI 줄(이름 차례)
+    std::vector<std::string> uiGone;                          // 빠진 사람(이름 차례)
+};
+
+// ★ 11-17 C-3c — 새 방 결과(`ILobbyRooms::TakeCreateResults`) · 못 만들었으면 `roomId` = `CRoomManager::kNoRoom`
+struct LobbyCreateResult {
+    uint32_t req = 0;     // 로비의 요청 번호(`CREATE`)
+    int roomId = -1;
+};
+
+// ★ 11-17 C-3c — 로비 연결이 방에 닿는 틀(계획 5-5 표의 여섯 자리 + 설정 읽기 `RankOneMap`). 한 스레드 판 = `CDirectLobbyRooms`
+class ILobbyRooms {
+public:
+    virtual ~ILobbyRooms() = default;
+    virtual bool RankOneMap() const = 0;   // 방 관리자 설정 읽기(`--rank-one-map`)
+    // 새 방 — 결과는 `TakeCreateResults` 로(한 스레드 판은 부른 자리에서 만들어 곧바로 있다)
+    virtual void CreateRoom(uint32_t req, const RoomSettings& s) = 0;
+    virtual void TakeCreateResults(std::vector<LobbyCreateResult>& out) = 0;   // `out` 뒤에 붙인다
+    // 방 사실 바뀜 — 지난번 이것을 부른 뒤로 달라진 것만
+    virtual void CollectChanges(LobbyFactChanges& out) = 0;
+    virtual void TakeRankNoShows(std::vector<CRoomManager::RankNoShow>& out) = 0;
+    // 계정 하나에 대한 명령 — 처리한 세션 수(그 이름이 어느 방인지 모르니 모든 방에)
+    virtual size_t ClientLobbyGone(const std::string& account) = 0;
+    virtual size_t KickAccount(const std::string& account) = 0;
+    // 점수 알림 — (이름 · 글)마다 그 방의 그 이름 사람에게 · `sent` 에 사람 수(같은 차례). 방이 없으면 false
+    virtual bool NoticeRatings(int roomId, const std::vector<std::pair<std::string, std::string>>& notes, std::vector<size_t>& sent) = 0;
+};
 
 // 연결의 셈 — 갈래마다
 struct CLobbyClientStats {
@@ -104,7 +143,11 @@ public:
 
     // `rooms` 는 이 객체보다 오래 산다. `roomTemplate` = 새 방의 틀(실행 인자의 방 설정 — 진단 · 시야 손잡이) ·
     //   `waitMaps` · `battleMaps` = 대기 맵 · 대전 맵 후보(맵 파일 경로 — 방 관리자의 맵 목록에 있어야 한다)
+    //   ★ 11-17 C-3c — 이 꼴은 한 스레드 판(`CDirectLobbyRooms` 를 안에 만든다)
     CLobbyClient(CRoomManager& rooms, Config cfg, RoomSettings roomTemplate = {}, std::vector<std::string> waitMaps = {},
+                 std::vector<std::string> battleMaps = {});
+    // ★ 11-17 C-3c — 틀을 받는 꼴(게임 스레드 여럿 — 조정 스레드 몫 C-3d · 시험의 가짜 틀). `rooms` 는 이 객체보다 오래 산다
+    CLobbyClient(ILobbyRooms& rooms, Config cfg, RoomSettings roomTemplate = {}, std::vector<std::string> waitMaps = {},
                  std::vector<std::string> battleMaps = {});
     void SetSeed(uint32_t seed) { _rng.seed(seed); }   // 맵 고르기 씨앗(시험이 정해 보려고)
     void SetVerbose(bool v) { _verbose = v; }           // 연결 줄을 한 줄씩 찍는가(`--quiet` 반대). 기록(`[로비 연결]`)은 늘 찍는다
@@ -116,6 +159,7 @@ public:
     void OnNetworkEvent(const NetworkEvent& ev, std::vector<NetworkRequest>& out);
     // 틱 뒤 — 방 사실이 지난번 보낸 것과 다른 방만 ROOM · 사라진 방은 ROOM_GONE(등록 뒤에만)
     //   ★ 7단계 — 살아 있음도 여기서(바퀴마다 불린다 — 방이 없어도 한 틱 길이마다 깬다 `main.cpp`)
+    //   ★ 11-17 C-3c — 늦게 온 새 방 결과도 여기서(ROOM 다음 CREATED · 한 스레드 판은 늘 비었다)
     void AfterTick(std::vector<NetworkRequest>& out);
     // 판 결과 JSON 한 줄(`FormatMatchResultJson`) → RESULT(등록 뒤에만 · 줄 한도 안에서만 — 아니면 셈만)
     //   ★ 7단계 조각 3 — `match` = 판 번호(`MatchIdOf` — `SAVED` 와 짝). 쥐었다가 등록 뒤에 보내고 `SAVED` 에 지운다 · 줄로 못 지으면 셈만
@@ -140,12 +184,19 @@ private:
     void OnCreate(const LinkLine& l, std::vector<NetworkRequest>& out);
     // 새 방 — 틀 + 만든 사람 · 이름 · 대기 맵(무작위) · 채팅 모드 · 비면 닫음 → 방 관리자의 만들기 입구(옛 `CChannelLobby::CreateRoomFor`)
     //   ★ 랭크 매칭 조각 5 — 랭크면 ranked 켬 · 명단을 방 설정에(틀이 이미 랭크면 그대로 랭크 — `--ranked-all`)
-    int CreateRoomFor(const std::string& creator, bool ranked, const std::vector<std::string>& roster, std::string& why,
-                      const std::vector<int32_t>& ratings = {});   // ★ 매칭 손보기 5 — 명단 점수(같은 수일 때만)
-    // 로비 방 = 만든 사람이 있는 방만(실행 인자의 방은 로비 목록에 안 낸다). 채널 · 목록 이름은 지금 방장
-    static bool ToLinkRoom(const RoomFact& f, LinkRoom& out);
-    // 지난번 보낸 것(`_sent`)과 다른 방만 ROOM · 사라진 방은 ROOM_GONE — 붙을 때 · 끊길 때 `_sent` 를 비워 다시 붙으면 전부 간다
+    //   ★ 11-17 C-3c — 설정만 짓는다(만들기는 틀 `ILobbyRooms::CreateRoom`). 못 지으면 false · `why`
+    bool RoomSettingsFor(const std::string& creator, bool ranked, const std::vector<std::string>& roster, std::string& why, RoomSettings& s,
+                         const std::vector<int32_t>& ratings = {});   // ★ 매칭 손보기 5 — 명단 점수(같은 수일 때만)
+    // ★ 11-17 C-3c — 온 새 방 결과마다 — 성공이면 그 방의 ROOM(바뀐 사실 보내기) 다음 CREATED · 실패면 CREATE_FAILED
+    void FinishCreates(std::vector<NetworkRequest>& out);
+    void CreateFailed(uint32_t req, const std::string& creator, const std::string& why, std::vector<NetworkRequest>& out);
+    // ★ 11-17 C-3c — 틀에서 바뀐 사실을 모아 사본(`_roomLines` · `_uiLines`)에 얹는다
+    void AbsorbChanges(LobbyFactChanges& ch);
+    // 지난번 보낸 것과 다른 방만 ROOM · 사라진 방은 ROOM_GONE(등록 뒤에만)
+    //   ★ 11-17 C-3c — 틀이 준 바뀜을 사본에 얹고 그 바뀜만 보낸다(옛 꼴은 방 목록 전부를 지난번 보낸 것과 견줬다)
     void SendChanged(std::vector<NetworkRequest>& out);
+    // ★ 11-17 C-3c — 등록 직후 — 사본 전부(로비 거울은 끊김에 이 게임 서버 방을 내렸다 — 옛 꼴은 붙을 때 `_sent` 를 비워 같은 뜻)
+    void SendAll(std::vector<NetworkRequest>& out);
     void SendRankNoShows(std::vector<NetworkRequest>& out);   // ★ 11-05 플랜1
     // ★ 7단계 — 등록 뒤 PING · 받은 줄이 한도 동안 없으면 `LOBBY_CLOSE`(한 접속에 한 번)
     void LinkTick(std::vector<NetworkRequest>& out);
@@ -161,7 +212,8 @@ private:
     void NoticeRatings(int roomId, const std::vector<LinkRatingChange>& ratings);
     void SendHeld(HeldResult& h, uint32_t now, std::vector<NetworkRequest>& out);
 
-    CRoomManager& _rooms;
+    std::unique_ptr<ILobbyRooms> _ownedRooms;   // ★ 11-17 C-3c — 옛 생성자가 만든 한 스레드 판(틀을 받는 꼴이면 빈 것) · `_rooms` 보다 먼저
+    ILobbyRooms& _rooms;
     Config _cfg;
     JoinKey _authKey;
     RoomSettings _template;
@@ -171,14 +223,56 @@ private:
     bool _verbose = false;
     Stage _stage = Stage::Down;
     int _conn = 0;                            // 로비 연결 접속 번호(네트워크 스레드 `CTcpLines` 것)
-    std::map<std::string, std::string> _sentUi;   // ★ 11-04 플랜1 — 이름 → 지난번 `ROOMUI` 줄(달라진 사람만 · 빠진 사람은 떠남 줄)
-    std::map<uint32_t, std::string> _sent;    // 방 번호 → 지난번 보낸 ROOM 줄(바뀜 견주기)
+    // ★ 11-17 C-3c — 합친 사본(옛 `_sent` · `_sentUi` — 지난번 보낸 줄). 끊긴 동안에도 고쳐 두고 등록 때 전부 보낸다
+    std::map<std::string, std::string> _uiLines;   // ★ 11-04 플랜1 — 이름 → 지금 `ROOMUI` 줄(보내기는 달라진 사람만 · 빠진 사람은 떠남 줄)
+    std::map<uint32_t, std::string> _roomLines;     // 방 번호 → 지금 ROOM 줄
+    // ★ 11-17 C-3c — 결과를 기다리는 새 방(요청 번호 → 만든 사람 · 랭크 명단 — 결과 줄 · 기록용)
+    struct PendingCreate {
+        std::string creator;
+        bool ranked = false;
+        std::vector<std::string> roster;
+    };
+    std::map<uint32_t, PendingCreate> _pending;
     std::function<uint32_t()> _nowMs = NowMs;
     uint32_t _lastRecvMs = 0;                 // ★ 7단계 — 이 접속에서 마지막으로 줄을 받은 때(붙은 때부터)
     uint32_t _nextPingMs = 0;
     bool _closeAsked = false;                 // 이 접속에 `LOBBY_CLOSE` 를 이미 냄(끊김 사건까지 다시 안 냄)
     std::deque<HeldResult> _held;             // ★ 7단계 조각 3 — `SAVED` 를 못 받은 판 결과(받은 차례 — 한도를 넘으면 앞에서 버림)
     CLobbyClientStats _stats;
+};
+
+// ★ 11-17 C-3c — 방 사실을 지난번 것과 견줘 다른 것만(옛 `CLobbyClient::SendChanged` 의 견주기를 떼었다 — 계획 5-6).
+//   게임 스레드가 자기 방만 넣어 부른다(한 스레드 판은 `CDirectLobbyRooms` 가 방 전부로). 차례 = 방 번호 · 이름(옛 꼴과 같다)
+class CRoomFactDiff {
+public:
+    void Diff(const std::vector<RoomFact>& rooms, const std::vector<MemberUiFact>& ui, LobbyFactChanges& out);
+    // 로비 방 = 만든 사람이 있는 방만(실행 인자의 방은 로비 목록에 안 낸다). 채널 · 목록 이름은 지금 방장(옛 `CLobbyClient::ToLinkRoom`)
+    static bool ToLinkRoom(const RoomFact& f, LinkRoom& out);
+    static std::string UiLine(const MemberUiFact& f);   // ★ 11-04 플랜1 — 방 안 화면 상태 한 줄
+    size_t Rooms() const { return _rooms.size(); }
+
+private:
+    std::map<uint32_t, std::string> _rooms;     // 방 번호 → 지난번 ROOM 줄
+    std::map<std::string, std::string> _ui;     // 이름 → 지난번 ROOMUI 줄
+};
+
+// ★ 11-17 C-3c — 한 스레드 판 — 방 관리자를 그 자리에서 부른다(옛 `CLobbyClient` 가 하던 그대로)
+class CDirectLobbyRooms final : public ILobbyRooms {
+public:
+    explicit CDirectLobbyRooms(CRoomManager& rooms) : _rooms(rooms) {}
+    bool RankOneMap() const override { return _rooms.RankOneMap(); }
+    void CreateRoom(uint32_t req, const RoomSettings& s) override;
+    void TakeCreateResults(std::vector<LobbyCreateResult>& out) override;
+    void CollectChanges(LobbyFactChanges& out) override { _diff.Diff(_rooms.ListRooms(), _rooms.ListMemberUi(), out); }
+    void TakeRankNoShows(std::vector<CRoomManager::RankNoShow>& out) override { _rooms.TakeRankNoShows(out); }
+    size_t ClientLobbyGone(const std::string& account) override { return _rooms.OnClientLobbyGone(account); }
+    size_t KickAccount(const std::string& account) override { return _rooms.KickAccount(account); }
+    bool NoticeRatings(int roomId, const std::vector<std::pair<std::string, std::string>>& notes, std::vector<size_t>& sent) override;
+
+private:
+    CRoomManager& _rooms;
+    CRoomFactDiff _diff;
+    std::vector<LobbyCreateResult> _done;
 };
 
 }  // namespace nox
