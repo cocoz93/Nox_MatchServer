@@ -30174,6 +30174,98 @@ void TestRoomIdWide() {
     std::printf("  11-16 방 번호 플랜 — 65,536 넘는 방도 토큰이 제 방으로 · int 최댓값 앞에서 방 만들기 멈춤\n");
 }
 
+// ── ★ 11-17 C-3d-2 — 방 번호 몫 나눔 · 부하 판 몫(`Docs/SERVERCORE_UDP_PLAN_1116.md` 5-3 · 5-4) ─────────
+//   ① 몫 (k, n) 마다 첫 번호 둘레에서 방 다섯 — 전부 「% n == k」· n 씩 건넘 · 첫 번호는 [시작, 시작 + n) (n 1 ~ 5 · 시작 넷 · 개수로 봄)
+//   ② 부르는 차례가 상관없다 — 몫 먼저 · 첫 번호 먼저가 같은 번호
+//   ③ 틀린 몫(k ≥ n · k < 0 · n < 1)은 거절 · 그대로(옛 꼴 0, 1, 2)
+//   ④ int 최댓값 앞 — 몫 (3, 4)는 최댓값(≡ 3)을 안 쓰고 거절 · 몫 (0, 4)도 한 방 뒤 거절(셈 `roomIdExhausted`)
+//   ⑤ 부하 판 몫 — 열린 방 상한 0 ~ 40 × n 1 ~ 6: k 몫 = [0, 상한) 에서 % n == k 인 수 · 합 = 상한
+void TestRoomIdSlice() {
+    char m[300];
+    {   // ①
+        const int starts[4] = { 0, 7, 65534, 1000003 };
+        int cases = 0, good = 0;
+        for (int n = 1; n <= 5; ++n) {
+            for (int k = 0; k < n; ++k) {
+                for (int st : starts) {
+                    nox::CRoomManager rooms;
+                    const bool ok = rooms.SetRoomIdSlice(k, n);
+                    rooms.SetFirstRoomId(st);
+                    int ids[5] = {};
+                    for (int& id : ids) id = rooms.CreateRoom(RoomSettings{});
+                    bool g = ok && rooms.RoomIdStep() == n && ids[0] >= st && ids[0] < st + n;
+                    for (int i = 0; i < 5; ++i) {
+                        g = g && ids[i] % n == k;
+                        if (i > 0) g = g && ids[i] - ids[i - 1] == n;
+                    }
+                    ++cases;
+                    good += g ? 1 : 0;
+                }
+            }
+        }
+        std::snprintf(m, sizeof(m), "① 몫마다 방 다섯 — 맞은 경우 %d/%d(몫 15 × 시작 4)", good, cases);
+        Check(cases == 60 && good == 60, m);
+    }
+    {   // ②
+        nox::CRoomManager a, b;
+        a.SetRoomIdSlice(2, 4);
+        a.SetFirstRoomId(65535);
+        b.SetFirstRoomId(65535);
+        b.SetRoomIdSlice(2, 4);
+        const int a0 = a.CreateRoom(RoomSettings{}), a1 = a.CreateRoom(RoomSettings{});
+        const int b0 = b.CreateRoom(RoomSettings{}), b1 = b.CreateRoom(RoomSettings{});
+        std::snprintf(m, sizeof(m), "② 몫 먼저 %d, %d · 첫 번호 먼저 %d, %d(기대 65538, 65542)", a0, a1, b0, b1);
+        Check(a0 == 65538 && a1 == 65542 && b0 == 65538 && b1 == 65542, m);
+    }
+    {   // ③
+        nox::CRoomManager rooms;
+        const bool r1 = rooms.SetRoomIdSlice(3, 3), r2 = rooms.SetRoomIdSlice(-1, 2), r3 = rooms.SetRoomIdSlice(0, 0);
+        const int i0 = rooms.CreateRoom(RoomSettings{}), i1 = rooms.CreateRoom(RoomSettings{}), i2 = rooms.CreateRoom(RoomSettings{});
+        std::snprintf(m, sizeof(m), "③ 틀린 몫 거절 %d%d%d(기대 000) · 걸음 %d · 번호 %d, %d, %d", r1, r2, r3, rooms.RoomIdStep(), i0, i1, i2);
+        Check(!r1 && !r2 && !r3 && rooms.RoomIdStep() == 1 && i0 == 0 && i1 == 1 && i2 == 2, m);
+    }
+    {   // ④
+        constexpr int kTop = std::numeric_limits<int>::max();   // 2,147,483,647 ≡ 3 (mod 4)
+        nox::CRoomManager r3, r0;
+        r3.SetRoomIdSlice(3, 4);
+        r3.SetFirstRoomId(kTop - 5);   // 2,147,483,642 ≡ 2 → 2,147,483,643
+        const int x0 = r3.CreateRoom(RoomSettings{});
+        int rc3 = 0;
+        const int x1 = r3.CreateRoom(RoomSettings{}, &rc3);
+        r0.SetRoomIdSlice(0, 4);
+        r0.SetFirstRoomId(kTop - 5);   // → 2,147,483,644
+        const int y0 = r0.CreateRoom(RoomSettings{});
+        int rc0 = 0;
+        const int y1 = r0.CreateRoom(RoomSettings{}, &rc0);
+        std::snprintf(m, sizeof(m), "④ 몫 (3,4) %d → %d(rc %d · 거절 %llu) · 몫 (0,4) %d → %d(rc %d · 거절 %llu)",
+                      x0, x1, rc3, r3.Stats().roomIdExhausted, y0, y1, rc0, r0.Stats().roomIdExhausted);
+        Check(x0 == kTop - 4 && x1 == nox::CRoomManager::kNoRoom && rc3 != 0 && r3.Stats().roomIdExhausted == 1 && r3.RoomCount() == 1 &&
+                  y0 == kTop - 3 && y1 == nox::CRoomManager::kNoRoom && rc0 != 0 && r0.Stats().roomIdExhausted == 1 && r0.RoomCount() == 1,
+              m);
+    }
+    {   // ⑤
+        int cases = 0, good = 0;
+        for (int total = 0; total <= 40; ++total) {
+            for (int n = 1; n <= 6; ++n) {
+                int sum = 0;
+                bool g = true;
+                for (int k = 0; k < n; ++k) {
+                    int brute = 0;
+                    for (int r = 0; r < total; ++r) brute += r % n == k ? 1 : 0;
+                    const int share = nox::CRoomManager::LoadRoomShare(total, k, n);
+                    g = g && share == brute;
+                    sum += share;
+                }
+                ++cases;
+                good += g && sum == total ? 1 : 0;
+            }
+        }
+        std::snprintf(m, sizeof(m), "⑤ 부하 판 몫 — 맞은 경우 %d/%d(상한 41 × n 6)", good, cases);
+        Check(cases == 246 && good == 246, m);
+    }
+    std::printf("  11-17 C-3d-2 — 방 번호는 게임 스레드 몫(%% N == k)대로 · 최댓값 앞 거절 · 부하 판 몫 합 = 상한\n");
+}
+
 void TestJoinTrailer() {
     char m[260];
     auto seenTotal = [](const nox::CUdpStats& s) {
@@ -35964,6 +36056,7 @@ int main() {
     TestInGameNameIsAccount();   // ★ 11-05
     TestJoinTrailer();
     TestRoomIdWide();             // ★ 11-16 방 번호 플랜
+    TestRoomIdSlice();            // ★ 11-17 C-3d-2
     TestReliableResend();
     TestNewPlayerGearBits();
     TestNewPlayerRealInfo();

@@ -50,7 +50,9 @@ int CRoomManager::CreateRoom(const RoomSettings& settings, int* buildRc) {
     } else if (buildRc) {
         *buildRc = 0;
     }
-    ++_nextRoomId;
+    // ★ 11-17 C-3d-2 — 제 몫의 다음 번호(n 씩 건넘 · 몫이 없으면 옛 `++` 와 같다). int 최댓값을 넘을 자리면 끝 표시(위 검사가 거절 —
+    //   최댓값 자체는 안 쓴다 · 옛 규칙 그대로)
+    _nextRoomId = id < std::numeric_limits<int>::max() - _roomIdStep ? id + _roomIdStep : std::numeric_limits<int>::max();
     const bool rank = room->_rankWait == CRoom::RankWait::Arriving;   // ★ 랭크 매칭 조각 6
     _rooms.emplace(id, std::move(room));
     ++_stats.roomsCreated;
@@ -354,6 +356,21 @@ void CRoomManager::SetJoinKey(const JoinKey& key) {
 void CRoomManager::SetOpenEntry(int roomId) {
     _openEntry = true;
     _openRoom = roomId;
+}
+
+bool CRoomManager::SetRoomIdSlice(int k, int n) {
+    if (n < 1 || k < 0 || k >= n) return false;
+    _roomIdSlice = k;
+    _roomIdStep = n;
+    AlignNextRoomId();
+    return true;
+}
+
+void CRoomManager::AlignNextRoomId() {
+    constexpr int kTop = std::numeric_limits<int>::max();
+    if (_roomIdStep <= 1 || _nextRoomId >= kTop || _nextRoomId < 0) return;
+    const int add = (_roomIdSlice - _nextRoomId % _roomIdStep + _roomIdStep) % _roomIdStep;
+    _nextRoomId = add >= kTop - _nextRoomId ? kTop : _nextRoomId + add;
 }
 
 void CRoomManager::SetLoadEntry(const RoomSettings& roomTemplate, int maxOpenRooms, int roomSize) {

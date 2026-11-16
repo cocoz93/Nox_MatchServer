@@ -397,7 +397,18 @@ public:
     std::vector<MemberUiFact> ListMemberUi() const;   // ★ 11-04 플랜1
     void SetLogRooms(bool on) { _logRooms = on; }
     // ★ 11-16 방 번호 플랜 조각 1 — 다음에 만들 방 번호(시험용 `--first-room-id` · 65,536 같은 경계를 실물로 보려고). 번호는 여기서부터 올리기만 한다
-    void SetFirstRoomId(int id) { _nextRoomId = id; }
+    void SetFirstRoomId(int id) {
+        _nextRoomId = id;
+        AlignNextRoomId();   // ★ 11-17 C-3d-2 — 몫이 정해져 있으면 그 몫으로(아래 `SetRoomIdSlice` 와 부르는 차례가 상관없게)
+    }
+    // ★ 11-17 C-3d-2 — 게임 스레드 여럿(C 플랜 5-3): 이 방 관리자(게임 스레드 k)는 「% n == k」인 번호만 매긴다 — 다음 번호를 그 몫으로
+    //   올려 맞추고 번호마다 n 씩 건넌다. 방 번호만 보고 주인 게임 스레드를 안다(토큰의 방 번호 % N — 통신 스레드 `CSessionOwners`).
+    //   안 부르면 k 0 · n 1(옛 꼴). n 이 1 미만이거나 k 가 [0, n) 밖이면 false(그대로 둔다)
+    bool SetRoomIdSlice(int k, int n);
+    int RoomIdStep() const { return _roomIdStep; }
+    // ★ 11-17 C-3d-2 — 부하 판(`SetLoadEntry`)의 열린 방 상한을 게임 스레드 k 에 나눈 몫. 방 차례 r 의 주인이 r % n 이라
+    //   (통신 스레드 `OwnerRule::LoadArrival` — 도착 차례 ÷ 방 인원 % N) k 의 몫 = [0, total) 에서 % n == k 인 수 = ⌈(total − k) ÷ n⌉ · 합 = total
+    static int LoadRoomShare(int total, int k, int n) { return total > k ? (total - k + n - 1) / n : 0; }
 
     // ── 입장 방식 ── (머리 주석 「10-10 토큰 작업 2」)
     void SetJoinKey(const JoinKey& key);   // 토큰 방식 — 실제 서버
@@ -487,6 +498,9 @@ private:
     std::map<int, std::unique_ptr<CRoom>> _rooms;
     std::map<uint8_t, unsigned long long> _closedSeen;   // 닫은 방들의 받은 메시지 수(`SeenTotals`)
     int _nextRoomId = 0;
+    int _roomIdSlice = 0;   // ★ 11-17 C-3d-2 — `SetRoomIdSlice`(k · n)
+    int _roomIdStep = 1;
+    void AlignNextRoomId();   // 다음 번호를 「% n == k」로 올려 맞춤(int 최댓값에 닿으면 끝 표시)
     bool _openEntry = false;
     // ★ 11-10 부하 실험 — `SetLoadEntry`
     int FindLoadRoom() const;                     // 판 중이 아니고 K명이 안 찬 첫 방 · 없으면 `kNoRoom`
