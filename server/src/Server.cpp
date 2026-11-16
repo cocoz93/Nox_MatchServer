@@ -170,9 +170,16 @@ static void TraceOutMsgs(FILE* f, const std::string& to, uint32_t frame, const u
         }
         if (sz == 0) { std::fprintf(f, "%u\t%s\t?? %02x (남은 %zu)\n", frame, to.c_str(), op, n - pos); return; }
         if (op != static_cast<uint8_t>(Op::UPDATE_STREAM) && op != 0x27 && op != 0x28) {
-            std::fprintf(f, "%u\t%s\t%s", frame, to.c_str(), OpName(static_cast<Op>(op)));
-            for (size_t i = 0; i < sz && i < 12; ++i) std::fprintf(f, " %02x", m[pos + i]);
-            std::fprintf(f, "\n");
+            // ★ 11-17 C-3d-1 — 한 줄을 지어 한 번에 쓴다. 게임 스레드 여럿이 같은 파일에 쓰면 호출 하나만 안 섞인다
+            //   (CRT 가 호출마다 파일을 잠근다 · 옛 꼴은 이름 · 바이트 · 줄바꿈을 따로 써서 남의 줄이 끼어들 수 있었다 · 계획 5-9)
+            std::string line = std::to_string(frame) + '\t' + to + '\t' + OpName(static_cast<Op>(op));
+            for (size_t i = 0; i < sz && i < 12; ++i) {
+                char hex[4];
+                std::snprintf(hex, sizeof(hex), " %02x", m[pos + i]);
+                line += hex;
+            }
+            line += '\n';
+            std::fwrite(line.data(), 1, line.size(), f);
         }
         pos += sz;
     }

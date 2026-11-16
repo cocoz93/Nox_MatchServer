@@ -66,12 +66,14 @@ bool Sniff(const char* path, Setup& out) {
     FILE* f = std::fopen(path, "rb");
     if (!f) return false;
     // 덤프 한 줄이 길다. replay.cpp 와 같은 크기를 쓴다.
-    static char buf[65536];
+    // ★ 11-17 C-3d-1 — 함수 안 정적 버퍼 → 부를 때마다 제 것. 방을 녹음 서두로 차리는 자리(`WorldBuild.cpp` `BuildRoomWorld`)라
+    //   게임 스레드 여럿이 동시에 방을 차리면 한 버퍼를 같이 썼다(계획 5-9 · 방 하나에 한 번이라 힙 64KB 는 작다)
+    std::vector<char> buf(65536);
     Line ln;
     std::map<std::string, uint8_t> keys;   // 상대별 XOR 키
     std::map<std::string, size_t> slot;    // 상대 → accepts 의 자리
-    while (std::fgets(buf, sizeof(buf), f)) {
-        if (!ParseLine(buf, ln)) continue;
+    while (std::fgets(buf.data(), static_cast<int>(buf.size()), f)) {
+        if (!ParseLine(buf.data(), ln)) continue;
         if (ln.dir != "SEND") continue;
         std::vector<uint8_t> d = ln.data;
         if (d.size() < 3) continue;
