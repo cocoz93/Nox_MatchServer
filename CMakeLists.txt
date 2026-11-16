@@ -87,6 +87,10 @@ if (MSVC)
 endif()
 add_executable(tcp_lines_core_test server/tests/tcp_lines_core_test.cpp)   # 두 판 같은 시험(판마다 프로세스 따로 — ServerCore 판은 프로세스에 하나)
 target_link_libraries(tcp_lines_core_test PRIVATE nox_tcp_core)
+# ★ 11-17 D-2 — 로비 부하 도구(더미 M 명 · `Docs/SERVERCORE_LOBBY_MOVE_PLAN_1116.md` 6-3). ServerCore 판 줄 부품 위 — 더미가 접속 수천 개를 쥐어도
+#   깰 때마다 모두에 받기 호출을 하지 않게. ServerCore 머리는 안 연다(부품 겉만) · 띄우는 대본 `tools/lobby_load.ps1`
+add_executable(nox_lobby_load server/src/lobby_load.cpp)
+target_link_libraries(nox_lobby_load PRIVATE nox_tcp_core)
 
 add_executable(nox_server server/src/main.cpp)
 target_link_libraries(nox_server PRIVATE nox_proto)
