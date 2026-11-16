@@ -250,6 +250,11 @@ if (NOX_POWERSHELL AND WIN32)
   add_test(NAME match_smoke
            COMMAND ${NOX_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
                    -File ${CMAKE_SOURCE_DIR}/tools/match_smoke.ps1 -Exe $<TARGET_FILE:nox_server> -LobbyExe $<TARGET_FILE:nox_lobby>)
+  # ★ 11-17 C-3e — 같은 판을 게임 스레드 둘 · 방 둘로(방 번호 짝 · 홀 = 다른 게임 스레드 · 판 결과 둘이 로비 저장까지 · 접속 시도만 한 상대 걷기 → 세션 주인 지움)
+  add_test(NAME match_smoke_threads
+           COMMAND ${NOX_POWERSHELL} -NoProfile -ExecutionPolicy Bypass
+                   -File ${CMAKE_SOURCE_DIR}/tools/match_smoke.ps1 -TwoRooms -GameThreads 2 -Exe $<TARGET_FILE:nox_server> -LobbyExe $<TARGET_FILE:nox_lobby>
+                   -LobbyPort 14900 -LinkPort 14910 -UdpPort 18941)
   # ★ 랭크 매칭 조각 6 — 같은 판을 랭크 줄로(DLL 판 4 꼴 NOXRANK JOIN · 로비 최소 = 최대 = 2 → 묶음 · CREATE 명단 · 각자 제 채널 · 같은 방 토큰 →
   #   명단이 다 들면 저절로 판 · 결과 ranked · 판 끝 뒤 일반 방). 대기 맵(So_LOD)이 없으면 건너뜀
   add_test(NAME match_smoke_rank
