@@ -46,6 +46,7 @@ add_library(nox_proto STATIC
   server/src/TickSections.cpp # ★ 11-10 부하 실험 — 구간 시간(`--tick-sections`)
   server/src/RoomTick.cpp     # ★ 10-14 작업 9c — 방의 판 차리기 · 틱 뒤 진단(옛 main 의 RoomRun 몫)
   server/src/GameThread.cpp   # ★ 11-17 C-3d-2 — 게임 스레드 하나의 고리(옛 main 의 게임 루프)
+  server/src/LobbyRoomsQueue.cpp   # ★ 11-17 C-3d-3 — 조정 스레드(로비 연결) ↔ 게임 스레드(방) 큐
   server/src/LobbyClient.cpp  # ★ 10-20 MO 6단계 v2 작업 4b — 게임 서버의 로비 연결(확인 · 등록 · 방 알림 · 새 방 · 판 결과)
   server/src/MatchRecorder.cpp # ★ 10-19 MO 5단계 작업 3 — 판 결과 기록기(줄 짓기 · 기록 스레드)
   server/src/DumpSniff.cpp

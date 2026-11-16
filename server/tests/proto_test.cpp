@@ -6,6 +6,7 @@
 // 빌드:
 //   cl /std:c++17 /EHsc /I server\include server\tests\proto_test.cpp server\src\Opcode.cpp
 #include <algorithm>
+#include <atomic>       // ★ 11-17 C-3d-3 — 큐 시험의 진짜 스레드
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>      // ★ 11-17 C-2 — 못 읽는 시험 주소면 끝냄(`ToAddr`)
@@ -17,6 +18,7 @@
 #include <map>
 #include <set>
 #include <string>
+#include <thread>       // ★ 11-17 C-3d-3
 #include <vector>
 
 #include "nox/ModeRules.h"
@@ -25,6 +27,7 @@
 #include "nox/SyncHost.h"
 #include "nox/Lobby.h"         // ★ 10-20 v2 작업 4b-2 — 로비 규약 · 거울을 메모리로 이어 보는 시험(TestHostRename · 옛 ChannelLobby.h 자리)
 #include "nox/LobbyClient.h"   // ★ 10-20 v2 작업 4b
+#include "nox/LobbyRoomsQueue.h"   // ★ 11-17 C-3d-3
 #include "nox/RoomMirror.h"
 #include "nox/MatchRecorder.h"  // ★ 10-19 MO 5단계 작업 3 — 판 결과 기록기 시험
 #include "nox/MatchRecord.h"    // ★ 7단계 조각 4 — 판 결과 읽개(쓰개 ↔ 읽개 왕복)
@@ -25837,22 +25840,46 @@ public:
         next = nox::LobbyFactChanges{};
     }
     void TakeRankNoShows(std::vector<nox::CRoomManager::RankNoShow>&) override {}
-    size_t ClientLobbyGone(const std::string& account) override {
+    // ★ 11-17 C-3d-3 — 계정 명령 · 점수 알림도 「명령 → 결과」. 결과는 곧바로(`hold` 면 `Release` 까지 쥔다 — 늦게 오는 꼴)
+    void ClientLobbyGone(const std::string& account) override {
         gone.push_back(account);
-        return 2;
+        nox::LobbyCommandResult r;
+        r.kind = nox::LobbyCommandResult::Kind::ClientGone;
+        r.account = account;
+        r.sessions = 2;
+        Done(std::move(r));
     }
-    size_t KickAccount(const std::string& account) override {
+    void KickAccount(const std::string& account) override {
         kicked.push_back(account);
-        return 0;
+        nox::LobbyCommandResult r;
+        r.kind = nox::LobbyCommandResult::Kind::Kick;
+        r.account = account;
+        r.sessions = 0;
+        Done(std::move(r));
     }
-    bool NoticeRatings(int roomId, const std::vector<std::pair<std::string, std::string>>& notes, std::vector<size_t>& sent) override {
+    void NoticeRatings(int roomId, std::vector<std::pair<std::string, std::string>> notes) override {
         noticeRooms.push_back(roomId);
-        if (roomId != 7) return false;   // 방 7 만 있다
-        for (const auto& n : notes) {
-            noticeTexts.push_back(n.second);
-            sent.push_back(n.first == "amy" ? 1 : 0);   // amy 만 그 방에 있다
+        nox::LobbyCommandResult r;
+        r.kind = nox::LobbyCommandResult::Kind::NoticeRatings;
+        r.roomId = roomId;
+        r.roomFound = roomId == 7;   // 방 7 만 있다
+        if (r.roomFound) {
+            for (const auto& n : notes) {
+                noticeTexts.push_back(n.second);
+                r.sent.push_back(n.first == "amy" ? 1 : 0);   // amy 만 그 방에 있다
+            }
         }
-        return true;
+        r.notes = std::move(notes);
+        Done(std::move(r));
+    }
+    void TakeCommandResults(std::vector<nox::LobbyCommandResult>& out) override {
+        for (auto& r : cmdReady) out.push_back(std::move(r));
+        cmdReady.clear();
+    }
+    void Done(nox::LobbyCommandResult r) { (hold ? cmdHeld : cmdReady).push_back(std::move(r)); }
+    void Release() {
+        for (auto& r : cmdHeld) cmdReady.push_back(std::move(r));
+        cmdHeld.clear();
     }
     std::vector<std::pair<uint32_t, RoomSettings>> asked;   // 받은 만들기(요청 번호 · 설정)
     std::vector<nox::LobbyCreateResult> ready;               // 다음 `TakeCreateResults` 에 줄 결과
@@ -25860,6 +25887,8 @@ public:
     int collects = 0;
     std::vector<std::string> gone, kicked, noticeTexts;
     std::vector<int> noticeRooms;
+    bool hold = false;
+    std::vector<nox::LobbyCommandResult> cmdReady, cmdHeld;
 };
 }  // namespace
 
@@ -26001,13 +26030,14 @@ void TestLobbyRoomsSeam() {
 
     // ④ 계정 명령 · 점수 알림
     lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 4, nox::LinkClientGone("amy")), rq);
+    const unsigned long long goneRight = lc.Stats().clientGoneShortened;   // ★ 11-17 C-3d-3 — 결과가 곧바로 오면 부른 자리에서 셈(옛 꼴)
     lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 4, nox::LinkKick("zed")), rq);
     lc.OnMatchResult("1760000000-0-1", "{}", rq, 7);
     lc.OnMatchResult("1760000000-0-2", "{}", rq, 4);
     lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 4, nox::LinkSavedLine("1760000000-0-1", nox::SaveOutcome::Ok, {{"amy", 1010, 10}, {"zed", 990, -10}})), rq);
     lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 4, nox::LinkSavedLine("1760000000-0-2", nox::SaveOutcome::Ok, {{"amy", 1020, 10}})), rq);
     const nox::CLobbyClientStats& s = lc.Stats();
-    const bool ok4 = s.clientGoneIn == 1 && s.clientGoneShortened == 2 && s.kickIn == 1 && s.kickedSessions == 0 && fake.gone.size() == 1 &&
+    const bool ok4 = s.clientGoneIn == 1 && s.clientGoneShortened == 2 && goneRight == 2 && s.kickIn == 1 && s.kickedSessions == 0 && fake.gone.size() == 1 &&
                      fake.gone[0] == "amy" && fake.kicked.size() == 1 && fake.kicked[0] == "zed" && fake.noticeRooms.size() == 2 && fake.noticeRooms[0] == 7 &&
                      fake.noticeRooms[1] == 4 && fake.noticeTexts.size() == 2 && fake.noticeTexts[0] == nox::CLobbyClient::RatingNoticeText(1010, 10) &&
                      fake.noticeTexts[1] == nox::CLobbyClient::RatingNoticeText(990, -10) && s.ratingNotices == 1 && s.ratingNotHere == 1 &&
@@ -26016,7 +26046,444 @@ void TestLobbyRoomsSeam() {
                   s.clientGoneIn, s.clientGoneShortened, s.kickIn, s.kickedSessions, fake.noticeRooms.size(), s.ratingNotices, s.ratingNotHere,
                   s.ratingNoRoom, lc.HeldResults());
     Check(ok4, m);
+
+    // ⑤ ★ 11-17 C-3d-3 — 결과가 늦게 옴(게임 스레드 여럿) — 받은 셈만 오르고 처리 수 · 알림 수는 그대로 → 틱 뒤 결과가 오면 오른다 · 줄은 안 나감
+    fake.hold = true;
+    rq.clear();
+    const nox::CLobbyClientStats s0 = lc.Stats();
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 4, nox::LinkClientGone("bob")), rq);
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 4, nox::LinkKick("bob")), rq);
+    lc.OnMatchResult("1760000000-0-3", "{}", rq, 7);
+    lc.OnNetworkEvent(ev(Ev::Type::LOBBY_LINE, 4, nox::LinkSavedLine("1760000000-0-3", nox::SaveOutcome::Ok, {{"amy", 1030, 10}})), rq);
+    const nox::CLobbyClientStats s1 = lc.Stats();
+    const bool waitOk = s1.clientGoneIn == s0.clientGoneIn + 1 && s1.kickIn == s0.kickIn + 1 && s1.clientGoneShortened == s0.clientGoneShortened &&
+                        s1.kickedSessions == s0.kickedSessions && s1.ratingNotices == s0.ratingNotices && fake.cmdHeld.size() == 3;
+    rq.clear();
+    lc.AfterTick(rq);   // 결과 아직 — 그대로
+    const bool stillOk = lc.Stats().clientGoneShortened == s0.clientGoneShortened && rq.empty();
+    fake.Release();
+    lc.AfterTick(rq);
+    const nox::CLobbyClientStats s2 = lc.Stats();
+    const bool lateOk = s2.clientGoneShortened == s0.clientGoneShortened + 2 && s2.kickedSessions == s0.kickedSessions &&
+                        s2.ratingNotices == s0.ratingNotices + 1 && s2.ratingNoRoom == s0.ratingNoRoom && rq.empty() && fake.cmdReady.empty();
+    fake.hold = false;
+    std::snprintf(m, sizeof(m), "⑤ 늦은 결과 — 받은 뒤 처리 수 그대로 %d · 결과 전 틱 그대로 %d · 결과 뒤 줄임 +%llu · 내보냄 +%llu · 알림 +%llu · 줄 없음 %d",
+                  (int)waitOk, (int)stillOk, s2.clientGoneShortened - s0.clientGoneShortened, s2.kickedSessions - s0.kickedSessions,
+                  s2.ratingNotices - s0.ratingNotices, (int)rq.empty());
+    Check(waitOk && stillOk && lateOk, m);
     std::printf("  11-17 C-3c — 로비 연결이 방에 닿는 틀: 견주기 · 늦은 새 방 결과 · 다시 붙을 때 사본 전부 · 계정 명령 · 점수 알림\n");
+}
+
+// ── ★ 11-17 C-3d-3 — 게임 스레드가 여럿일 때 로비 연결 ↔ 방을 큐로(`LobbyRoomsQueue.h`) ─────────
+//   ① 조정 스레드 몫 단독(손으로 만든 알림 묶음) — 새 방 받는 스레드(방 수 + 답 없는 새 방 · 같으면 작은 번호) · 계정 명령은 모든 스레드에 ·
+//      합은 모두 답한 뒤 한 번 · 점수 알림은 방 번호 % N 스레드에 · 방 번호 없는 판은 곧바로 「방 없음」 · 모르는 답은 셈만
+//   ② 바뀜 얹기 — 방 번호 차례 · 넘긴 것과 같으면 없음 · 넘긴 적 없는 방이 사이에 생겼다 사라지면 없음 ·
+//      사람이 스레드를 옮김(새 몫이 먼저 와도 · 옛 몫 나감이 먼저 와도) · 두 몫이면 늦게 낸 쪽 · 한 몫이 나가면 남은 몫
+//   ③ 진짜 방 관리자 둘(번호 몫 0 · 1) + 게임 스레드 몫 + 로비 연결 — 묶음 전 CREATED 없음 · ROOM 다음 CREATED · 방 수 적은 스레드 ·
+//      판 결과 RESULT · 점수 알림이 방 주인에게(짝 · 홀 두 방향) · 계정 명령은 모두 답한 뒤
+//   ④ 게임 스레드 하나(N = 1) — 큐 판 로비 줄 · 셈이 한 스레드 옛 꼴(`CDirectLobbyRooms`)과 같음
+//   ⑤ 진짜 스레드 둘 — 새 방 20개 → 결과 20 · 모두 그 방 ROOM 다음 · 스레드마다 10 · 번호 몫
+void TestLobbyRoomsQueue() {
+    using Ev = nox::NetworkEvent;
+    using Rq = nox::NetworkRequest;
+    using Cmd = nox::LobbyRoomCommand;
+    using Res = nox::LobbyCommandResult;
+    char m[600];
+    nox::CLobbyClient::Config cfg;
+    for (size_t i = 0; i < cfg.tokenKey.size(); ++i) cfg.tokenKey[i] = static_cast<uint8_t>(i + 1);
+    cfg.epoch = 1760000000u;
+    cfg.registerIp = 0x7f000002u;
+    cfg.port = 18590;
+    const std::vector<std::string> waits = {"C:\\Nox\\maps\\So_LOD\\So_LOD.map"};
+    const std::vector<std::string> battles = {"C:\\Nox\\maps\\Estate\\Estate.map"};
+    auto ev = [](Ev::Type t, const std::string& line) {
+        Ev e;
+        e.type = t;
+        e.lobbyConn = 3;
+        e.lobbyLine = line;
+        e.lobbyWhy = "test";
+        return e;
+    };
+    auto lobby = [&](const std::string& line) { return ev(Ev::Type::LOBBY_LINE, line); };
+    auto lines = [](const std::vector<Rq>& q) {
+        std::vector<std::string> v;
+        for (const Rq& r : q) v.push_back(r.type == Rq::Type::LOBBY_SEND ? r.lobbyLine : std::string("?"));
+        return v;
+    };
+    const std::string nonce = "00112233445566778899aabbccddeeff";
+    auto hello = [&]() { return std::vector<Ev>{ev(Ev::Type::LOBBY_OPENED, ""), lobby(nox::LinkHello(nonce))}; };
+    auto creatorRoom = [](const nox::CRoomManager& r, const std::string& who) {
+        for (const auto& f : r.ListRooms())
+            if (f.creator == who) return f.roomId;
+        return -1;
+    };
+
+    // ① 조정 스레드 몫 단독
+    {
+        nox::CLobbyRoomsHub hub(3);
+        nox::CQueuedLobbyRooms q(hub, false);
+        RoomSettings s;
+        const int p0 = q.PickThread();
+        for (uint32_t req = 10; req <= 13; ++req) q.CreateRoom(req, s);
+        std::vector<Cmd> c[3];
+        for (int k = 0; k < 3; ++k) hub.SwapOutCommands(k, c[k]);
+        auto seqs = [](const std::vector<Cmd>& v) {
+            std::string t;
+            for (const Cmd& x : v) t += std::to_string(x.seq) + (x.type == Cmd::Type::Create ? "," : "?");
+            return t;
+        };
+        const bool spreadOk = p0 == 0 && seqs(c[0]) == "10,13," && seqs(c[1]) == "11," && seqs(c[2]) == "12," && q.CreatesInFlight(0) == 2 &&
+                              q.CreatesInFlight(1) == 1;
+        nox::LobbyRoomReport r1;
+        r1.thread = 1;
+        r1.roomCount = 5;
+        r1.creates.push_back(nox::LobbyCreateResult{11, 7});
+        q.Absorb(r1);
+        const int pickAfter = q.PickThread();   // 0: 0 + 2 · 1: 5 + 0 · 2: 0 + 1 → 2
+        std::vector<nox::LobbyCreateResult> cr;
+        q.TakeCreateResults(cr);
+        const bool createOk = pickAfter == 2 && q.CreatesInFlight(1) == 0 && q.RoomsOf(1) == 5 && cr.size() == 1 && cr[0].req == 11 && cr[0].roomId == 7;
+        auto reply = [&](int t, uint32_t seq, size_t n, bool found, std::vector<size_t> sent) {
+            nox::LobbyRoomReport r;
+            r.thread = t;
+            r.roomCount = q.RoomsOf(t);
+            nox::LobbyRoomReport::Reply a;
+            a.seq = seq;
+            a.sessions = n;
+            a.found = found;
+            a.sent = std::move(sent);
+            r.replies.push_back(std::move(a));
+            q.Absorb(r);
+        };
+        // 계정 명령 — 모든 스레드에 · 합은 모두 답한 뒤 한 번
+        q.ClientLobbyGone("amy");
+        q.KickAccount("zed");
+        std::vector<Cmd> g[3];
+        for (int k = 0; k < 3; ++k) hub.SwapOutCommands(k, g[k]);
+        bool bcast = true;
+        for (const auto& v : g)
+            bcast = bcast && v.size() == 2 && v[0].type == Cmd::Type::ClientGone && v[0].account == "amy" && v[0].seq == g[0][0].seq &&
+                    v[1].type == Cmd::Type::Kick && v[1].account == "zed" && v[1].seq == g[0][1].seq && v[0].seq != v[1].seq;
+        std::vector<Res> res;
+        if (bcast) {
+            reply(0, g[0][0].seq, 2, false, {});
+            reply(2, g[0][0].seq, 1, false, {});
+            reply(0, g[0][1].seq, 1, false, {});
+        }
+        q.TakeCommandResults(res);
+        const bool early = res.empty() && q.CommandsWaiting() == 2;
+        if (bcast) {
+            reply(1, g[0][0].seq, 0, false, {});
+            reply(1, g[0][1].seq, 0, false, {});
+            reply(2, g[0][1].seq, 4, false, {});
+        }
+        q.TakeCommandResults(res);
+        const bool sumOk = res.size() == 2 && res[0].kind == Res::Kind::ClientGone && res[0].account == "amy" && res[0].sessions == 3 &&
+                           res[1].kind == Res::Kind::Kick && res[1].account == "zed" && res[1].sessions == 5 && q.CommandsWaiting() == 0;
+        reply(1, 999, 4, false, {});   // 모르는 번호 — 셈만
+        const bool unknownOk = q.UnknownReplies() == 1;
+        // 점수 알림 — 방 번호 % 3 스레드에 · 번호 없는 판은 곧바로 「방 없음」
+        res.clear();
+        q.NoticeRatings(7, {{"amy", "n1"}, {"zed", "n2"}});
+        q.NoticeRatings(9, {{"amy", "n3"}});
+        q.NoticeRatings(-1, {{"bob", "n4"}});
+        std::vector<Cmd> n[3];
+        for (int k = 0; k < 3; ++k) hub.SwapOutCommands(k, n[k]);
+        q.TakeCommandResults(res);
+        const bool routeOk = n[1].size() == 1 && n[1][0].type == Cmd::Type::NoticeRatings && n[1][0].roomId == 7 && n[1][0].notes.size() == 2 &&
+                             n[0].size() == 1 && n[0][0].roomId == 9 && n[2].empty() && res.size() == 1 && res[0].roomId == -1 && !res[0].roomFound &&
+                             res[0].notes.size() == 1 && q.CommandsWaiting() == 2;
+        res.clear();
+        if (n[1].size() == 1 && n[0].size() == 1) {
+            reply(1, n[1][0].seq, 0, true, {1, 0});
+            reply(0, n[0][0].seq, 0, false, {});
+        }
+        q.TakeCommandResults(res);
+        const bool noticeOk = res.size() == 2 && res[0].roomId == 7 && res[0].roomFound && res[0].sent == std::vector<size_t>{1, 0} &&
+                              res[0].notes.size() == 2 && res[0].notes[1].first == "zed" && res[1].roomId == 9 && !res[1].roomFound &&
+                              q.CommandsWaiting() == 0 && hub.CommandsBadThread() == 0;
+        std::snprintf(m, sizeof(m),
+                      "① 조정 몫 — 새 방 나눔 %d [%s | %s | %s] · 결과 뒤 고름 %d → %d | 계정 명령 모두에 %d · 다 답하기 전 없음 %d · 합 %d · 모르는 답 셈 %llu | "
+                      "점수 알림 방 주인 %d · 결과 %d",
+                      (int)spreadOk, seqs(c[0]).c_str(), seqs(c[1]).c_str(), seqs(c[2]).c_str(), (int)createOk, pickAfter, (int)bcast, (int)early,
+                      (int)sumOk, q.UnknownReplies(), (int)routeOk, (int)noticeOk);
+        Check(spreadOk && createOk && bcast && early && sumOk && unknownOk && routeOk && noticeOk, m);
+    }
+
+    // ② 바뀜 얹기
+    {
+        nox::CLobbyRoomsHub hub(2);
+        nox::CQueuedLobbyRooms q(hub, false);
+        auto rep = [&](int t, std::vector<std::pair<uint32_t, std::string>> rooms, std::vector<uint32_t> gone, std::vector<std::pair<std::string, std::string>> ui,
+                       std::vector<std::string> uiGone) {
+            nox::LobbyRoomReport r;
+            r.thread = t;
+            r.changes.rooms = std::move(rooms);
+            r.changes.roomsGone = std::move(gone);
+            r.changes.ui = std::move(ui);
+            r.changes.uiGone = std::move(uiGone);
+            q.Absorb(r);
+        };
+        auto collect = [&]() {
+            nox::LobbyFactChanges c;
+            q.CollectChanges(c);
+            std::string t;
+            for (const auto& x : c.rooms) t += "R" + std::to_string(x.first) + "=" + x.second + ";";
+            for (uint32_t x : c.roomsGone) t += "G" + std::to_string(x) + ";";
+            for (const auto& x : c.ui) t += "U" + x.first + "=" + x.second + ";";
+            for (const auto& x : c.uiGone) t += "X" + x + ";";
+            return t;
+        };
+        rep(0, {{2u, "a2"}}, {}, {{"amy", "u0"}}, {});
+        rep(1, {{1u, "a1"}}, {}, {{"bob", "u1"}}, {});
+        const std::string k1 = collect();
+        const std::string k2 = collect();
+        rep(1, {{3u, "a3"}}, {}, {}, {});   // 넘긴 적 없이 생겼다
+        rep(1, {}, {3u}, {}, {});           // 사라짐
+        rep(0, {{2u, "b2"}}, {}, {}, {});   // 바뀌었다
+        rep(0, {{2u, "a2"}}, {}, {}, {});   // 넘긴 것으로 되돌아옴
+        const std::string k3 = collect();
+        rep(1, {}, {}, {{"amy", "v1"}}, {});   // amy 스레드 0 → 1 — 새 몫이 먼저
+        rep(0, {}, {}, {}, {"amy"});
+        const std::string k4 = collect();
+        rep(1, {}, {}, {}, {"bob"});   // bob 스레드 1 → 0 — 옛 몫 나감이 먼저
+        rep(0, {}, {}, {{"bob", "w0"}}, {});
+        const std::string k5 = collect();
+        rep(1, {}, {1u}, {}, {"amy"});   // 넘긴 방 사라짐 · amy 나감
+        const std::string k6 = collect();
+        rep(0, {}, {}, {{"amy", "p0"}}, {});   // 같은 이름이 두 스레드에 — 늦게 낸 쪽
+        rep(1, {}, {}, {{"amy", "q1"}}, {});
+        const std::string k7 = collect();
+        rep(1, {}, {}, {}, {"amy"});   // 한 몫 나감 → 남은 몫
+        const std::string k8 = collect();
+        const bool ok = k1 == "R1=a1;R2=a2;Uamy=u0;Ubob=u1;" && k2.empty() && k3.empty() && k4 == "Uamy=v1;" && k5 == "Ubob=w0;" && k6 == "G1;Xamy;" &&
+                        k7 == "Uamy=q1;" && k8 == "Uamy=p0;";
+        std::snprintf(m, sizeof(m), "② 얹기 — [%s] · 다시 [%s] · 생겼다 사라짐 · 되돌아옴 [%s] · 옮김(새 몫 먼저) [%s] · 옮김(나감 먼저) [%s] · 사라짐 [%s] · 두 몫 [%s] · 남은 몫 [%s]",
+                      k1.c_str(), k2.c_str(), k3.c_str(), k4.c_str(), k5.c_str(), k6.c_str(), k7.c_str(), k8.c_str());
+        Check(ok, m);
+    }
+
+    // ③ 진짜 방 관리자 둘 + 게임 스레드 몫 + 로비 연결(한 스레드에서 차례를 정해 돌린다)
+    {
+        nox::CRoomManager r0, r1;
+        r0.SetRoomIdSlice(0, 2);
+        r1.SetRoomIdSlice(1, 2);
+        r0.CreateRoom(RoomSettings{});   // 만든 사람 없는 방 — 로비엔 안 감 · 스레드 0 방 수만 하나
+        nox::CLobbyRoomsHub hub(2);
+        nox::CLobbyRoomsAgent a0(hub, 0, r0), a1(hub, 1, r1);
+        nox::CQueuedLobbyRooms q(hub, false);
+        RoomSettings tmpl;
+        nox::CLobbyClient lc(q, cfg, tmpl, waits, battles);
+        lc.SetSeed(3);
+        lc.SetClock([] { return 1000u; });
+        nox::CLobbyCoordinator co(hub, q, lc);
+        std::vector<Rq> out;
+        auto turn = [&](const std::vector<Ev>& evs) {
+            out.clear();
+            co.Turn(evs, out);
+            return lines(out);
+        };
+        auto game = [&](bool t0, bool t1) {
+            if (t0) {
+                a0.RunCommands();
+                a0.Report();
+            }
+            if (t1) {
+                a1.RunCommands();
+                a1.Report();
+            }
+        };
+        game(true, true);   // 첫 묶음(방 수)
+        const auto l0 = turn(hello());
+        const bool counted = q.RoomsOf(0) == 1 && q.RoomsOf(1) == 0;
+        const auto l1 = turn({lobby(nox::LinkCreate(42, "amy"))});   // 줄 없음 · 스레드 1(방 0개)
+        a1.RunCommands();                                            // 만들었지만 묶음 전
+        const auto l1b = turn({});
+        a1.Report();
+        const auto l2 = turn({});
+        const int amy = creatorRoom(r1, "amy");
+        const bool ok3a = l0.size() == 2 && counted && l1.empty() && l1b.empty() && amy >= 0 && amy % 2 == 1 && l2.size() == 2 &&
+                          l2[0].rfind("ROOM " + std::to_string(amy) + " ", 0) == 0 && l2[1] == "CREATED 42 " + std::to_string(amy);
+        // 둘 한꺼번에 — 방 수 1 · 1 → 스레드 0(같으면 작은 번호) · 그다음 1 + 1 · 1 → 스레드 1
+        const auto l3 = turn({lobby(nox::LinkCreate(43, "bob")), lobby(nox::LinkCreate(44, "carl"))});
+        game(true, true);
+        const auto l4 = turn({});
+        const int bob = creatorRoom(r0, "bob"), carl = creatorRoom(r1, "carl");
+        const int lo = bob < carl ? bob : carl, hi = bob < carl ? carl : bob;
+        const bool ok3b = l3.empty() && bob >= 0 && bob % 2 == 0 && carl >= 0 && carl % 2 == 1 && l4.size() == 4 &&
+                          l4[0].rfind("ROOM " + std::to_string(lo) + " ", 0) == 0 && l4[1].rfind("ROOM " + std::to_string(hi) + " ", 0) == 0 &&
+                          l4[2] == "CREATED 43 " + std::to_string(bob) && l4[3] == "CREATED 44 " + std::to_string(carl);
+        // 판 결과 → RESULT · SAVED → 점수 알림이 방 주인 스레드에(amy 방 = 홀 · bob 방 = 짝)
+        a1.AddMatch("1760000000-0-1", "{\"match\":\"1760000000-0-1\"}", amy);
+        a0.AddMatch("1760000000-0-2", "{\"match\":\"1760000000-0-2\"}", bob);
+        game(true, true);
+        const auto l5 = turn({});
+        const size_t held = lc.HeldResults();
+        const nox::CLobbyClientStats s0 = lc.Stats();
+        turn({lobby(nox::LinkSavedLine("1760000000-0-1", nox::SaveOutcome::Ok, {{"amy", 1010, 10}})),
+              lobby(nox::LinkSavedLine("1760000000-0-2", nox::SaveOutcome::Ok, {{"bob", 1010, 10}, {"zed", 990, -10}}))});
+        const bool noticeWait = q.CommandsWaiting() == 2 && lc.Stats().ratingNotHere == s0.ratingNotHere && lc.HeldResults() == 0;
+        game(true, true);
+        turn({});
+        const nox::CLobbyClientStats s1 = lc.Stats();
+        const bool ok3c = l5.size() == 2 && held == 2 && noticeWait && s1.ratingNoRoom == s0.ratingNoRoom && s1.ratingNotHere == s0.ratingNotHere + 3 &&
+                          s1.ratingNotices == s0.ratingNotices && q.CommandsWaiting() == 0;
+        // 계정 명령 — 두 스레드가 다 답한 뒤
+        turn({lobby(nox::LinkClientGone("amy")), lobby(nox::LinkKick("bob"))});
+        const size_t w1 = q.CommandsWaiting();
+        game(true, false);
+        turn({});
+        const size_t w2 = q.CommandsWaiting();
+        game(false, true);
+        turn({});
+        const size_t w3 = q.CommandsWaiting();
+        const nox::CLobbyClientStats& s2 = lc.Stats();
+        const bool ok3d = w1 == 2 && w2 == 2 && w3 == 0 && s2.clientGoneIn == 1 && s2.kickIn == 1 && q.UnknownReplies() == 0 && hub.CommandsBadThread() == 0;
+        std::snprintf(m, sizeof(m),
+                      "③ 진짜 방 둘 — 등록 줄 %zu · 방 수 %d · 묶음 전 줄 없음 %d · [%s | %s] 방 %d | 둘 → 방 %d · %d [%s | %s | %s | %s] | RESULT %zu · 쥔 것 %zu · "
+                      "알림 기다림 %d · 방 없음 +%llu · 방에 없음 +%llu | 계정 기다림 %zu → %zu → %zu",
+                      l0.size(), (int)counted, (int)l1b.empty(), l2.size() > 0 ? l2[0].c_str() : "", l2.size() > 1 ? l2[1].c_str() : "", amy, bob, carl,
+                      l4.size() > 0 ? l4[0].substr(0, 12).c_str() : "", l4.size() > 1 ? l4[1].substr(0, 12).c_str() : "", l4.size() > 2 ? l4[2].c_str() : "",
+                      l4.size() > 3 ? l4[3].c_str() : "", l5.size(), held, (int)noticeWait, s1.ratingNoRoom - s0.ratingNoRoom,
+                      s1.ratingNotHere - s0.ratingNotHere, w1, w2, w3);
+        Check(ok3a && ok3b && ok3c && ok3d, m);
+    }
+
+    // ④ 게임 스레드 하나 — 큐 판과 한 스레드 옛 꼴이 같은 로비 줄 · 셈
+    {
+        RoomSettings tmpl;
+        std::vector<std::string> direct, queued;
+        nox::CLobbyClientStats ds, qs;
+        {
+            nox::CRoomManager rd;
+            nox::CLobbyClient ld(rd, cfg, tmpl, waits, battles);
+            ld.SetSeed(3);
+            ld.SetClock([] { return 1000u; });
+            std::vector<Rq> o;
+            auto put = [&]() {
+                for (const auto& x : lines(o)) direct.push_back(x);
+                o.clear();
+            };
+            for (const Ev& e : hello()) ld.OnNetworkEvent(e, o);
+            ld.OnNetworkEvent(lobby(nox::LinkCreate(42, "amy")), o);
+            ld.AfterTick(o);
+            put();
+            const int id = creatorRoom(rd, "amy");
+            ld.OnNetworkEvent(lobby(nox::LinkClientGone("amy")), o);
+            ld.OnMatchResult("1760000000-0-1", "{\"match\":\"1760000000-0-1\"}", o, id);
+            ld.AfterTick(o);
+            put();
+            ld.OnNetworkEvent(lobby(nox::LinkSavedLine("1760000000-0-1", nox::SaveOutcome::Ok, {{"amy", 1010, 10}})), o);
+            if (id >= 0) rd.CloseRoom(id);
+            ld.AfterTick(o);
+            put();
+            ds = ld.Stats();
+        }
+        {
+            nox::CRoomManager rq1;
+            rq1.SetRoomIdSlice(0, 1);
+            nox::CLobbyRoomsHub hub(1);
+            nox::CLobbyRoomsAgent a(hub, 0, rq1);
+            nox::CQueuedLobbyRooms q(hub, false);
+            nox::CLobbyClient lq(q, cfg, tmpl, waits, battles);
+            lq.SetSeed(3);
+            lq.SetClock([] { return 1000u; });
+            nox::CLobbyCoordinator co(hub, q, lq);
+            std::vector<Rq> o;
+            auto step = [&](const std::vector<Ev>& evs) {
+                co.Turn(evs, o);
+                a.RunCommands();
+                a.Report();
+                co.Turn({}, o);
+                for (const auto& x : lines(o)) queued.push_back(x);
+                o.clear();
+            };
+            a.Report();
+            std::vector<Ev> first = hello();
+            first.push_back(lobby(nox::LinkCreate(42, "amy")));
+            step(first);
+            const int id = creatorRoom(rq1, "amy");
+            a.AddMatch("1760000000-0-1", "{\"match\":\"1760000000-0-1\"}", id);
+            step({lobby(nox::LinkClientGone("amy"))});
+            step({lobby(nox::LinkSavedLine("1760000000-0-1", nox::SaveOutcome::Ok, {{"amy", 1010, 10}}))});   // 알림이 게임 스레드에 닿은 뒤 닫는다(옛 꼴의 차례)
+            if (id >= 0) rq1.CloseRoom(id);
+            step({});
+            qs = lq.Stats();
+        }
+        std::string dj, qj;
+        for (const auto& x : direct) dj += x + " | ";
+        for (const auto& x : queued) qj += x + " | ";
+        const bool same = direct == queued && direct.size() == 6 && ds.created == qs.created && ds.clientGoneIn == qs.clientGoneIn &&
+                          ds.clientGoneShortened == qs.clientGoneShortened && ds.ratingNotHere == qs.ratingNotHere && ds.ratingNoRoom == qs.ratingNoRoom &&
+                          ds.ratingNotices == qs.ratingNotices && ds.savedOk == qs.savedOk && ds.roomLines == qs.roomLines && ds.roomGoneLines == qs.roomGoneLines &&
+                          ds.ratingNotHere == 1 && ds.roomGoneLines == 1;
+        std::snprintf(m, sizeof(m), "④ 한 스레드 — 같음 %d · 줄 %zu = %zu · 셈 방에 없음 %llu = %llu · ROOM_GONE %llu = %llu | 옛 [%s]", (int)same, direct.size(),
+                      queued.size(), ds.ratingNotHere, qs.ratingNotHere, ds.roomGoneLines, qs.roomGoneLines, dj.substr(0, 300).c_str());
+        Check(same, m);
+        if (!same) std::printf("      큐 [%s]\n", qj.substr(0, 400).c_str());
+    }
+
+    // ⑤ 진짜 스레드 둘 — 새 방 20개
+    {
+        nox::CRoomManager r0, r1;
+        r0.SetRoomIdSlice(0, 2);
+        r1.SetRoomIdSlice(1, 2);
+        nox::CLobbyRoomsHub hub(2);
+        nox::CLobbyRoomsAgent a0(hub, 0, r0), a1(hub, 1, r1);
+        nox::CQueuedLobbyRooms q(hub, false);
+        RoomSettings tmpl;
+        nox::CLobbyClient lc(q, cfg, tmpl, waits, battles);
+        lc.SetSeed(3);
+        lc.SetClock([] { return 1000u; });
+        nox::CLobbyCoordinator co(hub, q, lc);
+        std::atomic<bool> stop{false};
+        auto run = [&](nox::CLobbyRoomsAgent* a) {
+            while (!stop.load()) {
+                a->RunCommands();
+                a->Report();
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        };
+        std::thread t0(run, &a0), t1(run, &a1);
+        std::vector<std::string> all;
+        std::vector<Rq> out;
+        co.Turn(hello(), out);
+        std::vector<Ev> creates;
+        for (uint32_t i = 0; i < 20; ++i) creates.push_back(lobby(nox::LinkCreate(100 + i, "p" + std::to_string(i))));
+        co.Turn(creates, out);
+        int created = 0;
+        const auto t00 = std::chrono::steady_clock::now();
+        while (created < 20 && std::chrono::steady_clock::now() - t00 < std::chrono::seconds(5)) {
+            co.Turn({}, out);
+            for (const auto& x : lines(out)) {
+                all.push_back(x);
+                if (x.rfind("CREATED ", 0) == 0) ++created;
+            }
+            out.clear();
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        stop = true;
+        t0.join();
+        t1.join();
+        // CREATED 마다 그 방 ROOM 이 앞에 · 번호 겹침 없음
+        std::set<std::string> roomsSeen, ids;
+        int ordered = 0;
+        for (const auto& x : all) {
+            if (x.rfind("ROOM ", 0) == 0) roomsSeen.insert(x.substr(5, x.find(' ', 5) - 5));
+            if (x.rfind("CREATED ", 0) == 0) {
+                const std::string id = x.substr(x.rfind(' ') + 1);
+                ids.insert(id);
+                if (roomsSeen.count(id)) ++ordered;
+            }
+        }
+        bool parity = true;
+        for (const auto& f : r0.ListRooms()) parity = parity && f.roomId % 2 == 0;
+        for (const auto& f : r1.ListRooms()) parity = parity && f.roomId % 2 == 1;
+        std::snprintf(m, sizeof(m), "⑤ 진짜 스레드 둘 — 결과 %d · ROOM 다음 %d · 다른 번호 %zu · 스레드 0 방 %zu · 1 방 %zu · 번호 몫 %d · 남은 명령 %zu",
+                      created, ordered, ids.size(), r0.RoomCount(), r1.RoomCount(), (int)parity, q.CommandsWaiting());
+        Check(created == 20 && ordered == 20 && ids.size() == 20 && r0.RoomCount() == 10 && r1.RoomCount() == 10 && parity, m);
+    }
+    std::printf("  11-17 C-3d-3 — 로비 연결 ↔ 방 큐: 조정 몫 · 바뀜 얹기 · 진짜 방 둘 · 한 스레드 같음 · 진짜 스레드 둘\n");
 }
 
 // ── ★ 7단계 조각 2 — 게임 서버 쪽 연결 살아 있음(`CLobbyClient::LinkTick` — `Docs/ACCOUNT_DB_DESIGN.md`) ─────────
@@ -36046,6 +36513,7 @@ int main() {
     TestLobbyClientHeld();    // ★ 7단계 조각 3
     TestLobbyClientRatingNotice();   // ★ 매칭 손보기 1
     TestLobbyRoomsSeam();            // ★ 11-17 C-3c
+    TestLobbyRoomsQueue();           // ★ 11-17 C-3d-3
     TestIntroOnce();                 // ★ 10-31 남 소개 맵 한 번에 한 통(입장문 되풀이)
     TestRankOneMap();                // ★ 매칭 손보기 3
     TestMatchRecordRoundTrip();   // ★ 7단계 조각 4

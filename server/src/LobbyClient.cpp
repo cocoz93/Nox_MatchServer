@@ -106,9 +106,40 @@ void CDirectLobbyRooms::TakeCreateResults(std::vector<LobbyCreateResult>& out) {
     _done.clear();
 }
 
-bool CDirectLobbyRooms::NoticeRatings(int roomId, const std::vector<std::pair<std::string, std::string>>& notes, std::vector<size_t>& sent) {
-    if (roomId < 0 || !_rooms.HasRoom(roomId)) return false;
-    CRoom& room = _rooms.Room(roomId);
+// ★ 11-17 C-3d-3 — 결과는 부른 자리에서 곧바로(셈 · 기록 줄은 `CLobbyClient::FinishCommands` — 부르자마자 꺼내 옛 꼴과 줄 · 차례가 같다)
+void CDirectLobbyRooms::ClientLobbyGone(const std::string& account) {
+    LobbyCommandResult r;
+    r.kind = LobbyCommandResult::Kind::ClientGone;
+    r.account = account;
+    r.sessions = _rooms.OnClientLobbyGone(account);
+    _cmdDone.push_back(std::move(r));
+}
+
+void CDirectLobbyRooms::KickAccount(const std::string& account) {
+    LobbyCommandResult r;
+    r.kind = LobbyCommandResult::Kind::Kick;
+    r.account = account;
+    r.sessions = _rooms.KickAccount(account);
+    _cmdDone.push_back(std::move(r));
+}
+
+void CDirectLobbyRooms::NoticeRatings(int roomId, std::vector<std::pair<std::string, std::string>> notes) {
+    LobbyCommandResult r;
+    r.kind = LobbyCommandResult::Kind::NoticeRatings;
+    r.roomId = roomId;
+    r.roomFound = NoticeRatingsInRoom(_rooms, roomId, notes, r.sent);
+    r.notes = std::move(notes);
+    _cmdDone.push_back(std::move(r));
+}
+
+void CDirectLobbyRooms::TakeCommandResults(std::vector<LobbyCommandResult>& out) {
+    for (LobbyCommandResult& r : _cmdDone) out.push_back(std::move(r));
+    _cmdDone.clear();
+}
+
+bool NoticeRatingsInRoom(CRoomManager& rooms, int roomId, const std::vector<std::pair<std::string, std::string>>& notes, std::vector<size_t>& sent) {
+    if (roomId < 0 || !rooms.HasRoom(roomId)) return false;
+    CRoom& room = rooms.Room(roomId);
     for (const auto& note : notes) {
         size_t n = 0;
         for (const RoomMember& m : room.Members()) {
@@ -204,16 +235,14 @@ void CLobbyClient::OnLine(const std::string& line, std::vector<NetworkRequest>& 
             return;
         case LinkKind::ClientGone: {   // ★ 11-03 — 시간 초과 한도만 줄인다(`Server::ClientLobbyGone`)
             ++_stats.clientGoneIn;
-            const size_t n = _rooms.ClientLobbyGone(l.text);
-            _stats.clientGoneShortened += n;
-            std::printf("[로비 연결] CLIENT_GONE %s — 들어 있던 세션 %zu개 한도 줄임\n", Printable(l.text).c_str(), n);
+            _rooms.ClientLobbyGone(l.text);
+            FinishCommands();   // ★ 11-17 C-3d-3 — 셈 · 기록 줄은 결과에서(한 스레드 판은 곧바로)
             return;
         }
         case LinkKind::Kick: {   // ★ 11-05 플랜1 — 계정 정지. 그 이름이 없으면 0(로비가 게임 서버 전부에 보낸다)
             ++_stats.kickIn;
-            const size_t n = _rooms.KickAccount(l.text);
-            _stats.kickedSessions += n;
-            std::printf("[로비 연결] KICK %s — 내보낸 세션 %zu개\n", Printable(l.text).c_str(), n);
+            _rooms.KickAccount(l.text);
+            FinishCommands();   // ★ 11-17 C-3d-3
             return;
         }
         case LinkKind::Ping:   // ★ 7단계 — 받은 시각은 사건에서 적었다(어느 단계든)
@@ -399,6 +428,7 @@ void CLobbyClient::SendAll(std::vector<NetworkRequest>& out) {
 void CLobbyClient::AfterTick(std::vector<NetworkRequest>& out) {
     LinkTick(out);
     FinishCreates(out);   // ★ 11-17 C-3c — 늦게 온 새 방 결과(한 스레드 판은 없다)
+    FinishCommands();     // ★ 11-17 C-3d-3 — 늦게 온 계정 명령 · 점수 알림 결과(한 스레드 판은 없다)
     SendChanged(out);
     SendRankNoShows(out);
 }
@@ -486,22 +516,44 @@ std::string CLobbyClient::RatingNoticeText(int32_t after, int32_t delta) {
 void CLobbyClient::NoticeRatings(int roomId, const std::vector<LinkRatingChange>& ratings) {
     if (ratings.empty()) return;
     // ★ 11-17 C-3c — 보내기는 틀이(그 방의 게임 스레드) · 수와 기록 줄은 여기서(옛 꼴과 같은 줄 · 같은 차례)
+    //   ★ 11-17 C-3d-3 — 수와 기록 줄은 결과가 올 때(`FinishCommands` — 한 스레드 판은 곧바로)
     std::vector<std::pair<std::string, std::string>> notes;
     for (const LinkRatingChange& c : ratings) notes.emplace_back(c.account, RatingNoticeText(c.after, c.delta));
-    std::vector<size_t> sent;
-    if (!_rooms.NoticeRatings(roomId, notes, sent) || sent.size() != notes.size()) {
-        _stats.ratingNoRoom += ratings.size();
-        std::printf("[로비 연결] 점수 알림 %zu명 — 판의 방 %d 이 없음(닫힘) · 안 보냄\n", ratings.size(), roomId);
-        std::fflush(stdout);
-        return;
+    _rooms.NoticeRatings(roomId, std::move(notes));
+    FinishCommands();
+}
+
+void CLobbyClient::FinishCommands() {
+    std::vector<LobbyCommandResult> done;
+    _rooms.TakeCommandResults(done);
+    for (const LobbyCommandResult& r : done) {
+        switch (r.kind) {
+            case LobbyCommandResult::Kind::ClientGone:
+                _stats.clientGoneShortened += r.sessions;
+                std::printf("[로비 연결] CLIENT_GONE %s — 들어 있던 세션 %zu개 한도 줄임\n", Printable(r.account).c_str(), r.sessions);
+                break;
+            case LobbyCommandResult::Kind::Kick:
+                _stats.kickedSessions += r.sessions;
+                std::printf("[로비 연결] KICK %s — 내보낸 세션 %zu개\n", Printable(r.account).c_str(), r.sessions);
+                break;
+            case LobbyCommandResult::Kind::NoticeRatings:
+                if (!r.roomFound || r.sent.size() != r.notes.size()) {
+                    _stats.ratingNoRoom += r.notes.size();
+                    std::printf("[로비 연결] 점수 알림 %zu명 — 판의 방 %d 이 없음(닫힘) · 안 보냄\n", r.notes.size(), r.roomId);
+                    std::fflush(stdout);
+                    break;
+                }
+                for (size_t i = 0; i < r.notes.size(); ++i) {
+                    const size_t n = r.sent[i];
+                    if (n == 0) ++_stats.ratingNotHere;
+                    _stats.ratingNotices += n;
+                    std::printf("[로비 연결] 방 %d 점수 알림 — %s 「%s」 %zu명\n", r.roomId, Printable(r.notes[i].first).c_str(), r.notes[i].second.c_str(),
+                                n);
+                }
+                std::fflush(stdout);
+                break;
+        }
     }
-    for (size_t i = 0; i < notes.size(); ++i) {
-        const size_t n = sent[i];
-        if (n == 0) ++_stats.ratingNotHere;
-        _stats.ratingNotices += n;
-        std::printf("[로비 연결] 방 %d 점수 알림 — %s 「%s」 %zu명\n", roomId, Printable(notes[i].first).c_str(), notes[i].second.c_str(), n);
-    }
-    std::fflush(stdout);
 }
 
 }  // namespace nox

@@ -26,6 +26,8 @@
 //   - 새 방은 「만들어라(요청 번호 · 설정) → 결과」 두 걸음(5-4). 결과가 오면 그 방의 ROOM 다음 CREATED(같은 객체가 차례대로 낸다)
 //   - 방 사실은 「지난번 모은 것과 다른 것만」(`CRoomFactDiff` — 게임 스레드가 자기 방만 견준다 5-6). 이 객체는 합친 사본을 쥐고
 //     등록 때 사본 전부 · 등록 뒤엔 바뀐 것만 보낸다(옛 꼴의 「지난번 보낸 것 `_sent`」 자리)
+// ★ 11-17 C-3d-3 — 계정 명령(CLIENT_GONE · KICK) · 점수 알림도 「명령 → 결과」(`TakeCommandResults` — 셈 · 기록 줄은 결과가 올 때).
+//   큐 판(조정 스레드 ↔ 게임 스레드)은 `LobbyRoomsQueue.h`
 #pragma once
 
 #include <cstdint>
@@ -64,6 +66,19 @@ struct LobbyCreateResult {
     int roomId = -1;
 };
 
+// ★ 11-17 C-3d-3 — 계정 명령 · 점수 알림의 결과(`ILobbyRooms::TakeCommandResults`). 새 방처럼 「명령 → 결과」 두 걸음이다 —
+//   게임 스레드가 여럿이면 방이 다른 스레드에 있어 결과가 늦게 오고, 모든 게임 스레드에 뿌린 명령은 모두 답한 뒤 합으로 한 번 온다(구체화 C-④)
+struct LobbyCommandResult {
+    enum class Kind : uint8_t { ClientGone, Kick, NoticeRatings };
+    Kind kind = Kind::ClientGone;
+    std::string account;      // ClientGone · Kick — 받은 이름
+    size_t sessions = 0;      // ClientGone · Kick — 처리한 세션 수(한도 줄임 · 내보냄 — 모든 게임 스레드 합)
+    int roomId = -1;          // NoticeRatings — 판의 방
+    bool roomFound = false;   // NoticeRatings — 그 방이 있었나(없으면 알림 없음)
+    std::vector<std::pair<std::string, std::string>> notes;   // NoticeRatings — (이름 · 글)
+    std::vector<size_t> sent;                                 // NoticeRatings — 이름마다 보낸 사람 수(`notes` 와 같은 차례)
+};
+
 // ★ 11-17 C-3c — 로비 연결이 방에 닿는 틀(계획 5-5 표의 여섯 자리 + 설정 읽기 `RankOneMap`). 한 스레드 판 = `CDirectLobbyRooms`
 class ILobbyRooms {
 public:
@@ -76,11 +91,17 @@ public:
     virtual void CollectChanges(LobbyFactChanges& out) = 0;
     virtual void TakeRankNoShows(std::vector<CRoomManager::RankNoShow>& out) = 0;
     // 계정 하나에 대한 명령 — 처리한 세션 수(그 이름이 어느 방인지 모르니 모든 방에)
-    virtual size_t ClientLobbyGone(const std::string& account) = 0;
-    virtual size_t KickAccount(const std::string& account) = 0;
-    // 점수 알림 — (이름 · 글)마다 그 방의 그 이름 사람에게 · `sent` 에 사람 수(같은 차례). 방이 없으면 false
-    virtual bool NoticeRatings(int roomId, const std::vector<std::pair<std::string, std::string>>& notes, std::vector<size_t>& sent) = 0;
+    //   ★ 11-17 C-3d-3 — 수는 결과로(`TakeCommandResults` — 한 스레드 판은 부른 자리에서 곧바로 있다)
+    virtual void ClientLobbyGone(const std::string& account) = 0;
+    virtual void KickAccount(const std::string& account) = 0;
+    // 점수 알림 — (이름 · 글)마다 그 방의 그 이름 사람에게. 결과 = 사람 수(같은 차례) · 방이 없으면 `roomFound` false
+    virtual void NoticeRatings(int roomId, std::vector<std::pair<std::string, std::string>> notes) = 0;
+    virtual void TakeCommandResults(std::vector<LobbyCommandResult>& out) = 0;   // `out` 뒤에 붙인다(끝난 차례)
 };
+
+// ★ 11-17 C-3d-3 — 점수 알림 몸통(옛 `CDirectLobbyRooms::NoticeRatings`) — 한 스레드 판과 게임 스레드 몫(`CLobbyRoomsAgent`)이 같이 쓴다.
+//   (이름 · 글)마다 그 방의 그 이름 사람에게 정품 알림창 · `sent` 뒤에 사람 수. 방이 없으면 false(`sent` 그대로)
+bool NoticeRatingsInRoom(CRoomManager& rooms, int roomId, const std::vector<std::pair<std::string, std::string>>& notes, std::vector<size_t>& sent);
 
 // 연결의 셈 — 갈래마다
 struct CLobbyClientStats {
@@ -189,6 +210,8 @@ private:
                          const std::vector<int32_t>& ratings = {});   // ★ 매칭 손보기 5 — 명단 점수(같은 수일 때만)
     // ★ 11-17 C-3c — 온 새 방 결과마다 — 성공이면 그 방의 ROOM(바뀐 사실 보내기) 다음 CREATED · 실패면 CREATE_FAILED
     void FinishCreates(std::vector<NetworkRequest>& out);
+    // ★ 11-17 C-3d-3 — 온 계정 명령 · 점수 알림 결과마다 셈 · 기록 줄(옛 꼴은 부른 자리에서 찍었다 — 한 스레드 판은 곧바로 불러 줄 · 차례가 같다)
+    void FinishCommands();
     void CreateFailed(uint32_t req, const std::string& creator, const std::string& why, std::vector<NetworkRequest>& out);
     // ★ 11-17 C-3c — 틀에서 바뀐 사실을 모아 사본(`_roomLines` · `_uiLines`)에 얹는다
     void AbsorbChanges(LobbyFactChanges& ch);
@@ -265,14 +288,16 @@ public:
     void TakeCreateResults(std::vector<LobbyCreateResult>& out) override;
     void CollectChanges(LobbyFactChanges& out) override { _diff.Diff(_rooms.ListRooms(), _rooms.ListMemberUi(), out); }
     void TakeRankNoShows(std::vector<CRoomManager::RankNoShow>& out) override { _rooms.TakeRankNoShows(out); }
-    size_t ClientLobbyGone(const std::string& account) override { return _rooms.OnClientLobbyGone(account); }
-    size_t KickAccount(const std::string& account) override { return _rooms.KickAccount(account); }
-    bool NoticeRatings(int roomId, const std::vector<std::pair<std::string, std::string>>& notes, std::vector<size_t>& sent) override;
+    void ClientLobbyGone(const std::string& account) override;
+    void KickAccount(const std::string& account) override;
+    void NoticeRatings(int roomId, std::vector<std::pair<std::string, std::string>> notes) override;
+    void TakeCommandResults(std::vector<LobbyCommandResult>& out) override;
 
 private:
     CRoomManager& _rooms;
     CRoomFactDiff _diff;
     std::vector<LobbyCreateResult> _done;
+    std::vector<LobbyCommandResult> _cmdDone;   // ★ 11-17 C-3d-3
 };
 
 }  // namespace nox
