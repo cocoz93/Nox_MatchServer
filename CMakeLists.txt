@@ -73,6 +73,21 @@ add_subdirectory(third_party/ServerCore EXCLUDE_FROM_ALL)
 target_include_directories(nox_proto PUBLIC third_party/ServerCore/Network)
 target_link_libraries(nox_proto INTERFACE $<LINK_ONLY:ServerNetworkLib>)   # INTERFACE — 정적 라이브러리라 스스로 링크하지 않고 쓰는 실행 파일이 링크한다(PUBLIC 이면 11-17 첫 빌드처럼 nox_proto 자신에게 UNICODE · /sdl 이 걸려 C4996 오류)
 
+# ★ 11-17 D-1 — TCP 줄 서버 부품의 ServerCore 판(`TcpLinesCore.h` · `Docs/SERVERCORE_LOBBY_MOVE_PLAN_1116.md` 4절).
+#   nox_common 에 안 넣고 따로 둔 까닭 — 이 판은 ServerCore 머리(`IOCPServer.h` 등)를 열어 ServerCore 의 컴파일 설정으로 컴파일해야 한다
+#   (매크로가 갈리면 구조체 모양이 갈린다 — ServerCore `CMakeLists.txt` 의 경고). 그래서 ServerNetworkLib 을 PRIVATE 로 링크해 설정을
+#   이 라이브러리 하나에만 받는다 — 정적 라이브러리라 쓰는 실행 파일에는 링크만 넘어가고(`LINK_ONLY`) 설정은 안 넘어간다.
+#   nox_common 에 넣으면 그 설정이 nox_common 전체(로비 · 게임 서버 · 시험 전부)에 걸린다
+add_library(nox_tcp_core STATIC server/src/common/TcpLinesCore.cpp)
+target_link_libraries(nox_tcp_core PUBLIC nox_common PRIVATE ServerNetworkLib)
+if (MSVC)
+  # C4324 「맞춤 지정자 때문에 채워짐」 — ServerCore 머리가 캐시 줄 맞춤(alignas)으로 일부러 채운 자리를 녹스 /W4 가 알린다(ServerNetworkLib 도 같은 경고).
+  #   이 라이브러리 한 파일만 그 머리를 연다
+  target_compile_options(nox_tcp_core PRIVATE /wd4324)
+endif()
+add_executable(tcp_lines_core_test server/tests/tcp_lines_core_test.cpp)   # 두 판 같은 시험(판마다 프로세스 따로 — ServerCore 판은 프로세스에 하나)
+target_link_libraries(tcp_lines_core_test PRIVATE nox_tcp_core)
+
 add_executable(nox_server server/src/main.cpp)
 target_link_libraries(nox_server PRIVATE nox_proto)
 
@@ -188,6 +203,7 @@ add_test(NAME proto_test COMMAND proto_test)
 add_test(NAME server_selftest COMMAND nox_server --selftest)
 add_test(NAME lobby_unit COMMAND lobby_test)
 add_test(NAME common_unit COMMAND common_test)
+add_test(NAME tcp_lines_core COMMAND tcp_lines_core_test)   # ★ 11-17 D-1 — 줄 부품 두 판(옛 · ServerCore) 같은 시험
 add_test(NAME auth_unit COMMAND auth_test)   # ★ 로그인 암호 조각 2
 add_test(NAME chat_unit COMMAND chat_test)   # ★ 11-06 귓속말 조각 1
 add_test(NAME rankmatch_unit COMMAND rankmatch_test)   # ★ 11-07 점수 묶기 조각 1

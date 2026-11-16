@@ -63,6 +63,12 @@ public:
     //   실패하면 false · `err` 에 까닭
     bool Listen(uint32_t bindIp, uint16_t port, std::string& err);
     uint16_t ListenPort(size_t i) const { return i < _listeners.size() ? _listeners[i].port : 0; }
+    // ★ 11-17 D-1 — ServerCore 판(`CTcpLinesCore`)과 겉을 맞추는 자리. 그 판은 `Listen` 을 다 부른 뒤 `Start` 로 연다 —
+    //   이 판은 `Listen` 이 바로 열어 할 일이 없어 늘 true. 두 판이 같은 시험 본문(`tests/tcp_lines_cases.h`)을 돈다
+    bool Start(std::string& err) {
+        (void)err;
+        return true;
+    }
     // ★ 10-20 v2 작업 2 — 바깥으로 붙기를 시작한다(막지 않음). 접속 번호를 돌려준다 — 결과는 뒤의 `Poll` 이 `OPENED` · `CLOSED` 로.
     //   소켓을 못 만들거나 곧바로 틀린 주소면 0 · `err` 에 까닭(사건 없음). 접속 수 한도도 0
     int Connect(uint32_t ip, uint16_t port, std::string& err);

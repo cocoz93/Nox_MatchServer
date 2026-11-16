@@ -263,7 +263,8 @@ void TestTcpLines() {
     std::printf("⑦ TCP 줄 부품\n");
     const auto r = RunTcpLinesChecks();
     for (const auto& c : r) Check(c.first, c.second.c_str());
-    Check(r.size() == 28, "TCP 줄 부품 확인 수 28(본체가 끝까지 돌았나 — 듣기 15(★ 11-03 살아 있음 확인 하나) + ★ 10-20 줄 한도 경계 2 · 바깥으로 붙기 11)");
+    Check(r.size() == 31, "TCP 줄 부품 확인 수 31(본체가 끝까지 돌았나 — 듣기 15(★ 11-03 살아 있음 확인 하나) + ★ 10-20 줄 한도 경계 2 · 바깥으로 붙기 11 · "
+                          "★ 11-17 D-1 4-4 셋 — 보낸 뒤 끊기 FIN · 4096 + CR LF 한 번에 · 닫은 번호 다시 안 나옴)");
 }
 
 void TestLobbyLink() {
