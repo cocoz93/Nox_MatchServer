@@ -32,12 +32,14 @@ struct TcpLinesCoreOptions {
     size_t recvRingBytes = 8192;  // 세션 받기 링 — 한 줄 최대(4,096)보다 커야 한다(작으면 `Start` 가 false)
     size_t sendRingBytes = 65535; // 세션 보내기 링 — 한 접속에 `Flush` 한 번에 내는 최대보다 커야 한다(넘치면 그 접속을 끊는다 —
                                   //   까닭 「보내기 오류」). 값은 구체화 D-① 전까지 ServerCore 기본
+    size_t maxConns = CTcpLines::kMaxConns;   // ★ 11-17 D-2 — 세션 표 크기 · 붙는 중인 접속도 센다. 기본 = `CTcpLines` 한도 1,024(원칙 3 — 서버는 그대로).
+                                  //   로비 부하 도구(`src/lobby_load.cpp`)의 더미 쪽만 올린다(한 사람이 로비 · 채팅 둘을 쥔다). 표 크기만큼 링을 미리 잡는다(⑦)
 };
 
 class CTcpLinesCore {
 public:
     static constexpr size_t kMaxLine = CTcpLines::kMaxLine;
-    static constexpr size_t kMaxConns = CTcpLines::kMaxConns;   // ServerCore 세션 표 크기 · 붙는 중인 접속도 센다(`CTcpLines` 와 같다)
+    static constexpr size_t kMaxConns = CTcpLines::kMaxConns;   // 기본 한도(`TcpLinesCoreOptions::maxConns` 의 기본값 · `CTcpLines` 와 같다)
 
     static constexpr const char* kWhyPeerClosed = CTcpLines::kWhyPeerClosed;
     static constexpr const char* kWhyRecvError = CTcpLines::kWhyRecvError;

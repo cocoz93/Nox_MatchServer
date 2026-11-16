@@ -153,7 +153,7 @@ struct CTcpLinesCore::Impl {
 
     explicit Impl(const TcpLinesCoreOptions& o)
         : options(o),
-          server(std::make_unique<CIOCPServer>(0, static_cast<int>(kMaxConns), "nox-tcp-lines", monitor, o.workers, 1, 0, 0, 1)) {}
+          server(std::make_unique<CIOCPServer>(0, static_cast<int>(o.maxConns), "nox-tcp-lines", monitor, o.workers, 1, 0, 0, 1)) {}
 
     TcpLinesCoreOptions options;
     CMonitorManager monitor;   // ServerCore 셈 모음(스레드 없음) — 이 부품이 하나 쥔다(계획 4-3)
@@ -246,7 +246,7 @@ struct CTcpLinesCore::Impl {
             if (!c.out.empty() || c.closeAfter) MarkDirty(id, c);   // 붙는 동안 쌓인 줄 — 다음 `Flush` 에(`CTcpLines` 와 같다)
             return;
         }
-        if (conns.size() >= kMaxConns) {   // 붙는 중인 접속이 자리를 쥐고 있다(ServerCore 표는 세션만 센다) — `CTcpLines` 처럼 받자마자 끊음
+        if (conns.size() >= options.maxConns) {   // 붙는 중인 접속이 자리를 쥐고 있다(ServerCore 표는 세션만 센다) — `CTcpLines` 처럼 받자마자 끊음
             server->RequestDisconnectSession(n.session);
             TcpLineEvent e;
             e.type = TcpLineEvent::Type::REFUSED;
@@ -350,7 +350,7 @@ int CTcpLinesCore::Connect(uint32_t ip, uint16_t port, std::string& err) {
         err = "Start 전";
         return 0;
     }
-    if (m.conns.size() >= kMaxConns) {
+    if (m.conns.size() >= m.options.maxConns) {
         err = "접속 수 한도";
         return 0;
     }

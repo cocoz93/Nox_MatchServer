@@ -11,6 +11,8 @@
 //   채널이 둘 이상일 때 고르는 법은 아직 안 정했다(`ROOMS_DESIGN.md` 「안 정한 것」) — 지금은 하나
 //
 // 소켓만 맡는다 — 받은 줄은 `nox::wol::Router` 에 넘기고 돌려받은 줄을 보낸다. 소켓은 TCP 줄 부품(`nox::CTcpLines` — 작업 8a)
+// ★ 11-17 D-2 — 닫기 신호 = 이름 있는 이벤트 `nox_router_stop_<pid>`(로비 `nox_lobby_stop_<pid>` 와 같은 꼴). 창 없이 띄운 도구
+//   (`tools/lobby_load.ps1`)가 켜면 끝 줄을 찍고 나간다 — 전엔 `--seconds` 뿐이라 도구가 끝 시각을 미리 맞히거나 강제 종료해야 했다
 //
 // ⚠ --bind 를 0.0.0.0 으로 두면 처음 실행할 때 Windows 방화벽 허용 창이 뜰 수 있다. 같은 PC 시험은 --bind 127.0.0.1
 #include <winsock2.h>
@@ -144,8 +146,12 @@ int main(int argc, char** argv) {
             break;
         }
     };
+    wchar_t stopName[64];
+    swprintf(stopName, 64, L"nox_router_stop_%lu", GetCurrentProcessId());
+    HANDLE stopEvent = CreateEventW(nullptr, TRUE, FALSE, stopName);   // ★ 11-17 D-2
     for (;;) {
         if (seconds > 0 && std::chrono::steady_clock::now() - start >= std::chrono::seconds(seconds)) break;
+        if (stopEvent && WaitForSingleObject(stopEvent, 0) == WAIT_OBJECT_0) break;
         WaitForSingleObject(static_cast<HANDLE>(tcp.WaitHandle()), 100);   // 100ms — --seconds 확인용으로만 깨어난다
         evs.clear();
         tcp.Poll(evs);
@@ -156,6 +162,7 @@ int main(int argc, char** argv) {
         std::fflush(stdout);
     }
     tcp.CloseAll();
+    if (stopEvent) CloseHandle(stopEvent);
     Log("[라우터] 끝 — 접속 %llu · 받은 줄 %llu · 보낸 줄 %llu\n", nConn, nIn, nOut);
     return 0;
 }

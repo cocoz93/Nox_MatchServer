@@ -2,7 +2,7 @@
 //
 //   nox_lobby.exe --config <설정 파일> [--bind 0.0.0.0] [--lobby-port 4000]
 //                 [--link-bind 127.0.0.1] [--link-port 4010] [--seconds N] [--quiet] [--no-db] [--test-db] [--no-auth]
-//                 [--rank-min N] [--rank-max N] [--rank-gather-sec N] [--rank-penalty-sec N]
+//                 [--rank-min N] [--rank-max N] [--rank-gather-sec N] [--rank-penalty-sec N] [--sections]
 //
 // 왜 다시 따로 된 프로세스인가 — 목표 구조 v2(10-20 결정): 로비 하나가 전체 상태(로그인 · 채팅 채널 · 게임 목록 ·
 //   나중 계정 · 친구 · 매칭)를 쥐고, 게임 서버(`nox_server`)는 판만 돌려 늘리고 줄인다. 10-14 작업 8d 가 이 실행 파일을 없애고
@@ -28,10 +28,17 @@
 //   ★ 랭크 매칭 조각 4 — `[rank] min · max · gather_sec`(랭크 줄 — 기본 2 · 12 · 30 · `Docs/RANK_MATCH_PLAN.md`). 같은 이름의 실행 인자가 설정보다 앞선다.
 //     2 ≤ 최소 ≤ 최대 ≤ 31 · 모으기 0~3600초가 아니면 뜨지 않는다(조용히 기본값으로 떨어지지 않게). 부하 실험은 최소 = 최대 = 12
 //   ★ 11-06 귓속말 조각 2 — `[chat] host · port`(채팅 서버 nox_chat 주소 — 로그인 성공 때 DLL 판 7 이상에 `NOXCHAT`). 기본 = 로비 주소 · 4020 · port 0 = 안 알림
+// ★ 11-17 D-2(`Docs/SERVERCORE_LOBBY_MOVE_PLAN_1116.md` 6-2) — `--sections` 면 초마다 `[로비 구간]` 줄(게임 서버 `[구간]` 과 같은 「이름 · 칸 값」 꼴).
+//   바쁨 = 고리 스레드가 기다림(`WaitForMultipleObjects`) 밖에 있던 시간 ÷ 지난 시간 · 깬 수 = 고리 바퀴 수 · 접속 = 지금 쥔 접속(클라 + 게임 서버 연결) ·
+//   받은 줄 · 보낸 줄 = 그 동안의 클라 줄(끝 줄과 같은 셈 — 줄마다 더하면 끝 줄 값) · 연결 = 게임 서버 연결 줄 ·
+//   CPU = 그 동안 쓴 ms — 고리 스레드 · 프로세스 전체(모든 스레드). 둘을 같이 찍는 까닭 — 옮긴 뒤엔 받기 일이 ServerCore 워커로 가서
+//   고리 바쁨만 보면 일이 사라진 것처럼 보인다(반대 방향을 재는 대조군). 메모리 = 개인 · 작업 집합(옮긴 뒤 링을 미리 잡는 몫이 보인다).
+//   마지막 줄은 고리를 나온 뒤 한 번(1초가 안 된 몫) — 줄을 다 더하면 끝 줄 「받은 줄 · 보낸 줄」과 같다
 // ⚠ --bind 0.0.0.0 은 처음 실행할 때 Windows 방화벽 허용 창이 뜰 수 있다. 같은 PC 시험은 --bind 127.0.0.1 로 충분하다.
 //   연결 포트는 기본 127.0.0.1 — 게임 서버가 다른 PC 면 --link-bind 로 내부 주소를 준다(바깥 주소에 열지 말 것)
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <psapi.h>   // ★ 11-17 D-2 — `[로비 구간]` 메모리(`GetProcessMemoryInfo` · 게임 서버 `TickSections.cpp` 와 같은 길)
 
 #include <atomic>
 #include <chrono>
@@ -59,6 +66,7 @@
 namespace {
 
 bool g_quiet = false;
+bool g_sections = false;   // ★ 11-17 D-2 — `--sections`
 std::atomic<bool> g_stop{false};
 
 HANDLE g_shutdownDone = nullptr;
@@ -107,6 +115,31 @@ std::string PrintableLog(const std::string& s) {
     return r;
 }
 
+// ★ 11-17 D-2 — `[로비 구간]` 의 CPU · 메모리. 게임 서버 `TickSections.cpp` 의 `ThreadCpuMs` · `ProcessMemoryMb` 와 같은 읽기(그쪽은 게임 서버 라이브러리라 로비가 안 끌어온다).
+//   FILETIME 은 100ns 단위 · 못 읽으면 0
+double FileTimeMs(const FILETIME& kernel, const FILETIME& user) {
+    const auto ticks = [](const FILETIME& f) { return (static_cast<uint64_t>(f.dwHighDateTime) << 32) | f.dwLowDateTime; };
+    return static_cast<double>(ticks(kernel) + ticks(user)) / 10000.0;
+}
+double LoopThreadCpuMs() {
+    FILETIME created, exited, kernel, user;
+    return GetThreadTimes(GetCurrentThread(), &created, &exited, &kernel, &user) ? FileTimeMs(kernel, user) : 0.0;
+}
+double ProcessCpuMs() {
+    FILETIME created, exited, kernel, user;
+    return GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user) ? FileTimeMs(kernel, user) : 0.0;
+}
+void ProcessMemoryMb(double& privateMb, double& workingMb) {
+    PROCESS_MEMORY_COUNTERS_EX pmc{};
+    pmc.cb = sizeof(pmc);
+    if (!GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc), sizeof(pmc))) {
+        privateMb = workingMb = 0.0;
+        return;
+    }
+    privateMb = static_cast<double>(pmc.PrivateUsage) / (1024.0 * 1024.0);
+    workingMb = static_cast<double>(pmc.WorkingSetSize) / (1024.0 * 1024.0);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -134,6 +167,7 @@ int main(int argc, char** argv) {
         const std::string a = argv[i];
         const bool hasNext = i + 1 < argc;
         if (a == "--quiet") g_quiet = true;
+        else if (a == "--sections") g_sections = true;   // ★ 11-17 D-2
         else if (a == "--bind" && hasNext) {
             if (!ParseIp(argv[++i], bindIp)) { Log("[실패] --bind 주소: %s\n", argv[i]); return 2; }
         } else if (a == "--lobby-port" && hasNext) lobbyPort = static_cast<uint16_t>(std::atoi(argv[++i]));
@@ -367,11 +401,39 @@ int main(int argc, char** argv) {
 
     // ★ 11-05 — 깨어난 까닭은 안 가린다. 바퀴마다 답 · 소켓을 다 보므로 둘이 같이 켜져 앞쪽만 돌아와도 답을 놓치지 않는다(뒤쪽이 켜진 채 남아 한 바퀴 더 돌 뿐)
     const HANDLE waitFor[] = {static_cast<HANDLE>(tcp.WaitHandle()), storeWake};
+    // ★ 11-17 D-2 — `[로비 구간]`(머리 주석). 셈은 `--sections` 일 때만 · 칸 차례는 계획 6-2 의 「바쁨 · 접속 · 받은 줄 · 보낸 줄 · 깬 수」 뒤에 덧붙임
+    using SectClock = std::chrono::steady_clock;
+    SectClock::time_point sectAt = SectClock::now();
+    double sectWaitMs = 0.0, sectLoopCpu = LoopThreadCpuMs(), sectProcCpu = ProcessCpuMs();
+    unsigned long long sectWakes = 0, sectIn = 0, sectOut = 0, sectLinkIn = 0, sectLinkOut = 0;
+    if (g_sections) Log("[로비] 구간 켬 — 초마다 [로비 구간] 줄\n");
+    auto printSection = [&](SectClock::time_point now) {
+        const double elapsedMs = std::chrono::duration<double, std::milli>(now - sectAt).count();
+        const double busyMs = elapsedMs > sectWaitMs ? elapsedMs - sectWaitMs : 0.0;
+        const double loopCpu = LoopThreadCpuMs(), procCpu = ProcessCpuMs();
+        double privateMb = 0.0, workingMb = 0.0;
+        ProcessMemoryMb(privateMb, workingMb);
+        Log("[로비 구간] 초 %lld · 바쁨 %.1f%% · 접속 %zu · 받은 줄 %llu · 보낸 줄 %llu · 깬 수 %llu · 지난 %.1f · 기다림 %.1f"
+            " · 연결 받음 %llu 보냄 %llu · CPU 고리 %.0f 프로세스 %.0f · 메모리 개인 %.1fMB 작업 %.1fMB\n",
+            static_cast<long long>(std::chrono::duration_cast<std::chrono::seconds>(now - start).count()),
+            elapsedMs > 0.0 ? 100.0 * busyMs / elapsedMs : 0.0, tcp.ConnCount(), nIn - sectIn, nOut - sectOut, sectWakes, elapsedMs,
+            sectWaitMs, linkIn - sectLinkIn, linkOut - sectLinkOut, loopCpu - sectLoopCpu, procCpu - sectProcCpu, privateMb, workingMb);
+        sectAt = now;
+        sectWaitMs = 0.0;
+        sectWakes = 0;
+        sectIn = nIn; sectOut = nOut; sectLinkIn = linkIn; sectLinkOut = linkOut;
+        sectLoopCpu = loopCpu; sectProcCpu = procCpu;
+    };
     while (!g_stop) {
         if (seconds > 0 && std::chrono::steady_clock::now() - start >= std::chrono::seconds(seconds)) break;
         if (stopEvent && WaitForSingleObject(stopEvent, 0) == WAIT_OBJECT_0) break;
         // 100ms — 미룬 새 방 답의 시간 초과(`Tick`) · --seconds · 닫기 신호를 보려고 깨어난다
+        const SectClock::time_point waitAt = g_sections ? SectClock::now() : SectClock::time_point();
         WaitForMultipleObjects(2, waitFor, FALSE, 100);
+        if (g_sections) {   // ★ 11-17 D-2 — 기다린 시간 · 바퀴 수
+            sectWaitMs += std::chrono::duration<double, std::milli>(SectClock::now() - waitAt).count();
+            ++sectWakes;
+        }
         // ★ 7단계 조각 5 — 저장소 답을 바퀴 맨 앞에서(지난 바퀴 요청의 답 — 메모리 가짜도 「다음 바퀴에 답」이 된다 · 정할 것 b)
         answers.clear();
         store.TakeAnswers(answers);
@@ -395,8 +457,13 @@ int main(int argc, char** argv) {
         evs.clear();
         tcp.Flush(evs);   // 보내기 오류 · QUIT 답 · BYE 뒤 끊기가 여기서 나온다
         for (const auto& e : evs) onEvent(e);
+        if (g_sections) {
+            const SectClock::time_point now = SectClock::now();
+            if (now - sectAt >= std::chrono::seconds(1)) printSection(now);
+        }
         std::fflush(stdout);
     }
+    if (g_sections) printSection(SectClock::now());   // ★ 11-17 D-2 — 1초가 안 된 마지막 몫(줄을 다 더하면 끝 줄 값)
 
     tcp.CloseAll();
     if (stopEvent) CloseHandle(stopEvent);
