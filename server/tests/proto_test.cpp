@@ -25327,11 +25327,15 @@ void TestUdpStats() {
 
 // ── 10-09 플랜 A 조각 5d-2b — 네트워크 스레드(`CNetworkThread`) — 로컬 UDP 로 실제로 주고받는다 ─────────
 //   몸통은 `net_thread_test.cpp`(winsock 의 min/max 매크로를 이 파일과 떼려고). 깨어나는 때 셋(소켓 · 요청 · 타이머)과 멈춤.
-std::vector<std::pair<bool, std::string>> RunNetworkThreadChecks();
+std::vector<std::pair<bool, std::string>> RunNetworkThreadChecks(bool rio);
 void TestNetworkThread() {
-    const auto checks = RunNetworkThreadChecks();
+    // ★ 11-17 C-2 — UDP 부품 팔 둘(보통 · RIO)로 같은 시험을 한 번씩 · 확인 수에 ⑨ 몰아 보내기 하나를 더함(13 → 14)
+  for (const bool rio : { false, true }) {
+    const auto checks = RunNetworkThreadChecks(rio);
     for (const auto& kv : checks) Check(kv.first, kv.second.c_str());
-    Check(checks.size() == 13, "네트워크 스레드 확인 수 13(① ~ ⑥ 여섯 + ★ 10-20 ⑧ 로비에 붙기 여섯 + ★ 7단계 ⑧-4b 끊기 요청 · ⑦ 로비 듣기는 4b-2 에서 걷음 — 본체가 끝까지 돌았나)");
+    Check(checks.size() == 14, rio ? "[RIO 팔] 네트워크 스레드 확인 수 14(① ~ ⑥ 여섯 + ⑧ 로비 일곱 + ★ 11-17 ⑨ 몰아 보내기 — 본체가 끝까지 돌았나)"
+                                   : "네트워크 스레드 확인 수 14(① ~ ⑥ 여섯 + ★ 10-20 ⑧ 로비에 붙기 여섯 + ★ 7단계 ⑧-4b 끊기 요청 · ⑦ 로비 듣기는 4b-2 에서 걷음 · ★ 11-17 ⑨ 몰아 보내기 — 본체가 끝까지 돌았나)");
+  }
 
     // ★ 10-14 작업 8c — 로비 TCP 사건(세션 번호 없음)은 방 관리자 · 게임에 와도 자리를 만들지 않는다(나누는 자리가 틀려도 세션 0 이 안 생기게)
     nox::CRoomManager rooms;

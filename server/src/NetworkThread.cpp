@@ -20,27 +20,14 @@ namespace nox {
 
 namespace {
 // ★ 10-09 플랜 A 5d 자가검증 ② — 시계는 게임 루프와 같은 `nox::NowMs`(`Clock.h` — 옛 이 자리 `GetTickCount64` 는 15.6ms 단위)
-
-// ★ 11-17 C-2 — 받은 주소를 숫자로(옛 `KeyOf` 는 데이터그램마다 「ip:port」 글자를 지었다) · 보낼 때는 거꾸로
-UdpAddr AddrOfSock(const sockaddr_in& a) {
-    return UdpAddr{ ntohl(a.sin_addr.s_addr), ntohs(a.sin_port) };
-}
-sockaddr_in SockOf(const UdpAddr& a) {
-    sockaddr_in s = {};
-    s.sin_family = AF_INET;
-    s.sin_addr.s_addr = htonl(a.ip);
-    s.sin_port = htons(a.port);
-    return s;
-}
+// ★ 11-17 C-2 — 주소 바꾸기(`sockaddr_in` ↔ 숫자 주소)는 UDP 부품이 한다(옛 이 자리 `KeyOf` — 데이터그램마다 「ip:port」 글자)
 }  // namespace
 
 CNetworkThread::CNetworkThread() = default;
 
 CNetworkThread::~CNetworkThread() {
     Stop();
-    if (_sock != static_cast<uintptr_t>(INVALID_SOCKET)) closesocket(static_cast<SOCKET>(_sock));
-    if (_sockEvent) WSACloseEvent(static_cast<WSAEVENT>(_sockEvent));
-    if (_wakeEvent) CloseHandle(static_cast<HANDLE>(_wakeEvent));
+    _udp.Close();
     if (_eventsReady) CloseHandle(static_cast<HANDLE>(_eventsReady));
     if (_wsaUp) WSACleanup();
 }
@@ -48,32 +35,30 @@ CNetworkThread::~CNetworkThread() {
 bool CNetworkThread::Open(const std::string& ip, uint16_t port, std::string& err) {
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) { err = "WSAStartup 실패"; return false; }
-    _wsaUp = true;
-    const SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (s == INVALID_SOCKET) { err = "소켓 실패"; return false; }
-    _sock = static_cast<uintptr_t>(s);
-    BOOL yes = TRUE;
-    setsockopt(s, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&yes), sizeof(yes));
-    sockaddr_in addr = {};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    if (ip.empty()) addr.sin_addr.s_addr = INADDR_ANY;
-    else inet_pton(AF_INET, ip.c_str(), &addr.sin_addr);
-    if (bind(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
-        char m[160];
-        std::snprintf(m, sizeof(m), "bind 실패 (%d). 포트 %d 를 이미 누가 쓰고 있는가?", WSAGetLastError(), port);
+    _wsaUp = true;   // 로비 TCP(`CTcpLines`) 몫 — UDP 부품은 따로 올린다
+    // ★ 11-17 C-2 — UDP 소켓 · 받기 이벤트 · 깨움은 부품이 연다(옛 이 자리 `socket` · `bind` · `WSAEventSelect` · 깨움 이벤트).
+    //   옛 `SO_BROADCAST` 는 안 건다 — 서버는 받은 상대에게만 답하고 브로드캐스트 주소로 보내는 곳이 없다(받기엔 필요 없는 설정)
+    CUdpEndpoint::Config c;
+    c.port = port;
+    c.bindIp = 0;   // 빈 글자 · 못 읽는 글자 = 모든 주소(옛 꼴도 `inet_pton` 실패면 0 이 남아 모든 주소)
+    if (!ip.empty()) {
+        in_addr a = {};
+        if (inet_pton(AF_INET, ip.c_str(), &a) == 1) c.bindIp = ntohl(a.s_addr);
+    }
+    c.maxDatagram = kUdpMaxDatagram;
+    c.recvSlots = _udpRecvSlots != 0 ? _udpRecvSlots : (_udpRio ? kUdpRecvSlotsRio : kUdpRecvSlotsWinsock);
+    c.sendSlots = _udpSendSlots != 0 ? _udpSendSlots : (_udpRio ? kUdpSendSlotsRio : kUdpSendSlotsWinsock);
+    c.rio = _udpRio;
+    if (!_udp.Open(c)) {
+        // 부품이 까닭을 로그로 찍는다(`[UDP] bind port … failed — WSAError: …`) · 옛 문구는 bind 실패 하나라 그 뜻을 남긴다
+        char m[200];
+        std::snprintf(m, sizeof(m), "UDP 열기 실패 (팔 %s · 포트 %d). 포트를 이미 누가 쓰고 있는가? — 까닭은 위 [UDP] 줄",
+                      _udpRio ? "RIO" : "보통", port);
         err = m;
         return false;
     }
-    sockaddr_in got = {};
-    int gl = sizeof(got);
-    getsockname(s, reinterpret_cast<sockaddr*>(&got), &gl);
-    _port = ntohs(got.sin_port);
-    // 소켓 읽기 이벤트 — `WSAEventSelect` 가 소켓을 막지 않는 모드로 바꾼다(받을 것을 `WSAEWOULDBLOCK` 까지 비운다)
-    _sockEvent = WSACreateEvent();
-    if (WSAEventSelect(s, static_cast<WSAEVENT>(_sockEvent), FD_READ) == SOCKET_ERROR) { err = "WSAEventSelect 실패"; return false; }
-    _wakeEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);   // 자동으로 되돌아가는 이벤트
-    _eventsReady = CreateEventW(nullptr, FALSE, FALSE, nullptr);  // 같은 꼴 — 게임 루프가 기다린다
+    _udpConfig = c;
+    _eventsReady = CreateEventW(nullptr, FALSE, FALSE, nullptr);  // 자동으로 되돌아가는 이벤트 — 게임 루프가 기다린다
     return true;
 }
 
@@ -159,7 +144,7 @@ void CNetworkThread::Stop(bool closeSessions) {
     if (!_thread.joinable()) return;
     _closeOnStop.store(closeSessions);
     _stop.store(true);
-    SetEvent(static_cast<HANDLE>(_wakeEvent));
+    _udp.Wake();
     _thread.join();
 }
 
@@ -177,7 +162,7 @@ void CNetworkThread::PushRequests(std::vector<NetworkRequest>& reqs) {
         }
     }
     reqs.clear();
-    SetEvent(static_cast<HANDLE>(_wakeEvent));
+    _udp.Wake();
 }
 
 void CNetworkThread::SwapOutNetworkEvents(std::vector<NetworkEvent>& into) {
@@ -198,6 +183,13 @@ CNetworkThreadStats CNetworkThread::LatestThreadStats() const {
 
 void CNetworkThread::Publish() {
     CNetworkThreadStats t = _threadStats;
+    // ★ 11-17 C-2 — 부품의 셈(아무 스레드나 읽는 relaxed 값 — 여기선 네트워크 스레드가 읽는다)
+    const CUdpEndpoint::Stats& u = _udp.GetStats();
+    t.udpOversizeDropped = u.oversizeDropped.load(std::memory_order_relaxed);
+    t.udpRecvFail = u.recvFail.load(std::memory_order_relaxed);
+    t.udpSendFail = u.sendFail.load(std::memory_order_relaxed);
+    t.udpFlushes = u.flushes.load(std::memory_order_relaxed);
+    t.recvErrors = t.udpRecvFail + t.udpOversizeDropped;
     {
         std::lock_guard<std::mutex> lk(_queueMu);
         t.requestsDropped = _requestsDropped;
@@ -212,18 +204,18 @@ void CNetworkThread::Publish() {
 }
 
 void CNetworkThread::Run() {
-    const SOCKET s = static_cast<SOCKET>(_sock);
     // ★ 10-14 작업 8c — 로비 TCP 일 이벤트도 같이 기다린다 · ★ 10-20 v2 작업 4a — 로비에 붙을 때(4b-2 부터 이것 하나)
-    WSAEVENT evs[3] = { static_cast<WSAEVENT>(_sockEvent), static_cast<WSAEVENT>(_wakeEvent), static_cast<WSAEVENT>(_lobby.WaitHandle()) };
+    // ★ 11-17 C-2 — UDP 부품 손잡이 하나가 받을 것 · 깨움을 같이 알린다(옛 소켓 이벤트 · 깨움 이벤트 둘)
+    WSAEVENT evs[2] = { static_cast<WSAEVENT>(_udp.WaitHandle()), static_cast<WSAEVENT>(_lobby.WaitHandle()) };
     const bool lobbyTcp = _lobbyPort != 0;
-    const DWORD nEvs = lobbyTcp ? 3 : 2;
+    const DWORD nEvs = lobbyTcp ? 2 : 1;
     std::vector<OutPacket> out;
     std::vector<NetworkEvent> events;
     std::vector<NetworkRequest> reqs;
     std::vector<uint32_t> sendQueuedMs;          // ★ 11-11 M0 조각 4 — 이 깸에 처리한 보내기 요청의 큐에 넣은 시각(`--tick-sections` 일 때만)
     std::vector<TcpLineEvent> tcpEvs;
     std::set<uint8_t> told;                      // `[처음]` — 접속 제어 오프코드(게임 오프코드는 게임 스레드가 찍는다)
-    uint8_t in[2048];
+    UdpDatagram batch[kUdpRecvBatch];            // ★ 11-17 C-2 — 받은 것(부품 칸을 가리킨다 · 다음 `Receive` 까지 유효)
     Publish();
     for (;;) {
         // 기다리는 시간 — 타이머 맨 앞 마감까지(없으면 `_maxWaitMs` — 기본 `kMaxWaitMs`)
@@ -246,8 +238,9 @@ void CNetworkThread::Run() {
         // ★ 10-09 조각 5d-2c — 멈추라면 마지막으로 한 번 — 쌓인 요청을 보내고(닫기면 `SERVER_CLOSE` 까지) 끝낸다. 받기 · 타이머는 안 한다
         const bool stopping = _stop.load();
         ++_threadStats.wakes;
-        WSANETWORKEVENTS ne;
-        WSAEnumNetworkEvents(s, evs[0], &ne);    // 소켓 이벤트를 되돌린다(받을 것은 아래에서 다 비운다)
+        // ★ 11-17 C-2 — 부품의 바깥 기다림 차례 — 손잡이가 깼으면 `Wait(0)` 으로 깨움을 거두고 받을 것은 아래에서 다 비운다
+        //   (옛 `WSAEnumNetworkEvents` 자리 · 깬 까닭이 로비 · 시간 끝이어도 부른다 — 거둘 것이 없으면 그냥 돌아온다)
+        _udp.Wait(0);
         const uint32_t now = NowMs();
         // ★ 11-10 부하 실험 — 구간 시간(더미 플랜 5-1절). 기다림 뒤부터 잰다. 끄면 시계를 안 읽는다
         const bool sections = g_tickSections;
@@ -288,22 +281,17 @@ void CNetworkThread::Run() {
         if (!stopping) LobbyConnectTick(now, events);   // ★ 10-20 v2 작업 4a
         if (sections) AddNetworkSection(g_networkSections.sendNs, secLast);
         // ③ 받을 것 전부(멈출 때는 안 받는다)
+        //   ★ 11-17 C-2 — 부품이 꺼낸 묶음을 차례대로 · 받을 것이 없을 때까지 묶음을 되풀이(옛 `recvfrom` 을 `WSAEWOULDBLOCK` 까지 와 같은 범위).
+        //   받기 오류(닫힌 포트 알림 · 칸보다 큼)는 부품이 세고 다음 것을 계속 받는다 — `recvErrors` 는 그 셈(`Publish`)
         unsigned long long got = 0;
-        while (!stopping) {
-            sockaddr_in from = {};
-            int fromLen = sizeof(from);
-            const int n = recvfrom(s, reinterpret_cast<char*>(in), sizeof(in), 0, reinterpret_cast<sockaddr*>(&from), &fromLen);
-            if (n == SOCKET_ERROR) {
-                const int e = WSAGetLastError();
-                if (e == WSAEWOULDBLOCK) break;
-                ++_threadStats.recvErrors;           // 닫힌 포트 알림(WSAECONNRESET) 등 — 다음 것을 계속 받는다
-                if (e == WSAECONNRESET || e == WSAEMSGSIZE) continue;
-                break;
-            }
+        for (size_t nb = 0; !stopping && (nb = _udp.Receive(batch, kUdpRecvBatch)) != 0;) {
+          for (size_t bi = 0; bi < nb; ++bi) {
+            const uint8_t* in = batch[bi].data;
+            const int n = static_cast<int>(batch[bi].size);
             if (n <= 0) continue;
             ++got;
             ++_threadStats.datagramsIn;
-            const UdpAddr who = AddrOfSock(from);
+            const UdpAddr who = batch[bi].from;
             const size_t evBefore = events.size(), outBefore = out.size();
             const size_t ctl = _network.OnDatagram(who, in, static_cast<size_t>(n), out, events);
             // ★★ **클라가 처음 보낸 오프코드를 그때그때 알린다**(옛 `main` 의 같은 줄 — 접속 제어 쪽. ⚠ `--quiet` 여도 찍는다)
@@ -343,6 +331,7 @@ void CNetworkThread::Run() {
                 }
                 std::fflush(stdout);
             }
+          }
         }
         if (got > _threadStats.maxDatagramsPerWake) _threadStats.maxDatagramsPerWake = got;
         if (sections) {
@@ -376,18 +365,29 @@ void CNetworkThread::Run() {
         if (stopping && _closeOnStop.load()) _network.CloseAll(out);
         // ⑤ 나갈 것 전부(주소를 모르는 상대 — 소켓 없는 봇 — 는 건너뛴다)
         //   ★ 11-17 C-2 — 봇은 ip 0(`AddrText`). 옛 꼴은 이 스레드가 받아 본 주소 지도에 없으면 건너뛰었다 — 지도에 없는 상대는 봇뿐이었다
+        //   부품 `Send` 는 보통 팔에선 바로 `sendto` · RIO 팔에선 쌓는다 → 고리 끝 `Flush` 한 번(보통 팔은 할 일 없음)
+        unsigned long long sentThisWake = 0;
         for (const OutPacket& p : out) {
             if (p.to.ip == 0) continue;
-            const sockaddr_in to = SockOf(p.to);
-            if (sendto(s, reinterpret_cast<const char*>(p.data.data()), static_cast<int>(p.data.size()), 0,
-                       reinterpret_cast<const sockaddr*>(&to), sizeof(to)) == SOCKET_ERROR) {
-                // ★ 11-11 부하 측정 M0 조각 4 — 보내기 실패를 센다(`TickSections.h` `CSendFailTotals` · 옛 꼴은 결과를 안 봤다)
-                AddRelaxed(g_sendFail.count, 1);
-                g_sendFail.lastError.store(WSAGetLastError(), std::memory_order_relaxed);
-            }
+            _udp.Send(p.to, p.data.data(), static_cast<uint32_t>(p.data.size()));
             ++_threadStats.datagramsOut;
+            ++sentThisWake;
+            if (p.data.size() > _threadStats.maxDatagramOutBytes) _threadStats.maxDatagramOutBytes = p.data.size();
         }
+        _udp.Flush();
         out.clear();
+        if (sentThisWake > _threadStats.maxDatagramsOutPerWake) _threadStats.maxDatagramsOutPerWake = sentThisWake;
+        // ★ 11-11 부하 측정 M0 조각 4 — 보내기 실패를 센다(`TickSections.h` `CSendFailTotals` · 옛 꼴은 결과를 안 봤다)
+        //   ★ 11-17 C-2 — 부품 셈에서 늘어난 몫을 옮긴다 — 바로 실패(`Send` 가 false)와 RIO 의 끝난 뒤 알림(`Flush` 가 거둠)을 한 번씩
+        {
+            const CUdpEndpoint::Stats& u = _udp.GetStats();
+            const uint64_t failNow = u.sendFail.load(std::memory_order_relaxed);
+            if (failNow != _udpSendFailSeen) {
+                AddRelaxed(g_sendFail.count, failNow - _udpSendFailSeen);
+                g_sendFail.lastError.store(u.lastSendError.load(std::memory_order_relaxed), std::memory_order_relaxed);
+                _udpSendFailSeen = failNow;
+            }
+        }
         // ★ 11-11 부하 측정 M0 조각 4 — 보내는 쪽 지연(`TickSections.h` `CSendDelayTotals`). 이 깸에 처리한 보내기 요청마다 하나씩
         if (sections && !sendQueuedMs.empty()) {
             const uint32_t sentMs = NowMs();

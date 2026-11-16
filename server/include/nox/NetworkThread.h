@@ -15,6 +15,9 @@
 // ★ 10-20 MO 6단계 v2 작업 4a(`Docs/LOBBY_SPLIT_DESIGN.md`) — 로비가 따로 된 프로세스가 되어 게임 서버가 로비 연결 포트에 **붙는다**(`ConnectLobby`).
 //   같은 사건 · 요청(`LOBBY_*` · `LOBBY_SEND` — 이제 「로비와의 TCP」)을 쓴다. 이 스레드가 붙고, 끊기거나 못 붙으면 몇 초 뒤 다시 붙는다 —
 //   게임 스레드는 붙은 뒤의 사건만 본다(못 붙은 시도는 셈만). 다시 붙으면 게임 스레드가 확인 · 등록 · 방 알림을 처음부터 다시 한다
+// ★ 11-17 C-2 — UDP 소켓은 ServerCore 의 UDP 부품(`CUdpEndpoint`)이 든다(옛 이 스레드의 `socket` · `recvfrom` · `sendto` · 이벤트 둘).
+//   팔(Windows 보통 · RIO)은 `SetUdpOptions` 로 고른다 — 기본 보통(옛 꼴과 같은 커널 호출). 고리 차례는 그대로이고,
+//   보내기 고리 끝에 `Flush` 한 번(RIO 는 그 깸의 보내기를 한 번에 낸다). 부품 손잡이 하나가 받을 것 · 깨움을 같이 알린다
 #pragma once
 
 #include <atomic>
@@ -37,6 +40,14 @@ struct CNetworkThreadStats {
     unsigned long long datagramsOut = 0;          // 보낸 데이터그램
     unsigned long long maxDatagramsPerWake = 0;   // 한 번 깨어 비운 받은 데이터그램 최대
     unsigned long long recvErrors = 0;            // `recvfrom` 오류(비었음 빼고 — 받는 쪽이 닫힌 포트 알림 포함)
+                                                  //   ★ 11-17 C-2 — 부품의 받기 오류 + 칸보다 커서 버림(옛 꼴도 `WSAEMSGSIZE` 를 여기 셌다)
+    // ★ 11-17 C-2 — RIO 칸 수 · 큰 칸 크기의 근거(구체화 C-① · C-②)와 부품 셈
+    unsigned long long maxDatagramsOutPerWake = 0;   // 한 번 깨어 보낸 데이터그램 최대
+    unsigned long long maxDatagramOutBytes = 0;      // 보낸 데이터그램 하나의 최대 바이트
+    unsigned long long udpOversizeDropped = 0;       // 받기 한 칸(`kUdpMaxDatagram`)보다 커서 버림
+    unsigned long long udpRecvFail = 0;              // 받기 오류(닫힌 포트 알림 등)
+    unsigned long long udpSendFail = 0;              // 보내기 실패(바로 · RIO 는 끝난 뒤 알림까지)
+    unsigned long long udpFlushes = 0;               // 쌓인 보내기를 실제로 낸 Flush 수(보통 팔은 0)
     unsigned long long eventsDropped = 0;         // 이벤트 큐 한도를 넘어 버린 수 — 0 이 정상
     unsigned long long requestsDropped = 0;       // 요청 큐 한도를 넘어 버린 수 — 0 이 정상
     size_t eventsQueued = 0;                      // 사본을 뜰 때 큐에 남은 이벤트 수
@@ -69,8 +80,30 @@ public:
     CUdpServer& Network() { return _network; }
 
     // 소켓을 연다. `ip` 가 빈 글자면 모든 주소. `port` 0 이면 OS 가 고른다(시험 — `Port`). 실패하면 false · `err` 에 까닭.
+    //   ★ 11-17 C-2 — 부품을 연다. `Start` 전에 이 스레드(만든 쪽)에서 열고 그 뒤로는 네트워크 스레드만 만진다 —
+    //   스레드를 띄우는 것이 앞뒤를 정해 두 스레드가 부품을 동시에 부르지 않는다(부품의 「주인 스레드 하나」 규칙)
     bool Open(const std::string& ip, uint16_t port, std::string& err);
-    uint16_t Port() const { return _port; }
+    uint16_t Port() const { return _udp.LocalPort(); }
+    // ★ 11-17 C-2 — UDP 부품의 팔 · 칸 수(`Open` 전에). 칸 수 0 = 팔마다 기본(`kUdp*Slots*`)
+    void SetUdpOptions(bool rio, uint32_t recvSlots, uint32_t sendSlots) { _udpRio = rio; _udpRecvSlots = recvSlots; _udpSendSlots = sendSlots; }
+    bool UdpRio() const { return _udpRio; }
+    uint32_t UdpRecvSlots() const { return _udpConfig.recvSlots; }   // `Open` 뒤 — 실제로 쓴 값
+    uint32_t UdpSendSlots() const { return _udpConfig.sendSlots; }
+    // 받기 한 칸 — 옛 받기 버퍼(`uint8_t in[2048]`)와 같다. 넘는 것은 버리고 센다(`udpOversizeDropped`)
+    static constexpr uint32_t kUdpMaxDatagram = 2048;
+    // 한 번 `Receive` 로 꺼내는 수 — 꺼낸 것을 다 처리한 뒤 다음 `Receive`(받을 것이 없을 때까지 되풀이 · 깸당 상한 아님).
+    //   작게 두는 까닭: 꺼낸 조각이 칸마다 따로 있어, 묶음이 크면 처리할 때 닿는 메모리가 넓어진다(64 × 2KB = 128KB · 짐작 — 안 잼)
+    static constexpr uint32_t kUdpRecvBatch = 64;
+    // 보통 팔 칸 수 — 받기는 한 `Receive` 의 상한이라 묶음과 같게 · 보내기는 바로 `sendto` 라 쌓지 않는다(부품이 0 을 받지 않아 묶음 값)
+    static constexpr uint32_t kUdpRecvSlotsWinsock = kUdpRecvBatch;
+    static constexpr uint32_t kUdpSendSlotsWinsock = kUdpRecvBatch;
+    // RIO 팔 받기 칸 — 미리 걸어 둔 칸보다 많이 몰리면 커널이 말없이 버린다(부품 셈에도 안 잡힘 · C-1 시험 ⑩).
+    //   기록에 남은 「한 번에 비운 조각 최대」(옛 보통 꼴 · 깸 안에 더 온 것까지 센 위쪽 값) — 320방 3,300 · 352방 3,642 · 512방 5,116
+    //   (`_out/load_run/` 11-14 · 11-15 · 기록 기준). 가장 큰 값을 넉넉히 넘는 2의 거듭제곱 8,192(칸 2KB → 등록 버퍼 16MB)
+    static constexpr uint32_t kUdpRecvSlotsRio = 8192;
+    // RIO 팔 보내기 칸 — 한 깸의 보내기를 쌓았다가 `Flush` 로 한 번에. 다 차면 부품이 먼저 내보낸다(잃지 않음).
+    //   깸당 보낸 최대(`maxDatagramsOutPerWake`)를 처음 세는 것이라 기록이 없다 — 받기와 같은 차수의 1,024 로 두고 64방 판에서 센다(C-①)
+    static constexpr uint32_t kUdpSendSlotsRio = 1024;
     // ★ 10-20 v2 작업 4a — 로비 연결 포트에 붙는다(시작 전에만 · 안 부르면 UDP 만 · 주소 0 · 포트 0 은 false).
     //   ★ 4b-2 — 옛 로비 듣기(`OpenLobby` — 채널의 4000)는 걷었다
     //   끊기거나 못 붙으면 `kLobbyRetryMs` 뒤 다시 · 붙는 중 `kLobbyConnectTimeoutMs` 를 넘기면 접고 다시
@@ -123,12 +156,15 @@ private:
     uint32_t _lobbyTryAt = 0;
     uint32_t _lobbyConnStartMs = 0;
     uint32_t _lobbyRetryMs = kLobbyRetryMs;
-    uintptr_t _sock = ~static_cast<uintptr_t>(0);   // SOCKET(INVALID_SOCKET) — 머리에서 winsock 을 안 부르려고
-    void* _sockEvent = nullptr;                     // WSAEVENT — 소켓 읽기
-    void* _wakeEvent = nullptr;                     // 요청이 들어옴 · 멈춤
+    // ★ 11-17 C-2 — UDP 부품(옛 `_sock` · `_sockEvent` · `_wakeEvent` 자리). 깨움(요청이 들어옴 · 멈춤)은 `Wake`
+    CUdpEndpoint _udp;
+    CUdpEndpoint::Config _udpConfig;                // `Open` 이 채운 값(지표 · 줄 찍기용)
+    bool _udpRio = false;
+    uint32_t _udpRecvSlots = 0;                     // 0 = 팔마다 기본
+    uint32_t _udpSendSlots = 0;
+    uint64_t _udpSendFailSeen = 0;                  // 부품 보내기 실패 셈 중 `g_sendFail` 에 옮긴 몫
     void* _eventsReady = nullptr;                   // 이벤트를 큐에 넣음 — 게임 루프가 기다린다
-    uint16_t _port = 0;
-    bool _wsaUp = false;
+    bool _wsaUp = false;                            // 로비 TCP(`CTcpLines`) 몫 — 부품은 따로 올리고 내린다
     bool _verbose = false;
     uint32_t _maxWaitMs = kMaxWaitMs;
     size_t _queueMax = kQueueMax;

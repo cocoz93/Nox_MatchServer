@@ -44,10 +44,13 @@ bool IsAccept(const std::vector<uint8_t>& d) {   // 접속 수락 — 머리 2 +
 // ③ 확인이 없으면 접속 수락을 보낸 지 2초에 다시 받는다 — 타이머 마감에 깨어난다(깨지 않으면 5초)
 // ④ `Stop` — 스레드가 끝나고 두 번 불러도 된다
 // ⑤ 닫기 — 넣자마자 멈춘 요청도 나가고 `SERVER_CLOSE` 가 간다 ⑥ 큐 한도 — 넘친 요청·이벤트는 버리고 센다
-std::vector<std::pair<bool, std::string>> RunNetworkThreadChecks() {
+// ★ 11-17 C-2 — `rio` = UDP 부품의 RIO 팔(거짓이면 보통 팔). 같은 시험을 팔마다 한 번씩(`proto_test` `TestNetworkThread`) ·
+//   ⑨ 몰아 보내기 · 칸보다 큰 조각(두 팔 다 — 받기 고리가 받을 것을 끝까지 비우나 · 부품 셈이 `recvErrors` 로 오나 · 팔이 실제로 바뀌었나)
+std::vector<std::pair<bool, std::string>> RunNetworkThreadChecks(bool rio) {
     std::vector<std::pair<bool, std::string>> r;
     char m[240];
     nox::CNetworkThread net;
+    net.SetUdpOptions(rio, 0, 0);
     net.Network().SetXorKey(0);
     net.SetMaxWaitMs(5000);
     std::string err;
@@ -112,6 +115,7 @@ std::vector<std::pair<bool, std::string>> RunNetworkThreadChecks() {
     // ⑤ ★ 10-09 조각 5d-2c — 닫기 — 요청을 넣자마자 `Stop(알림)` 해도 그 요청이 나가고, 그 뒤 `SERVER_CLOSE`(0x0b) 가 간다
     {
         nox::CNetworkThread n2;
+        n2.SetUdpOptions(rio, 0, 0);
         n2.Network().SetXorKey(0);
         std::string e2;
         n2.Open("127.0.0.1", 0, e2);
@@ -161,6 +165,7 @@ std::vector<std::pair<bool, std::string>> RunNetworkThreadChecks() {
     // ⑥ ★ 10-09 조각 5d-2c — 큐 한도 — 한도 3 에 요청 다섯(시작 전에 넣음) · 이벤트 다섯(접속 시도 다섯 · 게임이 안 꺼냄) → 둘씩 버리고 센다
     {
         nox::CNetworkThread n3;
+        n3.SetUdpOptions(rio, 0, 0);
         n3.SetQueueMaxForTest(3);
         std::string e3;
         n3.Open("127.0.0.1", 0, e3);
@@ -214,6 +219,7 @@ std::vector<std::pair<bool, std::string>> RunNetworkThreadChecks() {
             }
         };
         nox::CNetworkThread n5;
+        n5.SetUdpOptions(rio, 0, 0);
         n5.SetLobbyRetryMsForTest(300);
         n5.SetMaxWaitMs(5000);   // 다시 붙기 시각에 스스로 깨야 아래 3초 안에 붙는다(기본 0.25초 깨기에 기대지 않게)
         const bool started = n5.Open("127.0.0.1", 0, e5) && n5.ConnectLobby(0x7f000001u, srv.ListenPort(0), e5);
@@ -311,6 +317,7 @@ std::vector<std::pair<bool, std::string>> RunNetworkThreadChecks() {
             if (tmp.Listen(0x7f000001u, 0, e6)) dead = tmp.ListenPort(0);
         }
         nox::CNetworkThread n6;
+        n6.SetUdpOptions(rio, 0, 0);
         n6.SetLobbyRetryMsForTest(300);
         const bool s6 = n6.Open("127.0.0.1", 0, e5) && n6.ConnectLobby(0x7f000001u, dead, e5);
         n6.Start();
@@ -327,5 +334,48 @@ std::vector<std::pair<bool, std::string>> RunNetworkThreadChecks() {
                       t6.lobbyConnects, t6.lobbyConnectFailed, t6.lobbyOpened, ev6.size());
         r.push_back({ s6 && dead != 0 && t6.lobbyConnects >= 2 && t6.lobbyConnectFailed >= 1 && t6.lobbyOpened == 0 && ev6.empty(), m });
     }
+
+    // ⑨ ★ 11-17 C-2 — 몰아 보내기 · 칸보다 큰 조각. 모르는 주소에서 쓰레기 300 조각(통신 층이 세고 버린다 — `droppedNoSession`) +
+    //   한 칸(2,048)보다 큰 3,000바이트 하나 → 받은 조각 = 접속 1 + 300 · 칸보다 커서 버림 1 · 받기 오류(`recvErrors`) 1 · 그 밖의 받기 오류 0.
+    //   팔이 실제로 바뀌었나 — 접속 수락을 보냈으니 RIO 는 묶어 낸 수(`udpFlushes`)가 1 이상 · 보통은 0. 받기 칸 수는 팔마다 기본
+    {
+        nox::CNetworkThread n9;
+        n9.SetUdpOptions(rio, 0, 0);
+        n9.Network().SetXorKey(0);
+        std::string e9;
+        const bool open9 = n9.Open("127.0.0.1", 0, e9);
+        n9.Start();
+        sockaddr_in to9 = me;
+        to9.sin_port = htons(n9.Port());
+        const SOCKET c9a = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        bind(c9a, reinterpret_cast<sockaddr*>(&me), sizeof(me));
+        sendto(c9a, reinterpret_cast<const char*>(conn), sizeof(conn), 0, reinterpret_cast<sockaddr*>(&to9), sizeof(to9));
+        const bool acc9 = IsAccept(RecvOne(c9a, 1000));
+        const SOCKET c9 = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        bind(c9, reinterpret_cast<sockaddr*>(&me), sizeof(me));
+        const uint8_t junk[2] = { 0x00, 0x00 };
+        for (int i = 0; i < 300; ++i)
+            sendto(c9, reinterpret_cast<const char*>(junk), sizeof(junk), 0, reinterpret_cast<sockaddr*>(&to9), sizeof(to9));
+        const std::vector<char> big(3000, 0);
+        sendto(c9, big.data(), static_cast<int>(big.size()), 0, reinterpret_cast<sockaddr*>(&to9), sizeof(to9));
+        nox::CNetworkThreadStats t9;
+        for (int i = 0; i < 150; ++i) {   // 지표 사본은 0.25초마다 — 3초까지
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            t9 = n9.LatestThreadStats();
+            if (t9.datagramsIn >= 301 && t9.udpOversizeDropped >= 1) break;
+        }
+        n9.Stop();
+        closesocket(c9);
+        closesocket(c9a);
+        const uint32_t wantSlots = rio ? nox::CNetworkThread::kUdpRecvSlotsRio : nox::CNetworkThread::kUdpRecvSlotsWinsock;
+        const bool armOk = rio ? t9.udpFlushes >= 1 : t9.udpFlushes == 0;
+        std::snprintf(m, sizeof(m), "⑨ 몰아 보내기 — 열기 %d · 수락 %d · 받음 %llu(301) · 칸보다 큼 %llu(1) · 받기 오류 %llu(1) · 그 밖 %llu(0) · 묶어 냄 %llu · 받기 칸 %u(%u)",
+                      (int)open9, (int)acc9, t9.datagramsIn, t9.udpOversizeDropped, t9.recvErrors, t9.udpRecvFail, t9.udpFlushes,
+                      n9.UdpRecvSlots(), wantSlots);
+        r.push_back({ open9 && acc9 && t9.datagramsIn == 301 && t9.udpOversizeDropped == 1 && t9.recvErrors == 1 && t9.udpRecvFail == 0 &&
+                          armOk && n9.UdpRecvSlots() == wantSlots && t9.maxDatagramOutBytes > 0 && t9.maxDatagramsOutPerWake >= 1, m });
+    }
+    if (rio)
+        for (auto& kv : r) kv.second = "[RIO 팔] " + kv.second;
     return r;
 }

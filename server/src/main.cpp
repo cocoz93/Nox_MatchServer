@@ -208,6 +208,8 @@ int main(int argc, char** argv) {
             opt.noFirstSeen = true;                     // ★ 11-10 부하 실험
         } else if (a == "--no-op-count") {
             opt.noOpCount = true;                       // ★ 11-10 부하 실험
+        } else if (a == "--udp-rio") {
+            opt.udpRio = true;                          // ★ 11-17 C-2 — UDP 부품 RIO 팔(기본 보통 · 팔 둘을 같은 판으로 견주려고)
         } else if (a == "--battle-maps" && i + 1 < argc) {
             // ★ 10-16 작업 13a — 대전 맵 후보(같은 꼴) — 로비가 새 방마다 하나를 정해 두고 `!start` 때 그 맵으로 바꾼다
             const std::string list = argv[++i];
@@ -779,10 +781,13 @@ int main(int argc, char** argv) {
     // ★ 10-09 조각 5d-2b — 소켓은 네트워크 스레드가 연다(옛 이 자리의 `WSAStartup` · `socket` · `bind` — 실패 문구 그대로)
     {
         std::string netErr;
+        net.SetUdpOptions(opt.udpRio, 0, 0);   // ★ 11-17 C-2 — 칸 수 0 = 팔마다 기본(`NetworkThread.h` `kUdp*Slots*` — 값의 까닭은 거기)
         if (!net.Open(opt.bindIp, static_cast<uint16_t>(opt.port), netErr)) {   // ★ 10-20 — `--bind`(비면 모든 주소)
             std::printf("%s\n", netErr.c_str());
             return 1;
         }
+        std::printf("UDP 부품 — 팔 %s · 받기 칸 %u · 보내기 칸 %u · 한 칸 %u바이트\n", net.UdpRio() ? "RIO" : "보통",
+                    net.UdpRecvSlots(), net.UdpSendSlots(), nox::CNetworkThread::kUdpMaxDatagram);
     }
     // ★ 10-14 작업 10a — 새 방의 대기 맵 후보는 서버가 뜰 때 차린 맵 원본에 있는 것만(못 읽은 맵은 빼고 한 줄)
     //   ★ 10-20 v2 작업 4b — 옛 채널 안 로비 블록에서 꺼냄(4b-2 에서 그 블록 걷음)
@@ -1182,6 +1187,10 @@ int main(int argc, char** argv) {
             for (const auto& kv : seenAll) msgs += kv.second;
             std::printf("[종료] 받은 것 — 입력(0x3f) %llu · 메시지 전체 %llu · 받은 조각 %llu · 한 번에 비운 조각 최대 %llu · 받기 오류 %llu\n",
                         inputs, msgs, ts.datagramsIn, ts.maxDatagramsPerWake, ts.recvErrors);
+            // ★ 11-17 C-2 — UDP 부품 셈(RIO 칸 수 · 큰 칸 크기의 근거 — 구체화 C-① · C-②). 위 줄은 `tools/load_report.ps1` 이 읽어 꼴을 그대로 두고 줄을 더한다
+            std::printf("[종료] UDP 부품 — 팔 %s · 한 번에 보낸 조각 최대 %llu · 보낸 조각 하나 최대 %llu바이트 · 칸보다 커서 버림 %llu · 받기 오류 %llu · 보내기 실패 %llu · 묶어 낸 수 %llu\n",
+                        net.UdpRio() ? "RIO" : "보통", ts.maxDatagramsOutPerWake, ts.maxDatagramOutBytes,
+                        ts.udpOversizeDropped, ts.udpRecvFail, ts.udpSendFail, ts.udpFlushes);
             // ★ 11-13 — 판을 다시 연 뒤 준비 전이라 버린 별칭 알림(`Session::aliasStale`) · 받아 쓴 수를 같이(0 이 「없었다」인지 가른다)
             std::printf("[종료] 별칭 알림(a5) — 받아 씀 %llu · 판 다시 연 뒤 준비 전이라 버림 %llu\n", nox::g_aliasTaken, nox::g_aliasStaleDropped);
         }
