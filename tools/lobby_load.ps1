@@ -7,11 +7,14 @@
 #   ③ 더미 실패 0 · 답 없음 0 · 뜻밖 끊김 0 · 서버 종료 코드 0 · 강제 종료 0
 # 첫 판은 `--no-auth --no-db`(계획 6-3 — 암호 확인 · DB 비용을 빼고 소켓 층만). 결과는 `_out/lobby_load/<Tag>/`(지우지 않는다)
 # ⚠ 이 대본은 도구다 — 파일럿 · 측정의 M · R · 길이는 계획 6-4 차례대로 사람이 정한 뒤 돌린다. 기본값(10명 · 30초)은 「도구가 맞물리나」 확인용
+# ★ 11-17 -Measure(측정 판 · `Docs/MO_LOBBY_MEASURE_PLAN_1117.md` 3절 · 4절 ②) — 게임 판과 같은 PC 검사(pc_gate.ps1) · 미커밋 검사 · 코어 지정을 하고
+#   env.txt(지문)와 직전 실행 시각(`_out/load_run/last_end.txt` — 다음 판의 잔열 검사가 읽는다)을 남긴다. 기본(도구 확인)은 옛 그대로 — 검사 · 코어 없이 돈다
+# 종료 코드: 0 = 확인 다 통과 · 1 = 확인 실패 있음 · 2 = 미커밋(-Measure) · 3 = PC 검사 실패(-Measure) · 4 = 코어 지정이 다름(-Measure)
 param(
   [int]$People = 10, [double]$Active = 0.1, [double]$RateScale = 1.0, [int]$Seconds = 30, [int]$Ramp = 50, [int]$HoldSec = 30,
   [int]$ChatLobbies = 1, [int]$Seed = 1, [int]$Workers = 1, [string]$Tag = '',
   [int]$RouterPort = 14205, [int]$LobbyPort = 14200, [int]$LinkPort = 14210, [int]$ChatPort = 14220, [int]$UdpPort = 18791,
-  [switch]$NoGame, [switch]$NoRouter, [string]$Bin = ''
+  [switch]$NoGame, [switch]$NoRouter, [string]$Bin = '', [switch]$Measure
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
@@ -50,6 +53,33 @@ function Num([string]$line, [string]$label) {   # 줄에서 「<label> <수>」�
   if ($m.Success) { return [int64]$m.Groups[1].Value } else { return -1 }
 }
 
+# ── -Measure ── 코어 = 서버 넷이 물리 코어 0 · 1 · 2 · 3 하나씩, 더미 = 물리 4~9(계획 3절 · 구체화 D-⑥ · 이 PC 물리 k = 논리 2k · 2k+1, `tools/load_run.ps1` 코어 줄)
+$cores = [ordered]@{ '로비' = 0x3; '채팅 서버' = 0xC; '라우터' = 0x30; '게임 서버' = 0xC0; '더미' = 0xFFF00 }
+$envLines = New-Object System.Collections.Generic.List[string]
+$lastEnd = Join-Path $root '_out\load_run\last_end.txt'   # 게임 판과 같은 파일 — 어느 판이 먼저 끝났든 다음 판의 잔열 검사가 본다
+function Save-Report { [IO.File]::WriteAllLines((Join-Path $out 'summary.txt'), $report, (New-Object Text.UTF8Encoding($true))) }
+function Save-Env { if ($Measure) { [IO.File]::WriteAllLines((Join-Path $out 'env.txt'), $envLines, (New-Object Text.UTF8Encoding($true))) } }
+$script:coreBad = $false
+function Set-Core($p, [string]$who) {
+  if (-not $Measure -or $null -eq $p) { return }
+  $mask = [int64]$cores[$who]
+  $got = -1   # 넣기 · 읽기가 예외면(프로세스가 벌써 끝남 · 없는 코어) -1 로 남아 「다름」 갈래로 간다
+  try { $p.ProcessorAffinity = [IntPtr]$mask; $p.Refresh(); $got = [int64]$p.ProcessorAffinity } catch { }
+  $gotText = if ($got -lt 0) { '못 넣음' } else { '0x{0:X}' -f $got }
+  $envLines.Add(('코어 지정 {0}: {1} (기대 0x{2:X})' -f $who, $gotText, $mask))
+  if ($got -ne $mask) { $script:coreBad = $true; throw ('코어 지정이 다름 — {0} {1} (기대 0x{2:X})' -f $who, $gotText, $mask) }
+}
+if ($Measure) {
+  $dirty = @(& git -C $root status --porcelain).Count
+  $envLines.Add("시각: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+  $envLines.Add("커밋: $((& git -C $root rev-parse HEAD).Trim())")
+  $envLines.Add("미커밋 파일 수: $dirty")
+  if ($dirty -gt 0) { Say "[멈춤] 미커밋 $dirty 개 — 측정 판은 커밋된 것만 돌린다(git status)"; Save-Env; Save-Report; exit 2 }
+  $gate = & (Join-Path $PSScriptRoot 'pc_gate.ps1') -StampPath $lastEnd
+  foreach ($ln in @($gate.Notes)) { $envLines.Add($ln) }
+  if (@($gate.Failed).Count -gt 0) { Say "[멈춤] 게이트 실패: $(@($gate.Failed) -join ', ') — 서버를 안 띄운다 · CPU 상위 $($gate.TopText)"; Save-Env; Save-Report; exit 3 }
+}
+
 $ini = Join-Path $out 'load.ini'
 [IO.File]::WriteAllText($ini, "[token]`r`nkey = $('ab' * 32)`r`n[chat]`r`nhost = 127.0.0.1`r`nport = $ChatPort`r`n")
 $rini = Join-Path $out 'router.ini'
@@ -61,10 +91,13 @@ $lp = $cp = $rp = $gp = $dp = $null
 try {
   $lp = Start-Hidden (Join-Path $Bin 'nox_lobby.exe') $logs.lobby @('--config', "`"$ini`"", '--bind', '127.0.0.1', '--lobby-port', $LobbyPort, '--link-port', $LinkPort,
                                                                      '--quiet', '--no-db', '--no-auth', '--sections')
+  Set-Core $lp '로비'
   $cp = Start-Hidden (Join-Path $Bin 'nox_chat.exe') $logs.chat @('--config', "`"$ini`"", '--bind', '127.0.0.1', '--port', $ChatPort, '--quiet', '--no-db', '--no-auth')
-  if (-not $NoRouter) { $rp = Start-Hidden (Join-Path $Bin 'nox_router.exe') $logs.router @('--config', "`"$rini`"", '--bind', '127.0.0.1', '--port', $RouterPort, '--quiet') }
+  Set-Core $cp '채팅 서버'
+  if (-not $NoRouter) { $rp = Start-Hidden (Join-Path $Bin 'nox_router.exe') $logs.router @('--config', "`"$rini`"", '--bind', '127.0.0.1', '--port', $RouterPort, '--quiet'); Set-Core $rp '라우터' }
   if (-not $NoGame) {
     $gp = Start-Hidden (Join-Path $Bin 'nox_server.exe') $logs.game @('--port', $UdpPort, '--config', "`"$ini`"", '--lobby', "127.0.0.1:$LinkPort", '--quiet', '--no-results')
+    Set-Core $gp '게임 서버'
     $registered = $false
     for ($i = 0; $i -lt 100 -and -not $registered; $i++) {
       Start-Sleep -Milliseconds 100
@@ -78,6 +111,7 @@ try {
              '--seconds', $Seconds, '--hold-sec', $HoldSec, '--chat-lobbies', $ChatLobbies, '--seed', $Seed, '--workers', $Workers)
   if (-not $NoRouter) { $dargs += @('--router', "127.0.0.1:$RouterPort") }
   $dp = Start-Hidden (Join-Path $Bin 'nox_lobby_load.exe') $logs.dummy $dargs
+  Set-Core $dp '더미'
   $limitMs = (([math]::Ceiling($People / [double]$Ramp)) + $Seconds + 120) * 1000
   if (-not $dp.WaitForExit($limitMs)) { $script:forced++; Say "  [실패] 더미가 $([int]($limitMs / 1000))초 안에 안 끝남 — 강제 종료"; Stop-Process -Id $dp.Id -Force }
   # 서버 CPU(프로세스 전체 · 시작부터) — 닫기 전에 읽는다
@@ -138,5 +172,7 @@ $unexp = @($dummyLines | Where-Object { $_ -match '^\[더미 끝\] (로비|채�
 Check ($unexp.Count -eq 0) "③ 뜻밖 끊김 없음($($unexp.Count)몫)"
 
 Say "확인 $($script:checks - $script:fails)/$($script:checks) · 기록 $out"
-[IO.File]::WriteAllLines((Join-Path $out 'summary.txt'), $report, (New-Object Text.UTF8Encoding($true)))
+Save-Report
+if ($Measure) { Save-Env; [void][IO.Directory]::CreateDirectory((Split-Path -Parent $lastEnd)); [IO.File]::WriteAllText($lastEnd, ((Get-Date).ToUniversalTime().Ticks).ToString()) }
+if ($script:coreBad) { exit 4 }
 if ($script:fails -gt 0) { exit 1 } else { exit 0 }
