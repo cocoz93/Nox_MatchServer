@@ -30,9 +30,10 @@ $utf8Bom = New-Object Text.UTF8Encoding($true)
 $inv = [Globalization.CultureInfo]::InvariantCulture
 function D([string]$s) { return [double]::Parse($s, $inv) }
 
-# PC 검사 문턱의 기본값 — load_run.ps1 의 param 기본값을 그대로 읽는다(두 대본에 값을 따로 적으면 어긋난다)
+# PC 검사 문턱의 기본값 — 검사 대본의 param 기본값을 그대로 읽는다(두 대본에 값을 따로 적으면 어긋난다).
+#   ★ 11-17 검사가 load_run.ps1 에서 pc_gate.ps1 로 옮겨 가 기본값도 거기 하나다(load_run 은 받은 것만 넘긴다)
 $gateParams = @('UptimeMaxHours', 'IdleMaxPercent', 'ResidualMaxPercent', 'ResidualMaxReads', 'PowerPlanGuid', 'UpdateServiceStatus')
-$runAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'load_run.ps1'), [ref]$null, [ref]$null)
+$runAst = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'pc_gate.ps1'), [ref]$null, [ref]$null)
 $defaults = @{}
 foreach ($p in $runAst.ParamBlock.Parameters) {
   if ($p.DefaultValue) { $defaults[$p.Name.VariablePath.UserPath] = [string]$p.DefaultValue.SafeGetValue() }
