@@ -350,13 +350,19 @@ function Report-Run([string]$dir) {
     if (-not (Test-Path -LiteralPath $duPath)) { [void]$rs.Add('dummy.txt 없음') }
     else {
       $maxEntered = 0; $lateIn = 0L; $sum = $null
+      $busyAvgs = New-Object System.Collections.Generic.List[double]; $busyMaxs = New-Object System.Collections.Generic.List[double]
       foreach ($ln in [IO.File]::ReadAllLines($duPath, $utf8)) {
         $mm = [regex]::Match($ln, '^\[더미\] 초 (\d+) · 입장 (\d+)/(\d+) .*lateTicks=(\d+)')
         if ($mm.Success) {
           $s = [int]$mm.Groups[1].Value
           if ([int]$mm.Groups[2].Value -gt $maxEntered) { $maxEntered = [int]$mm.Groups[2].Value }
           # 더미 줄 s 는 더미 시각 (s−1, s]초 — 서버 구간과 조금이라도 겹치면 센다
-          if ($s * 1000.0 -gt $B.T[$B.ka] - $dMax -and ($s - 1) * 1000.0 -lt $B.T[$B.kb] - $dMin) { $lateIn += [int64]$mm.Groups[4].Value }
+          if ($s * 1000.0 -gt $B.T[$B.ka] - $dMax -and ($s - 1) * 1000.0 -lt $B.T[$B.kb] - $dMin) {
+            $lateIn += [int64]$mm.Groups[4].Value
+            # ★ 11-17 더미 한계 7-② — 같은 줄 끝의 그 초 바퀴 일한 시간(스레드 중 큰 것). 옛 더미 출력엔 없어 세 칸이 null 로 남는다
+            $mb = [regex]::Match($ln, ' · 바퀴 일한 시간 평균 ([\d.]+)ms · 최대 ([\d.]+)ms$')
+            if ($mb.Success) { $busyAvgs.Add([double]$mb.Groups[1].Value); $busyMaxs.Add([double]$mb.Groups[2].Value) }
+          }
           continue
         }
         if ($ln.StartsWith('[더미 요약] ')) { $sum = $ln }
@@ -375,6 +381,15 @@ function Report-Run([string]$dir) {
       if ($maxEntered -lt $dummyCount) { [void]$rs.Add("입장 $maxEntered/$dummyCount") }
       $o.dummyLateTicksInWindow = $lateIn
       if ($lateIn -gt 0) { [void]$rs.Add("측정 구간 안 더미 lateTicks $lateIn") }
+      # 측정 구간 초마다의 바퀴 일한 시간 — 평균의 평균 · 최대의 최대 · 최대의 상위 5%(300초면 15번째로 큰 값 · 한 번 튄 초를 걸러 더미 한계의 다음 인원을 정한다 · 플랜 5절 2)
+      $o.dummyBusySecondsInWindow = $busyMaxs.Count
+      $o.dummyBusyAvgMsInWindow = $null; $o.dummyBusyMaxMsInWindow = $null; $o.dummyBusyMaxP95MsInWindow = $null
+      if ($busyMaxs.Count -gt 0) {
+        $o.dummyBusyAvgMsInWindow = [math]::Round(($busyAvgs | Measure-Object -Average).Average, 2)
+        $desc = @($busyMaxs | Sort-Object -Descending)
+        $o.dummyBusyMaxMsInWindow = $desc[0]
+        $o.dummyBusyMaxP95MsInWindow = $desc[[int][math]::Ceiling($desc.Count * 0.05) - 1]
+      }
     }
   }
   $o.inputSent = $sentInput; $o.inputRecv = $endInput

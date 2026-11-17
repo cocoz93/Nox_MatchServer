@@ -1588,11 +1588,13 @@ void WaitUntilUs(HANDLE timer, int64_t targetUs) {
     WaitForSingleObject(timer, INFINITE);
 }
 
-void PrintCounters(const char* head, int sec, int entered, int total, const Counters& c) {
+// busyAvgMs · busyMaxMs 가 0 이상이면 줄 끝에 「바퀴 일한 시간」을 붙인다(1초 줄만 · 요약 줄은 안 붙인다 — 요약은 `이름=값` 을 통째로 읽는 곳이 있다)
+void PrintCounters(const char* head, int sec, int entered, int total, const Counters& c, double busyAvgMs = -1.0, double busyMaxMs = -1.0) {
     std::printf("%s 초 %d · 입장 %d/%d", head, sec, entered, total);
 #define X(n) std::printf(" %s=%llu", #n, static_cast<unsigned long long>(c.n));
     NOX_DUMMY_COUNTERS(X)
 #undef X
+    if (busyAvgMs >= 0.0) std::printf(" · 바퀴 일한 시간 평균 %.2fms · 최대 %.2fms", busyAvgMs, busyMaxMs);
     std::printf("\n");
     std::fflush(stdout);
 }
@@ -1615,6 +1617,10 @@ struct Worker {
     // 한 바퀴에 일한 시간과 33ms 를 넘긴 정도 — lateTicks 가 오른 까닭이 「타이머가 조금 늦게 깨움」인지 「일이 33ms 에 안 들어감」인지 가른다
     uint64_t wheels = 0, busySumUs = 0, busyMaxUs = 0;
     uint64_t overBuckets[5] = {};           // 1ms 이하 · 2ms 이하 · 5ms 이하 · 10ms 이하 · 그 위
+    // ★ 11-17 더미 한계(`Docs/MO_DUMMY_LIMIT_PLAN_1117.md` 7-②) — 위 셋은 실행 전체 한 줄이라 입장 구간이 섞인다.
+    //   같은 값을 1초 단위로도 센다. 이 스레드가 더하고 주 스레드가 1초마다 0 으로 바꿔 가며 읽는다(그래서 원자 변수).
+    //   셋을 따로 바꿔 읽으므로 1초 경계에 걸린 바퀴 하나가 합과 바퀴 수에 다르게 들 수 있다 — 한 초 약 30바퀴 중 하나라 평균이 그만큼 흔들릴 뿐이다
+    std::atomic<uint64_t> secWheels{0}, secBusySumUs{0}, secBusyMaxUs{0};
 };
 
 // 더미 스레드 — 옛 단일 스레드 고리를 그대로 옮겼다. 시작 시각 t0 와 더미마다의 칸은 스레드 수와 상관없이 같다(--threads 1 이면 옛 꼴).
@@ -1646,6 +1652,12 @@ void RunWorker(Worker& w, std::vector<Dummy>& dummies, const Args& a, int64_t t0
         ++w.wheels;
         w.busySumUs += static_cast<uint64_t>(busyUs);
         w.busyMaxUs = std::max(w.busyMaxUs, static_cast<uint64_t>(busyUs));
+        w.secWheels.fetch_add(1, std::memory_order_relaxed);
+        w.secBusySumUs.fetch_add(static_cast<uint64_t>(busyUs), std::memory_order_relaxed);
+        for (uint64_t cur = w.secBusyMaxUs.load(std::memory_order_relaxed);
+             static_cast<uint64_t>(busyUs) > cur &&
+             !w.secBusyMaxUs.compare_exchange_weak(cur, static_cast<uint64_t>(busyUs), std::memory_order_relaxed);) {
+        }
         if (after > next) {
             const int64_t over = after - next;
             ++w.overBuckets[over <= 1000 ? 0 : over <= 2000 ? 1 : over <= 5000 ? 2 : over <= 10000 ? 3 : 4];
@@ -1937,7 +1949,16 @@ int main(int argc, char** argv) {
         WaitUntilUs(statTimer, nextStat);
         ++sec;
         const Counters now = sumCounters();
-        PrintCounters("[더미]", sec, sumEntered(), a.count, Delta(now, printed));
+        // 그 초의 바퀴 일한 시간 — 스레드마다 (합 ÷ 바퀴 수)와 최대를 내고 스레드 중 큰 것을 찍는다(플랜 7-② · 밀림은 가장 바쁜 스레드에서 먼저 난다)
+        double secAvgMs = 0.0, secMaxMs = 0.0;
+        for (const std::unique_ptr<Worker>& w : workers) {
+            const uint64_t n = w->secWheels.exchange(0, std::memory_order_relaxed);
+            const uint64_t sumUs = w->secBusySumUs.exchange(0, std::memory_order_relaxed);
+            const uint64_t maxUs = w->secBusyMaxUs.exchange(0, std::memory_order_relaxed);
+            if (n) secAvgMs = std::max(secAvgMs, static_cast<double>(sumUs) / static_cast<double>(n) / 1000.0);
+            secMaxMs = std::max(secMaxMs, static_cast<double>(maxUs) / 1000.0);
+        }
+        PrintCounters("[더미]", sec, sumEntered(), a.count, Delta(now, printed), secAvgMs, secMaxMs);
         printed = now;
     }
     for (std::thread& t : threads) t.join();      // 스레드마다 0a 를 보내고 1초 받기까지 끝낸 뒤
