@@ -4,11 +4,11 @@
 //                      [--ramp 50] [--seconds 30] [--hold-sec 30] [--prefix ld] [--chat-lobbies 1] [--seed 1] [--workers 1]
 //                      [--timeout-ms 10000]
 //
-// 무엇을 하나 — 사람 M(`--people`) 명을 흉내 낸다. 한 사람 = 정품 클라 + DLL 판 7 이 보내는 차례
+// 무엇을 하나 — 사람 M(`--people`) 명을 흉내 낸다. 한 사람 = 정품 클라 + DLL 판 8 이 보내는 차례
 //   (`tools/lobby_smoke.ps1:5-7` · 사람 판 로비 기록 `_out/mo_local/*/lobby.log` — 11-15 판의 줄과 시각 묶음).
 //   1. 라우터(`--router` 를 주면)에 붙어 녹음 다섯 줄(`tools/router_smoke.ps1` 의 줄) → 607 → 라우터가 끊는다
 //   2. 로비에 붙어 로그인 네 묶음 — 정품이 답을 기다렸다가 다음 묶음을 보내는 자리 그대로(사람 판 기록의 같은 ms 묶음):
-//      ① NOXCLIENT 7 … SETOPT → 379  ② SETLOCALE · SETCODEPAGE → 329  ③ SETOPT · LIST -1 37 · JOIN #Lob → 323 · 366  ④ GETCODEPAGE → 328
+//      ① NOXCLIENT 8 … SETOPT → 379  ② SETLOCALE · SETCODEPAGE → 329  ③ SETOPT · LIST -1 37 · JOIN #Lob → 323 · 366  ④ GETCODEPAGE → 328
 //   3. 로비가 알려 준 채팅 서버(`NOXCHAT ip:port`)에 붙어 `AUTH 이름` → AUTHOK(채팅 서버 `--no-auth` 판 — 첫 판은 암호 확인 비용을 뺀다 · 계획 6-3)
 //   4. 쉬기 — 줄 0. 채팅 서버의 PING 에만 PONG(DLL 이 하는 일 — 안 하면 90초에 끊긴다 `ChatHub.h:44`). 이 상태의 사람 수가 M 이다
 //   5. 활동 — 활동하는 사람(비율 R = `--active`)만. 다음 일까지의 간격은 지수 분포(빈도 합의 역수) · 일은 빈도 비율로 고른다.
@@ -369,7 +369,7 @@ private:
         if (!p.lobby) return Fail(p, "로비 붙기 못 함");
         p.step = Step::Login;
         p.loginStage = 1;
-        for (const std::string& l : {std::string("NOXCLIENT 7"), std::string("CVERS 11020 9472"), std::string("PASS supersecret"), "NICK " + p.name,
+        for (const std::string& l : {std::string("NOXCLIENT 8"), std::string("CVERS 11020 9472"), std::string("PASS supersecret"), "NICK " + p.name,
                                      std::string("apgar 1234 0"), std::string("SERIAL 7726"),
                                      std::string("USER UserName HostName irc.westwood.com :RealName"), std::string("verchk 32512 720916"),
                                      std::string("SETOPT 17,33")})

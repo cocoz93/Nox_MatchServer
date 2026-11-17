@@ -74,7 +74,10 @@ namespace nox::wol {
 
 constexpr uint16_t kServServPort = 4005;  // 정품 모듈에 박힌 첫 주소의 포트(WOLAPI.dll "TCP;servserv.westwood.com;4005")
 constexpr uint16_t kLobbyPort    = 4000;  // 605 답으로 알려 주는 로비 포트(XWIS 와 같게)
-constexpr int kNoxClientMinVersion = 1;   // ★ 10-10 — DLL 이 알리는 판. 이보다 낮거나 없으면 로그인 거절
+// ★ 10-10 — DLL 이 알리는 판. 이보다 낮거나 없으면 로그인은 받고 인사말에 안내 · 참가 토큰 · 새 방 · 랭크 줄 없음(10-11 부터 — 로그인 거절은 걷음).
+//   ★ 11-16 1 → 8(`Docs/ROOM_ID_WIDEN_PLAN_1116.md` 2-3) — 판 8 = 방 칸 4바이트 입장 토큰(`JoinToken.h` 판 2 · 16진 106자)을 읽는 DLL.
+//   낮은 판은 106자 줄을 「꼴이 틀려 버림」으로 버려 꼬리 없이 붙고 게임 서버가 「토큰 없음」으로 거절하니, 로비가 먼저 알아보고 안내한다
+constexpr int kNoxClientMinVersion = 8;
 // ★ 10-16 작업 11 — 이 판부터 DLL 이 `NOXSERVER` 줄을 떼어 「우리 로비」로 알아보고 Host Game 을 내 방 참가로 돌린다.
 //   로비는 `NOXCLIENT` 가 이 판 이상이면 곧바로 `NOXSERVER 1` 한 줄로 답한다(낮은 판 DLL 은 이 줄을 못 떼므로 안 보낸다).
 //   DLL 은 이 줄을 못 받은 로비(XWIS 등)에선 아무것도 돌리지 않는다 — 원작 Host Game 이 그대로 산다
@@ -259,6 +262,7 @@ struct LobbyStats {
     unsigned long long roomUiSent = 0;       // ★ 11-04 플랜1 — DLL 로 넘긴 방 안 화면 상태 줄
     unsigned long long roomUiNoConn = 0;     // ★ 11-04 플랜1 — 받을 접속이 없어 버림(끊김 · 줄을 못 떼는 옛 DLL)
     unsigned long long roomsPushes = 0;      // ★ 11-03 — 목록 바뀜 알림을 민 횟수(한 번 = 접속 전부에 한 줄)
+    unsigned long long roomsPushLines = 0;   // ★ 11-17 R-3 — 그 알림 줄 수(받는 접속마다 하나 · 끝 줄 「DLL 알림 줄」 — 1초 간격으로 묶여 시험 대본이 미리 못 센다)
     unsigned long long loginNoClient = 0;    // 로그인 — `NOXCLIENT` 없음(인사말로 알림)
     unsigned long long loginOldClient = 0;   // 로그인 — DLL 판이 낮음(인사말로 알림)
     unsigned long long joinNoClient = 0;     // 방 참가 — DLL 없음(로그인 전 참가 포함) · 토큰 없이 답함
@@ -351,7 +355,7 @@ struct LobbyStats {
     unsigned long long rankRequeued = 0;        // 실패 · 시간 초과로 줄 앞에 되돌린 사람
     unsigned long long rankMatched = 0;         // 참가 답(토큰)을 보낸 사람
     unsigned long long rankMarkDropped = 0;     // NOXRANK JOIN 뒤 내 방 참가가 아닌 줄(표시 버림 — 그 줄은 원래대로)
-    unsigned long long rankOldClient = 0;       // 판 4 밑 DLL 의 NOXRANK(무시)
+    unsigned long long rankOldClient = 0;       // 판 4 밑 DLL 의 NOXRANK(무시) · ★ 11-16 최소 판(`kNoxClientMinVersion`) 밑의 줄 서기(JOIN)도
     unsigned long long rankDupJoin = 0;         // 줄에 있거나 요청 중인 접속의 방 참가(무시 — 답이 둘이 되지 않게)
     unsigned long long rankRoomsHidden = 0;     // ★ 매칭 손보기 7 — 목록 줄(326)에서 뺀 랭크 방(LIST 한 번에 방마다 하나)
     // ★ 매칭 손보기 6 — 수락 단계. 찾음 한 사람(`rankFound`)은 「참가 답(다 수락)」 · 「되돌림(남이 거절 · 한도 — 나는 수락 또는 아직)」 ·

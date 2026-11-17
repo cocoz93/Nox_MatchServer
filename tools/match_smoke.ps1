@@ -59,11 +59,14 @@ function Open($port) {
 }
 function Send($k, [string[]]$lines) { foreach ($l in $lines) { $k.w.WriteLine($l) }; $k.w.Flush() }
 function Kind([string]$l) { $t = $l.Split(' '); if ($t[0] -eq ':') { $t[1] } elseif ($t[0].StartsWith(':')) { 'user:' + $t[1] } else { '?' } }
+# ★ 11-17 R-3 — DLL 이 떼어 정품에 안 넘기는 알림 줄(목록 바뀜 · 채팅 주소 · 방 안 화면 — 판 5 · 7 이상). 이 대본은 DLL + 정품 자리라 떼고 읽는다
+function DllOnly([string]$l) { return ($l -ceq 'NOXRANK ROOMS') -or $l.StartsWith('NOXCHAT ') -or $l.StartsWith('NOXRANK ROOMUI ') }
 function ReadUntil($k, [string]$stop) {
   $got = @()
   while ($true) {
     try { $l = $k.r.ReadLine() } catch { return ,$got }
     if ($null -eq $l) { return ,$got }
+    if (DllOnly $l) { continue }
     $got += $l
     if ((Kind $l) -eq $stop) { return ,$got }
   }
@@ -81,7 +84,7 @@ function HexBytes([string]$h) { $b = New-Object byte[] ($h.Length / 2); for ($i 
 #   ★ 로그인 암호 조각 6b — $apgar(로그인 토큰 NXL1…)를 주면 DLL 판 3 꼴로 `apgar <토큰> 0` 을 USER 앞에
 function LoginJoin([string]$nick, [string]$channel, [string]$apgar = '') {
   $k = Open $LobbyPort
-  $hello = @("NOXCLIENT $(if ($apgar) { 3 } else { 2 })", "NICK $nick")
+  $hello = @('NOXCLIENT 8', "NICK $nick")
   if ($apgar) { $hello += "apgar $apgar 0" }
   Send $k ($hello + @('USER UserName HostName irc.westwood.com :RealName'))
   $h = ReadUntil $k '376'   # ★ 레이팅 조각 4 — 인사 줄(점수 줄을 본다)
@@ -96,7 +99,7 @@ function RatingLine([string]$text) { return ': 372 u :- ' + $text }
 # ★ 랭크 매칭 조각 6 — 로그인 → 랭크 줄 서기(DLL 판 4 꼴 — 참가 줄 앞 `NOXRANK JOIN`). 답은 묶인 뒤에 오므로 여기선 안 읽는다
 function LoginRank([string]$nick, [string]$apgar = '') {
   $k = Open $LobbyPort
-  $hello = @('NOXCLIENT 5', "NICK $nick")   # ★ 매칭 손보기 6 — 판 5(수락 단계 · `AcceptFound`)
+  $hello = @('NOXCLIENT 8', "NICK $nick")   # ★ 매칭 손보기 6 — 판 5(수락 단계 · `AcceptFound`)
   if ($apgar) { $hello += "apgar $apgar 0" }
   Send $k ($hello + @('USER UserName HostName irc.westwood.com :RealName'))
   $h = ReadUntil $k '376'
@@ -411,7 +414,7 @@ try {
     Start-Sleep -Milliseconds 500   # 로비가 옛 접속 끊김을 먼저 보게(안 그러면 「옛 접속 끊음」 갈래로 샌다 — 로비 바퀴 100ms) — 판 뒤 alice 가 다시 로그인(새 토큰 — 일회용) → 랭크 판이면 이긴 점수 · 일반 판이면 그대로
     $tokA2 = (AuthReq '/token' "name=alice&key=$keyA").body   # ★ 런처 P3 — 같은 열쇠로 새 토큰(다시 로비에 갈 때마다 DLL 이 하는 일)
     $k2 = Open $LobbyPort
-    Send $k2 @('NOXCLIENT 3', 'NICK alice', "apgar $tokA2 0", 'USER UserName HostName irc.westwood.com :RealName')
+    Send $k2 @('NOXCLIENT 8', 'NICK alice', "apgar $tokA2 0", 'USER UserName HostName irc.westwood.com :RealName')
     $h2 = ReadUntil $k2 '376'
     $k2.c.Close()
     $want = if ($Ranked -or $Rank) { RatingLine 'Rating 1010 - Rank #1' } else { RatingLine 'Rating 1000 - No ranked games yet' }

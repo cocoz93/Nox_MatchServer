@@ -25,7 +25,7 @@ const char* const kChatLobbies[] = {"#Lob_37_0", "#Lob_37_1", "#Lob_37_2", "#Lob
 
 // ★ 10-11 토큰 작업 5 — DLL 없는 클라의 인사말에 덧붙이는 줄(영문 — WOL 글자는 라틴 1)
 const char* const kNoClientMotd[] = {
-    "*** Nox Online client patch (wsock32.dll) is missing ***",
+    "*** Nox Online client patch (wsock32.dll) is missing or outdated ***",   // ★ 11-16 방 번호 플랜 2-3 — 낡은 판(최소 판 아래)도 이 줄
     "You can chat, but joining a game needs the patch. Ask the server host.",
 };
 
@@ -301,7 +301,10 @@ void Lobby::Tick(std::vector<Out>& out) {
         ++stats_.roomsPushes;
         for (const auto& kv : conns_) {
             const Conn& c = kv.second;
-            if (!c.closing && c.login == LoginState::Ok && c.clientVer >= kNoxClientAcceptVersion) out.push_back({kv.first, "NOXRANK ROOMS"});
+            if (!c.closing && c.login == LoginState::Ok && c.clientVer >= kNoxClientAcceptVersion) {
+                out.push_back({kv.first, "NOXRANK ROOMS"});
+                ++stats_.roomsPushLines;
+            }
         }
     }
     // ★ 11-04 플랜1 — 방 안 화면 상태. 줄이 있을 때만 접속을 훑는다(사람의 상태가 바뀔 때뿐)
@@ -1128,6 +1131,13 @@ void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<
             return;
         }
         const std::string sub = t.size() > 1 ? Upper(t[1]) : std::string();
+        // ★ 11-16 방 번호 플랜 2-3 — 줄 서기(JOIN)만 최소 판도 본다. 최소 판 아래는 참가 토큰을 못 받아 묶여도 방에 못 들어오고 「안 나타남」으로 세여
+        //   줄 서기 제한을 받는다. 대전 기록(RECORD)은 토큰이 필요 없어 그대로 받는다 — 낮은 판도 기록 창은 쓴다
+        if (sub == "JOIN" && c.clientVer < kNoxClientMinVersion) {
+            ++stats_.rankOldClient;
+            Unknown("NOXRANK JOIN(판 " + std::to_string(c.clientVer) + ")", line);
+            return;
+        }
         if (sub == "JOIN") c.rankNext = true;
         else if (sub == "LEAVE") RankRemove(conn, RankLeave::Dll, out);
         else if (sub == "ACCEPT") RankAccept(conn, c, out);   // ★ 매칭 손보기 6 — 판 5 DLL · 찾음 창의 「예」

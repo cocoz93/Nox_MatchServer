@@ -227,7 +227,7 @@ void LobbyUnitTests() {
     // 4000 — DLL 알림 + 로그인 묶음 → 376, verchk → 379
     //   (★ 10-14 작업 8b — 4005 로비 찾기는 라우터로 — `RouterUnitTests`)
     lb.OnConnect(2, peer, loop);
-    for (const char* l : {"NOXCLIENT 1", "CVERS 11020 9472", "PASS supersecret", "NICK wn", "apgar 1234 0", "SERIAL 7726",
+    for (const char* l : {"NOXCLIENT 8", "CVERS 11020 9472", "PASS supersecret", "NICK wn", "apgar 1234 0", "SERIAL 7726",
                           "USER UserName HostName irc.westwood.com :RealName", "verchk 32512 720916", "SETOPT 17,33"})
         lb.OnLine(2, l, out);
     Check(out.size() >= 2 && out[out.size() - 2].line == ": 376 u" &&
@@ -375,7 +375,7 @@ void ChannelLobbyUnitTests() {
     std::vector<Out> out;
     lb.OnConnect(1, peer, local);
     // 접속 이름은 방을 만든 사람(wn)과 다르게 — 같으면 사라진 뒤 참가가 「새 방」(작업 10a)이 된다
-    for (const char* l : {"NOXCLIENT 1", "NICK bob", "USER UserName HostName irc.westwood.com :RealName"}) lb.OnLine(1, l, out);
+    for (const char* l : {"NOXCLIENT 8", "NICK bob", "USER UserName HostName irc.westwood.com :RealName"}) lb.OnLine(1, l, out);
     out.clear();
     lb.OnLine(1, "LIST 37 37", out);
     GameInfo g;
@@ -402,7 +402,7 @@ void ChannelLobbyUnitTests() {
         Lobby lbM(cfg, fakeM);
         std::vector<Out> oM;
         lbM.OnConnect(1, peer, local);
-        for (const char* l : {"NOXCLIENT 1", "NICK bob", "USER UserName HostName irc.westwood.com :RealName"}) lbM.OnLine(1, l, oM);
+        for (const char* l : {"NOXCLIENT 8", "NICK bob", "USER UserName HostName irc.westwood.com :RealName"}) lbM.OnLine(1, l, oM);
         oM.clear();
         lbM.OnLine(1, "LIST 37 37", oM);
         GameInfo inL;
@@ -428,7 +428,7 @@ void ChannelLobbyUnitTests() {
         Lobby lbJ(cfg, fakeJ);
         std::vector<Out> oJ;
         lbJ.OnConnect(1, peer, local);
-        for (const char* l : {"NOXCLIENT 1", "NICK bob", "USER UserName HostName irc.westwood.com :RealName", "JOINGAME #wn's_game 1 "}) lbJ.OnLine(1, l, oJ);
+        for (const char* l : {"NOXCLIENT 8", "NICK bob", "USER UserName HostName irc.westwood.com :RealName", "JOINGAME #wn's_game 1 "}) lbJ.OnLine(1, l, oJ);
         GameInfo in;
         int n332 = 0;
         for (const auto& o : oJ) {
@@ -443,7 +443,7 @@ void ChannelLobbyUnitTests() {
         Lobby lb3(cfg, fake3);
         std::vector<Out> o3;
         lb3.OnConnect(1, peer, local);
-        for (const char* l : {"NOXCLIENT 1", "NICK bob", "USER UserName HostName irc.westwood.com :RealName", "LIST 37 37"}) lb3.OnLine(1, l, o3);
+        for (const char* l : {"NOXCLIENT 8", "NICK bob", "USER UserName HostName irc.westwood.com :RealName", "LIST 37 37"}) lb3.OnLine(1, l, o3);
         GameInfo g3;
         int n3 = 0;
         for (const auto& o : o3) {
@@ -461,7 +461,7 @@ void ChannelLobbyUnitTests() {
         Lobby lb2(cfg, fake2);
         std::vector<Out> o2;
         lb2.OnConnect(1, peer, local);
-        for (const char* l : {"NOXCLIENT 1", "NICK bob", "USER UserName HostName irc.westwood.com :RealName", "LIST 37 37"}) lb2.OnLine(1, l, o2);
+        for (const char* l : {"NOXCLIENT 8", "NICK bob", "USER UserName HostName irc.westwood.com :RealName", "LIST 37 37"}) lb2.OnLine(1, l, o2);
         GameInfo g2;
         int n2 = 0;
         for (const auto& o : o2) {
@@ -506,7 +506,7 @@ void NewRoomUnitTests() {
     auto login = [&](int conn, const char* nick, bool dll, const char* codepage) {
         lb.OnConnect(conn, peer, local);
         std::vector<Out> o;
-        if (dll) lb.OnLine(conn, "NOXCLIENT 1", o);
+        if (dll) lb.OnLine(conn, "NOXCLIENT 8", o);
         lb.OnLine(conn, std::string("NICK ") + nick, o);
         lb.OnLine(conn, "USER UserName HostName irc.westwood.com :RealName", o);
         if (codepage) lb.OnLine(conn, std::string("SETCODEPAGE ") + codepage, o);
@@ -615,7 +615,7 @@ void PendingRoomUnitTests() {
     auto login = [&](int conn, const char* nick) {
         lb.OnConnect(conn, peer, local);
         std::vector<Out> o;
-        for (const std::string l : {std::string("NOXCLIENT 2"), std::string("NICK ") + nick,
+        for (const std::string l : {std::string("NOXCLIENT 8"), std::string("NICK ") + nick,
                                     std::string("USER UserName HostName irc.westwood.com :RealName"), std::string("SETCODEPAGE 949")})
             lb.OnLine(conn, l, o);
     };
@@ -736,11 +736,13 @@ void PendingRoomUnitTests() {
 
 // ── ★ 랭크 매칭 조각 4 — 줄: 줄 섬 · 모음(최소 + 모으기 시간) · 최대 즉시 · 빠짐 셋(창 닫힘 · LIST · 끊김) · 요청 중 빠짐 ·
 //    방 실패 · 시간 초과(줄 앞에 되돌림 · 쉬고 다시) · 곧바로 실패 · 곧바로 섬 · 표시 버림 · 낮은 판 · 참가 무시 · 셈의 합 ──
+//    (★ 11-17 R-3 — 줄에 서는 DLL 은 최소 판 8 · 다 수락 단계를 거친다. 「요청 중 빠짐」 은 뺌 — `RankReadyUnitTests` ⑪)
 // ★ 매칭 손보기 6 — 수락 단계(판 5 DLL 끼리 · `Lobby.h` `kNoxClientAcceptVersion`)
 //   ① 방이 서면 둘 다 `NOXRANK FOUND 10`(참가 답 없음) · 하나 수락 → 아직 · 둘 다 수락 → 각자 참가 답
 //   ② 하나 수락 뒤 다른 쪽 LEAVE(창의 「아니오」 · 취소) → 수락한 쪽 `NOXRANK WAIT` · 줄 맨 앞 · 다음 사람과 다시 찾음
 //   ③ 한도 — 1ms 앞 그대로 · 한도에 수락 안 한 쪽 `NOXRANK EXPIRED`(줄에서 빠짐) · 수락한 쪽 WAIT
-//   ④ 판 4 가 섞이면 옛 길(곧바로 참가 답) ⑤ 찾음 중이 아닌 ACCEPT → 버림 ⑥ 찾음 중 끊김 → 남은 쪽 WAIT ⑦ 셈의 합
+//   ④ (★ 11-17 R-3 — 옛 「판 4 가 섞이면 옛 길」 대신) 줄 앞에 되돌아간 쪽은 다음 사람과 다시 찾음 · 다시 수락해야 방
+//   ⑤ 찾음 중이 아닌 ACCEPT → 버림 ⑥ 찾음 중 끊김 → 남은 쪽 WAIT ⑦ 셈의 합
 void RankAcceptUnitTests() {
     using namespace nox::wol;
     LobbyConfig cfg;
@@ -785,8 +787,8 @@ void RankAcceptUnitTests() {
     };
 
     // ①
-    login(1, "amy", 5);
-    login(2, "bob", 5);
+    login(1, "amy", 8);
+    login(2, "bob", 8);
     std::vector<Out> o1;
     rankJoin(1, "amy", o1);
     rankJoin(2, "bob", o1);
@@ -801,9 +803,9 @@ void RankAcceptUnitTests() {
           "★ ① 판 5 둘 → 둘 다 FOUND(참가 답 · 방 요청 없음) · 하나 수락은 그대로 · ★ 10-31 둘 다 수락 → READY · 그때 방 요청 1 → 각자 참가 답(토큰)");
 
     // ②
-    login(3, "cat", 5);
-    login(4, "dan", 5);
-    login(5, "eve", 5);
+    login(3, "cat", 8);
+    login(4, "dan", 8);
+    login(5, "eve", 8);
     std::vector<Out> o2;
     rankJoin(3, "cat", o2);
     rankJoin(4, "dan", o2);
@@ -827,8 +829,8 @@ void RankAcceptUnitTests() {
           "★ 10-31 방 요청은 둘 다 수락한 뒤 한 번(명단 cat · eve)");
 
     // ③
-    login(6, "fay", 5);
-    login(7, "gus", 5);
+    login(6, "fay", 8);
+    login(7, "gus", 8);
     std::vector<Out> o3;
     rankJoin(6, "fay", o3);
     rankJoin(7, "gus", o3);
@@ -843,23 +845,28 @@ void RankAcceptUnitTests() {
               lb.RankFoundPending() == 0 && has(o3, 7, rel("gus")) == 1 && rels(o3, 6) == 0,
           "★ ③ 수락 한도 1ms 앞 그대로 · 한도에 수락 안 한 gus EXPIRED + 474(줄에서 빠짐 · 묶인 참가 풂) · 수락한 fay WAIT(줄 맨 앞 · 묶인 그대로)");
 
-    // ④ — fay(5, 줄에 남음) + hal(4) → 옛 길(곧바로 참가 답)
-    login(8, "hal", 4);
+    // ④ — ★ 11-17 R-3 fay(줄 앞에 되돌아감 · 앞서 수락함) + hal → 다시 찾음 · 앞 수락은 안 넘어감(hal 만 수락하면 그대로) · 둘 다 수락 → 참가 답
+    //   (옛 장면 「판 4 가 섞인 묶음 → 옛 길」 은 뺌 — 최소 판 8 밑은 줄에 못 선다)
+    login(8, "hal", 8);
     std::vector<Out> o4;
-    rankJoin(8, "hal", o4);
     const unsigned long long groups0 = s.rankFoundGroups;
-    Check(tokens(o4, 6) == 1 && tokens(o4, 8) == 1 && has(o4, 6, found) == 0 && s.rankFoundGroups == groups0,
-          "★ ④ 판 4 가 섞인 묶음 → 옛 길(찾음 없이 곧바로 참가 답)");
+    rankJoin(8, "hal", o4);
+    const bool refound = has(o4, 6, found) == 1 && has(o4, 8, found) == 1 && s.rankFoundGroups == groups0 + 1 && lb.RankFoundPending() == 1;
+    lb.OnLine(8, "NOXRANK ACCEPT", o4);
+    const bool halOnly = has(o4, 8, "NOXRANK READY") == 0 && tokens(o4, 6) == 0 && lb.RankFoundPending() == 1;
+    lb.OnLine(6, "NOXRANK ACCEPT", o4);
+    Check(refound && halOnly && has(o4, 6, "NOXRANK READY") == 1 && tokens(o4, 6) == 1 && tokens(o4, 8) == 1 && lb.RankFoundPending() == 0,
+          "★ ④ 줄 앞에 되돌아간 fay 는 다음 hal 과 다시 찾음 · 앞 수락은 안 넘어감(hal 만 수락하면 그대로) · 둘 다 수락 → 참가 답");
 
     // ⑤
     std::vector<Out> o5;
-    lb.OnLine(8, "NOXRANK ACCEPT", o5);   // 판 4(참가 답 받음 — 찾음 아님)
-    login(9, "ivy", 5);
-    lb.OnLine(9, "NOXRANK ACCEPT", o5);   // 판 5 · 줄에도 없음
-    Check(o5.empty() && s.rankAcceptStray == 2, "★ ⑤ 찾음 중이 아닌 접속의 ACCEPT(판 4 참가 뒤 · 판 5 줄 밖) → 둘 다 수락 버림 셈 · 줄 없음");
+    lb.OnLine(8, "NOXRANK ACCEPT", o5);   // ★ 11-17 R-3 참가 답 받은 뒤(찾음 아님 — 옛 판 4 참가 뒤 자리)
+    login(9, "ivy", 8);
+    lb.OnLine(9, "NOXRANK ACCEPT", o5);   // 줄에도 없음
+    Check(o5.empty() && s.rankAcceptStray == 2, "★ ⑤ 찾음 중이 아닌 접속의 ACCEPT(참가 답 받은 뒤 · 줄 밖) → 둘 다 수락 버림 셈 · 줄 없음");
 
     // ⑥
-    login(10, "jon", 5);
+    login(10, "jon", 8);
     std::vector<Out> o6;
     rankJoin(9, "ivy", o6);
     rankJoin(10, "jon", o6);
@@ -874,14 +881,14 @@ void RankAcceptUnitTests() {
     std::snprintf(m, sizeof(m), "★ ⑦ 찾음 %llu = 다 수락 %llu + 되돌림 %llu + 거절 %llu + 한도 %llu (+ 끝날 때 찾음 %zu묶음)", s.rankFound, s.rankAcceptMatched,
                   s.rankFoundRequeued, s.RankDeclinedTotal(), s.rankExpired, lb.RankFoundPending());
     Check(s.rankFound == s.rankAcceptMatched + s.rankFoundRequeued + s.RankDeclinedTotal() + s.rankExpired && lb.RankFoundPending() == 0 &&
-              s.rankFound == 10 && s.rankFoundGroups == 5,
+              s.rankFound == 12 && s.rankFoundGroups == 6,
           m);
     // ★ 10-31 — 474 = 거절(창 닫힘 · LIST) + 한도 — 이 묶음엔 dan(창 닫힘) · gus(한도) 둘
     Check(s.rankJoinReleased == s.rankDeclined[static_cast<size_t>(RankLeave::Dll)] + s.rankDeclined[static_cast<size_t>(RankLeave::List)] + s.rankExpired &&
               s.rankJoinReleased == 2,
           "★ ⑦ 묶인 참가 풂(474) 2 = 거절(창 닫힘 · LIST) + 한도 — 끊김엔 없음");
-    // ★ 10-31 — 버려진 방 0: 찾음 5묶음 가운데 다 수락한 셋(①② 마무리 · ④ 는 옛 길)만 방 요청 — 깨진 묶음(② 첫 · ③ · ⑥)은 요청 없음
-    Check(fake.asks.size() == 3 && s.rankAcceptMatched == 4, "★ ⑦ 방 요청 3 = 다 수락 2묶음 + 옛 길 1묶음 · 깨진 찾음 3묶음은 게임 서버에 안 닿음");
+    // ★ 10-31 — 버려진 방 0: 찾음 6묶음 가운데 다 수락한 셋(① · ② 마무리 · ④ — ★ 11-17 R-3 옛 길 대신 다 수락)만 방 요청 — 깨진 묶음(② 첫 · ③ · ⑥)은 요청 없음
+    Check(fake.asks.size() == 3 && s.rankAcceptMatched == 6, "★ ⑦ 방 요청 3 = 다 수락 3묶음 · 깨진 찾음 3묶음은 게임 서버에 안 닿음");
 }
 
 // ── ★ 10-31 — 다 수락한 뒤 방 요청(사용자 결정 ②). 묶음마다 새 로비(줄 · 쉬는 시간이 섞이지 않게)
@@ -889,7 +896,7 @@ void RankAcceptUnitTests() {
 //   ⑨ 다 수락 뒤 방 시간 초과 → 둘 다 WAIT · 줄 맨 앞(차례 그대로) · 요청 접음 · 쉬고 나서 다시 찾음
 //   ⑩ 다 수락 뒤 곧바로 실패 → 둘 다 WAIT · 줄 앞
 //   ⑪ 다 수락 뒤 방 기다리는 중 한 사람 LEAVE → 그 사람 474 · 남은 사람 WAIT · 줄 앞 · 요청 접음 → 늦은 CREATED 는 버림(참가 답 없음)
-//   ⑫ 옛 길(판 4)은 방 시간 초과에 WAIT 없음
+//   ⑫ 옛 길(판 4)은 방 시간 초과에 WAIT 없음 — ★ 11-17 R-3 뺌(최소 판 8 밑은 줄에 못 섬)
 void RankReadyUnitTests() {
     using namespace nox::wol;
     uint32_t clock = 0x10000u;
@@ -938,7 +945,7 @@ void RankReadyUnitTests() {
         fake.ask = true;
         Lobby lb(cfg, fake);
         std::vector<Out> o;
-        bothAccept(lb, 5, o);
+        bothAccept(lb, 8, o);
         const bool asked = has(o, 1, "NOXRANK READY") == 1 && has(o, 2, "NOXRANK READY") == 1 && fake.asked.size() == 1 && tokens(o, 1) + tokens(o, 2) == 0 &&
                            lb.RankRequestsPending() == 1 && lb.RankFoundPending() == 0;
         std::vector<Out> oc;
@@ -951,7 +958,7 @@ void RankReadyUnitTests() {
         fake.ask = true;
         Lobby lb(cfg, fake);
         std::vector<Out> o;
-        bothAccept(lb, 5, o);
+        bothAccept(lb, 8, o);
         const uint32_t req = fake.asked.back();
         clock += kRoomRequestTimeoutMs - 1;
         std::vector<Out> ot;
@@ -973,7 +980,7 @@ void RankReadyUnitTests() {
         fake.canCreate = false;
         Lobby lb(cfg, fake);
         std::vector<Out> o;
-        bothAccept(lb, 5, o);
+        bothAccept(lb, 8, o);
         Check(has(o, 1, "NOXRANK READY") == 1 && has(o, 1, "NOXRANK WAIT") == 1 && has(o, 2, "NOXRANK WAIT") == 1 && lb.RankQueueSize() == 2 &&
                   lb.Stats().rankRoomFailed == 1 && tokens(o, 1) + tokens(o, 2) == 0,
               "★ ⑩ 다 수락 뒤 곧바로 실패 → READY 뒤 둘 다 WAIT · 줄 앞 2 · 참가 답 없음");
@@ -983,7 +990,7 @@ void RankReadyUnitTests() {
         fake.ask = true;
         Lobby lb(cfg, fake);
         std::vector<Out> o;
-        bothAccept(lb, 5, o);
+        bothAccept(lb, 8, o);
         const uint32_t req = fake.asked.back();
         std::vector<Out> ol;
         lb.OnLine(2, "NOXRANK LEAVE", ol);
@@ -997,19 +1004,7 @@ void RankReadyUnitTests() {
         Check(broke && tokens(oc, 1) == 0 && tokens(oc, 2) == 0 && lb.Stats().lateRoomReply == late0 + 1 && lb.RankQueueSize() == 1,
               "★ ⑪ 다 수락 뒤 방 기다리는 중 bob LEAVE → bob 474 · amy WAIT · 줄 앞 · 요청 접음 → 늦은 CREATED 버림(참가 답 없음 · amy 는 줄에)");
     }
-    {   // ⑫
-        FakeRooms fake;
-        fake.ask = true;
-        Lobby lb(cfg, fake);
-        std::vector<Out> o;
-        bothAccept(lb, 4, o);
-        const bool asked = fake.asked.size() == 1 && has(o, 1, found) == 0 && has(o, 1, "NOXRANK READY") == 0;
-        clock += kRoomRequestTimeoutMs;
-        std::vector<Out> ot;
-        lb.Tick(ot);
-        Check(asked && has(ot, 1, "NOXRANK WAIT") == 0 && has(ot, 2, "NOXRANK WAIT") == 0 && lb.RankQueueSize() == 2,
-              "★ ⑫ 옛 길(판 4) — 찾음 · READY 없이 곧바로 물음 · 시간 초과에 WAIT 없음(정품 창 그대로) · 줄 앞 2");
-    }
+    // ⑫ (★ 11-17 R-3 뺌) 옛 길(판 4) — 시간 초과에 WAIT 없음. 최소 판 8 밑은 줄에 못 서 닿지 않는 자리
 }
 
 void RankQueueUnitTests() {
@@ -1028,7 +1023,7 @@ void RankQueueUnitTests() {
     fake.ask = true;
     Lobby lb(cfg, fake);
     const uint32_t local = 0x7f000001, peer = 0x7f000001;
-    auto login = [&](int conn, const std::string& nick, int ver = 4) {
+    auto login = [&](int conn, const std::string& nick, int ver = 8) {
         lb.OnConnect(conn, peer, local);
         std::vector<Out> o;
         for (const std::string l : {"NOXCLIENT " + std::to_string(ver), "NICK " + nick, std::string("USER UserName HostName irc.westwood.com :RealName"),
@@ -1039,6 +1034,23 @@ void RankQueueUnitTests() {
         lb.OnLine(conn, "NOXRANK JOIN", o);
         lb.OnLine(conn, "JOINGAME #" + nick + "'s_game 1 ", o);
     };
+    // ★ 11-17 방 번호 플랜 R-3 — 줄에 서는 DLL 은 최소 판 8 이라 둘 이상 묶이면 늘 수락 단계부터(`NOXRANK FOUND`) — 다 수락해야 방 요청.
+    //   옛 판 4 길(곧바로 방 요청)은 최소 판 밑이라 줄에 못 선다
+    auto acceptAll = [&](std::initializer_list<int> conns, std::vector<Out>& o) {
+        for (int id : conns) lb.OnLine(id, "NOXRANK ACCEPT", o);
+    };
+    auto has = [](const std::vector<Out>& o, int conn, const std::string& line) {
+        int n = 0;
+        for (const auto& x : o) n += x.conn == conn && x.line == line ? 1 : 0;
+        return n;
+    };
+    // 나온 줄이 랭크 창 줄(FOUND · READY · WAIT)뿐인가 — 참가 답 · 거절 줄이 없나
+    auto onlyRankLines = [](const std::vector<Out>& o) {
+        for (const auto& x : o)
+            if (x.line.rfind("NOXRANK ", 0) != 0) return false;
+        return true;
+    };
+    const std::string found = "NOXRANK FOUND " + std::to_string(kRankAcceptMs / 1000);
     // 접속 하나가 받은 줄의 종류(`NOXTOKEN,user:JOINGAME,332,353,366`)
     auto kindsFor = [](const std::vector<Out>& o, int conn) {
         std::string k;
@@ -1089,10 +1101,13 @@ void RankQueueUnitTests() {
     const bool noAskBeforeDue = out.empty() && fake.asks.empty();
     clock += 1;
     lb.Tick(out);
-    Check(noAskAtMin && noAskBeforeDue && fake.asks.size() == 1 && fake.asks[0].ranked && fake.asks[0].creator == "amy" &&
+    const bool found2 = has(out, 1, found) == 1 && has(out, 2, found) == 1 && fake.asks.empty() && lb.RankFoundPending() == 1;
+    acceptAll({1, 2}, out);
+    Check(noAskAtMin && noAskBeforeDue && found2 && fake.asks.size() == 1 && fake.asks[0].ranked && fake.asks[0].creator == "amy" &&
               fake.asks[0].roster == std::vector<std::string>{"amy", "bob"} && lb.RankQueueSize() == 0 && lb.RankRequestsPending() == 1 &&
-              out.empty() && lb.Stats().rankGroupGather == 1,
-          "② 최소가 차도 곧바로 안 묶음 · 모으기 한도 1ms 전엔 그대로 · 한도에 묶어 랭크 요청(명단 amy,bob · 방장 amy) — 시계가 32비트를 넘어 돌아도");
+              onlyRankLines(out) && lb.Stats().rankGroupGather == 1,
+          "② 최소가 차도 곧바로 안 묶음 · 모으기 한도 1ms 전엔 그대로 · 한도에 묶어 찾음 → 다 수락에 랭크 요청(명단 amy,bob · 방장 amy) — 시계가 32비트를 넘어 돌아도");
+    out.clear();
     const uint32_t req2 = fake.asked.back();
     const LobbyRoom r2 = made("amy");
     lb.OnRoomCreated(req2, r2, out);
@@ -1110,9 +1125,11 @@ void RankQueueUnitTests() {
     rankJoin(4, "dan", out);
     const size_t asksBefore = fake.asks.size();
     rankJoin(5, "eve", out);
-    Check(asksBefore == 1 && fake.asks.size() == 2 && fake.asks[1].roster == std::vector<std::string>{"cat", "dan", "eve"} &&
-              lb.RankQueueSize() == 0 && lb.Stats().rankGroupFull == 1 && out.empty(),
-          "③ 최대가 차는 순간 곧바로 묶음(cat,dan,eve) — 모으기 시간 안 기다림");
+    const bool found3 = has(out, 3, found) == 1 && has(out, 4, found) == 1 && has(out, 5, found) == 1 && fake.asks.size() == 1;
+    acceptAll({3, 4, 5}, out);
+    Check(asksBefore == 1 && found3 && fake.asks.size() == 2 && fake.asks[1].roster == std::vector<std::string>{"cat", "dan", "eve"} &&
+              lb.RankQueueSize() == 0 && lb.Stats().rankGroupFull == 1 && onlyRankLines(out),
+          "③ 최대가 차는 순간 곧바로 묶음(cat,dan,eve) — 모으기 시간 안 기다림 · 다 수락에 요청");
     lb.OnRoomCreated(fake.asked.back(), made("cat"), out);
     out.clear();
 
@@ -1153,21 +1170,8 @@ void RankQueueUnitTests() {
     lb.OnClose(6, out);   // 줄 0 으로 정리
     out.clear();
 
-    // ⑤ 요청 중 빠짐 — 방이 서도 빠진 사람엔 답 없음 · 남은 사람만
-    login(9, "ivy");
-    login(10, "jon");
-    rankJoin(9, "ivy", out);
-    rankJoin(10, "jon", out);
-    clock += cfg.rankGatherMs;
-    lb.Tick(out);
-    const uint32_t req5 = fake.asked.back();
-    lb.OnLine(9, "NOXRANK LEAVE", out);
-    const LobbyRoom r5 = made("ivy");
-    lb.OnRoomCreated(req5, r5, out);
-    Check(fake.asks.back().roster == std::vector<std::string>{"ivy", "jon"} && kindsFor(out, 9) == std::to_string(kRankReleaseNumeric) &&
-              joinedOwn(out, 10, "jon", r5.gameRoomId) && lb.Stats().rankLeftRequested[static_cast<size_t>(RankLeave::Dll)] == 1,
-          "⑤ 요청 중 창 닫힘 → 그 사람엔 474(묶인 참가 풂) 하나뿐 · 방이 서도 참가 답 없음 · 남은 jon 만 참가 답");
-    out.clear();
+    // ⑤ (★ 11-17 R-3 뺌) 요청 중 빠짐 → 남은 사람만 참가 답 — 옛 판 4 길의 꼴이었다. 판 8 은 다 수락 뒤 방 기다리는 중에 빠지면 요청을 접고
+    //   남은 사람을 줄 앞에 되돌린다 — 그 자리는 `RankReadyUnitTests` ⑪ 이 본다
 
     // ⑥ 방 실패 → 줄 앞에 되돌림(차례 그대로 · 거절 줄 없음) → 쉬는 동안 안 물음 → 쉬고 나면 곧바로 다시 묶음(모으기 시간 또 안 기다림)
     login(11, "kim");
@@ -1176,42 +1180,51 @@ void RankQueueUnitTests() {
     rankJoin(12, "lee", out);
     clock += cfg.rankGatherMs;
     lb.Tick(out);
+    acceptAll({11, 12}, out);
+    out.clear();
     lb.OnRoomCreateFailed(fake.asked.back(), "대기 맵 없음", out);
-    const bool requeued = out.empty() && lb.RankQueueSize() == 2 && lb.RankRequestsPending() == 0 && lb.Stats().rankRoomFailed == 1;
+    const bool requeued = has(out, 11, "NOXRANK WAIT") == 1 && has(out, 12, "NOXRANK WAIT") == 1 && out.size() == 2 && lb.RankQueueSize() == 2 &&
+                          lb.RankRequestsPending() == 0 && lb.Stats().rankRoomFailed == 1;
     const size_t asksAtFail = fake.asks.size();
     clock += kRankRetryMs - 1;
     lb.Tick(out);
-    const bool restHeld = fake.asks.size() == asksAtFail;
+    const bool restHeld = fake.asks.size() == asksAtFail && has(out, 11, found) == 0;
     clock += 1;
     lb.Tick(out);
-    Check(requeued && restHeld && fake.asks.size() == asksAtFail + 1 && fake.asks.back().roster == std::vector<std::string>{"kim", "lee"} &&
+    const bool refound = has(out, 11, found) == 1 && has(out, 12, found) == 1;
+    acceptAll({11, 12}, out);
+    Check(requeued && restHeld && refound && fake.asks.size() == asksAtFail + 1 && fake.asks.back().roster == std::vector<std::string>{"kim", "lee"} &&
               lb.Stats().rankRequeued == 2,
-          "⑥ 방 실패 → 거절 줄 없이 줄 앞에 되돌림 · 쉬는 시간 1ms 전엔 안 물음 · 끝나면 곧바로 같은 차례로 다시 묶음");
+          "⑥ 방 실패 → 거절 줄 없이 WAIT 둘 · 줄 앞에 되돌림 · 쉬는 시간 1ms 전엔 안 묶음 · 끝나면 곧바로 같은 차례로 다시 찾음 → 다 수락에 요청");
     // ⑦ 시간 초과 → 거울에 접음 알림 · 되돌림 · 그 뒤 온 답은 늦은 답(참가 답 없음)
     const uint32_t req7 = fake.asked.back();
+    out.clear();
     clock += kRoomRequestTimeoutMs - 1;
     lb.Tick(out);
     const bool waiting7 = lb.RankRequestsPending() == 1 && lb.Stats().rankRoomTimeout == 0;
     clock += 1;
     lb.Tick(out);
     const bool timedOut = lb.RankRequestsPending() == 0 && lb.Stats().rankRoomTimeout == 1 && lb.RankQueueSize() == 2 &&
-                          !fake.cancelled.empty() && fake.cancelled.back() == req7;
+                          !fake.cancelled.empty() && fake.cancelled.back() == req7 && has(out, 11, "NOXRANK WAIT") == 1 && has(out, 12, "NOXRANK WAIT") == 1;
+    out.clear();
     lb.OnRoomCreated(req7, made("kim"), out);
     Check(waiting7 && timedOut && out.empty() && lb.Stats().lateRoomReply == 1,
-          "⑦ 한도 1ms 전엔 기다림 · 한도에 시간 초과 → 거울에 접음 알림 · 줄 앞에 되돌림 · 늦게 온 답은 버림(참가 답 없음)");
+          "⑦ 한도 1ms 전엔 기다림 · 한도에 시간 초과 → 거울에 접음 알림 · WAIT 둘 · 줄 앞에 되돌림 · 늦게 온 답은 버림(참가 답 없음)");
     // ⑧ 곧바로 실패(게임 서버 없음) → 되돌리고 쉼(한 바퀴 안에서 다시 묻지 않음) · 곧바로 섬 → 그 자리에서 참가 답
     fake.ask = false;
     fake.canCreate = false;
     clock += kRankRetryMs;
     const size_t asks8 = fake.asks.size();
     lb.Tick(out);
+    acceptAll({11, 12}, out);   // 쉬고 나서 다시 찾음 → 다 수락에 물음
     const bool failedOnce = fake.asks.size() == asks8 + 1 && lb.RankQueueSize() == 2 && lb.Stats().rankRoomFailed == 2;
     fake.canCreate = true;
     clock += kRankRetryMs;
     lb.Tick(out);
+    acceptAll({11, 12}, out);
     Check(failedOnce && fake.asks.size() == asks8 + 2 && joinedOwn(out, 11, "kim", fake.rooms.back().gameRoomId) &&
               joinedOwn(out, 12, "lee", fake.rooms.back().gameRoomId) && lb.RankQueueSize() == 0,
-          "⑧ 곧바로 실패 → 한 번만 묻고 되돌려 쉼 · 곧바로 섬 → 그 자리에서 둘 다 참가 답");
+          "⑧ 곧바로 실패 → 한 번만 묻고 되돌려 쉼 · 곧바로 섬 → 다 수락한 그 자리에서 둘 다 참가 답");
     fake.ask = true;
     out.clear();
 
@@ -1223,15 +1236,15 @@ void RankQueueUnitTests() {
     const bool markDropped = lb.Stats().rankMarkDropped == 1 && lb.Stats().roomsRequested == 1 && lb.RankQueueSize() == 0;
     login(14, "ned", 3);
     lb.OnLine(14, "NOXRANK JOIN", out);              // 판 3 — 안 믿음
-    lb.OnLine(14, "JOINGAME #ned's_game 1 ", out);   // 일반 새 방
-    const bool oldIgnored = lb.Stats().rankOldClient == 1 && lb.Stats().roomsRequested == 2 && lb.RankQueueSize() == 0;
+    lb.OnLine(14, "JOINGAME #ned's_game 1 ", out);   // ★ 11-17 R-3 — 최소 판 8 밑이라 일반 새 방도 안 만듦(옛 기대 = 일반 새 방 · 요청 2)
+    const bool oldIgnored = lb.Stats().rankOldClient == 1 && lb.Stats().roomsRequested == 1 && lb.Stats().newRoomNoClient == 1 && lb.RankQueueSize() == 0;
     login(15, "oli");
     rankJoin(15, "oli", out);
     rankJoin(15, "oli", out);                         // 줄에 있는 접속이 또 → 무시
     lb.OnLine(15, "JOINGAME #oli's_game 1 ", out);   // 표시 없는 참가도 무시
-    // 줄 섬 14 = amy bob · cat dan eve · fay gus hal fay(다시) · ivy jon · kim lee · oli (max · ned 는 일반 새 방)
-    Check(markDropped && oldIgnored && lb.Stats().rankDupJoin == 2 && lb.RankQueueSize() == 1 && lb.Stats().rankQueued == 14,
-          "⑨ 표시 다음 줄이 참가가 아니면 표시 버림(그 뒤 참가는 일반 새 방) · 판 3 의 표시는 안 믿음 · 줄에 있는 접속의 참가는 무시 · 줄 섬 14");
+    // 줄 섬 12 = amy bob · cat dan eve · fay gus hal fay(다시) · kim lee · oli (max 는 일반 새 방 · ned 는 새 방도 안 만듦 · ★ 11-17 R-3 ⑤ 의 ivy jon 뺌)
+    Check(markDropped && oldIgnored && lb.Stats().rankDupJoin == 2 && lb.RankQueueSize() == 1 && lb.Stats().rankQueued == 12,
+          "⑨ 표시 다음 줄이 참가가 아니면 표시 버림(그 뒤 참가는 일반 새 방) · 판 3 의 표시는 안 믿음(최소 판 밑이라 새 방도 안 만듦) · 줄에 있는 접속의 참가는 무시 · 줄 섬 12");
     lb.OnClose(15, out);
 
     // ⑩ 셈의 합 — 줄 들어옴(섬 + 되돌림) = 나감(빠짐 · 줄) + 묶임 + 남음 · 묶임 = 참가 답 + 되돌림 + 빠짐(요청 중) · 요청 = 섬 + 실패 + 시간 초과 + 기다림
@@ -1322,13 +1335,76 @@ void ChatUnitTests() {
     lb.OnClose(2, out);
     Check(out.size() == 1 && out[0].conn == 1 && out[0].line == ":ben!u@h PART #Lob_37_3", "끊김 → 같은 대화방 남은 사람에게 PART 한 줄");
     fake.rooms = {FakeRoom(9, "zed")};
-    lb.OnLine(1, "NOXCLIENT 1", out);
-    lb.OnLine(3, "NOXCLIENT 1", out);
+    lb.OnLine(1, "NOXCLIENT 8", out);
+    lb.OnLine(3, "NOXCLIENT 8", out);
     lb.OnLine(1, "JOINGAME #zed's_game 1 ", out);
     lb.OnLine(3, "JOINGAME #zed's_game 1 ", out);
     out.clear();
     lb.OnClose(3, out);
     Check(out.empty(), "끊김 — 게임 방 채널 · 혼자 있던 대화방엔 알림 없음");
+}
+
+// ── ★ 11-16 방 번호 플랜 2-3 — DLL 판 문턱(최소 판 8 · `Docs/ROOM_ID_WIDEN_PLAN_1116.md` 5절) ─────────
+//   판 7 DLL 은 입장 토큰 판 2(16진 106자)를 못 읽는다 → 로그인 · 대화 · 대전 기록은 되고 인사말 안내 · 참가 토큰 없음 · 새 방 안 만듦 · 랭크 줄 거절.
+//   판 8 은 같은 자리에서 토큰 · 줄 섬(대조군)
+void VersionGateUnitTests() {
+    using namespace nox::wol;
+    LobbyConfig cfg;
+    cfg.room.maxPlayers = 31;
+    cfg.joinKey = LobbyTestKey();
+    cfg.unixNow = [] { return kLobbyTestNow; };
+    cfg.nonce = [] { return 0x0102030405060708ull; };
+    uint32_t clock = 1000;
+    cfg.nowMs = [&clock] { return clock; };
+    cfg.rankMin = cfg.rankMax = 2;   // 둘이 서야 묶임 — 한 사람만 서면 줄에 남는다
+    FakeRooms fake;
+    Lobby lb(cfg, fake);
+    const uint32_t local = 0x7f000001, peer = 0x7f000001;
+    auto login = [&](int conn, const char* ver, const char* nick, std::vector<Out>& o) {
+        lb.OnConnect(conn, peer, local);
+        for (const std::string l : {std::string("NOXCLIENT ") + ver, std::string("NICK ") + nick,
+                                    std::string("USER UserName HostName irc.westwood.com :RealName")})
+            lb.OnLine(conn, l, o);
+    };
+    auto has = [](const std::vector<Out>& o, const std::string& s) {
+        for (const auto& x : o)
+            if (x.line.find(s) != std::string::npos) return true;
+        return false;
+    };
+    std::vector<Out> o7, o8;
+    login(1, "7", "old7", o7);
+    login(2, "8", "new8", o8);
+    Check(has(o7, "is missing or outdated") && !has(o8, "is missing or outdated") && has(o7, ": 376 u") && has(o8, ": 376 u") &&
+              lb.Stats().loginOldClient == 1,
+          "★ 판 문턱 ① 로그인 — 판 7 은 인사말 안내(없거나 낡음)를 받고 로그인 끝 · 판 8 은 안내 없음");
+
+    fake.rooms = {FakeRoom(9, "zed")};
+    std::vector<Out> j7, j8;
+    lb.OnLine(1, "JOINGAME #zed's_game 1 ", j7);
+    lb.OnLine(2, "JOINGAME #zed's_game 1 ", j8);
+    Check(!j7.empty() && !has(j7, "NOXTOKEN") && has(j8, "NOXTOKEN ") && lb.Stats().joinNoClient == 1 && lb.Stats().tokensIssued == 1,
+          "★ 판 문턱 ② 남의 방 참가 — 판 7 은 원래 답만(토큰 없음) · 판 8 은 토큰");
+
+    const size_t asks0 = fake.asks.size();
+    std::vector<Out> n7;
+    lb.OnLine(1, "JOINGAME #old7's_game 1 ", n7);
+    Check(fake.asks.size() == asks0 && lb.Stats().newRoomNoClient == 1 && n7.empty(),
+          "★ 판 문턱 ③ 새 방 — 판 7 은 안 만듦(들어올 수 없는 방이라 · 답 없음)");
+
+    std::vector<Out> r7, r8;
+    lb.OnLine(1, "NOXRANK JOIN", r7);
+    lb.OnLine(1, "JOINGAME #old7's_game 1 ", r7);
+    const size_t queue7 = lb.RankQueueSize();
+    lb.OnLine(2, "NOXRANK JOIN", r8);
+    lb.OnLine(2, "JOINGAME #new8's_game 1 ", r8);
+    Check(queue7 == 0 && lb.Stats().rankOldClient == 1 && lb.RankQueueSize() == 1,
+          "★ 판 문턱 ④ 랭크 줄 — 판 7 의 표시는 버림(줄 " + std::to_string(queue7) + ") · 판 8 은 줄에 섬(줄 " + std::to_string(lb.RankQueueSize()) + ")");
+
+    // ★ 11-17 — 문턱은 줄 서기(JOIN)에만. 대전 기록 창(RECORD)은 참가 토큰이 필요 없어 판 7 도 받는다
+    const unsigned long long old0 = lb.Stats().rankOldClient;
+    std::vector<Out> rec7;
+    lb.OnLine(1, "NOXRANK RECORD", rec7);
+    Check(lb.Stats().rankOldClient == old0, "★ 판 문턱 ⑤ 대전 기록 — 판 7 의 RECORD 는 문턱에 안 걸림(토큰이 필요 없는 창)");
 }
 
 // ── ★ 10-20 MO 6단계 v2 작업 3a-2 — 로비의 방 거울(`RoomMirror`) + 가짜 게임 서버(연결 줄을 `LobbyLink` 로 지어 넣는다) ──
@@ -1474,7 +1550,7 @@ void MirrorUnitTests() {
     lb.OnConnect(1, peer, local);
     {
         std::vector<Out> o;
-        for (const char* l : {"NOXCLIENT 2", "NICK carl", "USER UserName HostName irc.westwood.com :RealName", "LIST 37 37"}) lb.OnLine(1, l, o);
+        for (const char* l : {"NOXCLIENT 8", "NICK carl", "USER UserName HostName irc.westwood.com :RealName", "LIST 37 37"}) lb.OnLine(1, l, o);
         std::vector<std::string> cols;
         for (const auto& x : o) {
             const auto t = Tokens(x.line);
@@ -1507,7 +1583,7 @@ void MirrorUnitTests() {
     lb.OnConnect(2, peer, local);
     {
         std::vector<Out> o;
-        for (const char* l : {"NOXCLIENT 2", "NICK dan", "USER UserName HostName irc.westwood.com :RealName", "JOINGAME #dan's_game 1 "})
+        for (const char* l : {"NOXCLIENT 8", "NICK dan", "USER UserName HostName irc.westwood.com :RealName", "JOINGAME #dan's_game 1 "})
             lb.OnLine(2, l, o);
     }
     sent.clear();
@@ -1529,7 +1605,7 @@ void MirrorUnitTests() {
     lb.OnConnect(3, peer, local);
     {
         std::vector<Out> o;
-        for (const char* l : {"NOXCLIENT 2", "NICK eve", "USER UserName HostName irc.westwood.com :RealName", "JOINGAME #eve's_game 1 "})
+        for (const char* l : {"NOXCLIENT 8", "NICK eve", "USER UserName HostName irc.westwood.com :RealName", "JOINGAME #eve's_game 1 "})
             lb.OnLine(3, l, o);
     }
     sent.clear();
@@ -1546,7 +1622,7 @@ void MirrorUnitTests() {
     lb.OnConnect(4, peer, local);
     {
         std::vector<Out> o;
-        for (const char* l : {"NOXCLIENT 2", "NICK fay", "USER UserName HostName irc.westwood.com :RealName", "JOINGAME #fay's_game 1 "})
+        for (const char* l : {"NOXCLIENT 8", "NICK fay", "USER UserName HostName irc.westwood.com :RealName", "JOINGAME #fay's_game 1 "})
             lb.OnLine(4, l, o);
     }
     sent.clear();
@@ -1568,7 +1644,7 @@ void MirrorUnitTests() {
     lb.OnConnect(5, peer, local);
     {
         std::vector<Out> o;
-        for (const char* l : {"NOXCLIENT 2", "NICK gus", "USER UserName HostName irc.westwood.com :RealName"}) lb.OnLine(5, l, o);
+        for (const char* l : {"NOXCLIENT 8", "NICK gus", "USER UserName HostName irc.westwood.com :RealName"}) lb.OnLine(5, l, o);
         o.clear();   // 로그인 답은 빼고 참가의 답만 본다
         lb.OnLine(5, "JOINGAME #gus's_game 1 ", o);
         sent.clear();
@@ -1607,7 +1683,7 @@ void MirrorUnitTests() {
     auto host = [&](int conn, const char* nick) {
         lb.OnConnect(conn, peer, local);
         std::vector<Out> o;
-        for (const std::string l : {std::string("NOXCLIENT 2"), std::string("NICK ") + nick, std::string("USER UserName HostName irc.westwood.com :RealName"),
+        for (const std::string l : {std::string("NOXCLIENT 8"), std::string("NICK ") + nick, std::string("USER UserName HostName irc.westwood.com :RealName"),
                                     "JOINGAME #" + std::string(nick) + "'s_game 1 "})
             lb.OnLine(conn, l, o);
         std::vector<Out> s;
@@ -1619,6 +1695,8 @@ void MirrorUnitTests() {
     clock += kRoomRequestTimeoutMs;
     out.clear();
     lb.Tick(out);
+    // ★ 11-17 R-3 — 접속들이 판 8(옛 판 2)이라 같은 Tick 의 목록 바뀜 알림(`NOXRANK ROOMS` — 판 5 이상만)도 받는다. 거절 줄만 본다
+    out.erase(std::remove_if(out.begin(), out.end(), [](const Out& x) { return x.line == "NOXRANK ROOMS"; }), out.end());
     Check(OnlyReject(out, 6, "#hal's_game", JoinReject::Timeout), "⑪ 시간 초과 → 클라 c6 에 거절 471");
     const uint32_t reqIvy = host(7, "ivy");
     out.clear();
@@ -1652,7 +1730,7 @@ void MirrorUnitTests() {
     auto login4 = [&](int conn, const char* nick) {
         lb.OnConnect(conn, peer, local);
         std::vector<Out> o;
-        for (const std::string l : {std::string("NOXCLIENT 4"), std::string("NICK ") + nick, std::string("USER UserName HostName irc.westwood.com :RealName")})
+        for (const std::string l : {std::string("NOXCLIENT 8"), std::string("NICK ") + nick, std::string("USER UserName HostName irc.westwood.com :RealName")})
             lb.OnLine(conn, l, o);
     };
     auto listed = [&](int conn) {   // 그 접속이 받은 목록의 방 채널
@@ -1674,6 +1752,8 @@ void MirrorUnitTests() {
         lb.OnLine(c1, "JOINGAME #" + std::string(n1) + "'s_game 1 ", o);
         lb.OnLine(c2, "NOXRANK JOIN", o);
         lb.OnLine(c2, "JOINGAME #" + std::string(n2) + "'s_game 1 ", o);
+        lb.OnLine(c1, "NOXRANK ACCEPT", o);   // ★ 11-17 R-3 — 판 8(옛 판 4)은 둘 다 수락해야 방 요청
+        lb.OnLine(c2, "NOXRANK ACCEPT", o);
         std::vector<Out> s;
         mirror.TakeOut(s);
         s.erase(std::remove_if(s.begin(), s.end(), [](const Out& x) { return x.line.rfind("CLIENT_GONE ", 0) == 0; }), s.end());   // ★ 11-03 — 앞 끊김들의 줄은 아래 ⑫-b 가 본다
@@ -1766,6 +1846,8 @@ void MirrorUnitTests() {
     clock += kRankRetryMs;   // 쉬는 시간 뒤 다시 묻는 CREATE 는 버림(이 갈래는 실패한 요청의 표시만 본다)
     out.clear();
     lb.Tick(out);
+    lb.OnLine(11, "NOXRANK ACCEPT", out);   // ★ 11-17 R-3 — 판 8 은 쉬고 나서 다시 찾음 → 둘 다 수락해야 다시 CREATE
+    lb.OnLine(12, "NOXRANK ACCEPT", out);
     std::vector<Out> again;
     mirror.TakeOut(again);
     send(a3, nox::LinkRoomLine(room(22, "oli", 0)));
@@ -2298,7 +2380,7 @@ void LoginUnitTests() {
     // ①
     Lobby plain(makeCfg(false), fake);
     plain.OnConnect(1, peer, peer);
-    feed(plain, 1, bundle("2", "wn", "apgar 1234 0"));
+    feed(plain, 1, bundle("8", "wn", "apgar 1234 0"));   // ★ 11-17 R-3 — 방 참가 토큰을 받는 판(최소 판 8 · 옛 판 2)
     const bool plainOk = welcomeOk() && plain.Stats().loginNoAuth == 1 && plain.Stats().LoginTotal() == 1;
     feed(plain, 1, {"JOINGAME #host1's_game 1 "});
     Check(plainOk && has("NOXTOKEN ") && plain.AccountsOnline() == 0,
@@ -2307,7 +2389,7 @@ void LoginUnitTests() {
     Lobby lb(makeCfg(true), fake);
     // ②
     lb.OnConnect(1, peer, peer);
-    feed(lb, 1, bundle("3", "wn", apgar(Tok{})));
+    feed(lb, 1, bundle("8", "wn", apgar(Tok{})));   // ★ 11-17 R-3 — 옛 판 3
     ++users;
     const bool tokOk = welcomeOk() && lb.Stats().loginToken[0] == 1 && lb.AccountsOnline() == 1;
     feed(lb, 1, {"JOINGAME #host1's_game 1 "});
@@ -2397,7 +2479,7 @@ void LoginUnitTests() {
               std::to_string(failShown) + "/10)");
 
     // ⑤ 정할 것 b — 같은 계정(7) 새 접속
-    const int k5 = tryLogin("3", "wn", apgar(Tok{}));
+    const int k5 = tryLogin("8", "wn", apgar(Tok{}));   // ★ 11-17 R-3 — 새 접속이 방 참가 토큰을 받는지 보므로 최소 판 8(옛 판 3)
     int kicks = 0;
     for (const Out& o : out) kicks += (o.conn == 1 && o.closeAfter && o.line == "ERROR :Closing Link (logged in elsewhere)") ? 1 : 0;
     const bool newIn = !has(": 372 u :- *** Login failed") && lb.Stats().loginKickedOld == 1;
@@ -2668,7 +2750,7 @@ void LoginUnitTests() {
         Check(out.empty() && desk.Stats().recordClosed == 1 && desk.Stats().recordLate == 1 && desk.Pending() == 0, "⑩ 끊긴 접속의 답은 늦은 답");
         // e) 로그인 전 물음 · 판 4 미만 DLL · 저장소 없는 로비
         rl.OnConnect(3, peer, peer);
-        feed(rl, 3, {"NOXCLIENT 5", "NOXRANK RECORD"});
+        feed(rl, 3, {"NOXCLIENT 8", "NOXRANK RECORD"});
         const bool noLogin = lines() == std::vector<std::string>{"NOXSERVER 1"} && rl.Stats().recordNoLogin == 1;
         rl.OnConnect(4, peer, peer);
         const unsigned long long oldBefore = rl.Stats().rankOldClient;
@@ -2796,7 +2878,7 @@ void LoginUnitTests() {
         Check(out.empty() && desk.Stats().recordClosed == 1 && desk.Stats().recordLate == 1 && desk.Pending() == 0, "⑩′ 끊긴 접속의 답은 늦은 답(로비가 창구에 알림)");
         rl.OnConnect(3, peer, peer);
         out.clear();
-        feed(rl, 3, {"NOXCLIENT 5", "NOXRANK RECORD h3"});
+        feed(rl, 3, {"NOXCLIENT 8", "NOXRANK RECORD h3"});
         Check(rl.Stats().recordNoLogin == 1 && desk.Pending() == 0 && lines() == std::vector<std::string>{"NOXSERVER 1"}, "⑩′ 로그인 전엔 남의 이름도 안 물음");
         const RecordDeskStats& s1 = desk.Stats();
         Check(s1.RecordTotal() == s1.recordAsked, "⑩′ 셈 — 답 + 못 읽음 + 없는 사용자 + 끊김 = 물음");
@@ -3335,7 +3417,7 @@ int ReplayRecording(const char* path) {
 
     // 녹음에서 정품 클라가 고른 방은 `#tak7's_game` — 방 하나의 방장 이름을 그것으로 맞춰 둔다
     // ★ 10-10 토큰 작업 3 — 로비는 토큰 방식 하나뿐이다. 녹음 속 클라에는 DLL 이 없었으므로, 실제 클라처럼 DLL 몫을 흉내 낸다:
-    //   4000 로그인 앞에 `NOXCLIENT 1` 을 끼우고, 나온 답에서 `NOXTOKEN` 줄을 떼어 센 뒤(녹음 속 방 참가 수와 같아야 한다)
+    //   4000 로그인 앞에 `NOXCLIENT 8` 을 끼우고, 나온 답에서 `NOXTOKEN` 줄을 떼어 센 뒤(녹음 속 방 참가 수와 같아야 한다)
     //   나머지만 XWIS 원래 답과 견준다. 그래서 이 대조는 「DLL 이 줄을 뗀 뒤 정품 로비 모듈이 받는 것」을 본다.
     nox::wol::LobbyConfig cfg;
     cfg.gameServerIp = 0x7f000001;   // 옛 로비 기본값(따로 뜬 로비 — 127.0.0.1) 그대로 · ★ 10-14 작업 8d 기본값은 0(붙은 주소)
@@ -3347,7 +3429,7 @@ int ReplayRecording(const char* path) {
     //   (암호 판 로비의 줄 차례는 `LoginUnitTests` ② 가 이 녹음과 같은 묶음 꼴로 본다)
     // ★ 10-14 작업 8b — 4005 접속(로비 찾기)은 라우터가 받는다. 채널 주소 설정이 없으니 605 는 「붙은 주소」:4000(옛 로비와 같은 답)
     nox::wol::Router rt{nox::wol::RouterConfig{}};
-    int tokenLines = 0, joinGames = 0, routerConns = 0;
+    int tokenLines = 0, joinGames = 0, routerConns = 0, dllLines = 0;
     const uint32_t loop = 0x7f000001;   // 녹음의 정품 클라는 127.0.0.1 에서 붙었다
 
     int compared = 0, skipped = 0, items = 0, diffs = 0, droppedPage = 0;
@@ -3375,7 +3457,7 @@ int ReplayRecording(const char* path) {
             rt.OnClose(rc.id);
         } else {
             lb.OnConnect(rc.id, loop, loop);
-            if (rc.port == nox::wol::kLobbyPort) lb.OnLine(rc.id, "NOXCLIENT 1", out);   // DLL 이 로그인 앞에 끼우는 줄
+            if (rc.port == nox::wol::kLobbyPort) lb.OnLine(rc.id, "NOXCLIENT 8", out);   // DLL 이 로그인 앞에 끼우는 줄
             for (const auto& cl : rc.client) {
                 lb.OnLine(rc.id, cl, out);
                 if (cl.rfind("JOINGAME ", 0) == 0) ++joinGames;
@@ -3383,8 +3465,10 @@ int ReplayRecording(const char* path) {
             lb.OnClose(rc.id, out);   // ★ 10-20 v2 작업 3b — 대화방 남은 사람에게 PART(녹음은 접속을 하나씩 돌려 남은 사람 없음)
         }
         std::vector<std::string> kept;   // DLL 이 `NOXTOKEN` 줄을 뗀 뒤 정품 로비 모듈이 받는 줄
+        // ★ 11-17 R-3 — 끼우는 판이 8(옛 판 1)이라 판 2 이상에 가는 `NOXSERVER 1` 도 나온다. DLL 이 떼는 줄 넷(`linefilter_test` ⑦ ⑧)을 다 뗀다
         for (const auto& l : Lines(out)) {
             if (l.rfind("NOXTOKEN ", 0) == 0) ++tokenLines;
+            else if (l.rfind("NOXSERVER ", 0) == 0 || l.rfind("NOXRANK ", 0) == 0 || l.rfind("NOXCHAT ", 0) == 0) ++dllLines;
             else kept.push_back(l);
         }
         int oursPage = 0;
@@ -3420,7 +3504,7 @@ int ReplayRecording(const char* path) {
     Check(compared > 0 && items > 0, "녹음에서 대조할 접속과 답을 찾았다");
     Check(routerConns == 5, "녹음의 4005 접속 다섯을 라우터가 받았다");
     Check(diffs == 0, "로비 답이 XWIS 원래 답과 종류·순서·꼴이 같다(DLL 이 NOXTOKEN 을 뗀 뒤)");
-    std::printf("녹음 속 방 참가 %d · 낸 NOXTOKEN %d\n", joinGames, tokenLines);
+    std::printf("녹음 속 방 참가 %d · 낸 NOXTOKEN %d · 뗀 DLL 줄(NOXSERVER · NOXRANK · NOXCHAT) %d\n", joinGames, tokenLines, dllLines);
     Check(joinGames > 0 && tokenLines == joinGames, "녹음 속 방 참가마다 NOXTOKEN 하나");
     return 0;
 }
@@ -3577,7 +3661,7 @@ void BanUnitTests() {
         ++users;
         rl.OnConnect(conn, peer, peer);
         std::vector<Out> o;
-        for (const std::string& l : Names{"NOXCLIENT 5", "CVERS 11020 9472", "PASS supersecret", "NICK " + nick, apgarLine, "SERIAL 7726",
+        for (const std::string& l : Names{"NOXCLIENT 8", "CVERS 11020 9472", "PASS supersecret", "NICK " + nick, apgarLine, "SERIAL 7726",
                                           "USER UserName HostName irc.westwood.com :RealName", "verchk 32512 720916", "SETOPT 17,33", "SETCODEPAGE 949"})
             rl.OnLine(conn, l, o);
         pump();
@@ -3633,11 +3717,12 @@ void BanUnitTests() {
     }
     read();
     {
-        int toWn = 0, toBob = 0, toWaiting = 0;
+        int toWn = 0, toBob = 0, toWaiting = 0, bannedWn = 0;
         bool closeOk = false;
         for (const Out& x : out) {
             if (x.conn == 1) {
                 ++toWn;
+                bannedWn += x.line.rfind("NOXRANK BANNED ", 0) == 0 && !x.closeAfter ? 1 : 0;   // ★ 11-17 R-3 — 판 8(옛 판 5)이라 끊기 전 정지 안내(판 6 이상)
                 closeOk = x.line == "ERROR :Closing Link (account suspended)" && x.closeAfter;
             } else if (x.conn == 2) {
                 ++toBob;
@@ -3649,8 +3734,8 @@ void BanUnitTests() {
         std::vector<Out> afterClose;
         rl.OnLine(1, "LIST 37 37", afterClose);
         Check(afterClose.empty(), "③ 끊는 줄을 보낸 접속은 그 뒤 줄에 답 안 함(답 " + std::to_string(afterClose.size()) + ")");
-        Check(inBoth && toWn == 1 && closeOk && toBob == 0 && toWaiting == 0 && fake.kicked == Names{"ghost", "wn"} && s.banEnforced == 2 && s.banConnsClosed == 1 && s.banRowsLast == 2,
-              "③ 새 이름 — wn 접속에 끊는 줄 하나 · bob 줄 0 · 게임 서버엔 로비에 없는 ghost 까지 둘 · 끝난 행 빠짐(wn 줄 " + std::to_string(toWn) + " · 내보낸 이름 " + std::to_string(s.banEnforced) + ")");
+        Check(inBoth && toWn == 2 && bannedWn == 1 && closeOk && toBob == 0 && toWaiting == 0 && fake.kicked == Names{"ghost", "wn"} && s.banEnforced == 2 && s.banConnsClosed == 1 && s.banRowsLast == 2,
+              "③ 새 이름 — wn 접속에 정지 안내 뒤 끊는 줄(둘) · bob 줄 0 · 게임 서버엔 로비에 없는 ghost 까지 둘 · 끝난 행 빠짐(wn 줄 " + std::to_string(toWn) + " · 내보낸 이름 " + std::to_string(s.banEnforced) + ")");
     }
     {
         std::vector<Out> o;
@@ -3716,7 +3801,7 @@ void BanUnitTests() {
         std::vector<Out> o;
         rl.Tick(o);
         rl.OnConnect(8, peer, peer);
-        for (const std::string& l : Names{"NOXCLIENT 5", "CVERS 11020 9472", "PASS supersecret", "NICK rita", token("rita", 9), "SERIAL 7726",
+        for (const std::string& l : Names{"NOXCLIENT 8", "CVERS 11020 9472", "PASS supersecret", "NICK rita", token("rita", 9), "SERIAL 7726",
                                           "USER UserName HostName irc.westwood.com :RealName", "verchk 32512 720916", "SETOPT 17,33", "SETCODEPAGE 949"})
             rl.OnLine(8, l, o);
         const bool waiting = rl.PendingRatings() == 1;
@@ -3817,7 +3902,7 @@ void BanUnitTests() {
         auto log4 = [&](int conn, const std::string& nick) {
             lb.OnConnect(conn, peer, peer);
             std::vector<Out> o;
-            for (const std::string& l : Names{"NOXCLIENT 5", "NICK " + nick, "USER UserName HostName irc.westwood.com :RealName"}) lb.OnLine(conn, l, o);
+            for (const std::string& l : Names{"NOXCLIENT 8", "NICK " + nick, "USER UserName HostName irc.westwood.com :RealName"}) lb.OnLine(conn, l, o);
         };
         auto rankJoin = [&](int conn, const std::string& nick) {
             std::vector<Out> o;
@@ -4015,7 +4100,7 @@ void RankPenaltyUnitTests() {
         Lobby lb;
         int next = 1;
         explicit Rig(const LobbyConfig& c) : lb(c, fake) { lb.AttachStore(&store); }
-        int Login(const std::string& nick, int ver = 6) {
+        int Login(const std::string& nick, int ver = 8) {
             const int conn = next++;
             lb.OnConnect(conn, 0x7f000001, 0x7f000001);
             std::vector<Out> o;
@@ -4221,12 +4306,12 @@ void RankPenaltyUnitTests() {
     }
 
     // ⑧ 입구 — 제한 중 단추 · 판 6 = BLOCKED + 474 · 판 5 = 471
+    //   (★ 11-17 R-3 — 판 5 의 471 장면은 뺌. 최소 판 8 밑은 제한 전에 줄 서기부터 거절 — `VersionGateUnitTests` ④)
     {
         Rig r(cfg);
         const int a = r.Login("amy");
-        const int old = r.Login("oli", 5);
         std::vector<Out> o;
-        for (const std::string& n : {std::string("amy"), std::string("oli")}) {
+        for (const std::string& n : {std::string("amy")}) {
             std::vector<std::string> left{n};
             r.lb.OnRankResult(left, {}, o);
             r.lb.OnRankResult(left, {}, o);
@@ -4238,17 +4323,13 @@ void RankPenaltyUnitTests() {
         unixNow += 59;
         o.clear();
         r.Rank(a, "amy", o);
-        const bool oneLeft = count(o, a, "NOXRANK BLOCKED 1") == 1 && r.lb.RankQueueSize() == 0;
-        o.clear();
-        r.Rank(old, "oli", o);
-        const bool oldReject = OnlyReject(o, old, "#oli's_game", JoinReject::RankBlocked) && r.lb.RankQueueSize() == 0 && r.lb.Stats().rankBlockedEntry == 3;
+        const bool oneLeft = count(o, a, "NOXRANK BLOCKED 1") == 1 && r.lb.RankQueueSize() == 0 && r.lb.Stats().rankBlockedEntry == 2;
         unixNow += 1;
         o.clear();
         r.Rank(a, "amy", o);
         const bool freed = startsCount(o, a, "NOXRANK BLOCKED") == 0 && r.lb.RankQueueSize() == 1;
         Check(warnSkipped && blocked, "⑧ 제한 중 단추(판 6) — BLOCKED 60 + 474 · 줄 안 섬");
         Check(oneLeft, "⑧ 59초 뒤 — BLOCKED 1(남은 초)");
-        Check(oldReject, "⑧ 판 5 DLL — 471 거절(RankBlocked) · 줄 안 섬");
         Check(freed, "⑧ 60초에 풀림 — 줄 섬");
         Check(std::string(JoinRejectText(JoinReject::RankBlocked)) == "Ranked match restricted", "⑧ 471 글");
     }
@@ -4267,15 +4348,7 @@ void RankPenaltyUnitTests() {
         r.Rank(a, "amy", o);
         Check(quiet && first && count(o, a, warnMatch) == 0 && r.lb.RankQueueSize() == 1, "⑨ 판 나감 — 그때 줄 없음 · 다음 단추에 WARN match · 줄 섬 · 그다음 단추엔 안 나감");
     }
-    {   // 낮은 판은 밀린 경고를 안 꺼낸다(줄은 그대로 섬)
-        Rig r(cfg);
-        const int a = r.Login("oli", 5);
-        std::vector<Out> o;
-        r.lb.OnRankResult({"oli"}, {}, o);
-        o.clear();
-        r.Rank(a, "oli", o);
-        Check(startsCount(o, a, "NOXRANK WARN") == 0 && r.lb.RankQueueSize() == 1 && r.lb.Stats().rankWarnLater == 0, "⑨ 판 5 — 경고 줄 없음 · 줄 섬");
-    }
+    // (★ 11-17 R-3 뺌) 낮은 판(5)은 밀린 경고를 안 꺼내고 줄은 섬 — 최소 판 8 밑은 줄에 못 서 닿지 않는 자리
     // ⑩ 판 결과 — 끝까지 = 0 · 정지로 내보낸 판 안 셈 · 겹친 판(Duplicate) 안 셈(거울 경유)
     {
         Rig r(cfg);
@@ -4382,7 +4455,7 @@ void RankPenaltyUnitTests() {
         auto login = [&](int conn, const std::string& nick) {
             lb.OnConnect(conn, peer, peer);
             std::vector<Out> lo;
-            for (const std::string& l : std::vector<std::string>{"NOXCLIENT 6", "NICK " + nick, "USER UserName HostName irc.westwood.com :RealName"}) lb.OnLine(conn, l, lo);
+            for (const std::string& l : std::vector<std::string>{"NOXCLIENT 8", "NICK " + nick, "USER UserName HostName irc.westwood.com :RealName"}) lb.OnLine(conn, l, lo);
         };
         login(11, "ann");
         login(12, "ben");
@@ -4577,15 +4650,7 @@ void RankPenaltyUnitTests() {
         o.clear();
         r.lb.OnLine(a, "NOXRANK LEAVE", o);
         Check(count(o, a, "NOXRANK BLOCKED 60") == 1 && startsCount(o, a, "NOXRANK WARN") == 0 && r.lb.Penalty().Struck(RankStrike::Declined) == 1, "⑭ 2회째 거절 — 그 자리에서 BLOCKED 60 · 경고 줄 없음");
-        // 낮은 판은 줄을 안 받는다
-        Rig r2(cfg);
-        const int c = r2.Login("cat", 5), d = r2.Login("dan", 5);
-        std::vector<Out> o2;
-        r2.Rank(c, "cat", o2);
-        r2.Rank(d, "dan", o2);
-        o2.clear();
-        r2.lb.OnLine(c, "NOXRANK LEAVE", o2);
-        Check(startsCount(o2, c, "NOXRANK WARN") == 0 && r2.lb.Penalty().Struck(RankStrike::Declined) == 1 && r2.lb.Penalty().CountOf("cat", unixNow) == 1, "⑭ 판 5 — 셈은 하되 줄 없음");
+        // (★ 11-17 R-3 뺌) 낮은 판(5)은 셈은 하되 줄 없음 — 최소 판 8 밑은 줄에 못 서 찾음 창까지 안 온다
     }
 }
 
@@ -4615,7 +4680,7 @@ struct PairRig {
     void Login(int conn, const std::string& nick, int32_t rating) {
         lb.OnConnect(conn, 0x7f000001, 0x7f000001);
         std::vector<nox::wol::Out> o;
-        for (const std::string l : {std::string("NOXCLIENT 5"), "NICK " + nick, std::string("USER UserName HostName irc.westwood.com :RealName")})
+        for (const std::string l : {std::string("NOXCLIENT 8"), "NICK " + nick, std::string("USER UserName HostName irc.westwood.com :RealName")})
             lb.OnLine(conn, l, o);
         lb.OnRatingsChanged({{nick, rating, 0}});
     }
@@ -4746,6 +4811,7 @@ int main(int argc, char** argv) {
     } else {
         UnitTests();
         LobbyUnitTests();
+        VersionGateUnitTests();   // ★ 11-16 방 번호 플랜 2-3
         ChannelLobbyUnitTests();
         NewRoomUnitTests();
         RoomsPushUnitTests();   // ★ 11-03

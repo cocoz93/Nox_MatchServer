@@ -374,7 +374,8 @@ FWD(1120) FWD(1130) FWD(1140) FWD(1141) FWD(1142)
 //   ★ 판 5 = 수락 단계(`kNoxClientAcceptVersion` · 매칭 손보기 6) — ⑬ 로비 `NOXRANK FOUND` 에 「수락?」 · 예면 `NOXRANK ACCEPT`
 //   ★ 판 6 = 줄 서기 제한 안내(`kNoxClientPenaltyVersion` · 플랜 11-05 7절) — `NOXRANK WARN` · `BLOCKED` · `BANNED`
 //   ★ 판 7 = 귓속말(`kNoxClientWhisperVersion` · `Docs/MO_WHISPER_PLAN_1105.md`) — 로비가 로그인 끝에 `NOXCHAT <채팅 서버 주소>` 를 보냄 · ② 처럼 떼어 낸다
-static const char kNoxClientHello[] = "NOXCLIENT 7\r\n";
+//   ★ 판 8 = 입장 토큰 판 2(방 칸 4바이트 · `kTokenRaw` 53 · `Docs/ROOM_ID_WIDEN_PLAN_1116.md`) — 로비 최소 판(`kNoxClientMinVersion`)이 8 이라 낮은 판은 토큰을 못 받는다
+static const char kNoxClientHello[] = "NOXCLIENT 8\r\n";
 static wchar_t g_rankWaitNote[100];   // ★ 11-05 플랜1 — 기다림 글 앞에 얹는 경고(머리 주석 `g_rankWaitBuf`)
 static const DWORD kTokenHoldMs = 60000;                   // 토큰을 쥐고 있는 시간(토큰 만료 30초보다 넉넉히 — 판정은 서버가 한다)
 static const size_t kTokenRaw = 53;                        // `JoinToken.h` kJoinTokenSize(★ 11-16 판 2 — 방 칸 4바이트 · 옛 51)

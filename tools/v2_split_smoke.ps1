@@ -33,11 +33,14 @@ function Open($port) {
 }
 function Send($k, [string[]]$lines) { foreach ($l in $lines) { $k.w.WriteLine($l) }; $k.w.Flush() }
 function Kind([string]$l) { $t = $l.Split(' '); if ($t[0] -eq ':') { $t[1] } elseif ($t[0].StartsWith(':')) { 'user:' + $t[1] } else { '?' } }
+# ★ 11-17 R-3 — DLL 이 떼어 정품에 안 넘기는 알림 줄(목록 바뀜 · 채팅 주소 · 방 안 화면 — 판 5 · 7 이상). 이 대본은 DLL + 정품 자리라 떼고 읽는다
+function DllOnly([string]$l) { return ($l -ceq 'NOXRANK ROOMS') -or $l.StartsWith('NOXCHAT ') -or $l.StartsWith('NOXRANK ROOMUI ') }
 function ReadUntil($k, [string]$stop) {
   $got = @()
   while ($true) {
     try { $l = $k.r.ReadLine() } catch { return ,$got }
     if ($null -eq $l) { return ,$got }
+    if (DllOnly $l) { continue }
     $got += $l
     if ((Kind $l) -eq $stop) { return ,$got }
   }
@@ -60,7 +63,7 @@ function WaitLog([string]$path, [string]$pattern, [int]$n, [int]$sec) {
 }
 function Login([string]$nick) {
   $k = Open $LobbyPort
-  Send $k @('NOXCLIENT 2', "NICK $nick", 'USER UserName HostName irc.westwood.com :RealName')
+  Send $k @('NOXCLIENT 8', "NICK $nick", 'USER UserName HostName irc.westwood.com :RealName')
   $null = ReadUntil $k '376'
   return $k
 }

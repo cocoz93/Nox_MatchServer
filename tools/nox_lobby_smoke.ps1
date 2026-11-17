@@ -34,7 +34,14 @@ function Open($port, $enc) {
   throw "접속 실패: 127.0.0.1:$port"
 }
 function Send($k, [string[]]$lines) { foreach ($l in $lines) { $k.w.WriteLine($l) }; $k.w.Flush() }
-function ReadOne($k) { try { return $k.r.ReadLine() } catch { return $null } }
+# ★ 11-17 R-3 — DLL 이 떼어 정품에 안 넘기는 알림 줄(목록 바뀜 · 채팅 주소 · 방 안 화면 — 판 5 · 7 이상). 이 대본은 DLL + 정품 자리라 떼고 읽는다
+function DllOnly([string]$l) { return ($l -ceq 'NOXRANK ROOMS') -or $l.StartsWith('NOXCHAT ') -or $l.StartsWith('NOXRANK ROOMUI ') }
+function ReadOne($k) {   # ★ 11-17 R-3 — DLL 알림 줄은 건너뜀(게임 서버 연결 줄엔 안 온다)
+  while ($true) {
+    try { $l = $k.r.ReadLine() } catch { return $null }
+    if ($null -eq $l -or -not (DllOnly $l)) { return $l }
+  }
+}
 # ★ 7단계 — 게임 서버 연결 줄 하나(로비가 5초마다 보내는 PING 은 건너뜀)
 function ReadLink($k) { do { $l = ReadOne $k } while ($l -eq 'PING'); return $l }
 # 로비 기록(쓰는 중인 파일)에 정규식이 `n` 번 이상 나올 때까지(초 한도) — v2_split_smoke.ps1 과 같은 꼴
@@ -123,7 +130,7 @@ try {
 
   # ② 클라 — 로그인 · 목록 · 채팅
   $k = Open $LobbyPort $latin1
-  Send $k @('NOXCLIENT 2', 'CVERS 11020 9472', 'NICK wn', 'apgar s3cr3t9 0', 'USER UserName HostName irc.westwood.com :RealName', 'SETCODEPAGE 949')   # ★ 로그인 암호 조각 4 — 평문 apgar(아이디만 판은 안 봄 · 기록에선 가림)
+  Send $k @('NOXCLIENT 8', 'CVERS 11020 9472', 'NICK wn', 'apgar s3cr3t9 0', 'USER UserName HostName irc.westwood.com :RealName', 'SETCODEPAGE 949')   # ★ 로그인 암호 조각 4 — 평문 apgar(아이디만 판은 안 봄 · 기록에선 가림)
   $null = ReadUntil $k '329'
   Send $k @('LIST 37 37')
   $l1all = ReadUntil $k '323'   # 함수가 배열을 한 덩어리로 돌려주므로 변수에 받은 뒤 거른다(lobby_smoke.ps1 과 같은 꼴)
@@ -132,7 +139,7 @@ try {
   Check ($l1.Count -eq 1 -and $t1[3] -eq "#alice's_game" -and $t1[9] -eq '2130706434') "목록 = 게임 서버가 알린 방 하나 · 방장 주소 칸 = 등록 주소 127.0.0.2 ($($l1 -join ' | '))"
 
   $k2 = Open $LobbyPort $latin1
-  Send $k2 @('NOXCLIENT 2', 'NICK bob', 'USER UserName HostName irc.westwood.com :RealName')
+  Send $k2 @('NOXCLIENT 8', 'NICK bob', 'USER UserName HostName irc.westwood.com :RealName')
   $null = ReadUntil $k2 '376'
   Send $k @('JOIN #Lob_37_3 zot0blat')
   $null = ReadUntil $k '366'
@@ -253,7 +260,8 @@ Check (@($all | Where-Object { $_ -match '등록 거절 — 127\.0\.0\.3:18590' 
 #   보낸 줄 — wn 로그인(NOXSERVER · 375 · 372 · 376 · 329 = 5) · 목록 3 · 대화방 3 + 들어옴 1 + 채팅 1 · 참가 5 · 목록 2 · 거절 471 1(★ 10-20) ·
 #     ★ ⑤ 목록 3(g2 방) + 목록 2 · 607 → 27 · bob 로그인 4 · 대화방 3 · 시간 초과 거절 471 1(★ 10-20) · wn 이 끊길 때 대화방 PART 알림 1 → 9 · 합 36
 #   새 방 — 물음 2(만듦 1 · 시간 초과 1) + 곧바로 실패 1(게임 서버 없음 — 묻지 않음) · 참가 거절 2 = 곧바로 실패 1 + 시간 초과 1
-Check ($end.Count -eq 9 -and $endOf['접속'] -match '접속 2 · 받은 줄 20 · 보낸 줄 36 · 토큰 1 · 새 방 1\(물음 2 · 실패 1 · 시간 초과 1 · 버림 0\) · 채팅 1 · 참가 거절 2\(곧바로 실패 1 · 게임 서버 실패 0 · 시간 초과 1 · 없는 방 0 · 로그인 안 됨 0\)') '끝 줄 — 클라 셈(접속 2 · 받은 줄 20(★ 조각 4 apgar 한 줄 더함) · 보낸 줄 36 · 토큰 1 · 새 방 1 · 물음 2 · 실패 1 · 시간 초과 1 · 참가 거절 2)'
+$dllN = if ($endOf['접속'] -match 'DLL 알림 줄 (\d+)') { [int]$Matches[1] } else { -1 }   # ★ 11-17 R-3 — 보낸 줄 = 36 + DLL 알림 줄(1초 간격으로 묶여 수가 때마다 다름)
+Check ($end.Count -eq 9 -and $dllN -ge 0 -and $endOf['접속'] -match "접속 2 · 받은 줄 20 · 보낸 줄 $(36 + $dllN) · 토큰 1 · 새 방 1\(물음 2 · 실패 1 · 시간 초과 1 · 버림 0\) · 채팅 1 · 참가 거절 2\(곧바로 실패 1 · 게임 서버 실패 0 · 시간 초과 1 · 없는 방 0 · 로그인 안 됨 0\)") '끝 줄 — 클라 셈(접속 2 · 받은 줄 20(★ 조각 4 apgar 한 줄 더함) · 보낸 줄 36 · 토큰 1 · 새 방 1 · 물음 2 · 실패 1 · 시간 초과 1 · 참가 거절 2)'
 # 연결 — 게임 서버 g · 서명 틀린 것 · ★ ⑤ g2 · g3 · g4 = 5 · 받음 = g 9(★ 7단계 조각 5 — RESULT 넷) + 틀린 것 1 + g2 3 + g3 2 + g4 2 = 17(가짜는 PING 을 안 보냄) ·
 #   보냄(PING 뺌) = HELLO 5 + BYE 3(서명 틀림 · g3 같은 주소 · g2 무소식) + CREATE 2 + SAVED 3(ok · dup · bad) = 13 · PING = g(③-2 에서 5.6초를 기다림) 1 이상 + g2(15초) 2 → 3 이상
 $linkOk = $false

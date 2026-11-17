@@ -235,7 +235,7 @@ int main(int argc, char** argv)
             if (r <= 0) break;
             atLobby.append(b, r);
         }
-        Check(atLobby == std::string("NOXCLIENT 7\r\n") + cvers, "lobby: NOXCLIENT 7 goes out before CVERS");   // ★ 매칭 손보기 6 — 판 5(수락 단계) · ★ 11-06 판 7(귓속말)
+        Check(atLobby == std::string("NOXCLIENT 8\r\n") + cvers, "lobby: NOXCLIENT 8 goes out before CVERS");   // ★ 매칭 손보기 6 — 판 5(수락 단계) · ★ 11-06 판 7(귓속말) · ★ 11-16 판 8(입장 토큰 판 2)
 
         // ★ 11-16 판 2 토큰 — 옛 꼴(16진 102자 = 토큰 51) 줄은 떼되 쥐지 않는다 → 게임 서버로 가는 접속 시도에 꼬리가 안 붙는다
         {

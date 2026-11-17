@@ -27923,7 +27923,7 @@ void TestHostRename() {
     {
         std::vector<nox::wol::Out> o;
         link.lobby.OnConnect(5, peer, local);
-        for (const char* l : {"NOXCLIENT 1", "NICK alice", "USER UserName HostName irc.westwood.com :RealName"}) link.Line(5, l, o);
+        for (const char* l : {"NOXCLIENT 8", "NICK alice", "USER UserName HostName irc.westwood.com :RealName"}) link.Line(5, l, o);
     }
     // 참가 답의 토큰 → 방 번호(-1 = 토큰 없음)
     auto tokenRoom = [&](const std::vector<nox::wol::Out>& q) {

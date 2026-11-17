@@ -486,11 +486,15 @@ int main(int argc, char** argv) {
     // ★ 10-20 거절 답 — 참가 거절(471) 합과 까닭 넷(`JoinReject` 차례 — 곧바로 실패 · 게임 서버 실패 · 시간 초과 · 없는 방)
     using nox::wol::JoinReject;
     const auto jr = [&ls](JoinReject w) { return ls.joinRejected[static_cast<size_t>(w)]; };
+    // ★ 11-17 R-3 — 「DLL 알림 줄」 = 보낸 줄 가운데 DLL 이 떼어 정품에 안 넘기는 알림(목록 바뀜 · 채팅 주소 · 방 안 화면). 판 5 · 7 이상에만 가고
+    //   목록 바뀜은 1초 간격으로 묶여 수가 때마다 달라서, 시험 대본이 보낸 줄을 「정해진 답 + 이 수」 로 맞춘다
     Log("[로비] 끝 — 접속 %llu · 받은 줄 %llu · 보낸 줄 %llu · 토큰 %llu · 새 방 %llu(물음 %llu · 실패 %llu · 시간 초과 %llu · 버림 %llu) · 채팅 %llu"
-        " · 참가 거절 %llu(곧바로 실패 %llu · 게임 서버 실패 %llu · 시간 초과 %llu · 없는 방 %llu · 로그인 안 됨 %llu)\n",
+        " · 참가 거절 %llu(곧바로 실패 %llu · 게임 서버 실패 %llu · 시간 초과 %llu · 없는 방 %llu · 로그인 안 됨 %llu)"
+        " · DLL 알림 줄 %llu(목록 바뀜 %llu · 채팅 주소 %llu · 방 안 화면 %llu)\n",
         nConn, nIn, nOut, ls.tokensIssued, ls.roomsCreated, ls.roomsRequested, ls.roomCreateFailed, ls.roomRequestTimeout,
         ls.roomRequestDropped, ls.chatMessages, ls.JoinRejectedTotal(), jr(JoinReject::RequestFailed), jr(JoinReject::CreateFailed),
-        jr(JoinReject::Timeout), jr(JoinReject::NoSuchRoom), jr(JoinReject::NotLoggedIn));
+        jr(JoinReject::Timeout), jr(JoinReject::NoSuchRoom), jr(JoinReject::NotLoggedIn), ls.roomsPushLines + ls.chatNotices + ls.roomUiSent,
+        ls.roomsPushLines, ls.chatNotices, ls.roomUiSent);
     // ★ 로그인 암호 조각 4 — 로그인(USER 하나 = 아래 갈래 중 하나 · 합 = 로그인) · 토큰 갈래(`LoginTokenCheck` 차례) · 실패 까닭(`LoginFail` 차례)
     {
         std::string tok, fail;

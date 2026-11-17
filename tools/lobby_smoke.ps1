@@ -36,11 +36,14 @@ function Open($port) {
 function Send($k, [string[]]$lines) { foreach ($l in $lines) { $k.w.WriteLine($l) }; $k.w.Flush() }
 function Kind([string]$l) { $t = $l.Split(' '); if ($t[0] -eq ':') { $t[1] } elseif ($t[0].StartsWith(':')) { 'user:' + $t[1] } else { '?' } }
 # $stop 종류의 줄이 올 때까지 읽는다. 시간 초과·끊김이면 거기까지
+# ★ 11-17 R-3 — DLL 이 떼어 정품에 안 넘기는 알림 줄(목록 바뀜 · 채팅 주소 · 방 안 화면 — 판 5 · 7 이상). 이 대본은 DLL + 정품 자리라 떼고 읽는다
+function DllOnly([string]$l) { return ($l -ceq 'NOXRANK ROOMS') -or $l.StartsWith('NOXCHAT ') -or $l.StartsWith('NOXRANK ROOMUI ') }
 function ReadUntil($k, [string]$stop) {
   $got = @()
   while ($true) {
     try { $l = $k.r.ReadLine() } catch { return ,$got }
     if ($null -eq $l) { return ,$got }
+    if (DllOnly $l) { continue }
     $got += $l
     if ((Kind $l) -eq $stop) { return ,$got }
   }
@@ -89,7 +92,7 @@ try {
   $k.c.Close()
 
   $k = Open $LobbyPort
-  Send $k @('NOXCLIENT 1', 'CVERS 11020 9472', 'PASS supersecret', 'NICK wn', 'apgar 1234 0', 'SERIAL 7726',
+  Send $k @('NOXCLIENT 8', 'CVERS 11020 9472', 'PASS supersecret', 'NICK wn', 'apgar 1234 0', 'SERIAL 7726',
             'USER UserName HostName irc.westwood.com :RealName', 'verchk 32512 720916', 'SETOPT 17,33')
   $b = ReadUntil $k '379'
   Check ((($b | ForEach-Object { Kind $_ }) -contains '376') -and ((Kind $b[-1]) -eq '379')) "로그인 끝 376 · 패치 없음 379 (받은 줄 $($b.Count))"
@@ -133,7 +136,7 @@ try {
 
     # 다른 사람(bob) — 목록에서 그 방을 보고 참가하면 같은 방 토큰(방 번호 = 토큰 [1..2] 작은 끝수)
     $k2 = Open $LobbyPort
-    Send $k2 @('NOXCLIENT 1', 'NICK bob', 'USER UserName HostName irc.westwood.com :RealName')
+    Send $k2 @('NOXCLIENT 8', 'NICK bob', 'USER UserName HostName irc.westwood.com :RealName')
     $null = ReadUntil $k2 '376'
     Send $k2 @('LIST 37 37')
     $l4all = ReadUntil $k2 '323'
@@ -191,7 +194,8 @@ try {
   Send $k @('QUIT')
   $q2 = ReadUntil $k '607'
   Check ($q2.Count -eq 1 -and (Kind $q2[0]) -eq '607') "QUIT 답 607 (받은 줄 $($q2.Count))"
-  Check ($null -eq $k.r.ReadLine()) 'QUIT 뒤 로비가 끊는다'
+  do { $l = $k.r.ReadLine() } while ($null -ne $l -and (DllOnly $l))   # ★ 11-17 R-3 — DLL 알림 줄은 떼고(끊기 전에 올 수 있다) · 시간 초과는 예외 그대로
+  Check ($null -eq $l) 'QUIT 뒤 로비가 끊는다'
   $k.c.Close()
 } catch {
   Check $false "예외: $($_.Exception.Message)"
@@ -225,17 +229,20 @@ Check ($unknown -eq 1) "로비 기록 [모르는 방] 한 줄 ($unknown)"
 #     ★ 4c — 빈 방 닫힘 기다리기의 목록 다시 보기 — 받은 줄 +번 · 보낸 줄 +2(321 · 323)×번 +1(326)×방 있던 번
 #   ★ 10-20 거절 답 — 끝 줄의 참가 거절 = 없는 방 1 하나(새 방은 만들어짐)
 #   ★ 7단계 조각 6 — 괄호 끝에 「로그인 안 됨」 갈래가 붙음(로그인 확인 전 참가 — 이 시험의 클라는 모두 로그인을 끝낸 뒤 참가라 0)
+# ★ 11-17 R-3 — 보낸 줄엔 DLL 알림 줄(판 8 접속이 받는 목록 바뀜 등 — 1초 간격으로 묶여 수가 때마다 다름)이 더해진다. 로비가 센 수를 읽는다
+#   또 wn · bob 이 판 1 → 8 이라 로그인 때 `NOXSERVER 1`(판 2 이상) 한 줄씩 더 받는다 — 대기 맵 있음 +2(wn · bob) · 없음 +1(wn)
+$dllN = if ($summary.Count -eq 1 -and $summary[0] -match 'DLL 알림 줄 (\d+)') { [int]$Matches[1] } else { -1 }
 $rejectOne = $summary.Count -eq 1 -and $summary[0] -match '참가 거절 1\(곧바로 실패 0 · 게임 서버 실패 0 · 시간 초과 0 · 없는 방 1 · 로그인 안 됨 0\)'
 Check $rejectOne "로비 셈 — 참가 거절 1(없는 방 1)"
 if ($haveWaitMap) {
-  $inN = 29 + $script:polls; $outN = 47 + 2 * $script:polls + $script:withRoom
+  $inN = 29 + $script:polls; $outN = 47 + 2 + 2 * $script:polls + $script:withRoom + $dllN
   Check ($summary.Count -eq 1 -and $summary[0] -match "접속 3 · 받은 줄 $inN · 보낸 줄 $outN · 토큰 2 · 새 방 1\(물음 1 · 실패 0 · 시간 초과 0 · 버림 0\)") "로비 셈 — 접속 3 · 받은 줄 $inN · 보낸 줄 $outN · 토큰 2 · 새 방 1(물음 1)"
   Check ($newRoomLog -eq 1 -and $roomMade -eq 1) "기록 — 로비 [새 방] wn $newRoomLog 줄 · 게임 서버 [방] $FirstRoomId 만듦(wn's game · so_lod · chat · 비면 닫음) $roomMade 줄"
   Check ($joinOk -eq 1 -and $joinNo -eq 1) "입장 판정 — 접속 시도 받음(방 $FirstRoomId · wn) $joinOk · 거절 $joinNo"
   Check ($gsSummary.Count -eq 1 -and $gsSummary[0] -match '붙음 1 · 끊김 0 · 등록 1 · 방 알림 \d+ · 사라짐 1 · 새 방 물음 1\(만듦 1 · 실패 0\)') '게임 서버 연결 셈 — 붙음 1 · 등록 1 · 사라짐 1(빈 방 닫힘) · 새 방 물음 1(만듦 1)'
   Check ($linkSummary.Count -eq 1 -and $linkSummary[0] -match '방 알림 \d+ · 사라짐 1 ·') '로비 셈 — 게임 서버의 ROOM_GONE 1(빈 방 닫힘)'
 } else {
-  Check ($summary.Count -eq 1 -and $summary[0] -match '접속 2 · 받은 줄 21 · 보낸 줄 27 · 토큰 0') '로비 셈 — 접속 2 · 받은 줄 21 · 보낸 줄 27'
+  Check ($summary.Count -eq 1 -and $summary[0] -match "접속 2 · 받은 줄 21 · 보낸 줄 $(27 + 1 + $dllN) · 토큰 0") "로비 셈 — 접속 2 · 받은 줄 21 · 보낸 줄 27 + NOXSERVER 1 + DLL 알림 줄 $dllN"
 }
 Check ($linkSummary.Count -eq 1 -and $linkSummary[0] -match '게임 서버 연결 1\(확인 1 · 확인 실패 0 · 등록 1 · 등록 거절 0 · 차례 틀림 0\)') '로비 셈 — 게임 서버 연결 1(확인 1 · 등록 1)'
 Write-Host ("{0} — 확인 {1}건 · 실패 {2}건" -f $(if ($script:fails) { '[실패]' } else { '[통과]' }), $script:checks, $script:fails)
