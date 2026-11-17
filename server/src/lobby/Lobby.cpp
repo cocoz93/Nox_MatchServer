@@ -498,7 +498,9 @@ void Lobby::RankPumpPairs(uint32_t now, std::vector<Out>& out) {
 }
 
 // 줄 앞 `count` 명을 묶는다. ★ 10-31 — 다 판 5 DLL 이고 둘 이상이면 방 없이 수락 단계부터(`NOXRANK FOUND <초>`) — 방은 다 수락한 뒤에 요청한다
-//   (`RankAccept`). 하나라도 낮은 판이면 옛 길(곧바로 방 요청 → 참가 답).
+//   (`RankAccept`). 한 사람 묶음은 옛 길(곧바로 방 요청 → 참가 답).
+//   ★ 11-17 R-7 — 판 비교(`kNoxClientAcceptVersion`)를 뺐다. 줄엔 `NOXRANK JOIN` 문턱(최소 판 8)을 지난 접속만 선다 — 옛 「하나라도 판 5 밑이면 옛 길」은
+//   줄에 선 뒤 `NOXCLIENT` 로 판을 낮춘 규약 밖 클라만 닿아 수락 단계를 건너뛰는 틈이었다. 한 사람 묶음은 설정 최소 1 일 때만(`lobby_main` 은 2 밑을 거절)
 //   - 왜: 방을 먼저 세우고 수락을 물으면 거절 · 한도 때마다 아무도 안 올 랭크 방이 게임 서버에 남았다(도착 한도 30초 뒤에야 닫힘).
 //     방은 확정된 판에만 — 수락은 로비 혼자 끝내고 깨진 묶음은 게임 서버에 닿지 않게(10-31 사용자 결정 ②)
 //   ★ 11-07 점수 묶기 — 줄 앞 몇 명 대신 묶을 사람 목록을 받아 줄에서 그 사람들만 뗀다(점수 짝은 줄 가운데 사람끼리일 수 있다)
@@ -508,17 +510,15 @@ void Lobby::RankRequest(std::vector<int> group, bool full, const std::string& de
         if (at != rankQueue_.end()) rankQueue_.erase(at);
     }
     const uint32_t req = nextReq_++;
-    bool allNew = true;
     for (int id : group) {
         Conn& c = conns_[id];   // 줄엔 살아 있는 접속만 있다(끊김은 `OnClose` 가 먼저 뺀다)
         c.rank = Conn::Rank::Requested;
         c.rankReq = req;
-        allNew = allNew && c.clientVer >= kNoxClientAcceptVersion;
     }
     stats_.rankGrouped += group.size();
     ++(full ? stats_.rankGroupFull : stats_.rankGroupGather);
     const char* how = full ? "최대" : "모으기 끝";
-    if (allNew && group.size() >= 2) {
+    if (group.size() >= 2) {
         const std::string line = "NOXRANK FOUND " + std::to_string(kRankAcceptMs / 1000);
         for (int id : group) {
             conns_[id].rank = Conn::Rank::Found;
@@ -708,7 +708,6 @@ const char* JoinRejectText(JoinReject why) {
         case JoinReject::Timeout:       return "Cannot create game (game server timed out)";
         case JoinReject::NoSuchRoom:    return "No such game";
         case JoinReject::NotLoggedIn:   return "Not logged in";
-        case JoinReject::RankBlocked:   return "Ranked match restricted";
         case JoinReject::kCount:        break;
     }
     return "?";
@@ -1298,15 +1297,13 @@ void Lobby::OnChat(int conn, Conn& c, const std::string& cmd, const std::vector<
                 if (const uint32_t blockedSec = penalty_.BlockedForSec(c.nick, unixNow); blockedSec > 0) {
                     ++stats_.rankBlockedEntry;
                     log_.push_back("[랭크 — 제한 중] " + c.nick + " — 남은 " + std::to_string(blockedSec) + "초 · 줄 안 세움");
-                    if (c.clientVer >= kNoxClientPenaltyVersion) {
-                        out.push_back({conn, "NOXRANK BLOCKED " + std::to_string(blockedSec)});
-                        RankReleaseJoin(conn, c, out);
-                    } else {
-                        RejectJoin(conn, t[1], JoinReject::RankBlocked, out);
-                    }
+                    // ★ 11-17 R-7 — 판 6 밑 갈래(471 `RankBlocked`)를 뺐다. 여기 오는 접속은 바로 앞 줄 `NOXRANK JOIN` 이 최소 판 8 문턱을 지났고,
+                    //   그 사이 다른 명령(`NOXCLIENT` 포함)은 표시를 지운다(`OnChat` 맨 앞) — 판 6 이상이 보장된다. 아래 밀린 경고도 같은 까닭
+                    out.push_back({conn, "NOXRANK BLOCKED " + std::to_string(blockedSec)});
+                    RankReleaseJoin(conn, c, out);
                     return;
                 }
-                if (c.clientVer >= kNoxClientPenaltyVersion && penalty_.TakeWarnPending(c.nick, unixNow)) {
+                if (penalty_.TakeWarnPending(c.nick, unixNow)) {
                     ++stats_.rankWarnLater;
                     out.push_back({conn, "NOXRANK WARN match"});
                 }

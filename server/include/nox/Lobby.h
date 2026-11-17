@@ -89,8 +89,10 @@ constexpr int kNoxClientAuthVersion = 3;
 constexpr int kNoxClientRankVersion = 4;
 // ★ 매칭 손보기 6(`Docs/MATCH_UX_REVIEW.md`) — 이 판부터 DLL 이 로비의 `NOXRANK FOUND` 에 기다림 창을 「수락?」 예 · 아니오로 바꾸고 예면 `NOXRANK ACCEPT`.
 //   묶을 때 둘 이상이고 다 이 판 이상일 때만 수락 단계(하나라도 낮으면 옛 길 — 곧바로 방 요청 · 참가 답). ★ 10-31 — 방은 다 수락한 뒤 요청(`NOXRANK READY`)
+//   ★ 11-17 R-7 — 줄엔 최소 판 8 만 서서 묶을 때의 이 판 비교는 뺐다. 지금 쓰는 곳 = 목록 바뀜 · 방 안 화면 줄을 이 판 이상에만 보내는 걸러내기
 constexpr int kNoxClientAcceptVersion = 5;
 // ★ 11-05 플랜1 — 판 6 = 줄 서기 제한 안내(`NOXRANK WARN` · `BLOCKED` · `BANNED` · 문구는 DLL `RankNotice.h`). 낮은 판은 제한 중이면 471 거절
+//   ★ 11-17 R-7 — 줄 서기 자리의 판 비교(471 거절 · 밀린 경고)는 뺐다(줄엔 판 8 만). 지금 쓰는 곳 = 정지 안내 BANNED · 위반 안내(받는 접속이 다른 판일 수 있다)
 constexpr int kNoxClientPenaltyVersion = 6;
 // ★ 11-06 귓속말 조각 2 — 판 7 = DLL 이 `NOXCHAT 주소:포트` 줄을 떼어 채팅 서버(nox_chat)에 둘째 연결을 맺는다(`Docs/MO_WHISPER_PLAN_1105.md` 3절).
 //   로비는 로그인이 끝날 때 이 판 이상에게만 보낸다 — 낮은 판 DLL 은 이 줄을 못 떼고 정품 로비 모듈까지 넘긴다. 로비는 채팅 서버와 연결하지 않는다
@@ -211,7 +213,7 @@ enum class JoinReject : uint8_t {
     Timeout,         // 새 방 · 한도(`kRoomRequestTimeoutMs`) 안에 답 없음
     NoSuchRoom,      // 없는 방(목록이 낡음 · 남의 이름 채널)
     NotLoggedIn,     // ★ 7단계 조각 6 — 로그인이 안 끝났거나 실패(토큰 · 새 방은 확인됨만)
-    RankBlocked,     // ★ 11-05 플랜1 — 줄 서기 제한 중 · 판 6 밑의 DLL(판 6 은 `NOXRANK BLOCKED` + 474)
+    // ★ 11-17 R-7 — `RankBlocked`(줄 서기 제한 중 · 판 6 밑의 DLL)는 뺐다 — 줄에 서는 접속은 최소 판 8 이라 늘 `NOXRANK BLOCKED` + 474
     kCount
 };
 constexpr size_t kJoinRejectCount = static_cast<size_t>(JoinReject::kCount);

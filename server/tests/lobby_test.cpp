@@ -1346,7 +1346,7 @@ void ChatUnitTests() {
 
 // ── ★ 11-16 방 번호 플랜 2-3 — DLL 판 문턱(최소 판 8 · `Docs/ROOM_ID_WIDEN_PLAN_1116.md` 5절) ─────────
 //   판 7 DLL 은 입장 토큰 판 2(16진 106자)를 못 읽는다 → 로그인 · 대화 · 대전 기록은 되고 인사말 안내 · 참가 토큰 없음 · 새 방 안 만듦 · 랭크 줄 거절.
-//   판 8 은 같은 자리에서 토큰 · 줄 섬(대조군)
+//   판 8 은 같은 자리에서 토큰 · 줄 섬(대조군). ★ 11-17 R-7 ⑥ 줄에 선 뒤 판을 낮춰도 묶음은 찾음부터(옛 판 비교를 뺀 자리)
 void VersionGateUnitTests() {
     using namespace nox::wol;
     LobbyConfig cfg;
@@ -1405,6 +1405,19 @@ void VersionGateUnitTests() {
     std::vector<Out> rec7;
     lb.OnLine(1, "NOXRANK RECORD", rec7);
     Check(lb.Stats().rankOldClient == old0, "★ 판 문턱 ⑤ 대전 기록 — 판 7 의 RECORD 는 문턱에 안 걸림(토큰이 필요 없는 창)");
+
+    // ★ 11-17 R-7 — 줄에 선 뒤 `NOXCLIENT` 로 판을 낮춰도(규약 밖 클라) 묶음은 찾음(수락 단계)부터. 옛 「판 5 밑이 섞이면 곧바로 방 요청」 길은 뺐다
+    const size_t asks6 = fake.asks.size();
+    std::vector<Out> d6;
+    lb.OnLine(2, "NOXCLIENT 4", d6);   // 줄에 선 new8 이 판을 낮춤
+    login(3, "8", "new8b", d6);
+    lb.OnLine(3, "NOXRANK JOIN", d6);
+    lb.OnLine(3, "JOINGAME #new8b's_game 1 ", d6);   // 둘째 — 최대 2 라 곧바로 묶음
+    const std::string found6 = "NOXRANK FOUND " + std::to_string(kRankAcceptMs / 1000);
+    int foundTo = 0;
+    for (const auto& x : d6) foundTo += x.line == found6 && (x.conn == 2 || x.conn == 3) ? 1 : 0;
+    Check(foundTo == 2 && fake.asks.size() == asks6 && lb.RankFoundPending() == 1,
+          "★ 판 문턱 ⑥ 줄에 선 뒤 판을 낮춰도 묶음은 찾음부터(FOUND " + std::to_string(foundTo) + " · 방 요청 " + std::to_string(fake.asks.size() - asks6) + ")");
 }
 
 // ── ★ 10-20 MO 6단계 v2 작업 3a-2 — 로비의 방 거울(`RoomMirror`) + 가짜 게임 서버(연결 줄을 `LobbyLink` 로 지어 넣는다) ──
@@ -4331,7 +4344,7 @@ void RankPenaltyUnitTests() {
         Check(warnSkipped && blocked, "⑧ 제한 중 단추(판 6) — BLOCKED 60 + 474 · 줄 안 섬");
         Check(oneLeft, "⑧ 59초 뒤 — BLOCKED 1(남은 초)");
         Check(freed, "⑧ 60초에 풀림 — 줄 섬");
-        Check(std::string(JoinRejectText(JoinReject::RankBlocked)) == "Ranked match restricted", "⑧ 471 글");
+        // (★ 11-17 R-7 뺌) 「⑧ 471 글」 — 판 6 밑 제한 거절(`JoinReject::RankBlocked`)을 걷어 냄 · 줄엔 판 8 만 선다
     }
     // ⑨ 밀린 경고 — 판 나감 · 안 들어옴 뒤 다음 단추에서 한 번 · 줄은 섬
     {
