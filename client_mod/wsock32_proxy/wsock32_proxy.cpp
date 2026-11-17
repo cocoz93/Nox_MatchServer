@@ -1929,6 +1929,7 @@ static void NbPlace(DWORD win, int w, int h, int x, int y)
 static volatile LONG g_lobbyLost = 0;
 static DWORD g_lobbyLostAtMs = 0;
 static volatile LONG g_lobbyLostShown = 0;
+static bool g_loginRescueTried = false;   // ★ 11-17 87 — 끊김마다 `LoginRescueTick` 한 번(주 스레드만)
 static const wchar_t kLobbyLostText[] = L"서버와 연결이 끊겼습니다. 뒤로를 눌러 나간 뒤 다시 접속해 주세요";
 static wchar_t g_lobbyLostBuf[64];   // ★ 11-05 플랜1 — 정지 문구(글 칸은 주소만 쥔다)
 static void LobbyLostMark(int rc, DWORD err)
@@ -1942,16 +1943,24 @@ static void LobbyLostMark(int rc, DWORD err)
         shown || waiting ? "안내 창 예약" : "안내 안 함");
     if (shown || waiting) {
         g_lobbyLostAtMs = GetTickCount();
+        g_loginRescueTried = false;   // ★ 11-17 87
         InterlockedExchange(&g_lobbyLost, 1);
     } else {
         InterlockedExchange(&g_lobbyBannedUntil, 0);   // ★ 11-05 플랜1 — 판 안 등 안내 안 띄움(다음 온라인 누름의 정지 안내가 받음) — 묵은 값이 나중 끊김 안내로 새지 않게
     }
 }
 static bool BackToConnBusy();   // ★ 11-05 플랜1 — ⑯ 절
+static bool LoginRescueTick();  // ★ 11-17 87 — ⑯ 절
 static void LobbyLostTick(const char* where)
 {
     if (!g_lobbyLost || GetCurrentThreadId() != g_mainTid || GetTickCount() - g_lobbyLostAtMs < 1000) return;
     if (BackToConnBusy()) return;   // ★ 11-05 플랜1 — 메뉴를 돌려보내는 중에 띄우면 화면이 바뀌며 창이 풀린다(실물 — 정지 안내가 1초 만에 사라짐) · 접속 방식에 도착한 뒤에
+    // ★ 11-17 87 — 정품이 로그인 창 만들기를 잃었으면 대신 열고 이 프레임은 넘긴다(⑯ 이 접속 방식으로 돌려보낸 뒤 위 줄을 지나 안내).
+    //   끊김 한 번에 한 번만 — 열지 못했어도 안내는 띄운다
+    if (!g_loginRescueTried) {
+        g_loginRescueTried = true;
+        if (LoginRescueTick()) return;
+    }
     InterlockedExchange(&g_lobbyLost, 0);
     InterlockedExchange(&g_rankWaiting, 0);      // 줄은 로비가 끊김으로 이미 뺐다(`Lobby::OnClose`)
     InterlockedExchange(&g_rankFoundState, 0);
@@ -2818,6 +2827,44 @@ static bool ChatVisible()
 }
 
 static bool BackToConnBusy() { return g_backWhy != BackWhy::None; }   // ★ 11-05 플랜1 — `LobbyLostTick`
+
+// ★ 11-17 87 — 랭크 기다리는 중 로비가 끊기면 정품이 로그인 창 만들기를 잃는다 → 정품이 열려던 로그인 창을 대신 연다
+//   정품 「로그인으로 되돌리기」(`0x43bde0` — 끊김 처리 `0x40cb8e` 가 부름)는 맨 위 화면 움직임의 닫기(+0x30)를 **먼저** 부르고,
+//   「닫힌 뒤 열 화면」(+0x34)에 로그인 창 열기 `0x44a0e0` 을 **나중에** 적는다(`0x43be27` · `0x43be2a`).
+//   게임 목록의 닫기 `0x437f30` 은 목록이 이미 닫혀 있으면(움직임 +0x40 = 1) 그 자리에서 닫기 끝 `0x437ef0`(평소엔 움직임 +0x38 로 불림)으로 간다 —
+//   아직 비어 있는 옛 +0x34 를 읽고(0 이라 부를 것 없음) 움직임을 풀어 버린다 → 로그인 창이 영영 안 생기고 「불러오는 중...」에 갇힘.
+//   랭크 기다림은 목록을 닫힌 채 몇 분 붙잡아 이 순서를 밟는다
+//   (11-17 `_out/qa_1117/k87a` 메모리 — 기다리는 중 목록 움직임 상태 1 · 끊긴 뒤 0.4초부터 쌓기 맨 위 0x6a4 · 움직임 목록 빔 · 로그인 칸 0 · WOL 상태 9 가 끝까지).
+//   목록이 보이던 클라는 움직임이 돌다 끝에 +0x34 를 불러 0.86초에 로그인 창이 생김(`k1` 클라2) — 그 길은 아래 「열 고리 있음」으로 손 안 댐.
+//   뒤는 런처로 켠 판이면 ⑯(대화방 뒤로 → 접속 방식)이 받고, 런처 없이 들어온 판이면 정품 로그인 화면이 그대로 보인다.
+//   왜 `0x44a0e0` 을 직접: 쌓기 맨 위가 이미 로그인일 때 정품도 그것을 바로 부른다(`0x43be20` · 맨 위 화면 열기 `0x43bc20` 의 로그인 갈래 `0x43bcde`) — 정품이 고른 길 그대로
+//   덤 — 캐릭터를 고른 뒤 정품이 켠 바탕 창 「불러오는 중...」 글(`MainBG.wnd` 99번)도 남는다(11-17 `k87b` 확인 누른 뒤 접속 방식 화면 가운데).
+//   정품은 게임 목록을 열 때 · 접속 오류 때 그 글을 끈다(`0x4a17d0(1)` — OpenNox `sub_4A24C0` 과 같은 꼴: `[0x711330]` 의 99번을 숨김) → 같은 함수로 끈다
+static const uintptr_t kScreenDepth = 0x6990fc, kScreenIds = 0x6990b8, kAnimHead = 0x699100, kOpenLogin = 0x44a0e0, kLoadingText = 0x4a17d0;
+static const DWORD kScreenLogin = 0x6a4, kWolBackToLogin = 9, kAnimNext = 0x28, kAnimThen = 0x34;
+typedef int(__cdecl* PFN_openlogin)(void);
+typedef void(__cdecl* PFN_loadingtext)(int hide);
+static volatile LONG g_loginRescues = 0;
+static bool LoginRescueTick()
+{
+    DWORD state = 0, login = 0, depth = 0, top = 0;
+    if (!ReadSelf(kWolStateSlot, &state) || state != kWolBackToLogin) return false;
+    if (!ReadSelf(kLoginWin, &login) || login) return false;
+    if (!ReadSelf(kScreenDepth, &depth) || (depth &= 0xff) == 0 || !ReadSelf(kScreenIds + 4 * depth, &top) || top != kScreenLogin) return false;
+    DWORD a = 0, then = 0;
+    int n = 0;
+    ReadSelf(kAnimHead, &a);
+    for (; a && n < 64; ++n) {
+        if (ReadSelf(a + kAnimThen, &then) && then == kOpenLogin) return false;   // 정품이 닫기 움직임 끝에 열 참
+        if (!ReadSelf(a + kAnimNext, &a)) break;
+    }
+    const int ok = ((PFN_openlogin)kOpenLogin)();
+    ((PFN_loadingtext)kLoadingText)(1);
+    ReadSelf(kLoginWin, &login);
+    const LONG k = InterlockedIncrement(&g_loginRescues);
+    Log("㉑ 로그인 창 대신 엶(누적 %ld) — WOL 상태 9 · 쌓기 맨 위 로그인 · 로그인 창 0 · 열 고리 0(움직임 %d 개) → 돌려준 값 %d · 창 %#lx · 「불러오는 중」 글 끔", k, n, ok, login);
+    return true;
+}
 
 // 돌려보내는 중이면 true(이 프레임은 다른 자동 누름 안 함)
 static bool BackToConnTick(DWORD now)
