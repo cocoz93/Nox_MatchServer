@@ -4306,7 +4306,7 @@ void RankPenaltyUnitTests() {
     }
 
     // ⑧ 입구 — 제한 중 단추 · 판 6 = BLOCKED + 474 · 판 5 = 471
-    //   (★ 11-17 R-3 — 판 5 의 471 장면은 뺌. 최소 판 8 밑은 제한 전에 줄 서기부터 거절 — `VersionGateUnitTests` ④)
+    //   (★ 11-17 R-3 — 판 5 의 471 장면은 뺌. 최소 판 8 밑은 제한 전에 줄 서기(JOIN)부터 버림(답 없음) — `VersionGateUnitTests` ④)
     {
         Rig r(cfg);
         const int a = r.Login("amy");
