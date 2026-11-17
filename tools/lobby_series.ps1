@@ -75,8 +75,12 @@ function Read-Run([string]$dir) {
   $r.InAvg = Avg ($plat | ForEach-Object { $_.In }); $r.OutAvg = Avg ($plat | ForEach-Object { $_.Out })
   $r.MemMax = Max ($sect | ForEach-Object { $_.Mem })
   # [더미 구간] — 잼 단계만. CPU 더미 = 그 1초 동안 더미 프로세스 CPU(ms · 타이머 눈금이라 0 · 16 · 31 …)
-  $jam = @(foreach ($l in $dum) { if ($l -match '^\[더미 구간\] 초 [\d.]+ · 단계 잼 · .* · CPU 더미 ([\d.]+)$') { [double]$Matches[1] } })
-  $r.JamSec = $jam.Count
+  #   잼 초 = 첫 줄 「초」부터 끝 줄 「초」까지 걸친 시간. 줄 수로 세면 안 된다 — 더미는 평균 약 1.005초마다 찍어
+  #   (11-18 960명 30분 판 1790줄이 20~1818초를 덮음) 줄 수가 판 초보다 적게 나와 멀쩡한 판을 「지나간 양 모자람」으로 멈췄다
+  $jamRows = @(foreach ($l in $dum) { if ($l -match '^\[더미 구간\] 초 ([\d.]+) · 단계 잼 · .* · CPU 더미 ([\d.]+)$') { [pscustomobject]@{ T = [double]$Matches[1]; Cpu = [double]$Matches[2] } } })
+  $jam = @($jamRows | ForEach-Object { $_.Cpu })
+  $r.JamLines = $jamRows.Count
+  $r.JamSec = if ($jamRows.Count) { [int][math]::Round($jamRows[-1].T - $jamRows[0].T + 1) } else { 0 }
   $r.DummyCpuAvg = Avg $jam; $r.DummyCpuMax = Max $jam
   $r.DummyCpuNonzero = @($jam | Where-Object { $_ -gt 0 }).Count
   $r.LatN = $null; $r.LatP50 = $null; $r.LatP99 = $null; $r.LatMax = $null
@@ -115,9 +119,9 @@ function Get-LobbyVerdict([int]$rc, $r, [int]$cpuLimit, [int]$wantSec, [string]$
 function Curve($spec, $v, $r, [string]$tag) {
   return ("판 {0} · M {1} · 배율 {2} · {3}초 · {4}{5} · 로비 바쁨 평균 {6}% 최대 {7}% · CPU 고리 평균 {8} 프로세스 평균 {9} 최대 {10}(ms/초) · 메모리 개인 최대 {11}MB" +
           " · 접속 최대 {12} · 줄/초 받음 {13} 보냄 {14} · 답(잼) {15}개 가운데 {16} 느린 1% {17} 최대 {18}(ms) · 더미 CPU 평균 {19} 최대 {20}(ms/초)" +
-          " · 471 {21} · 다시 로그인 {22} · 지나간 양 로비 구간 {23}초(잼 자리 {24}) · 더미 잼 {25}초 · {26}") -f
+          " · 471 {21} · 다시 로그인 {22} · 지나간 양 로비 구간 {23}초(잼 자리 {24}) · 더미 잼 {25}초({27}줄) · {26}") -f
     $spec.N, $spec.People, $spec.Rate, $spec.Seconds, $v.Kind, $(if ($v.Why) { "($($v.Why))" } else { '' }), $r.BusyAvg, $r.BusyMax, $r.LoopAvg, $r.ProcAvg, $r.ProcMax, $r.MemMax,
-    $r.ConnMax, $r.InAvg, $r.OutAvg, $r.LatN, $r.LatP50, $r.LatP99, $r.LatMax, $r.DummyCpuAvg, $r.DummyCpuMax, $r.Reject471, $r.Relogin, $r.LobbySec, $r.PlateauSec, $r.JamSec, $tag
+    $r.ConnMax, $r.InAvg, $r.OutAvg, $r.LatN, $r.LatP50, $r.LatP99, $r.LatMax, $r.DummyCpuAvg, $r.DummyCpuMax, $r.Reject471, $r.Relogin, $r.LobbySec, $r.PlateauSec, $r.JamSec, $tag, $r.JamLines
 }
 
 # ── 시험 — 가짜 판 폴더(summary · lobby.log · dummy.log · env)를 만들어 판정 · 읽기를 본다 ──
@@ -149,6 +153,7 @@ if ($SelfTest) {
     [IO.File]::WriteAllLines((Join-Path $d 'lobby.log'), [string[]]$lob, $enc)
     $dum = @('[더미 구간] 초 1 · 단계 올림 · 쉬기 0 · 일 0 · 방 0 · 로그인 중 50 · 실패 0 · 끝 0 · 접속 150 · 로비 보낸 줄 1 받은 줄 1 · 채팅 보낸 줄 0 받은 줄 0 · 라우터 보낸 줄 0 받은 줄 0 · 답 1 · 느린 1% 0.5 · 최대 0.5 · 답 없음 0 · 뜻밖 끊김 0 · CPU 더미 999')
     for ($i = 0; $i -lt $jamSec; $i++) {
+      if ($o.ContainsKey('Skip') -and $i % $o.Skip -eq [int]($o.Skip / 2)) { continue }   # 줄이 1초보다 조금 늦게 찍혀 건너뛴 초(첫 · 끝 줄은 안 빠짐)
       $c = if ($i -eq 7) { $cpuMax } elseif ($o.ContainsKey('CpuZero')) { 0 } else { @(0, 16)[$i % 2] }
       $dum += "[더미 구간] 초 $($i + 2) · 단계 잼 · 쉬기 100 · 일 10 · 방 1 · 로그인 중 0 · 실패 0 · 끝 0 · 접속 360 · 로비 보낸 줄 3 받은 줄 4 · 채팅 보낸 줄 1 받은 줄 1 · 라우터 보낸 줄 0 받은 줄 0 · 답 3 · 느린 1% 0.5 · 최대 0.5 · 답 없음 0 · 뜻밖 끊김 0 · CPU 더미 $c"
     }
@@ -174,6 +179,8 @@ if ($SelfTest) {
     @('② 구간 합', 1, @{ Fails = @('② [로비 구간] 300줄 합 — 받은 줄 1 · 보낸 줄 2(끝 줄 3 · 4)') }, 100, '미결'),
     @('더미 잼 짧음', 0, @{ Jam = 297 }, 100, '미결'),
     @('더미 잼 경계', 0, @{ Jam = 298 }, 100, '통과'),
+    @('더미 잼 줄 빠짐', 0, @{ Jam = 300; Skip = 60 }, 100, '통과'),
+    @('더미 잼 짧고 줄 빠짐', 0, @{ Jam = 297; Skip = 60 }, 100, '미결'),
     @('더미 CPU 다 0', 0, @{ CpuZero = 1; CpuMax = 0 }, 100, '미결'),
     @('커밋 다름', 0, @{ Commit = 'bbb' }, 100, '미결'),
     @('답 0개', 0, @{ LatZero = 1 }, 100, '미결')
@@ -193,6 +200,8 @@ if ($SelfTest) {
   T ($r.BusyMax -eq 2.5 -and $r.BusyAvg -eq 0.51 -and $r.ProcAvg -eq 16 -and $r.MemMax -eq 8) "바쁨 최대 $($r.BusyMax)(2.5) · 평균 $($r.BusyAvg)(0.51) · 프로세스 $($r.ProcAvg)(16) · 메모리 $($r.MemMax)(8)"
   T ($r.JamSec -eq 300 -and $r.DummyCpuMax -eq 31 -and $r.DummyCpuNonzero -eq 150) "더미 잼 $($r.JamSec)(300) · CPU 최대 $($r.DummyCpuMax)(31 · 올림 999 는 안 셈) · 0 아닌 초 $($r.DummyCpuNonzero)(150)"
   T ($r.LatN -eq 500 -and $r.LatP99 -eq 1.2 -and $r.Reject471 -eq 2 -and $r.Relogin -eq 4 -and $r.Refused -eq 0) "답 $($r.LatN) · 느린 1% $($r.LatP99) · 471 $($r.Reject471) · 다시 로그인 $($r.Relogin) · 거절 알림 $($r.Refused)"
+  $r = Read-Run (Join-Path $tdir '더미_잼_줄_빠짐')
+  T ($r.JamSec -eq 300 -and $r.JamLines -eq 295) "줄 빠짐 판 — 더미 잼 $($r.JamSec)초(기대 300) · $($r.JamLines)줄(295)"
   Write-Host "시험 $($script:ok)/$($script:ok + $script:bad) · 가짜 판 $tdir"
   if ($script:bad -gt 0) { exit 1 } else { exit 0 }
 }
