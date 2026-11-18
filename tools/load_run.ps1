@@ -11,7 +11,7 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools\load_run.ps1 -CheckOnly
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools\load_run.ps1 -Tag r10x4 -Rooms 4 -RoomSize 10 -Sec 300
 #
-# 종료 코드: 0 = 통과(또는 실행 끝) · 1 = 게이트 실패 · 2 = 실행 파일 · 맵 없음 · 더미 코어 인자 · 3 = 코어 지정이 다름 · 4 = 서버가 안 뜸
+# 종료 코드: 0 = 통과(또는 실행 끝) · 1 = 게이트 실패 · 2 = 실행 파일 · 맵 없음 · 서버 · 더미 코어 인자 · 3 = 코어 지정이 다름 · 4 = 서버가 안 뜸
 param(
   [string]$Tag = 'run',
   [int]$Rooms = 1,
@@ -26,7 +26,10 @@ param(
   # ★ 11-17 — 더미 코어(논리 코어 비트). 기본 = 물리 3~9. 더미 한계(`Docs/MO_DUMMY_LIMIT_PLAN_1117.md` 4절)는 스레드 하나를
   #   물리 코어 하나(논리 6 · 7 = 0xC0)에 묶어 잰다. ⚠ 아래 코어 줄에서 같은 이름을 지역 변수로 다시 넣지 말 것(대소문자 안 가림 — 인자가 지워진다)
   [int64]$DummyMask = 0xFFFC0,
-  [int]$CycleSec = 0,                    # 방 여닫기(측정 플랜 M7) — 더미 --cycle-sec 로 넘긴다. 마지막 방이 이 초마다 닫히고 새로 열린다 · 0 = 끔
+  # ★ 11-18 — 서버 코어(논리 코어 비트). 기본 = 물리 0~2(옛 고정값 그대로라 안 주는 대본은 바뀌지 않음). 게임 스레드 3개 판은
+  #   무거운 스레드가 넷(게임 셋 · 통신)이라 물리 0~3(0xFF)을 준다 — 값은 tools/load_limit.ps1 Core-Split. ⚠ 아래에서 같은 이름을 지역 변수로 다시 넣지 말 것
+  [int64]$ServerMask = 0x3F,
+  [int]$CycleSec = 0,                   # 방 여닫기(측정 플랜 M7) — 더미 --cycle-sec 로 넘긴다. 마지막 방이 이 초마다 닫히고 새로 열린다 · 0 = 끔
   [switch]$NoDummy,                      # 빈 서버(측정 플랜 M2) — 더미를 안 띄우고 서버만 Sec 초 돌린다. 방은 더미가 들어와야 생겨 0개다
   [string]$ExtraServerArgs = '',
   [string]$ExtraDummyArgs = '',
@@ -58,10 +61,13 @@ $map = Join-Path $GameDir 'maps\So_LOD\So_LOD.map'
 $runRoot = Join-Path $repo '_out\load_run'
 $stamp = Join-Path $runRoot 'last_end.txt'   # 직전 실행이 끝난 시각(UTC 틱) — 잔열 게이트와 지문이 읽는다
 
-# 코어 — 이 PC(i9-10900)는 물리 코어 k 가 논리 2k · 2k+1 이다. 서버 = 물리 0~2 · 더미 = 물리 3~9(인자 -DummyMask 기본값)
-$serverMask = 0x3F
-if (($DummyMask -band $serverMask) -ne 0 -or $DummyMask -le 0 -or ($DummyMask -band -bnot [int64]0xFFFFF) -ne 0) {
-  Write-Host ('[멈춤] -DummyMask 0x{0:X} — 서버 코어(0x3F)와 겹치거나 논리 0~19 밖' -f $DummyMask); exit 2
+# 코어 — 이 PC(i9-10900)는 물리 코어 k 가 논리 2k · 2k+1 이다. 서버 = 물리 0~2 · 더미 = 물리 3~9(인자 -ServerMask · -DummyMask 기본값)
+#   ★ 11-18 옛 `$serverMask = 0x3F` 줄을 뺐다 — 인자 -ServerMask 와 한 변수라 남기면 인자가 지워진다
+if ($ServerMask -le 0 -or ($ServerMask -band -bnot [int64]0xFFFFF) -ne 0) {
+  Write-Host ('[멈춤] -ServerMask 0x{0:X} — 논리 0~19 밖' -f $ServerMask); exit 2
+}
+if (($DummyMask -band $ServerMask) -ne 0 -or $DummyMask -le 0 -or ($DummyMask -band -bnot [int64]0xFFFFF) -ne 0) {
+  Write-Host ('[멈춤] -DummyMask 0x{0:X} — 서버 코어(0x{1:X})와 겹치거나 논리 0~19 밖' -f $DummyMask, $ServerMask); exit 2
 }
 
 foreach ($p in @($srvExePath, $dummyExe, $map)) {
@@ -218,7 +224,7 @@ $wuSeen = 0; $wuOn = 0; $wuErr = 0; $wuOnAt = New-Object System.Collections.Arra
 $sv = Start-Process -FilePath $srvExePath -ArgumentList $serverArgs -WorkingDirectory $repo -PassThru -WindowStyle Hidden `
   -RedirectStandardOutput (Join-Path $runDir 'server.txt') -RedirectStandardError (Join-Path $runDir 'server_err.txt')
 $null = $sv.Handle   # 끝난 뒤 종료 코드를 읽으려면 핸들을 잡아 둬야 한다
-if (-not (Set-Affinity $sv $serverMask '서버')) {
+if (-not (Set-Affinity $sv $ServerMask '서버')) {
   [void](Stop-Server $sv)
   Write-Host '[멈춤] 서버 코어 지정이 다르다'
   Save-Env

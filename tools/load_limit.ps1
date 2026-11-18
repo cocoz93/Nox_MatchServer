@@ -22,7 +22,12 @@ param(
   #   5분 판 한계 2,900명(초마다 한 바퀴 최대의 상위 5% 30.89ms ≥ 29.7 에서 멈춤) × 몫 0.8 = 2,300명은 30분에서 넘음(구간 안 밀림 2 · 최대 52.66ms)
   #   → 200명 아래 2,100명 30분 통과(밀림 0 · 상위 5% 23.03 · 최대 26.73ms). 이 값은 상한 셈에만 쓴다 — 실제 띄우는 스레드 수는 DummyThreads
   [int]$DummyThreads = 6,        # 6 × 2100 ÷ 10 = 1260방 — 11-18 서버 한계(30분 416방)의 세 배 위라 판이 상한에서 멈추지 않는다. 몇 스레드 · 몇 코어를 줄지는 코어 나누기 플랜에서
+  #   (★ 11-18 코어 나누기는 플랜 문서 없이 아래 Core-Split 으로 정함 — 게임 스레드 1 · 2 · 3 모두 6스레드 그대로. 까닭은 Core-Split 주석)
   [int]$PerThread = 2100,
+  # ★ 11-18 게임 스레드 여럿 판(`Docs/SERVERCORE_UDP_PLAN_1116.md` 측정 순서 5번) — 서버 `--game-threads N`. 1 이면 서버 명령줄 · 판 이름이 11-18 판과 같다
+  [int]$GameThreads = 1,
+  [int64]$ServerMask = 0,        # 0 = Core-Split 이 게임 스레드 수로 정함 · 주면 그 값(load_run -ServerMask)
+  [int64]$DummyMask = 0,         # 0 = Core-Split 이 게임 스레드 수로 정함 · 주면 그 값(load_run -DummyMask)
   [switch]$DryRun
 )
 $ErrorActionPreference = 'Stop'
@@ -33,6 +38,31 @@ $loadReport = Join-Path $PSScriptRoot 'load_report.ps1'
 $size = 10; $joinSec = 0.2; $tailSec = 60
 $serverExtra = '--no-event-log --no-first-seen --no-op-count'
 if ($TopRooms -le 0) { $TopRooms = [int][math]::Floor($DummyThreads * $PerThread / $size) }
+
+# ★ 11-18 코어 나누기 — 게임 스레드 수 → 서버 · 더미 코어(논리 비트 · 이 PC 는 물리 k = 논리 2k · 2k+1 · 물리 10개).
+#   규칙: 서버 물리 코어 = 무거운 스레드 수(게임 N + 통신 1) · 최소 셋(N = 1 은 11-18 416방 판 그대로) · 나머지 물리 코어는 전부 더미.
+#   가벼운 스레드(조정 · 기록 · 주 스레드)는 서버 코어의 짝 논리 코어에 얹는다 — 가볍다는 것은 짐작(따로 안 잼).
+#   더미 6스레드 = 상한 1260방. 방 수가 게임 스레드 수에 비례한다는 짐작으로 N = 2 는 832 · N = 3 은 1248방이라 둘 다 상한 아래다.
+#   실제로는 그 전에 통신 스레드가 찰 것으로 본다(416방 판 통신 바쁨 79.63% → 비례면 약 520방 · 짐작). 상한에 닿으면 아래 [주의] 줄이 알린다.
+#   N = 3 은 더미 물리 코어가 여섯(4~9)이라 6스레드가 코어 하나씩 — 하이퍼스레딩 판(MO_DUMMY_LIMIT_PLAN_1117.md:64)은 안 연다
+function Core-Split([int]$n) {
+  switch ($n) {
+    1 { return @{ Server = [int64]0x3F; Dummy = [int64]0xFFFC0; Why = '서버 물리 0~2 · 더미 물리 3~9(11-18 416방 판 그대로)' } }
+    2 { return @{ Server = [int64]0x3F; Dummy = [int64]0xFFFC0; Why = '서버 물리 0~2(게임 2 · 통신 1) · 더미 물리 3~9' } }
+    3 { return @{ Server = [int64]0xFF; Dummy = [int64]0xFFF00; Why = '서버 물리 0~3(게임 3 · 통신 1) · 더미 물리 4~9' } }
+    default { return $null }
+  }
+}
+$split = Core-Split $GameThreads
+if ($null -eq $split -and ($ServerMask -le 0 -or $DummyMask -le 0)) {
+  Write-Host "[멈춤] 게임 스레드 $GameThreads 개의 코어 나눔이 없다(1 · 2 · 3 만) — -ServerMask · -DummyMask 를 직접 줄 것"; exit 2
+}
+$srvMaskUse = if ($ServerMask -gt 0) { $ServerMask } else { $split.Server }
+$dumMaskUse = if ($DummyMask -gt 0) { $DummyMask } else { $split.Dummy }
+$splitWhy = if ($ServerMask -gt 0 -or $DummyMask -gt 0 -or $null -eq $split) { '직접 줌' } else { $split.Why }
+$srvArgsUse = $serverExtra
+if ($GameThreads -gt 1) { $srvArgsUse += " --game-threads $GameThreads" }
+$tagHead = if ($GameThreads -gt 1) { "LIM_g${GameThreads}_" } else { 'LIM_' }
 
 $outDir = Join-Path $repo ("_out\load_limit\" + (Get-Date -Format 'yyyyMMdd_HHmmss'))
 if (-not $DryRun) { New-Item -ItemType Directory -Force -Path $outDir | Out-Null }
@@ -48,16 +78,16 @@ function Q([string]$s) { return "'" + $s.Replace("'", "''") + "'" }
 $dirtyN = @(& git -C $repo status --porcelain).Count
 if ($dirtyN -gt 0 -and -not $DryRun) { Log "[멈춤] 미커밋 $dirtyN 개 — 판이 다 버려진다(git status)"; exit 2 }
 $head = (& git -C $repo rev-parse --short HEAD).Trim()
-Log "[한계] 커밋 $head · 시작 $StartRooms 방 · 눈금 $StepRooms · 범위 $FloorRooms~$TopRooms · 더미 스레드 $DummyThreads(스레드당 $PerThread 명까지) · 끈 계측 $serverExtra · 가동 시간 문턱 기본"
+Log "[한계] 커밋 $head · 시작 $StartRooms 방 · 눈금 $StepRooms · 범위 $FloorRooms~$TopRooms · 더미 스레드 $DummyThreads(스레드당 $PerThread 명까지) · 게임 스레드 $GameThreads · 코어 서버 0x$('{0:X}' -f $srvMaskUse) · 더미 0x$('{0:X}' -f $dumMaskUse)($splitWhy) · 서버 인자 $srvArgsUse · 가동 시간 문턱 기본"
 
 # 판 하나 → @{ pass; rec; dir }. 버림이면 같은 지점을 3번까지
 function Run-Point([string]$tag, [int]$rooms, [int]$window, [int]$edge) {
   $sec = [int][math]::Ceiling($rooms * $size * $joinSec) + $window + $tailSec
   for ($try = 1; $try -le 3; $try++) {
-    $t = "LIM_${tag}_r${rooms}_t$try"
+    $t = "${tagHead}${tag}_r${rooms}_t$try"
     if ($DryRun) { Log "[판] (시험) $t · 방 $rooms × $size · $sec 초 · 측정 구간 $window"; return @{ pass = ($rooms -le 240); rec = $null; dir = '' } }
     Log "[판] $t · 방 $rooms × $size · $sec 초 · 측정 구간 $window 초"
-    $cmd = "& $(Q $loadRun) -Tag $(Q $t) -Rooms $rooms -RoomSize $size -Sec $sec -Behavior 'fight' -Classes '0,1' -FreqMult 1 -CycleSec 0 -DummyThreads $DummyThreads -ExtraServerArgs $(Q $serverExtra); exit `$LASTEXITCODE"
+    $cmd = "& $(Q $loadRun) -Tag $(Q $t) -Rooms $rooms -RoomSize $size -Sec $sec -Behavior 'fight' -Classes '0,1' -FreqMult 1 -CycleSec 0 -DummyThreads $DummyThreads -ServerMask $srvMaskUse -DummyMask $dumMaskUse -ExtraServerArgs $(Q $srvArgsUse); exit `$LASTEXITCODE"
     $out = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -Command $cmd 2>&1 | ForEach-Object { "$_" })
     $code = $LASTEXITCODE
     foreach ($ln in $out) { if ($ln -match '^\[(게이트|멈춤|주의|끝|코어)\]') { Log "  $ln" } }
