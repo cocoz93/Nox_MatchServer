@@ -207,6 +207,11 @@ add_executable(proto_test server/tests/proto_test.cpp server/tests/net_thread_te
 target_link_libraries(proto_test PRIVATE nox_proto nox_lobby_core)   # ★ 10-20 v2 작업 4b-2 — 로비 · 게임 서버를 메모리로 잇는 시험(TestHostRename)
 target_compile_definitions(proto_test PRIVATE NOX_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 
+# ★ 11-18 M-1 조각 3 — 게임 스레드 멈춤 후보 두 곳(선 추적 · 작살)에 안 끝나는 입력 · 끝나는 입력.
+#   ctest 에 안 건다 — 지금 짐작대로면 갇힌 스레드가 프로세스가 닫힐 때까지 코어를 쓴다(고친 뒤 짐작을 뒤집고 건다)
+add_executable(stall_cand_test server/tests/stall_cand_test.cpp)
+target_link_libraries(stall_cand_test PRIVATE nox_proto)
+
 enable_testing()
 add_test(NAME proto_test COMMAND proto_test)
 add_test(NAME server_selftest COMMAND nox_server --selftest)
