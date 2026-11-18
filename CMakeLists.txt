@@ -110,6 +110,11 @@ target_link_libraries(nox_opcount PRIVATE nox_proto)
 add_executable(nox_dummy server/src/dummy.cpp)
 target_link_libraries(nox_dummy PRIVATE nox_proto)
 
+# ★ 11-18 M-1 멈춤 잡기 — 바깥에서 다른 프로세스의 스레드 호출 사슬 · 스레드별 CPU · 덤프(`Docs/MO_STALL_HUNT_PLAN_1118.md` 3절 ①).
+#   서버 라이브러리에 안 기댄다 — 멈춘 판의 서버 실행 파일을 다시 링크하지 않고 이것만 빌드하려고(`--target nox_stack`)
+add_executable(nox_stack server/src/stack_snap.cpp)
+target_link_libraries(nox_stack PRIVATE dbghelp)
+
 add_executable(nox_verify server/src/verify_update.cpp)
 target_link_libraries(nox_verify PRIVATE nox_proto)
 
