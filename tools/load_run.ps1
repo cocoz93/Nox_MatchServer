@@ -1,4 +1,5 @@
 ﻿# 부하 실험 한 회 실행 — PC 검사(게이트) · 환경 지문(env.txt) · 코어 지정 · 서버 + 더미 실행 · 서버 멈춤 이벤트로 끝내기
+#   · ★ 11-18 게임 스레드 멈춤 감시(-StallSec · 잡히면 판 폴더에 stack1.txt · stack2.txt · server.dmp · env.txt 「멈춤 감시」)
 #
 #   왜 이 대본이 있나: 측정값은 PC 상태에 따라 흔들린다(가동 시간 · 다른 프로그램 · 전원 계획 · 직전 실행의 잔열).
 #   그래서 측정 직전마다 같은 검사를 돌리고, 못 넘으면 서버를 안 띄운다. 지문이 없는 실행의 절대값은 인용하지 않는다.
@@ -30,6 +31,10 @@ param(
   [string]$ExtraServerArgs = '',
   [string]$ExtraDummyArgs = '',
   [string]$ServerExe = '',               # 비우면 build\Release\nox_server.exe · 최적화 바퀴의 「고치기 전 서버」 사본을 띄울 때(tools/load_compare.ps1 · 11-14)
+  # ★ 11-18 멈춤 감시(M-1 · tools/stall_watch.ps1) — 한 게임 스레드의 [구간] 초가 이 초 동안 안 바뀌면 nox_stack 두 묶음 + 덤프를 판 폴더에 남기고
+  #   판을 일찍 끝낸다(종료 코드는 그대로 0 — 부르는 대본은 그 판을 「버림」으로 보고 다시 잰다). 값 = stall_hunt.ps1 $StallSec 과 같음 · 0 = 끔
+  [int]$StallSec = 10,
+  [string]$FakeServerArgs = '',          # 시험용(tools/stall_watch_test.ps1) — 주면 서버 = nox_stack --victim fakeserver 이것 · 더미 = nox_stack --victim sleep · 측정에서는 안 준다
   [string]$GameDir = 'C:\Program Files\GOG Galaxy\Games\Nox',
   [switch]$CheckOnly,
   # 게이트 문턱 · 다시 재기 — ★ 11-17 기본값과 뜻은 tools/pc_gate.ps1 하나(로비 판과 같이 쓰려고 떼어 냄). 여기선 받은 것만 넘긴다
@@ -46,6 +51,9 @@ $srvExePath = if (-not $ServerExe) { Join-Path $repo 'build\Release\nox_server.e
               elseif (Test-Path -LiteralPath $ServerExe) { (Resolve-Path -LiteralPath $ServerExe).Path }
               else { $ServerExe }   # 없으면 아래 검사가 「[멈춤] 없음」으로 멈춘다
 $dummyExe = Join-Path $repo 'build\Release\nox_dummy.exe'
+$stackExe = Join-Path $repo 'build\Release\nox_stack.exe'   # ★ 11-18 멈춤 감시 — 없으면 감시만 끄고 판은 돈다
+if ($FakeServerArgs) { $srvExePath = $stackExe; $dummyExe = $stackExe }
+. (Join-Path $PSScriptRoot 'stall_watch.ps1')
 $map = Join-Path $GameDir 'maps\So_LOD\So_LOD.map'
 $runRoot = Join-Path $repo '_out\load_run'
 $stamp = Join-Path $runRoot 'last_end.txt'   # 직전 실행이 끝난 시각(UTC 틱) — 잔열 게이트와 지문이 읽는다
@@ -158,8 +166,13 @@ if ($ExtraServerArgs) { $serverArgs += " $ExtraServerArgs" }
 $dummyArgs = "--server 127.0.0.1:$Port --count $($Rooms * $RoomSize) --room-size $RoomSize --classes $Classes --behavior $Behavior --stat-mult $StatMult --freq-mult $FreqMult --duration-sec $Sec --threads $DummyThreads"
 if ($CycleSec -gt 0) { $dummyArgs += " --cycle-sec $CycleSec" }
 if ($ExtraDummyArgs) { $dummyArgs += " $ExtraDummyArgs" }
+if ($FakeServerArgs) { $serverArgs = "--victim fakeserver $FakeServerArgs"; $dummyArgs = "--victim sleep --sec $Sec" }
 Note '서버 명령줄' "$srvExePath $serverArgs"
 Note '더미 명령줄' $(if ($NoDummy) { '없음(-NoDummy)' } else { "$dummyExe $dummyArgs" })
+# ★ 11-18 멈춤 감시 — 잡히면 .pdb 를 판 폴더에 복사해 이름을 푼다. 시작 때 해시와 견줘 판 도중 다시 빌드했는지 가른다
+$srvPdb = [IO.Path]::ChangeExtension($srvExePath, '.pdb')
+$srvPdbHash = Get-ShortHash $srvPdb
+Note '서버 실행 파일 해시' "$(Get-ShortHash $srvExePath) · .pdb $srvPdbHash"
 
 function Stop-Server($Proc) {
   # 멈춤 이벤트 먼저(콘솔 프로그램은 창 닫기 신호를 못 받는다) — 강제 종료는 응답이 없을 때만
@@ -242,11 +255,24 @@ $pdhErr = [NoxLoadRunPdh]::Open()
 if ($pdhErr) { [void]$cpuLines.Add("못 읽음 — $pdhErr") }
 $duStart = Get-Date
 $deadline = $duStart.AddSeconds($(if ($NoDummy) { $Sec } else { $Sec + 30 }))
+# ★ 11-18 멈춤 감시 — 10초 기다릴 때마다 server.txt 새 줄을 읽는다. 기다림이 10초라 실제로는 [구간] 줄이 한 번 기다리는 동안 하나도 안 와야
+#   잡힌다(문턱과 기다림 중 큰 쪽). 정상 판에서 [구간] 줄이 1초 넘게 끊긴 적 0번 · 11-18 멈춘 판은 96초 넘게 멈춤(stall_hunt.ps1 $StallSec 주석)
+$watch = $null; $caught = $null
+if ($StallSec -gt 0) {
+  if (Test-Path -LiteralPath $stackExe) { $watch = New-StallWatch (Join-Path $runDir 'server.txt') $StallSec }
+  else { Write-Host "[주의] 멈춤 감시 끔 — 없음: $stackExe" }
+}
+$watchClock = [Diagnostics.Stopwatch]::StartNew()
 while ($(if ($NoDummy) { -not $sv.HasExited } else { -not $du.HasExited })) {
   $left = ($deadline - (Get-Date)).TotalMilliseconds
   if ($left -le 0) { break }
   $waitMs = [int][math]::Min(10000, $left)
   if ($NoDummy) { [void]$sv.WaitForExit($waitMs) } else { [void]$du.WaitForExit($waitMs) }
+  if ($watch -and -not $sv.HasExited) {   # 서버가 죽어도 [구간] 이 끊긴다 — 그건 멈춤이 아니다(종료 코드가 따로 남는다)
+    Update-StallWatch $watch $watchClock.Elapsed.TotalSeconds
+    $caught = Get-StallVerdict $watch $watchClock.Elapsed.TotalSeconds
+    if ($caught) { break }
+  }
   try {
     $wuSc.Refresh(); $wuSeen++
     if ($wuSc.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Stopped) { $wuOn++; [void]$wuOnAt.Add([int]((Get-Date) - $duStart).TotalSeconds) }
@@ -260,6 +286,24 @@ while ($(if ($NoDummy) { -not $sv.HasExited } else { -not $du.HasExited })) {
   } else {
     [void]$cpuLines.Add(('{0:F0} · 못 읽음' -f ((Get-Date) - $duStart).TotalSeconds))
   }
+}
+if ($caught) {
+  $atSec = ((Get-Date) - $duStart).TotalSeconds
+  Write-Host ('[멈춤 잡힘] 게임 스레드 {0} · 마지막 [구간] 초 {1} · 바뀐 뒤 {2:F0}초 — 호출 사슬 두 묶음 + 덤프를 남긴다' -f $caught.Thread, $caught.Sec, $caught.Since)
+  $pdbNow = '없음'
+  if (Test-Path -LiteralPath $srvPdb) { Copy-Item -LiteralPath $srvPdb -Destination $runDir; $pdbNow = Get-ShortHash (Join-Path $runDir (Split-Path -Leaf $srvPdb)) }
+  $snap = Invoke-StallSnap $stackExe $sv.Id $runDir "$runDir;$(Split-Path -Parent $srvExePath)"   # 판 폴더에 복사한 .pdb 먼저
+  Note '멈춤 감시' ('잡힘 · 게임 스레드 {0} · 마지막 [구간] 초 {1} · 바뀐 뒤 {2:F0}초 · 더미 띄운 뒤 {3:F0}초 · 문턱 {4}초 · {5} · 판 폴더 .pdb {6}(시작 때 {7})' -f
+                   $caught.Thread, $caught.Sec, $caught.Since, $atSec, $StallSec, (Get-StallLines $watch), $pdbNow, $srvPdbHash)
+  Note '멈춤 호출 사슬 1' $snap[0]
+  Note '멈춤 호출 사슬 2' $snap[1]
+  Write-Host "[멈춤 잡힘] $($snap[0])"
+  if ($du -and -not $du.HasExited) { $du.Kill() }   # 아래 「시간 안에 안 끝나」 줄과 가르려고 여기서
+  Save-Env
+} elseif ($watch) {
+  Note '멈춤 감시' "안 잡힘 · 문턱 ${StallSec}초 · $(Get-StallLines $watch)"
+} else {
+  Note '멈춤 감시' $(if ($StallSec -le 0) { '끔(-StallSec 0)' } else { "끔 — 없음: $stackExe" })
 }
 if ($du -and -not $du.HasExited) {
   Write-Host '[주의] 더미가 시간 안에 안 끝나 강제 종료'

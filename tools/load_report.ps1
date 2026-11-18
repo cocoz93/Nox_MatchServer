@@ -234,6 +234,10 @@ function Report-Run([string]$dir) {
     if (-not $mw.Success) { [void]$rs.Add("판 도중 업데이트 기록을 못 읽음($wuRec)") }
     elseif ([int]$mw.Groups[1].Value -gt 0) { [void]$rs.Add("판 도중 업데이트 기록 $($mw.Groups[1].Value)건") }
   }
+  # ★ 11-18 멈춤 감시(M-1) — load_run 이 잡으면 판을 일찍 끝내 「못 채움」 · 「[종료] 줄 없음」으로도 버려지지만, 까닭을 따로 적어 한계 기록에 보이게
+  $stallRec = [string]$envMap['멈춤 감시']
+  $o.stallWatch = $stallRec
+  if ($stallRec.StartsWith('잡힘')) { [void]$rs.Add("게임 스레드 멈춤 잡힘(env.txt 「멈춤 감시」 · stack1.txt · stack2.txt · server.dmp)") }
   $svCmd = [string]$envMap['서버 명령줄']; $duCmd = [string]$envMap['더미 명령줄']
   $m = [regex]::Match($svCmd, '--load-rooms (\d+) --load-room-size (\d+)')
   $o.rooms = if ($m.Success) { [int]$m.Groups[1].Value } else { 0 }
