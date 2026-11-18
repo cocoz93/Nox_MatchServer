@@ -10,6 +10,7 @@
 # 사용:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools\stall_hunt.ps1             # 본 판(상한 4시간)
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools\stall_hunt.ps1 -SelfTest   # 가짜 서버(nox_stack --victim)로 네 갈래
+#   powershell -NoProfile -ExecutionPolicy Bypass -File tools\stall_hunt.ps1 -OnePair    # 멈춘 판 그대로 쌍 하나(서버 물리 3 · 더미 6스레드 · 입장 0.2초)
 #
 # 종료 코드: 0 = 끝(어느 갈래로 끝났는지는 hunt.txt) · 2 = 실행 파일 · 맵 없음 · 3 = 코어 지정이 다름 · 4 = 서버가 바로 끝남 · 10 = 자가 시험 틀림
 param(
@@ -21,8 +22,13 @@ param(
   [int]$DummyThreads = 3,     # 4,160명 ÷ 3 = 1,387명 — 더미 한 스레드 몫 2,100명 안
   [string]$Repo = '',         # 비우면 이 대본의 위 폴더 · 일부러 틀리기 사본이 원래 리포를 가리키게
   [string]$GameDir = 'C:\Program Files\GOG Galaxy\Games\Nox',
+  [switch]$OnePair,           # 본 판만 — 아래 $onePairDef 한 쌍 · 스레드 · 입장 간격을 따로 안 주면 멈춘 판 값
   [switch]$SelfTest
 )
+if ($OnePair) {
+  if (-not $PSBoundParameters.ContainsKey('DummyThreads')) { $DummyThreads = 6 }   # 멈춘 판 --threads 6
+  if (-not $PSBoundParameters.ContainsKey('JoinMs')) { $JoinMs = 200 }             # 멈춘 판은 입장 간격을 안 줘 더미 기본값(dummy.cpp:206)
+}
 
 $ErrorActionPreference = 'Stop'
 if (-not $Repo) { $Repo = Split-Path -Parent $PSScriptRoot }
@@ -35,6 +41,12 @@ $sectionRx = [regex]'\[구간\] 초 (\d+)'
 $pairDefs = @(
   @{ Name = 'A'; SrvMask = [int64]0xF;  DumMask = [int64]0x3F00;  Port = 18590 },
   @{ Name = 'B'; SrvMask = [int64]0xF0; DumMask = [int64]0xFC000; Port = 18591 })
+# -OnePair = 멈춘 판(_out/load_run/20261118_032106_LIM_p30_r416_t1 env.txt)의 코어 그대로 — 서버 물리 0~2 · 더미 물리 3~9
+#   왜: 11-18 13:35 두 쌍 판(_out/stall_hunt/20261118_133543)에서 서버 물리 2개로는 통신 스레드 바쁨이 100%(멈춘 판 약 78%)에 닿아
+#   보낼 요청이 큐에서 버려지고(1초 최대 3만 4천여 건 · 멈춘 판 0) 덜 참 방이 1 → 57로 늘었다 — 멈춘 판과 같은 짐이 아니라 기다림을 반으로 줄이는 쪽을 접는다.
+#   서버 한 대 4시간이면 빈도가 짐작대로(시간당 0.62번)일 때 못 잡을 확률 약 8%
+$onePairDef = @{   # ⚠ 이름 — PowerShell 변수는 대소문자를 안 가려 $onePair 면 스위치 $OnePair 와 한 변수(11-18 첫 시험)
+              Name = 'A'; SrvMask = [int64]0x3F; DumMask = [int64]0xFFFC0; Port = 18590 }
 
 function Get-Hash($p) {
   if (Test-Path -LiteralPath $p) { return (Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.Substring(0, 16) }
@@ -236,14 +248,15 @@ if ($SelfTest) {
     @{ Name = '잡힘';           A = '--stall-at 5';                 DA = 120; DB = 120; Early = 60; Kills = 3; Want = 'VictimSpin' },
     @{ Name = '서버 죽음';      A = '--die-at 5 --die-code 3';      DA = 120; DB = 120; Early = 60; Kills = 2; Want = '' },
     @{ Name = '더미 먼저 끝남'; A = '';                             DA = 5;   DB = 120; Early = 20; Kills = 1; Want = '' },
-    @{ Name = '상한';           A = '';                             DA = 60;  DB = 60;  Early = 60; Kills = 0; Want = '' })
+    @{ Name = '상한';           A = '';                             DA = 60;  DB = 60;  Early = 60; Kills = 0; Want = '' },
+    @{ Name = '잡힘';  One = $true; A = '--stall-at 5';            DA = 120; DB = 120; Early = 60; Kills = 2; Want = 'VictimSpin' })   # 쌍 하나(-OnePair 코어) = 멈춘 서버 + 더미 하나
   $base = Join-Path $Repo "_out\stall_hunt\$stamp`_selftest"
   $pass = 0; $bad = 0
   $i = 0
   foreach ($c in $cases) {
     $i++
     $specs = @()
-    foreach ($d in $pairDefs) {
+    foreach ($d in $(if ($c.One) { @($onePairDef) } else { $pairDefs })) {
       $isA = $d.Name -eq 'A'
       $specs += @{ Name = $d.Name; SrvMask = $d.SrvMask; DumMask = $d.DumMask; ServerExe = $stackExe; DummyExe = $stackExe
                    ServerArgs = ('--victim fakeserver ' + $(if ($isA) { $c.A } else { '' })).Trim()
@@ -280,10 +293,10 @@ foreach ($x in @($srvExe, $dumExe, [IO.Path]::ChangeExtension($srvExe, '.pdb'), 
 }
 $runDir = Join-Path $Repo "_out\stall_hunt\$stamp"
 $specs = @()
-foreach ($d in $pairDefs) {
+foreach ($d in $(if ($OnePair) { @($onePairDef) } else { $pairDefs })) {
   $results = Join-Path (Join-Path $runDir $d.Name) 'matches.jsonl'
   # 서버 인자 = 멈춘 판(_out/load_run/20261118_032106_LIM_p30_r416_t1 env.txt 「서버 명령줄」)과 같음 + --port ·
-  #   더미 인자 = 같음(스레드만 6 → 3) + 입장 간격 · 상한(더미가 스스로 끝난다)
+  #   더미 인자 = 같음(스레드만 6 → 3) + 입장 간격 · 상한(더미가 스스로 끝난다) · -OnePair 면 스레드 6 · 입장 0.2초 그대로
   $specs += @{ Name = $d.Name; SrvMask = $d.SrvMask; DumMask = $d.DumMask; ServerExe = $srvExe; DummyExe = $dumExe
                ServerArgs = "--quiet --aoi --friends --battle-maps Estate --no-join-token --standalone --map `"$map`" --load-rooms $Rooms --load-room-size 10 --stat-mult 3 --tick-sections --results `"$results`" --no-event-log --no-first-seen --no-op-count --port $($d.Port)"
                DummyArgs = "--server 127.0.0.1:$($d.Port) --count $($Rooms * 10) --room-size 10 --classes 0,1 --behavior fight --stat-mult 3 --freq-mult 1 --duration-sec $CapSec --threads $DummyThreads --join-interval-ms $JoinMs" }
