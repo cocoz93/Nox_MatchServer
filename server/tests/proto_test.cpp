@@ -73,6 +73,11 @@ static void LoadRealAttackAnims(nox::CSyncHost& srv) {
         { 1366,  9, 1, 0, 0, 0, 12, 1 },   // BlackBear
         { 1371,  8, 1, 0, 0, 0, 12, 1 },   // CarnivorousPlant
         { 1382,  0, 0, 0, 0, 0, 26, 1 },   // Beholder
+        // ★ 11-19 맵 몬스터 넷 — thing.bin MonsterDraw(`_out/qa_1119/maprender/_animprobe.cpp` 로 읽음)
+        { 1338,  8, 0, 0, 0, 0, 12, 1 },   // MeleeDemon
+        { 1347,  5, 1, 0, 0, 0,  8, 2 },   // Demon
+        { 1360,  8, 1, 0, 0, 0, 12, 1 },   // Zombie
+        { 1361,  8, 2, 0, 0, 0, 12, 1 },   // VileZombie
     };
     for (const Row& r : kRows) {
         srv->SetMonsterAnim(r.wire, 1, r.mf, r.mh, r.mloop != 0);
@@ -23997,6 +24002,113 @@ void TestMonsterCastB7() {
     std::printf("  09-29 B7 — 몬스터 주문: 비홀더 자동 주문 · 공격 주문 사슬 · 쏘기 칸 시전(빔 패킷·피해·20 끝에 끔) · 움직이면 끊김 · 반주문·쉬는 때 · 가까우면 점멸 · 후퇴 도망 중 점멸\n");
 }
 
+// ★ 11-19 — 맵 몬스터 넷(MeleeDemon 1338 · Demon 1347 · Zombie 1360 · VileZombie 1361) — 표 · 독 좀비 독 · 큰 악마 자동 주문·화염구 · 악마 터짐
+void TestMapMobs1119() {
+    const std::string a = "10.11.19.1:9401", b = "10.11.19.2:9402";
+    using MW = nox::MeleeStrikeWay;
+    using CS = nox::CastStat;
+    char msg[260];
+    // ① 표 — monster.bin(`nox_datadump --out`) 값
+    {
+        const nox::MonsterStats* md = nox::FindMonster(1338); const nox::MonsterStats* dm = nox::FindMonster(1347);
+        const nox::MonsterStats* zb = nox::FindMonster(1360); const nox::MonsterStats* vz = nox::FindMonster(1361);
+        Check(md && dm && zb && vz && md->health == 30 && dm->health == 200 && zb->health == 75 && vz->health == 150 &&
+              zb->meleeDamage == 20 && zb->minDelay == 10 && zb->maxDelay == 30 && vz->meleeDamage == 30 && dm->meleeRange == 0.0,
+              "① 맵 몬스터 넷 표가 monster.bin 과 다르다");
+        const nox::MeleeStrikeInfo vs = nox::MeleeStrikeOf(1361);
+        Check(vs.fn == nox::StrikeFn::VileZombie && vs.dtype == 10 && vs.poisonChance == 10 && vs.poisonStrength == 1 && vs.poisonMax == 3 &&
+              nox::MeleeStrikeOf(1360).fn == nox::StrikeFn::Monster && nox::MeleeStrikeOf(1347).fn == nox::StrikeFn::None,
+              "① 근접 함수 표(독 좀비 VileZombieStrike · 좀비 MonsterStrike · 큰 악마 NULL)가 다르다");
+        Check(std::fabs(nox::MonsterBrainOf(1338).retreat - 0.15f) < 1e-6f && nox::MonsterBrainOf(1347).status == 0x28,
+              "① 두뇌 표(근접 악마 후퇴 0.15 · 큰 악마 0x28)가 다르다");
+    }
+    auto mk = [&](nox::CSyncHost& srv, uint16_t type, float ax) {
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv->DebugTeleport(Sid(srv, a), ax, 1000.0f);
+        srv->DebugSpawnPet(type, 1000, 1000, Sid(srv, std::string()));
+        srv->DebugSetAutoFight(false);
+        LoadRealAttackAnims(srv);
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        srv->DebugSetPetPos(0, 1000, 1000);
+        srv->DebugSetFrame(1000);
+    };
+    auto swing = [](nox::CSyncHost& srv, std::vector<nox::OutPacket>& out) {
+        srv->DebugSetPetNextHit(0, 0);
+        srv->DebugAIPush(0, 16);
+        RunSwing(srv, 0, out);
+    };
+    // ② 독 좀비 — 대상이 없으면 1(빗나감 소리 없음 · 거미는 0) · 물면 10% 로 독
+    {
+        nox::CSyncHost srv; mk(srv, 1361, 1300.0f);
+        std::vector<nox::OutPacket> out;
+        swing(srv, out);
+        Check(srv->meleeStrike(MW::NoTarget) == 1 && srv->meleeStrike(MW::MissSound) == 0, "② 독 좀비가 대상 없이 휘둘렀는데 빗나감 소리를 냈다(거미 갈래)");
+    }
+    {
+        nox::CSyncHost srv; mk(srv, 1361, 1015.0f);
+        std::vector<nox::OutPacket> out;
+        for (int i = 0; i < 100; ++i) { swing(srv, out); srv->DebugSetHealth(Sid(srv, a), 150); srv->DebugSetPoison(Sid(srv, a), 0); }
+        std::snprintf(msg, sizeof(msg), "② 독 좀비 독 확률이 10%% 근처가 아니다 — 맞힘 %llu · 독 %llu", srv->meleeStrike(MW::Hit), srv->meleeStrike(MW::Poisoned));
+        Check(srv->meleeStrike(MW::Hit) == 100 && srv->meleeStrike(MW::Poisoned) >= 2 && srv->meleeStrike(MW::Poisoned) <= 25, msg);
+    }
+    // ③ 큰 악마 — 자동 주문 다섯 · 싸움에서 화염구(27)를 쏜다 = 세기 3 TitanFireball · 쏜 크리처 표시(제 몸에 안 맞게)
+    {
+        nox::CSyncHost srv; uint32_t ms = 0;
+        RegFireballTypes(srv);
+        srv->SetSpellDef(27, 0, 0x42200038u, { 1, 2 });   // 실물 깃발(_spellprobe — thing.bin)
+        srv->SetSpellDef(10, 0, 0x42000430u, { 1, 2 });
+        srv->SetSpellDef(13, 0, 0x09400430u, { 1, 2 });
+        srv->SetSpellDef(74, 0, 0x242000b5u, { 1, 2 });
+        srv->SetSpellDef(39, 0, 0x92480214u, { 1, 2 });
+        srv->SetMonsterAnim(1347, 7, 9, 0, false);        // 시전 애니 9칸(thing.bin)
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv->DebugTeleport(Sid(srv, a), 1150.0f, 1000.0f);
+        srv->DebugApplyEnchant(Sid(srv, a), 23, 100000, 1);
+        srv->DebugSpawnPet(1347, 1000, 1000, Sid(srv, std::string()));
+        Check(srv->DebugPetSpellCount(0) == 5 && srv->DebugPetHasSpell(0, 27) && srv->DebugPetHasSpell(0, 10) && srv->DebugPetHasSpell(0, 13) &&
+              srv->DebugPetHasSpell(0, 74) && srv->DebugPetHasSpell(0, 39), "③ 큰 악마 자동 주문(13·74·27·10·39)이 아니다");
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        srv->DebugSetFrame(1000);
+        for (int t = 0; t < 900 && srv->missileList().empty(); ++t) { ms += 34; std::vector<nox::OutPacket> o2; srv.Tick(ms, o2); }
+        const auto& ml = srv->missileList();
+        std::snprintf(msg, sizeof(msg), "③ 큰 악마가 화염구를 안 쐈다 — 시전 %llu · 받음 %llu · 안 옮김 %llu · 날아가는 것 %zu · 종류 %u",
+                      srv->castStat(CS::Cast), srv->castStat(CS::Accepted), srv->castStat(CS::NotPorted), ml.size(), ml.empty() ? 0u : unsigned(ml[0].type));
+        Check(!ml.empty() && ml[0].type == 693 && ml[0].spell == 27 && ml[0].level == 3 && ml[0].ownerPet == 0 && ml[0].fromPet == 0 &&
+              ml[0].owner == nox::kNoSession, msg);
+    }
+    // ④ 죽은 뒤 함수 — 큰 악마 DemonDead(둘레 150 · 불똥 255) · 불악마 소환수·근접 악마 EmberDemonDead(96 · 128) · 거머리 없음(시체 남음)
+    //   b 는 50 앞(둘레 안 — 깎임) · a(소환 주인)는 2000 밖(그대로) · 터진 악마는 지워진다(즉시 지움)
+    struct Case { uint16_t type; bool owned; int way; int amount; };
+    for (const Case& c : { Case{ 1347, false, 1, 255 }, Case{ 1337, true, 0, 128 }, Case{ 1338, false, 0, 128 }, Case{ 1358, false, 2, 0 } }) {
+        nox::CSyncHost srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Conjurer);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv->DebugTeleport(Sid(srv, a), 3000.0f, 3000.0f);
+        srv->DebugTeleport(Sid(srv, b), 1050.0f, 1000.0f);
+        srv->DebugSpawnPet(c.type, 1000, 1000, c.owned ? Sid(srv, a) : Sid(srv, std::string()));
+        LoadRealAttackAnims(srv);
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        const int ha0 = srv->HealthOf(Sid(srv, a)), hb0 = srv->HealthOf(Sid(srv, b));
+        srv->DebugHurt(Sid(srv, std::string()), 0, 9999, Sid(srv, b), 0); srv.TakeOut(o);
+        uint32_t ms = srv->DebugNowMs();
+        std::vector<nox::OutPacket> all;
+        for (int t = 0; t < 60; ++t) { ms += 34; srv.Tick(ms, all); }
+        int sparks = 0;
+        for (const auto& m : FlattenTo(all, b))
+            if (m.size() == 6 && m[0] == static_cast<uint8_t>(nox::Op::FX_SPARK_EXPLOSION) && m[5] == c.amount) ++sparks;
+        const int ha = srv->HealthOf(Sid(srv, a)), hb = srv->HealthOf(Sid(srv, b));
+        std::snprintf(msg, sizeof(msg), "④ 종류 %u — 죽은 뒤 함수 [불악마 %llu · 큰 악마 %llu · 없음 %llu](기대 칸 %d) · 남은 몬스터 %zu · 불똥 %d · b 체력 %d → %d · a %d → %d",
+                      unsigned(c.type), srv->deadFnStat(0), srv->deadFnStat(1), srv->deadFnStat(2), c.way, srv->pets(), sparks, hb0, hb, ha0, ha);
+        const bool oneWay = srv->deadFnStat(c.way) == 1 && srv->deadFnStat(0) + srv->deadFnStat(1) + srv->deadFnStat(2) == 1;
+        if (c.way == 2) Check(oneWay && srv->pets() == 1 && sparks == 0 && hb == hb0, msg);
+        else            Check(oneWay && srv->pets() == 0 && sparks == 1 && hb < hb0 && ha == ha0 && srv->corpseStat(2) == 1, msg);
+    }
+    std::printf("  11-19 — 맵 몬스터 넷: 표 · 독 좀비 독(대상 없으면 1) · 큰 악마 자동 주문·화염구(TitanFireball) · 악마 터짐(둘레 피해·불똥·지움) · 거머리 대조\n");
+}
+
 // ── 09-29 — 새로 온 사람에게 먼저 온 사람의 입은 것 겉모습(`sub_4DDE10` → `sub_4D82F0`) · 평상복 색 수식 ─────────
 //   사람 판 09-28 「워리어가 컨저러를 볼 때 흰 티가 살색으로」 — 새로 온 쪽이 먼저 온 쪽의 평상복 색(수식)을 못 받았다
 void TestWornLooksForNewcomer() {
@@ -36474,6 +36586,7 @@ int main() {
     TestMonsterAnimB5();
     TestMonsterHearB6();
     TestMonsterCastB7();
+    TestMapMobs1119();
     TestPickupAutoEquip();
     TestArmorEquip();
     TestBowQuiver();

@@ -561,9 +561,10 @@ struct MonsterStats {
     int         experience;
 };
 
-// `SummonType()` 이 부를 수 있는 열셋 전부. **전부 monster.bin 에서 뽑은 값**이다.
+// `SummonType()` 이 부를 수 있는 열셋 전부 + 맵에만 나오는 넷(★ 11-19 — MeleeDemon·Demon·Zombie·VileZombie). **전부 monster.bin 에서 뽑은 값**이다.
 // ⚠ 0 은 「그 키가 파일에 없다」는 뜻이지 「0 이다」가 아니다 —
 //   원거리형(Imp·EvilCherub·Beholder·Bomber·EmberDemon)은 근접 칸이 비어 있다.
+// ⚠ 근접 간격이 SOLO 에만 있으면(MeleeDemon 15~25) 아레나 값은 0 이다 — 근접 시작(16)이 0 을 30 으로 읽는다(옛 갈래 그대로)
 constexpr MonsterStats kMonsters[] = {
     //  이름                 번호   체력   피해   사거리    속도  최소 최대
     { "EvilCherub",         1317,    40,    0,    0.0,   100,   0,  0,  "CherubArrow", 150.0, 15, 25, 1.2, 110000 },
@@ -579,6 +580,11 @@ constexpr MonsterStats kMonsters[] = {
     { "BlackBear",          1366,    90,   18,   20.0,    60,  30, 45,  nullptr,         0.0,  0,  0, 1.5,  36000 },
     { "CarnivorousPlant",   1371,   100,  100,   40.0,     0,   0,  0,  nullptr,         0.0,  0,  0, 1.0,  80000 },   // 못 움직인다
     { "Beholder",           1382,   250,    0,    0.0,    60,   0,  0,  nullptr,       200.0,  0,  0, 1.3,  85000 },   // ⚠ 사거리는 있는데 이름이 NULL
+    // ★ 11-19 — 맵 몬스터 넷(소환 짝 없음 · 화산 맵 Wiz07B 등에 놓인다) ⭕ `nox_datadump monster.bin --out`
+    { "MeleeDemon",         1338,    30,   15,   15.0,    85,   0,  0,  nullptr,         0.0,  0,  0, 1.3,  60000 },   // 근접 악마 · ARENA 피해 15 · 간격은 SOLO(15~25)뿐 · 죽으면 터짐(EmberDemonDead)
+    { "Demon",              1347,   200,    0,    0.0,    96,   0,  0,  nullptr,       200.0,  0,  0, 1.3, 110000 },   // 큰 악마 · 근접·발사체 없음 — 공격은 주문뿐(SpawnCreature 자동 주문) · 사거리 200 = 주문 다가가기 자 · 죽으면 큰 터짐(DemonDead)
+    { "Zombie",             1360,    75,   20,   15.0,    30,  10, 30,  nullptr,         0.0,  0,  0, 1.3,  30000 },   // ARENA 체력 75 · 피해 20 · 간격 10~30
+    { "VileZombie",         1361,   150,   30,   15.0,    30,   0,  0,  nullptr,         0.0,  0,  0, 1.3,  90000 },   // ARENA 피해 30 · 간격 키 없음 · 독(VileZombieStrike)
 };
 
 // ★ 09-23 nine-defects 2-a4 — monster.bin `STATUS` 에 **`CAN_CAST_SPELLS`** 가 있는 몬스터(정답지 `MonStatusCanCastSpells` 0x20 ·
@@ -615,6 +621,8 @@ constexpr uint16_t kCarnivorousPlantType = 1371;
 // ★ 09-29 B4 — 두뇌가 읽는 몬스터 값 ⭕ monster.bin(`STATUS` → 갱신자료 +1440 · `ARENA RETREAT_RATIO` +1336 · `RESUME_RATIO` +1344 · `FLEE_RANGE` +1356)
 //   위 `kMonsters` 열셋만(스크립트로 13종 전수 대조 — 09-29). ARENA 후퇴 비율은 **전부 0** 이다(SOLO 만 0.1~0.25) — 그래서 멀티에서
 //   「체력이 줄면 도망」은 안 일어나고, 후퇴는 주문 쓰는 몬스터가 반주문(버프 29)에 걸렸을 때만 난다(`GAME5.c:1425`)
+//   ★ 11-19 — 맵 몬스터 넷을 더했다. **MeleeDemon 은 후퇴 0.15 가 모드 구분 없이** 적혀 있어 멀티에서도 체력 15% 아래면 물러난다
+//   (STATUS 의 CAN_HEAR 는 위 열셋처럼 안 적는다)
 //   STATUS 비트 — 0x1 DESTROY_WHEN_DEAD · 0x8 CAN_DODGE · 0x20 CAN_CAST_SPELLS(`libs object/subclass_monster.go:73~85`)
 struct MonsterBrainInfo { uint32_t status = 0; float retreat = 0.0f, resume = 1.0f, fleeRange = 0.0f; };
 inline MonsterBrainInfo MonsterBrainOf(uint16_t wire) {
@@ -632,6 +640,10 @@ inline MonsterBrainInfo MonsterBrainOf(uint16_t wire) {
         case 1366: return { 0x00, 0.0f, 0.5f,  0.0f };   // BlackBear   회복 0.5
         case 1371: return { 0x00, 0.0f, 1.0f,  0.0f };   // CarnivorousPlant
         case 1382: return { 0x28, 0.0f, 0.25f, 65.0f };  // Beholder    CAN_CAST_SPELLS+CAN_DODGE · 회복 0.25 · 도망 거리 65
+        case 1338: return { 0x08, 0.15f, 0.5f, 0.0f };   // MeleeDemon  CAN_DODGE · 후퇴 0.15(모드 구분 없음) · 회복 0.5
+        case 1347: return { 0x28, 0.0f, 1.0f,  0.0f };   // Demon       CAN_CAST_SPELLS+CAN_DODGE
+        case 1360: return { 0x00, 0.0f, 1.0f,  0.0f };   // Zombie
+        case 1361: return { 0x00, 0.0f, 1.0f,  0.0f };   // VileZombie
         default:   return {};
     }
 }
@@ -655,6 +667,10 @@ inline MonsterMoveSound MonsterMoveSoundOf(uint16_t wire) {
         case 1366: return { 1, 5 };   // BlackBear
         case 1371: return { 0, 0 };   // CarnivorousPlant
         case 1382: return { 0, 4 };   // Beholder
+        case 1338: return { 0, 4 };   // MeleeDemon ★ 11-19 맵 몬스터 넷
+        case 1347: return { 0, 4 };   // Demon
+        case 1360: return { 1, 5 };   // Zombie
+        case 1361: return { 1, 5 };   // VileZombie
         default:   return {};
     }
 }
@@ -667,7 +683,8 @@ inline int MonsterMissileFrameOf(uint16_t wire) {
         case 1328: return 1;   // Imp
         case 1337: return 4;   // EmberDemon
         case 1382: return 4;   // Beholder
-        default:   return 0;   // 나머지 아홉은 파일 값 0
+        case 1347: return 4;   // Demon ★ 11-19 — 시전(`mobActionCast_5413B0`)이 이 칸에서 주문을 낸다
+        default:   return 0;   // 나머지는 파일 값 0
     }
 }
 
@@ -689,6 +706,10 @@ inline int MonsterMeleeFrameOf(uint16_t wire) {
         case 1366: return 5;   // BlackBear
         case 1371: return 5;   // CarnivorousPlant
         case 1382: return 4;   // Beholder
+        case 1338: return 5;   // MeleeDemon ★ 11-19 맵 몬스터 넷
+        case 1347: return 0;   // Demon(근접 NULL)
+        case 1360: return 5;   // Zombie
+        case 1361: return 5;   // VileZombie
         default:   return 0;
     }
 }
@@ -696,7 +717,9 @@ inline int MonsterMeleeFrameOf(uint16_t wire) {
 // ★ 09-29 B3 — 근접 때리기 함수·피해 종류·밀어내기·독 ⭕ monster.bin(`MELEE_STRIKE_FUNCTION` +236 · `MELEE_ATTACK_DAMAGE_TYPE` +124 ·
 //   `MELEE_ATTACK_IMPACT` +120 · `MELEE_ATTACK_POISON_CHANCE/STRENGTH/MAX` +136·+140·+144) — 위 `kMonsters` 열셋만.
 //   피해 종류 번호는 아래 18칸 표(8 BITE · 2 CRUSH · 4 DRAIN · 10 CLAW). NULL(Imp·EvilCherub·Beholder)은 근접을 못 한다(`532440` — 빠짐)
-enum class StrikeFn : uint8_t { None = 0, Monster, Spider, Ghost, Bomber };
+//   ★ 11-19 — VileZombie(`strikeVileZombie_549700` `GAME5.c:2654`) = 기본처럼 대상이 없으면 1 · 때린 뒤 거미와 같은 독(`sub_549690`) ·
+//     걸리면 글 「aifunc.c:PoisonedByZombie」
+enum class StrikeFn : uint8_t { None = 0, Monster, Spider, Ghost, Bomber, VileZombie };
 struct MeleeStrikeInfo { StrikeFn fn = StrikeFn::None; uint8_t dtype = 0; float impact = 0.0f; int poisonChance = 0, poisonStrength = 0, poisonMax = 0; };
 inline MeleeStrikeInfo MeleeStrikeOf(uint16_t wire) {
     switch (wire) {
@@ -710,7 +733,10 @@ inline MeleeStrikeInfo MeleeStrikeOf(uint16_t wire) {
         case 1337: return { StrikeFn::Monster, 10, 0.0f, 0, 0, 0 };    // EmberDemon CLAW
         case 1348: return { StrikeFn::Bomber,  0,  0.0f, 0, 0, 0 };    // Bomber(근접 사거리 0 · 함수는 늘 1)
         case 1371: return { StrikeFn::Monster, 8,  0.0f, 0, 0, 0 };    // CarnivorousPlant BITE
-        default:   return {};                                          // Imp·EvilCherub·Beholder — NULL
+        case 1338: return { StrikeFn::Monster, 10, 0.0f, 0, 0, 0 };    // MeleeDemon CLAW ★ 11-19 맵 몬스터 넷
+        case 1360: return { StrikeFn::Monster, 10, 0.0f, 0, 0, 0 };    // Zombie CLAW
+        case 1361: return { StrikeFn::VileZombie, 10, 0.0f, 10, 1, 3 }; // VileZombie CLAW · 독 10% · 세기 1 · 최대 3
+        default:   return {};                                          // Imp·EvilCherub·Beholder·Demon — NULL
     }
 }
 

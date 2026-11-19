@@ -271,7 +271,7 @@ enum class MeleeStrikeWay : uint8_t {
     NoTarget,    // 사거리·앞쪽 안에 적이 없음(기본 1 · 거미 0)
     Blocked,     // 시야선(추적 5)이 막힘 — 0
     Bomber,      // 폭탄병 함수(늘 1)
-    Poisoned,    // 거미 독이 걸림(Hit 의 덤)
+    Poisoned,    // 거미·독 좀비(★ 11-19) 독이 걸림(Hit 의 덤)
     GhostFlee,   // 유령 — 기절·도망 사슬(Hit 의 덤)
     MissSound,   // 빗나감 소리(칸 8)를 부름
     Count
@@ -689,6 +689,7 @@ struct Creature {
     bool dead = false;          // +16 0x8000 DEAD — 체력 0 순간 켬(`GAME3_3.c:7163~7165`) · 켜져 있으면 다시 안 죽음
     uint32_t decayFrame = 0;    // 썩어 지울 프레임(`unitSetDecayTime_511660`) · 0 이면 안 썩음(아레나 맵 몬스터)
     bool removeMe = false;      // 지금 지울 것(원본 `delayedDeleteObject_4E5CC0` — AI 돌기 뒤 한꺼번에)
+    bool deadFnPending = false; // ★ 11-19 죽음 시작(31)이 켬 — 죽은 뒤 함수(악마 터짐)를 AI 돌기 뒤에 부른다(`MonsterDeadFn` 주석)
     // 몸 깃발(+16) 덧칠 — thing.bin FLAGS 위에 죽음이 켜고 끄는 것(`PetObjFlags`) ·
     //   죽음 = 0x8000 켬 · 0x80 MISSILE_HIT 끔(`GAME4_1.c:476~478`) · 31 시작 = 0x18 ALLOW_OVERLAP·SHORT 켬(`GAME4_3.c:9893~9894`)
     uint32_t flagsSet = 0, flagsClear = 0;
@@ -4339,6 +4340,7 @@ public:
     // 불려 나온 것이 죽은 횟수.
     unsigned long long petsKilled() const { return petsKilled_; }
     unsigned long long corpseStat(int i) const { return i >= 0 && i < 4 ? corpseStat_[i] : 0; }   // ★ 10-01 — 0 죽음 · 1 썩어 지움 · 2 즉시 지움 · 3 동시 시체 최대
+    unsigned long long deadFnStat(int i) const { return i >= 0 && i < 3 ? deadFnStat_[i] : 0; }   // ★ 11-19 — 0 EmberDemonDead · 1 DemonDead · 2 죽은 뒤 함수 없음(NULL)
     bool DebugPetDead(size_t i) const { return i < pets_.size() && pets_[i].dead; }
     uint32_t DebugPetObjFlags(size_t i) const { return i < pets_.size() ? PetObjFlags(pets_[i]) : 0; }
     // ★ 10-01 묶음 시험용 — 비신뢰 메시지 하나를 진짜 길(`Emit` → 묶음)로 싣는다(혼자 한도를 넘는 덩어리 만들기)
@@ -4702,6 +4704,7 @@ private:
     int CastToxicCloud(Session& caster, const SpellArg& arg);               // castToxicCloud_52DB60
     int CastBurn(Session& caster, const SpellArg& arg);                     // castBurn_52C3E0
     int CastFireball(Session& caster, int lvl);                             // castFireball_52C790
+    MissileObj* LaunchFireball(int lvl, float px, float py, double velX, double velY, int dir, float bodyR, int64_t owner);   // ★ 11-19 그 몸통(사람·몬스터 같이)
     int CastMeteor(Session& caster, const SpellArg& arg, int lvl);          // castMeteor_52D9D0
     int CastMeteorShower(Session& caster, const SpellArg& arg, int lvl);    // castMeteorShower_52D8A0
     void MeteorExplode(PlacedObj& o);                                       // meteorExplode_53D6E0
@@ -4774,6 +4777,7 @@ private:
                            const AttackSrc* whoSrc = nullptr,  // ★ 09-27 S1 — 피해 함수의 v9(= a3 없음 → who) · 막기 판정·때린 이 자리
                            const WallHitter& wallWho = WallHitter{});   // ★ 09-29 Z1-A — 끝의 벽 피해가 보는 who
     void FireballExplode(MissileObj& m, const Target& hit);                 // fireballCollide_4E9AC0
+    void MonsterDeadFn(size_t idx);                                         // ★ 11-19 monster.bin DEAD_FUNCTION(+232) — 악마 둘의 터짐
     // ── 묶음 4-c2a 독 ──
     uint8_t* PoisonOf(const Target& t);                                                                  // +540 자리
     bool ActivatePoison(const Target& t, int add, int cap);                 // activatePoison_4EE7E0
@@ -6117,6 +6121,7 @@ private:
     unsigned long long code6Seen_ = 0;
     unsigned long long petsKilled_ = 0;
     unsigned long long corpseStat_[4] = {};   // ★ 10-01 — 0 죽음 · 1 썩어 지움 · 2 즉시 지움(DESTROY_WHEN_DEAD) · 3 동시 시체 최대
+    unsigned long long deadFnStat_[3] = {};   // ★ 11-19 — 죽음 시작(31)의 죽은 뒤 함수 갈래마다(0 EmberDemonDead · 1 DemonDead · 2 없음)
     unsigned long long soundsQueued_ = 0;
     unsigned long long soundsDropped_ = 0;
     unsigned long long soundsSent_ = 0;

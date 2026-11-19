@@ -679,7 +679,8 @@ std::shared_ptr<const nox::Server::GameTables> BuildGameTables(const GameFiles& 
                                 shoot ? (" 쏨칸 " + std::to_string(shotF)).c_str() : "",
                                 t->monsterAnims[9].frames, t->monsterAnims[9].hold, (int)t->monsterAnims[9].loop);
                 }
-                srv.Log("[몬스터칸] 열셋 중 표 없음 %d · 때림칸이 칸 수 밖 %d · 쏨칸이 칸 수 밖 %d · 공격 애니가 되풀이 %d\n", noDraw, meleeOut, shotOut, loopAtk);
+                srv.Log("[몬스터칸] 표 %zu종 중 표 없음 %d · 때림칸이 칸 수 밖 %d · 쏨칸이 칸 수 밖 %d · 공격 애니가 되풀이 %d\n",
+                        sizeof(nox::kMonsters) / sizeof(nox::kMonsters[0]), noDraw, meleeOut, shotOut, loopAtk);
             }
         }
         // ★ 09-23 2-a1 — 함성(46)·광전사(45) 애니 길이도 찍는다. 함성 애니가 끝나면 켜짐 값이 내려가 광전사·작살을 더는 안 막으므로

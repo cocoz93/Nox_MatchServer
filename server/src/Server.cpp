@@ -12024,6 +12024,7 @@ void Server::AIStart(Creature& k, uint8_t act) {
             //   ⚠ 풀려난 넋(`createReleasedSoul_544E60`)·좀비 시간표는 안 옮겼다
             k.velX = 0; k.velY = 0;
             k.path.clear();
+            k.deadFnPending = true;                          // ★ 11-19 — 죽은 뒤 함수(+232 · `:9877~9880`) — AI 를 다 돈 뒤 MonsterDeadFn
             k.flagsSet |= 0x18;                              // ★ 10-01 — ALLOW_OVERLAP·SHORT(`GAME4_3.c:9893~9894` · 좀비 아님) — 길을 안 막고 낮다
             break;
         }
@@ -13202,6 +13203,7 @@ void Server::ObjectApplyForce(float fromX, float fromY, const Target& t, double 
 //   · 유령(`strikeGhost_549A60` `:2806~2860`) — 기본과 같이 때린 뒤 대상에 기절(5) 2초 세기 3 · 대상 자리 바라보기(25) · 때(41 — 2~4초) · 도망(24)
 //     ⚠ 도망(24)은 B4a 가 옮긴다 — 그때까지는 때(41)가 다할 때 빠진다
 //   · 폭탄병(`strikeBomber_549BB0`) — 늘 1
+//   · ★ 11-19 독 좀비(`strikeVileZombie_549700` `:2654~2692`) — 대상 없으면 1(기본과 같음 · 거미와 다름) · 때린 뒤 같은 독 · 글만 「aifunc.c:PoisonedByZombie」
 int Server::MonsterStrike(Creature& k, const MeleeStrikeInfo& si, int dmg) {
     if (si.fn == StrikeFn::Bomber) { ++meleeStrike_[static_cast<size_t>(MeleeStrikeWay::Bomber)]; return 1; }
     const MonsterStats* m = FindMonster(k.type);
@@ -13232,10 +13234,12 @@ int Server::MonsterStrike(Creature& k, const MeleeStrikeInfo& si, int dmg) {
     // 때린 뒤 상대(앞 자리 크리처)가 죽으면 번호가 당겨진다 — 그 뒤 몫(밀기·독·유령)은 사람 대상이거나 목록이 그대로일 때만
     const bool listSame = pets_.size() == petsBefore;
     if (si.impact > 0.0f && (listSame || (v.sessionId != kNoSession))) ObjectApplyForce(kx, ky, v, si.impact);
-    if (si.fn == StrikeFn::Spider && si.poisonChance > 0 && (listSame || (v.sessionId != kNoSession))) {   // `sub_549690` — randomInt(1,100) <= 확률
+    const bool poisons = si.fn == StrikeFn::Spider || si.fn == StrikeFn::VileZombie;
+    if (poisons && si.poisonChance > 0 && (listSame || (v.sessionId != kNoSession))) {   // `sub_549690` — randomInt(1,100) <= 확률
         if (static_cast<int>(1 + NextRandom(100)) <= si.poisonChance && ActivatePoison(v, si.poisonStrength, si.poisonMax)) {
             ++meleeStrike_[static_cast<size_t>(MeleeStrikeWay::Poisoned)];
-            if ((v.sessionId != kNoSession)) { auto it = sessions_.find(v.sessionId); if (it != sessions_.end()) SendPriMsg(it->second, "aifunc.c:Poisoned"); }
+            const char* msg = si.fn == StrikeFn::VileZombie ? "aifunc.c:PoisonedByZombie" : "aifunc.c:Poisoned";
+            if ((v.sessionId != kNoSession)) { auto it = sessions_.find(v.sessionId); if (it != sessions_.end()) SendPriMsg(it->second, msg); }
         }
     }
     if (si.fn == StrikeFn::Ghost && listSame && kIdx < pets_.size()) {
@@ -13730,7 +13734,7 @@ void Server::MonsterActionCast(Creature& k, int a2) {
 // `mobCast_541300` + `castSpellByUser_4FDD20` → `castSpell`(`spells.go:432~443`) — 그 자리를 보게 돌리고(`mobCalcDir_533CC0`) ·
 //   공격 주문(0x20)이면 투명(0)·무적(23)을 끄고 타원 방패(67)를 끈다 · 겨눔(0x4)이 아니거나 대상이 자기면 곧장 받아들임(`spellAccept`) ·
 //   겨눔이고 남이면 날아가는 주문(`createSpellFly_4FDDA0`) — 우리 몬스터에 없음
-//   받아들임 — 전기 광선(24) = 지속(30) · 점멸(4) = 지속(0, 대상 자기) · 그 밖은 안 옮김
+//   받아들임 — 전기 광선(24) = 지속(30) · 점멸(4) = 지속(0, 대상 자기) · ★ 11-19 화염구(27) = 곧장 날림(`castFireball_52C790` — 겨눔 아님) · 그 밖은 안 옮김
 bool Server::MonsterCastSpellNow(Creature& k, uint8_t spell, const Target& target, float x, float y) {
     ++castStat_[static_cast<size_t>(CastStat::Cast)];
     if ((x != 0.0f || y != 0.0f) && (x != static_cast<float>(k.x) || y != static_cast<float>(k.y))) k.facingWant = DirFromVec(x - k.x, y - k.y);   // 제 자리면 안 돌림
@@ -13743,6 +13747,18 @@ bool Server::MonsterCastSpellNow(Creature& k, uint8_t spell, const Target& targe
     }
     const bool toSelf = (target.sessionId == kNoSession) && target.pet >= 0 && target.pet == self.pet;
     if ((fl & 0x4) && !toSelf) { ++castStat_[static_cast<size_t>(CastStat::NotPorted)]; return false; }
+    // ★ 11-19 — 화염구(27) — 큰 악마(세기 3 = TitanFireball). 시전자 = 그 몬스터 — 방향은 지금 쪽(+124 · 위 돌리기는 +126 만 바꾼다),
+    //   몸 반지름은 종류 몸 · 속도를 더한다(정답지 +80/+84). 주인 표시는 몬스터 발사체(`SpawnCreatureMissile`)와 같다(임자 · 쏜 크리처 · 제 몸에 안 맞게)
+    if (spell == 27) {
+        const auto tb = gt_->typeBodies.find(k.type);
+        const float bodyR = tb != gt_->typeBodies.end() ? tb->second.r : static_cast<float>(kBodyRadius);
+        if (MissileObj* m = LaunchFireball(k.spellLevel, static_cast<float>(k.x), static_cast<float>(k.y), k.velX, k.velY, k.facing, bodyR, k.owner)) {
+            m->ownerPet = static_cast<int>(&k - pets_.data());
+            m->fromPet = m->ownerPet;
+        }
+        ++castStat_[static_cast<size_t>(CastStat::Accepted)];
+        return true;
+    }
     DurFns f;
     uint32_t dt = 0;
     if (spell == 24) { f.create = &Server::DurEnergyBoltCreate; f.update = &Server::DurEnergyBoltTick; dt = 30; }
@@ -14832,16 +14848,23 @@ int Server::CastBurn(Session& caster, const SpellArg& arg) {
 //   그 자리까지 선 추적(5)이 막히면 **시전자 제자리에** 만든다(실패가 아니다 — 벽에 붙어 쏘면 제 발밑에서 터진다).
 //   빠르기 = `FireballSpeedCoeff[세기-1]`(1.6·2.0·2.4·2.5·2.6) × 그 종류의 SPEED 기본값.
 int Server::CastFireball(Session& caster, int lvl) {
+    LaunchFireball(lvl, static_cast<float>(caster.posX), static_cast<float>(caster.posY), caster.velX, caster.velY,
+                   caster.facingPrev /* +124 Direction1 */, static_cast<float>(kBodyRadius), caster.sessionId);
+    return 1;
+}
+
+// ★ 11-19 — castFireball_52C790 의 몸통을 떼었다. 정답지는 시전자 오브젝트(a4) 하나만 보므로 사람·몬스터가 같은 함수다 —
+//   사람(CastFireball)과 큰 악마의 주문(MonsterCastSpellNow 27)이 같이 쓴다. 시전자 몫 = 자리 +56 · 속도 +80 · 방향 +124 · 몸 반지름 +176 · 주인
+//   종류 표에 없으면 nullptr(정답지는 1 을 돌려주고 끝 — 부르는 쪽도 성공으로 본다)
+Server::MissileObj* Server::LaunchFireball(int lvl, float px, float py, double velX, double velY, int dir, float bodyR, int64_t owner) {
     if (lvl < 1) lvl = 1;
     if (lvl > 5) lvl = 5;
     static const char* const kName[6] = { "", "Fireball", "StrongFireball", "TitanFireball", "TitanFireball", "TitanFireball" };
     const ProjTypeInfo* pt = ProjType(kName[lvl]);
-    if (!pt || pt->type == 0) return 1;                      // newObjectByTypeID 가 0 이면 정답지도 1 을 돌려준다
-    const int dir = caster.facingPrev;                       // +124 Direction1
-    const float px = static_cast<float>(caster.posX), py = static_cast<float>(caster.posY);
-    const float reach = static_cast<float>(kBodyRadius) * 2.0f;   // +176 반지름 두 배
-    float sx = static_cast<float>(static_cast<double>(reach) * DirVecX(dir) + px) + static_cast<float>(caster.velX);
-    float sy = static_cast<float>(static_cast<double>(reach) * DirVecY(dir) + py) + static_cast<float>(caster.velY);
+    if (!pt || pt->type == 0) return nullptr;                // newObjectByTypeID 가 0 이면 정답지도 1 을 돌려준다
+    const float reach = bodyR * 2.0f;                        // +176 반지름 두 배
+    float sx = static_cast<float>(static_cast<double>(reach) * DirVecX(dir) + px) + static_cast<float>(velX);
+    float sy = static_cast<float>(static_cast<double>(reach) * DirVecY(dir) + py) + static_cast<float>(velY);
     if (!MapTraceRay(px, py, sx, sy, 0x5)) { sx = px; sy = py; }  // 막히면 제자리
     MissileObj m;
     m.netCode = nextShotNetCode_++;
@@ -14853,16 +14876,16 @@ int Server::CastFireball(Session& caster, int lvl) {
     m.dir1 = m.dir2 = static_cast<uint8_t>(dir);
     m.createdFrame = m.frame136 = frame_;
     m.speed = static_cast<float>(BalanceFloatInd("FireballSpeedCoeff", lvl - 1)) * pt->speed;
-    m.owner = caster.sessionId;
-    m.ud0 = m.ud2 = caster.sessionId;
+    m.owner = owner;
+    m.ud0 = m.ud2 = owner;
     m.spell = 27;
     m.level = lvl;
     m.collideKind = 1;                                       // SparkExplosionCollide
     m.collideAmount = pt->collideAmount;
-    m.velX = DirVecX(dir) * m.speed + static_cast<float>(caster.velX);
-    m.velY = DirVecY(dir) * m.speed + static_cast<float>(caster.velY);
+    m.velX = DirVecX(dir) * m.speed + static_cast<float>(velX);
+    m.velY = DirVecY(dir) * m.speed + static_cast<float>(velY);
     missiles_.push_back(m); ++missilesMade_;
-    return 1;
+    return &missiles_.back();
 }
 
 // castMeteor_52D9D0(`GAME4_2.c:10192`) — 커서 자리 **하늘(높이 255)** 에 운석을 띄우고 떨어뜨린다.
@@ -14932,6 +14955,18 @@ void Server::SpawnCreature(uint16_t type, float x, float y, int64_t owner) {
     if (type == 1382) {
         k.spells.push_back({ 24, 0x40000000u });
         if (!(questTotal_ > 0 || questStage_ > 0)) k.spells.push_back({ 4, 0x80000000u });
+        k.spellLevel = 3;
+    }
+    // ★ 11-19 — 큰 악마(`GAME5.c:4282~4291`) — 반주문 13(+1540 0x8000000) · 74 되받기(+1784 0x20000000) ·
+    //   화염구 27(+1596)·10(+1528) 공격(0x40000000) · 39 달아날 때(+1644 0x80000000) · 세기 3(+2040)
+    //   ⚠ 옮긴 것은 화염구뿐 — 나머지는 시전이 「안 옮김」(CastStat::NotPorted)으로 빠진다 ·
+    //     +2036 = 1(자동 주문을 걸었다는 표시 — 다시 읽을 때 또 거는 데 씀 `GAME4_2.c:8275`)은 안 옮김(Beholder 와 같음)
+    if (type == 1347) {
+        k.spells.push_back({ 13, 0x08000000u });
+        k.spells.push_back({ 74, 0x20000000u });
+        k.spells.push_back({ 27, 0x40000000u });
+        k.spells.push_back({ 10, 0x40000000u });
+        k.spells.push_back({ 39, 0x80000000u });
         k.spellLevel = 3;
     }
     pets_.push_back(k);
@@ -15205,6 +15240,48 @@ void Server::FireballExplode(MissileObj& m, const Target& hit) {
         static_cast<uint8_t>(amount),
     };
     SendFxAllCli(m.posX, m.posY, fx, sizeof(fx));
+}
+
+// ★ 11-19 — 죽은 뒤 함수(monster.bin `DEAD_FUNCTION` +232 · 죽음 시작 `mobActionDead1_544D80` `GAME4_3.c:9877~9880` 이 부른다).
+//   이름 → 함수는 `blob_init.go:3196~3204`(EmberDemonDead = `sub_549D80` · DemonDead = `sub_549E00`). 두 악마 몫은 같은 꼴이다 —
+//     밀기(둘레 r · 안쪽 10 · 힘 p) → 둘레 피해(r · 안쪽 10 · 종류 7 폭발 · who = 그 악마) → 불똥 그림(양) → 소리 42 → 지움(`delayedDeleteObject`)
+//     · EmberDemonDead(EmberDemon·MeleeDemon) — r 96 · 힘 100 · 피해 96(협동 2048 이면 30 — 멀티 아님) · 양 128 (`GAME5.c:2946~2956`)
+//     · DemonDead(Demon)                       — r 150 · 힘 150 · 피해 148 · 양 255 (`:2959~2966`)
+//   ⚠ 나머지 이름(ImpDead·SpiderDead·BomberDead …)은 우리 표의 몬스터에 안 걸려 있거나 아직 안 옮겼다 — 여기는 악마 둘만
+//   ⚠ 정답지는 죽음 시작 자리에서 곧장 부른다. 우리는 그 틱 AI 를 다 돈 뒤 부른다(같은 프레임) — 둘레 피해가 퀘스트 다음 무리를 부르면
+//     `pets_` 가 옮겨져 AI 가 쥔 참조가 깨지기 때문이다. 그래서 번호를 받고, 둘레 피해 뒤에는 번호로 다시 잡는다
+void Server::MonsterDeadFn(size_t idx) {
+    if (idx >= pets_.size()) return;
+    const Creature& k = pets_[idx];
+    float r = 0.0f, power = 0.0f;
+    int dmg = 0, amount = 0;
+    if (k.type == 1337 || k.type == 1338) { r = 96.0f; power = 100.0f; dmg = 96; amount = 128; ++deadFnStat_[0]; }
+    else if (k.type == 1347)              { r = 150.0f; power = 150.0f; dmg = 148; amount = 255; ++deadFnStat_[1]; }
+    else { ++deadFnStat_[2]; return; }
+    const float kx = static_cast<float>(k.x), ky = static_cast<float>(k.y);
+    PushUnitsAround(kx, ky, r, 10.0f, power);
+    AttackSrc src;                                               // who = 그 악마(유닛) — 막기 판정·때린 이 자리
+    src.x = kx; src.y = ky;
+    src.byMonsterType = k.type;
+    src.byPet = static_cast<int>(idx);
+    src.rootIsMonster = (k.owner == kNoSession);
+    WallHitter w;                                                // 벽 피해 who = 그 악마(유닛 · 방향 +124 · 재질은 그 종류)
+    w.present = true; w.unit = true; w.player = false;
+    w.x = kx; w.y = ky; w.dir = k.facing; w.material = MaterialOfWire(k.type);
+    w.src = k.owner;
+    const int64_t owner = k.owner;
+    const HitterRef hitter = HitterMonster(k);
+    DamageUnitsAround(kx, ky, r, 10.0f, dmg, 7, owner, Target{}, hitter, &src, w);   // 이 뒤로 `k` 를 안 쓴다
+    const int16_t ex = static_cast<int16_t>(kx), ey = static_cast<int16_t>(ky);
+    const uint8_t fx[6] = {
+        static_cast<uint8_t>(Op::FX_SPARK_EXPLOSION),
+        static_cast<uint8_t>(ex), static_cast<uint8_t>(ex >> 8),
+        static_cast<uint8_t>(ey), static_cast<uint8_t>(ey >> 8),
+        static_cast<uint8_t>(amount),
+    };
+    SendFxAllCli(kx, ky, fx, sizeof(fx));
+    PlaySoundAt(42, kx, ky, 0, 0, kNoSession, PetTarget(pets_[idx]));   // aud_501960(42, 그 악마, 0, 0)
+    pets_[idx].removeMe = true;                                  // delayedDeleteObject_4E5CC0 — 바로 뒤 FlushDeadPets 가 지운다
 }
 
 // changeOwner_52BE40(`spell_counter.go:82`) — MISSILE+MissileMagic 만(날리는 Magic 은 모두) · 대상이 새 주인이면 대상 = 옛 주인 · 주인 = 새 주인 · 만든 프레임 = 지금(소리 → 10)
@@ -18446,6 +18523,15 @@ void Server::RunTick(int ticks) {
             if (k.velX != 0.0 || k.velY != 0.0) CreatureApplyVelocity(k);
         }
         if (pets_.size() != before) break;
+    }
+    // ★ 11-19 — 죽은 뒤 함수(악마 터짐) — 죽음 시작(31)이 켠 것을 여기서 부른다. 둘레 피해가 다른 것을 죽이면 퀘스트 다음 무리가
+    //   `pets_` 에 붙어 배열이 옮겨질 수 있어 번호로 돈다(지우기는 아래 FlushDeadPets 뿐이라 번호는 안 밀린다)
+    if (!frozen) {
+        for (size_t i = 0; i < pets_.size(); ++i) {
+            if (!pets_[i].deadFnPending) continue;
+            pets_[i].deadFnPending = false;
+            MonsterDeadFn(i);
+        }
     }
     if (!frozen) FlushDeadPets();                         // ★ 10-01 — 썩은 시체·지울 표시(AI 를 다 돈 뒤 한꺼번에) · R1 판끝 동안 멈춤
 
