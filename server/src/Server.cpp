@@ -16270,7 +16270,8 @@ void Server::UpdateMissiles(uint32_t frame) {
                     //   · 유닛 아닌 장애물 — 피해 함수가 DefaultDamage 계열(`nox_xxx_damageDefaultProc_4E0B30` — 버프 26 이 없으면 1)이면 지운다.
                     //     화약(`damageBlackPowder_4E2560` `GAME3_3.c:677~686`)은 종류 1·12·2·0 만 받고 11 이면 0 → 화살이 그대로 지나간다
                     //     ⚠ 장애물 자신의 체력 깎기는 안 옮겼다(다른 날아가는 것 갈래와 같다 — 장애물 체력이 우리에게 없다)
-                    //   ⚠ 안 옮긴 것 — 화살 수식 공격 효과(`itemApplyAttackEffect_538840`) · 맞는 쪽 미리 효과(`playerPreAttackEffects_538290`) — 우리 물건에 수식이 없다 ·
+                    //   ★ 11-20 1-e — 화살 수식 공격 효과(`itemApplyAttackEffect_538840`) · 맞히기 전 효과(`playerPreAttackEffects_538290`) — 아래 arrowDmg
+                    //   ⚠ 안 옮긴 것 —
                     //     퀘스트 갈래(`:5238~5256` 같은 편 사람 안 때림) · 막을 때의 되받아치기는 앞의 방패(16)·대검(가만) 갈래만 — 막기 상태(18~20) 대검은 되받아치지 않아
                     //     화살이 그대로 남는다(정답지는 피해 함수 안에서 되받아친다 `GAME3_3.c:269~276`)
                     if (!handled && m.collideKind == 6) {
@@ -16289,7 +16290,18 @@ void Server::UpdateMissiles(uint32_t frame) {
                             src.byMonsterType = m.type;
                             src.rootIsMonster = MissileRootIsMonster(m);
                             src.missile = true;
-                            const bool hurt = HurtTarget(tgt, ArrowDamage(m.owner, m.type), m.owner, 11, &src, HitterMissile(m));
+                            // ★ 11-20 1-e — 화살 수식(`GAME3_3.c:5281~5294`) — calcBoltDamage float 에 공격 효과(칸 넷 · 쏜 이 a2) →
+                            //   맞은 것이 쏜 이가 아니면(위 Owner 갈래가 이미 거름) 맞히기 전 효과(칸 2·3) → +0.5 버림. 정의가 없으면 효과 없이 0(`:5223~5226`)
+                            int arrowDmg = ArrowDamage(m.owner, m.type);
+                            auto shooter = sessions_.find(m.owner);
+                            if (shooter != sessions_.end() && gt_->weaponDef.count(m.type)) {
+                                const uint8_t am[4] = { m.mods[0], m.mods[1], m.mods[2], m.mods[3] };   // 효과가 화살 목록을 바꿀 수 있어 베낀다
+                                float fdmg = ArrowDamageFloat(m.owner, m.type);
+                                ApplyAttackEffects(shooter->second, am, fdmg);
+                                ApplyPreHitEffects(shooter->second, am, tgt, src, HitterMissile(m));
+                                arrowDmg = static_cast<int>(static_cast<long long>(static_cast<double>(fdmg) + 0.5));
+                            }
+                            const bool hurt = HurtTarget(tgt, arrowDmg, m.owner, 11, &src, HitterMissile(m));
                             bool keep = false;
                             // ⚠ 종류 번호는 쏠 때 쓴 표(`ProjType`)에서 — 이름표(`NamedType`)엔 ArcherBolt 가 등록돼 있지 않다(시험이 잡음)
                             const ProjTypeInfo* boltPt = ProjType("ArcherBolt");
@@ -16916,15 +16928,20 @@ void Server::PlayWeaponPickupSound(const Session& s, uint16_t snd) {
 // `nox_xxx_calcBoltDamage_4EF1E0`(`GAME3_3.c:7752~7765`) — (힘 − 요구 힘) × 계수 + 최소 · 화살의 modifier.bin 정의로.
 //   힘은 쏜 이(+508)의 것 · 쏜 이가 없으면 30(`GAME3_3.c:5233~5237`). 솔로(깃발 2048)의 쇠뇌살 갈래는 우리 판에 없다.
 //   부르는 쪽이 `(long long)(값 + 0.5)`(`:5294` — qword_581450_9544 = 0.5)로 자른다 — 여기서 함께
-int Server::ArrowDamage(int64_t owner, uint16_t arrowType) const {
+//   ★ 11-20 1-e — float 몫(ArrowDamageFloat)을 떼어 둔다: 화살 수식 공격 효과가 버리기 전 float 에 곱한다(`:5281~5294`)
+float Server::ArrowDamageFloat(int64_t owner, uint16_t arrowType) const {
     const auto d = gt_->weaponDef.find(arrowType);
-    if (d == gt_->weaponDef.end()) return 0;                                  // 정의가 없으면 정답지는 닿음 함수에서 바로 돌아간다(`:5223~5226`)
+    if (d == gt_->weaponDef.end()) return 0.0f;
     int str = 30;
     auto it = sessions_.find(owner);
     if (it != sessions_.end()) str = it->second.strength;
     const double v = static_cast<double>(str - static_cast<int>(d->second.reqStrength)) * static_cast<double>(d->second.coeff) +
                      static_cast<double>(d->second.damageMin);
-    return static_cast<int>(static_cast<long long>(static_cast<double>(static_cast<float>(v)) + 0.5));
+    return static_cast<float>(v);
+}
+int Server::ArrowDamage(int64_t owner, uint16_t arrowType) const {
+    if (gt_->weaponDef.find(arrowType) == gt_->weaponDef.end()) return 0;   // 정의가 없으면 정답지는 닿음 함수에서 바로 돌아간다(`:5223~5226`)
+    return static_cast<int>(static_cast<long long>(static_cast<double>(ArrowDamageFloat(owner, arrowType)) + 0.5));
 }
 
 // `nox_xxx_shootBowCrossbow1_539BD0`(`GAME4_3.c:4460~4534`) — 활·석궁의 한 발. 참 = 쐈다(화살을 만들었든 앞이 막혔든)
@@ -16976,7 +16993,7 @@ bool Server::ShootBowCrossbow(Session& s, Session::Carried& bow) {
 //   · 주인(+508)·갱신 짐 [1] = 쏜 이 · 속도 = 바라보는 쪽 × 제 빠르기(+544) · 방향 둘 = 사람 방향
 //   · 화살통이 있고 무한이 아니면 화살 수 하나 줄이고 충전 알림 — 0 이 되면 화살통을 지운다(`delayedDeleteObject` → `sub_4ED0C0`)
 //   · 소리 활 885 · 석궁 886
-//   ⚠ 안 옮긴 것 — 화살통 수식을 화살에(`modifSetItemAttrs_4E4990` — 우리 물건에 수식 효과가 없다) · 활의 마법부여 반동·빠르기(`shootApplyEffects_539F40`)
+//   ★ 11-20 1-e — 화살통 수식을 화살에 · 활의 되밀기·빠르기(`shootApplyEffects_539F40`) — 아래 m.mods
 void Server::ShootArrow(Session& s, Session::Carried* quiver, uint32_t kind) {
     const double r = static_cast<double>(kBodyRadius) + 4.0;
     const uint8_t dir = s.facingPrev;                                       // +124 Direction1
@@ -16999,6 +17016,21 @@ void Server::ShootArrow(Session& s, Session::Carried* quiver, uint32_t kind) {
         m.dir1 = m.dir2 = dir;
         m.createdFrame = m.frame136 = frame_;
         m.speed = pt->speed;
+        // ★ 11-20 트레일러 전사 1-e — 화살통 수식 넷을 화살에(`modifSetItemAttrs_4E4990` `GAME4_3.c:4586~4588`) →
+        //   든 활의 부여 칸 2·3(`shootApplyEffects_539F40` `:4621~4652`) — 맞히기 전 효과가 되밀기면 화살 칸 3 에 그 수식 ·
+        //   공격 효과가 발사체 빠르기면 화살 빠르기(+544) × f(`effectProjectileSpeed_4E09B0`) — 속도(+80)는 그 뒤에 짓는다(`:4590`)
+        if (quiver) for (int k = 0; k < 4; ++k) m.mods[k] = quiver->mods[k];
+        if (const Session::Carried* bw = HeldWeapon(s)) {
+            for (int k = 2; k < 4; ++k) {
+                const ModEffect* e = ModEffectOf(bw->mods[k]);
+                if (!e) continue;
+                if (e->preHit.fn == ModFn::Recoil) m.mods[3] = bw->mods[k];
+                else if (e->attack.fn == ModFn::ProjectileSpeed) {
+                    m.speed = e->attack.f * m.speed;
+                    ++modFnStat_[static_cast<size_t>(ModFn::ProjectileSpeed)];
+                }
+            }
+        }
         m.velX = DirVecX(dir) * m.speed;
         m.velY = DirVecY(dir) * m.speed;
         m.collideKind = 6;                                                  // ArrowCollide
@@ -17521,14 +17553,24 @@ std::vector<Server::ModEffect> Server::ParseModEffects(const std::string& txt, s
     return out;
 }
 
+// ★ 11-20 1-e — `nox_xxx_itemCheckReadinessEffect_4E0960`(`GAME3_2.c:6933~6949`) — 물건 부여 칸 2·3 중 공격 효과가 Readiness(빈 함수 nullsub_22)인
+//   첫 칸의 i · 없으면 0. 원본의 클래스 관문(0x13001000)은 부르는 곳이 든 활·석궁(무기)뿐이라 늘 통과
+int Server::ReadinessOf(const Session::Carried* item) const {
+    if (!item) return 0;
+    for (int k = 2; k < 4; ++k) {
+        const ModEffect* e = ModEffectOf(item->mods[k]);
+        if (e && e->attack.fn == ModFn::Readiness) return e->attack.i;
+    }
+    return 0;
+}
+
 // ★ 11-20 1-b — `nox_xxx_itemApplyAttackEffect_538840`(`GAME4_3.c:3828~3851`) — 든 무기의 수식 **넷**의 공격 효과(+40)를 부른다.
 //   부르는 곳 = 휘두르기 판정 바로 앞(`:4113~4283` — calcBoltDamage 로 피해 float 을 짓고 → 이것 → playerTraceAttack).
 //   a5 = 피해 float 칸 — DamageMultiplier(`4E04C0`)가 `*a5 = valf × *a5` 로 곱한다(float 곱 · 버림은 sub_538510 의 +0.5)
-void Server::ApplyAttackEffects(const Session& s, float& dmg) {
-    const Session::Carried* w = HeldWeapon(s);
-    if (!w) return;
+//   ★ 1-e — 수식 넷을 받는다: 근접 = 든 무기 · 화살 = 화살이 들고 난 것(화살통 넷 + 활 되밀기 · `GAME3_3.c:5289`)
+void Server::ApplyAttackEffects(Session& s, const uint8_t* mods, float& dmg) {
     for (int m = 0; m < 4; ++m) {
-        const ModEffect* e = ModEffectOf(w->mods[m]);
+        const ModEffect* e = ModEffectOf(mods[m]);
         if (!e) continue;
         const ModHook& h = e->attack;
         switch (h.fn) {
@@ -17541,7 +17583,14 @@ void Server::ApplyAttackEffects(const Session& s, float& dmg) {
             case ModFn::Readiness: case ModFn::Replenishment: case ModFn::Empty: break;
             // ProjectileSpeed — 이 자리의 a5 는 피해 float 칸이라 `a5 + 544` 쓰기는 꾸러미 밖(정답지 결함 · 화면에 안 나옴). 화살에 곱하는 자리는 `:4643`(1-e)
             case ModFn::ProjectileSpeed: break;
-            default: ++modNotPorted_; break;   // FireRing · BlueFireRing(1-e)
+            case ModFn::FireRing:
+            case ModFn::BlueFireRing:
+                // ★ 1-e — `nox_xxx_fireRingEffect_4E05B0` · `blueFREffect_4E05F0`(Go `modifiers.go:38~56`) — 때린 이(a3) 자리에서
+                //   정화 불꽃(10) / 마나 정화 불꽃(11)을 세기 i 로 시전(마나·쉬는 시간 없이 주문 몸통만 · 온라인은 몸통이 세기 4로 못 박는다)
+                CastCleansingFlame(h.fn == ModFn::FireRing ? 10 : 11, s, h.i);
+                ++modFnStat_[static_cast<size_t>(h.fn)];
+                break;
+            default: ++modNotPorted_; break;
         }
     }
 }
@@ -17550,10 +17599,8 @@ void Server::ApplyAttackEffects(const Session& s, float& dmg) {
 //   든 무기의 **둘째·셋째 부여 칸(2·3)** 의 맞히기 전 효과(+52)를 부른다(`sub_538510` `:3729`).
 //   관문: 편 거르기 꺼짐(417DA0(1) — 우리 판은 늘 켬)이 아니면 **때린 이가 맞는 쪽의 적**이어야 · 맞는 쪽이 무적(23)·반사 방패(27)가 아니어야.
 //   효과 인자 = (수식, 무기, 때린 이, 맞는 쪽, 꾸러미) — 피해는 무기(src)로 때린 사람(by) 이름이다
-void Server::ApplyPreHitEffects(Session& s, const Target& t, const AttackSrc& src, HitterRef hr) {
-    const Session::Carried* w = HeldWeapon(s);
-    if (!w) return;
-    const uint8_t mods[2] = { w->mods[2], w->mods[3] };   // 피해가 가방을 바꿀 수 있어(감전 되갚기 · 죽음) 먼저 베낀다
+void Server::ApplyPreHitEffects(Session& s, const uint8_t* mods4, const Target& t, const AttackSrc& src, HitterRef hr) {
+    const uint8_t mods[2] = { mods4[2], mods4[3] };   // 피해가 가방을 바꿀 수 있어(감전 되갚기 · 죽음) 먼저 베낀다
     bool any = false;
     for (uint8_t mi : mods) { const ModEffect* e = ModEffectOf(mi); if (e && e->preHit.fn != ModFn::None) any = true; }
     if (!any) return;
@@ -17740,7 +17787,7 @@ bool Server::PlayerAttack(Session& s, uint32_t frame) {
     auto weaponDmg = [&]() {
         float f = static_cast<float>(static_cast<double>(s.strength - w->reqStrength) *
                                      static_cast<double>(static_cast<float>(w->coeff)) + w->damageMin);
-        ApplyAttackEffects(s, f);
+        if (const Session::Carried* hw = HeldWeapon(s)) ApplyAttackEffects(s, hw->mods, f);
         return static_cast<int>(static_cast<long long>(static_cast<double>(f) + 0.5));
     };
     auto meleeInfo = [&](uint8_t type, bool overlap) {
@@ -17890,13 +17937,17 @@ bool Server::PlayerAttack(Session& s, uint32_t frame) {
                 }
             }
         }
-        // ★ 09-29 — 활(0x4)·석궁(0x8)(`GAME4_3.c:4288~4324`). 준비 효과(`itemCheckReadinessEffect_4E0960` — 무기 수식)는 우리 물건에 없어 0
+        // ★ 09-29 — 활(0x4)·석궁(0x8)(`GAME4_3.c:4288~4324`).
+        //   ★ 11-20 1-e — 장전 수식(`itemCheckReadinessEffect_4E0960` — 든 활 칸 2·3 의 Readiness i): 활은 끝 시각을 i 만큼 당기고 칸 번호에 i 를 더한다 ·
+        //   석궁은 끝 시각을 당기고 칸 1 이상이면 칸 번호에 i 를 더한다(쏘는 칸 1 은 그대로)
         //   활 — 애니 33 · 칸이 (칸 수 − 1) 이상이고 지난 칸보다 크면 한 발(`539BD0`) 뒤 칸 = 칸 수(→ 공격 끝 · 상태 14)
         //   석궁 — 애니 34 · 칸이 1 이 되는 틱(지난 칸 0)에 한 발 · 애니는 끝까지 돈다
         else if (equip & 0x4) {
             range(33);
-            setReady();
+            const int ready = ReadinessOf(HeldWeapon(s));
+            if (s.attackReadyFrame == 0) s.attackReadyFrame = frame + static_cast<uint32_t>(frames * (hold + 1) - ready);   // `:4293~4294`
             calcIdx();
+            idx += ready;                                                    // `:4297~4298`
             if (idx >= frames - 1 && idx > prevFrame) {
                 Session::Carried* bow = nullptr;
                 for (auto& c : s.inventory) if (c.netCode == s.weaponNet) { bow = &c; break; }
@@ -17905,13 +17956,15 @@ bool Server::PlayerAttack(Session& s, uint32_t frame) {
             }
         } else if (equip & 0x8) {
             range(34);
-            setReady();
+            const int ready = ReadinessOf(HeldWeapon(s));
+            if (s.attackReadyFrame == 0) s.attackReadyFrame = frame + static_cast<uint32_t>(frames * (hold + 1) - ready);   // `:4309~4310`
             calcIdx();
             if (idx == 1 && prevFrame == 0) {
                 Session::Carried* bow = nullptr;
                 for (auto& c : s.inventory) if (c.netCode == s.weaponNet) { bow = &c; break; }
                 if (bow) ShootBowCrossbow(s, *bow);
             }
+            if (idx >= 1) idx += ready;                                      // `:4314~4323`
         }
     }
     // 차크람(0x40)·수리검(0x80) — 날아가는 오브젝트라 묶음 5 로
@@ -18130,8 +18183,8 @@ bool Server::PlayerTraceAttack(Session& s, const AttackInfo& ai) {
         HitterRef hr = HitterPlayerBody();
         if (ai.weapon) hr.type = WeaponWireOf(s);
         // ★ 11-20 전사 1-b — 피해 함수 앞에 맞히기 전 효과(playerPreAttackEffects_538290 `:3729` — 무기가 있을 때만: 맨손은 a3 = 0)
-        if (ai.weapon && (kind == Player || kind == Pet))
-            ApplyPreHitEffects(s, kind == Player ? Target{ sessionId, -1 } : Target{ kNoSession, idx }, src, hr);
+        if (src.itemWeapon && (kind == Player || kind == Pet))
+            ApplyPreHitEffects(s, src.itemMods, kind == Player ? Target{ sessionId, -1 } : Target{ kNoSession, idx }, src, hr);
         if (kind == Player) {
             HurtTarget(Target{ sessionId, -1 }, ai.dmg, s.sessionId, ai.type, &src, hr);
             auto it = sessions_.find(sessionId);

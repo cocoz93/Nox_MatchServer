@@ -24270,6 +24270,39 @@ void TestModEffects1120() {
               bv.hpGain == 7 && b0.hpGain == 0 && bp.poison == 1 && b0.poison == 0 &&
               wd.victimLost > 0 && expDrain > 0 && wd.victimMana == w0.victimMana - expDrain && bv.vamp == 1 && bp.pois == 1 && wd.drain == 1, msg);
     }
+    // ⑤ 1-e — 불 고리1(68 · 공격 효과 FireRingEffect 2) — 한 번 휘두르면 때린 이 자리에 정화 불꽃(놓인 것 종류 6)이 깔린다 · 파란 불 고리1(72)도
+    {
+        auto swing = [&](uint8_t m2, size_t& flames, unsigned long long& ring, unsigned long long& blue) {
+            nox::CSyncHost srv;
+            GearTemplates(srv);
+            srv->SetModEffects(effs);
+            srv->SetPlayerAnimFrames(28, 8, 0);
+            // 불꽃 종류 번호 — 정화 불꽃 시험(09-08)과 같은 자리표시 번호(종류를 모르면 불꽃을 안 만든다)
+            const char* const kFl[8] = { "SmallFlameCleanse", "MediumFlameCleanse", "FlameCleanse", "LargeFlameCleanse",
+                                         "SmallBlueFlameCleanse", "MediumBlueFlameCleanse", "BlueFlameCleanse", "LargeBlueFlameCleanse" };
+            for (int k = 0; k < 8; ++k) srv->SetNamedType(kFl[k], static_cast<uint16_t>(930 + k));
+            const std::string a = "10.11.20.6:9506";
+            srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+            srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+            srv->DebugSetAutoFight(false);
+            flames = 0; ring = blue = 0;
+            if (!srv->DebugSetHeldMods(Sid(srv, a), 0xff, 0xff, m2, 0xff)) return;
+            std::vector<nox::OutPacket> out;
+            uint32_t ms = 0;
+            srv.Tick(ms, out);
+            for (int t = 0; t < 30; ++t) { ms += 33; srv.Tick(ms, out); }
+            auto click = InputPacket(6);
+            srv.OnPacket(a, click.data(), click.size(), out);
+            for (int t = 0; t < 12; ++t) { ms += 33; srv.Tick(ms, out); }
+            for (size_t i = 0; i < srv->PlacedCount(); ++i) if (srv->DebugPlacedKind(i) == 6) ++flames;
+            ring = srv->modFnStat(MF::FireRing); blue = srv->modFnStat(MF::BlueFireRing);
+        };
+        size_t f0 = 0, f1 = 0, f2 = 0; unsigned long long r0 = 0, b0 = 0, r1 = 0, b1 = 0, r2 = 0, b2 = 0;
+        swing(0xff, f0, r0, b0); swing(68, f1, r1, b1); swing(72, f2, r2, b2);
+        std::snprintf(msg, sizeof(msg), "⑤ 불 고리 — 이름 %s·%s · 불꽃 없음 %zu · 불 고리1 %zu · 파란 %zu · 효과 %llu·%llu(없음 %llu·%llu)",
+                      nm(68), nm(72), f0, f1, f2, r1, b2, r0, b0);
+        Check(effs[68].name == "FireRing1" && effs[72].name == "BlueFireRing1" && f0 == 0 && f1 > 0 && f2 > 0 && r1 == 1 && b1 == 0 && b2 == 1 && r2 == 0 && r0 == 0 && b0 == 0, msg);
+    }
     std::printf("  11-20 — 수식 효과: modifier.bin %zu칸 · 롱소드 %d → 위력6 %d · 불1 +3 · 번개4 +12 · 무적이면 효과 없음\n", effs.size(), base, pow6);
 }
 
@@ -24891,6 +24924,43 @@ void TestBowQuiver() {
         srv->Damage(Sid(srv, w), 50); srv.TakeOut(o0);
         std::vector<nox::OutPacket> o1; send(srv, w, nox::Op::TRY_GET, 620, o1);
         Check(srv->drankOnPickup() == 1 && !srv->Carries(Sid(srv, w), 620), "⑲ 버렸다 다시 주운 물약을 다친 채인데 그 자리에서 안 마셨다");
+    }
+    // ⑳ ★ 11-20 트레일러 전사 1-e — 활 수식(진짜 modifier.bin): 장전2(149 · 칸 번호 +2 → 붙듦 1 이라 프레임 4 빨리) ·
+    //   발사체 빠르기4(155 · 화살 +544 × 1.5 — 시험 SetProjType 800 은 틱당 50 으로 담긴다) · 화살통 불1(64 → 화살이 곰에 62 + 3) · 활 되밀기1(80 → 화살 칸 3 · 곰이 쏜 이 반대쪽으로)
+    {
+        const auto mbin = nox::DecryptFile("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\modifier.bin", nox::kKeyModifier);
+        const std::vector<nox::Server::ModEffect> effs = nox::Server::ParseModEffects(std::string(mbin.begin(), mbin.end()));
+        using MF = nox::Server::ModFn;
+        struct B { int dt = -1; float speed = 0; int lost = -1; double bx = 0; unsigned long long fire = 0, ps = 0, rec = 0; };
+        auto go = [&](uint8_t b2, uint8_t b3, uint8_t q2) {
+            B r;
+            nox::CSyncHost srv; uint32_t ms = 0;
+            armed(srv, ms, kBow);
+            srv->SetModEffects(effs);
+            nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
+            srv->SetTypeBody(1365, body);
+            srv->DebugSpawnPet(1365, 1100.0f, 1000.0f, Sid(srv, std::string()));
+            srv->DebugSetPetHealth(0, 1000);
+            srv->DebugSetAutoFight(false);
+            if (!srv->DebugSetItemMods(Sid(srv, c), kBow, 0xff, 0xff, b2, b3) || !srv->DebugSetItemMods(Sid(srv, c), kQ1, 0xff, 0xff, q2, 0xff)) return r;
+            std::vector<nox::OutPacket> keep;
+            r.dt = shoot(srv, ms, keep);
+            r.speed = srv->DebugMissileSpeed(0);
+            const uint16_t hp0 = srv->DebugPetHealth(0);
+            for (int t = 0; t < 10 && srv->arrowHit(AH::Hurt) == 0; ++t) run(srv, ms, 1, &keep);
+            r.lost = hp0 - srv->DebugPetHealth(0);
+            double y = 0; srv->DebugPetXY(0, r.bx, y);
+            r.fire = srv->modFnStat(MF::Fire); r.ps = srv->modFnStat(MF::ProjectileSpeed); r.rec = srv->modFnStat(MF::Recoil);
+            return r;
+        };
+        const B r0 = go(0xff, 0xff, 0xff), rr = go(149, 0xff, 0xff), rp = go(0xff, 155, 0xff), rf = go(0xff, 0xff, 64), rk = go(80, 0xff, 0xff);
+        auto nm = [&](size_t i) { return i < effs.size() ? effs[i].name.c_str() : "(없음)"; };
+        char m[400];
+        std::snprintf(m, sizeof(m), "⑳ 활 수식 — 이름 %s·%s·%s·%s · 쏜 프레임 %d → 장전2 %d(−4) · 빠르기 %.1f → %.1f(× 1.5) · 곰 깎임 %d → 화살통 불1 %d(+3) · 곰 x %.1f → 되밀기 %.1f · 효과 %llu·%llu·%llu",
+                      nm(149), nm(155), nm(64), nm(80), r0.dt, rr.dt, r0.speed, rp.speed, r0.lost, rf.lost, r0.bx, rk.bx, rp.ps, rf.fire, rk.rec);
+        Check(effs.size() == 212 && effs[149].name == "Readiness2" && effs[155].name == "ProjectileSpeed4" &&
+              r0.dt > 4 && rr.dt == r0.dt - 4 && r0.speed > 0.0f && rp.speed == 1.5f * r0.speed && rp.ps == 1 &&
+              r0.lost == 62 && rf.lost == 65 && rf.fire == 1 && r0.fire == 0 && rk.bx > r0.bx + 1.0 && rk.rec == 1 && r0.rec == 0, m);
     }
     std::printf("  09-29 — 활·석궁·화살통: 줍기(직업·합치기 250·저절로 듦·충전 알림·소리) · 들기(활부터·먼저 든 화살통 놓기) · 놓기(활이면 화살통도) ·"
                 " 쏘기(칸 5·칸 1 · 19/20 · 885/886 · 14→13) · 피해 62 · 쇠뇌살 뚫기 · 재장전 칸 · 빈 화살통 지움·바꿔 듦·NoQuiver · 벽·막힘·수명·쏜 이·장애물\n");

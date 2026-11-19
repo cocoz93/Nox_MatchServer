@@ -2934,6 +2934,12 @@ public:
     unsigned long long modVampUndead() const { return modVampUndead_; }   // 효과가 걸렸으나 아직 안 옮긴 갈래
     unsigned long long modPreHitGate(int i) const { return i >= 0 && i < 3 ? modPreHitGate_[i] : 0; }   // 0 통과 · 1 적 아님 · 2 맞는 쪽 버프 23·27
     // 시험용 — 든 무기(무기 칸)의 수식 넷을 바꾼다
+    bool DebugSetItemMods(int64_t sessionId, uint16_t nc, uint8_t m0, uint8_t m1, uint8_t m2, uint8_t m3) {   // ★ 11-20 1-e 시험용 — 가방 물건 번호로
+        auto it = sessions_.find(sessionId); if (it == sessions_.end()) return false;
+        for (auto& c : it->second.inventory) if (c.netCode == nc) { c.mods[0] = m0; c.mods[1] = m1; c.mods[2] = m2; c.mods[3] = m3; return true; }
+        return false;
+    }
+    float DebugMissileSpeed(size_t i) const { return i < missiles_.size() ? missiles_[i].speed : 0.0f; }   // ★ 11-20 1-e
     bool DebugSetHeldMods(int64_t sessionId, uint8_t m0, uint8_t m1, uint8_t m2, uint8_t m3) {
         auto it = sessions_.find(sessionId); if (it == sessions_.end()) return false;
         for (auto& c : it->second.inventory) if (c.netCode == it->second.weaponNet) { c.mods[0] = m0; c.mods[1] = m1; c.mods[2] = m2; c.mods[3] = m3; return true; }
@@ -4570,6 +4576,7 @@ private:
         float velX = 0, velY = 0;        // +80 VelVec
         float forceX = 0, forceY = 0;    // +88 ForceVec
         float damping = 1.0f;            // +112 Float28(MISSILE 1.0)
+        uint8_t mods[4] = { 0xff, 0xff, 0xff, 0xff };   // ★ 11-20 1-e — +692 화살 수식(화살통 넷 + 활 되밀기 → 칸 3 · `GAME4_3.c:4587·4640`)
         float speed = 0;                 // +544 SpeedCur
         uint8_t dir1 = 0, dir2 = 0;      // +124 Direction1 · +126 Direction2
         uint32_t createdFrame = 0;       // +128
@@ -4870,6 +4877,7 @@ private:
     bool ShootBowCrossbow(Session& s, Session::Carried& bow);  // `shootBowCrossbow1_539BD0`
     void ShootArrow(Session& s, Session::Carried* quiver, uint32_t kind);   // `shootBowCrossbow2_539D80`
     int ArrowDamage(int64_t owner, uint16_t arrowType) const;                     // `calcBoltDamage_4EF1E0` + 0.5 버림
+    float ArrowDamageFloat(int64_t owner, uint16_t arrowType) const;              // ★ 11-20 1-e — 버리기 전 float(정의 없으면 0)
     void PlayWeaponPickupSound(const Session& s, uint16_t snd);                               // `sub_53A6C0`
     // toSelf = 거짓이면 본인 알림(0x60/0x61)은 빼고 남에게 겉모습만(버리기 `sub_4ED0C0` 가 a3 = 0 으로 부른다)
     // toOthers = 거짓이면 남에게 겉모습도 안 보낸다(09-28 B4b — 죽은 사람이 떨어뜨릴 때 a4 = 0)
@@ -6169,8 +6177,9 @@ private:
     unsigned long long modFnStat_[static_cast<size_t>(ModFn::Count)] = {};   // ★ 11-20 1-b — 수식 효과 갈래마다
     unsigned long long modNotPorted_ = 0, modPreHitGate_[3] = {};
     unsigned long long modVampUndead_ = 0;   // ★ 11-20 1-d — 흡혈 수식이 언데드(하위 분류 0x40)라 안 든 번
-    void ApplyAttackEffects(const Session& s, float& dmg);   // itemApplyAttackEffect_538840 — 든 무기 칸 넷
-    void ApplyPreHitEffects(Session& s, const Target& t, const AttackSrc& src, HitterRef hr);   // playerPreAttackEffects_538290 — 칸 2·3
+    void ApplyAttackEffects(Session& s, const uint8_t* mods, float& dmg);   // itemApplyAttackEffect_538840 — 수식 넷(든 무기 · 화살)
+    void ApplyPreHitEffects(Session& s, const uint8_t* mods4, const Target& t, const AttackSrc& src, HitterRef hr);   // playerPreAttackEffects_538290 — 칸 2·3
+    int ReadinessOf(const Session::Carried* item) const;   // itemCheckReadinessEffect_4E0960(1-e)
     void ApplyPreDamageEffects(const AttackSrc* src, int64_t by, const Target& victim, int dmg);   // itemApplyPreDamageEffect_4E13B0 — 칸 넷(1-d)
     unsigned long long soundsQueued_ = 0;
     unsigned long long soundsDropped_ = 0;
