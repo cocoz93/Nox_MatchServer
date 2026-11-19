@@ -464,6 +464,9 @@ constexpr size_t kBowShotCount = static_cast<size_t>(BowShot::Count);
 //   쇠뇌살이 죽인 것을 뚫고 감(`:5297~5303`) · 유닛 아닌 장애물(피해 함수 DefaultDamage 가 1 → 지움) · 벽(맵 피해 · 지움) · 40틱 수명(지움)
 enum class ArrowHit : uint8_t { Owner = 0, Dead, Hurt, NoHurt, BoltPass, Obstacle, Wall, Age, Count };
 constexpr size_t kArrowHitCount = static_cast<size_t>(ArrowHit::Count);
+// ★ 11-20 트레일러 전사 2 — 수리검·차크람(던지기 `GAME4_3.c:4327~4419` · 날기 `updateChakramInMotion_53DCC0` · 맞기 `collideChakram_4EAF00`)이 어디로 갔나
+enum class ChakramEv : uint8_t { ShurikenThrown = 0, ShurikenLast, ChakramThrown, Blocked, Count };
+constexpr size_t kChakramEvCount = static_cast<size_t>(ChakramEv::Count);
 // ★ 09-29 — 무기·화살통 줍기(`sub_53A720` `GAME4_3.c:5033~5128` · `pickupAmmo_4F3B00` `GAME3_3.c:10831~10903`)에서 난 일 —
 //   직업이 못 쓰는 무기라 못 주움(`:5089~5095`) · 같은 화살통에 합침 · 활·석궁을 들고 있어 화살통을 저절로 듦(`:5105~5111`) ·
 //   저절로 안 들어 충전을 따로 알림(`:5113~5123`) · 줍는 소리(`sub_53A6C0` — 830 지팡이 · 842 쇠 · 844 나무)
@@ -4175,6 +4178,7 @@ public:
         GtMut().weaponDef[wire] = WeaponDef{ classes, reqStrength, damageMin, coeff };
     }
     unsigned long long bowShot(BowShot k) const { return k < BowShot::Count ? bowShot_[static_cast<size_t>(k)] : 0; }          // ★ 09-29
+    unsigned long long chakramEv(ChakramEv k) const { return k < ChakramEv::Count ? chakramEv_[static_cast<size_t>(k)] : 0; }  // ★ 11-20 트레일러 전사 2
     unsigned long long arrowHit(ArrowHit k) const { return k < ArrowHit::Count ? arrowHit_[static_cast<size_t>(k)] : 0; }      // ★ 09-29
     unsigned long long weaponPick(WeaponPick k) const { return k < WeaponPick::Count ? weaponPick_[static_cast<size_t>(k)] : 0; }   // ★ 09-29
     unsigned long long quiverFromMap() const { return mt_->quiverFromMap; }   // ★ 09-29 — 맵 짐에서 화살 수를 읽어 실은 바닥 화살통
@@ -4611,6 +4615,16 @@ private:
         int fromPet = -1;                // 묶음 6-g(3b) — 이것을 쏜 소환수(제 몸에는 안 맞는다)
         // ★ 2 = PixieCollide — 적에게 닿으면 인자만큼 피해(종류 11 충격)를 주고 **제가 사라진다**
         uint32_t expireFrame = 0;        // 0 이 아니면 이 프레임에 사라진다(픽시 — 30~90초)
+        // ★ 11-20 트레일러 전사 2-a — 차크람(RoundChakramInMotion)은 던진 차크람을 **제 가방에** 넣고 난다(`inventoryPutImpl_4F3070(날아가는 것, 차크람, 1)` `GAME4_3.c:4408`).
+        //   갱신 짐 28바이트(`object_update.go:94`) — +4 남은 튕김(4) · +8 쫓는 것(주인이거나 없음) · +12 마지막에 맞은 것 · +16/+20 주인 자리 ·
+        //   +24 상태(2 = 날아감 · 0 = 돌아옴 · 1 = 떨어짐)
+        bool hasItem = false;
+        Session::Carried item;
+        uint8_t ckBounce = 0;
+        bool ckHomeOwner = false;
+        Target ckLast;
+        float ckHomeX = 0, ckHomeY = 0;
+        uint8_t ckState = 0;
     };
 public:
     // ★ 09-19 — ⑬(화살이 진행 방향으로 기울어 보이나)을 **표로** 가르려고 연다.
@@ -4886,6 +4900,8 @@ private:
     bool TryReloadQuiver(Session& s);                          // `playerTryReloadQuiver_539FF0` — 화살통(비트 2)을 듦
     bool ShootBowCrossbow(Session& s, Session::Carried& bow);  // `shootBowCrossbow1_539BD0`
     void ShootArrow(Session& s, Session::Carried* quiver, uint32_t kind);   // `shootBowCrossbow2_539D80`
+    void ThrowShuriken(Session& s);                         // ★ 11-20 트레일러 전사 2-a — 수리검(0x80 · `GAME4_3.c:4335~4378`)
+    void ThrowChakram(Session& s);                          // ★ 11-20 트레일러 전사 2-a — 차크람(0x40 · `GAME4_3.c:4388~4419`)
     int ArrowDamage(int64_t owner, uint16_t arrowType) const;                     // `calcBoltDamage_4EF1E0` + 0.5 버림
     float ArrowDamageFloat(int64_t owner, uint16_t arrowType) const;              // ★ 11-20 1-e — 버리기 전 float(정의 없으면 0)
     void PlayWeaponPickupSound(const Session& s, uint16_t snd);                               // `sub_53A6C0`
@@ -4895,6 +4911,8 @@ private:
     // ★ 09-28 B4b — 가방 `at` 번째를 (tx,ty) 바닥에 떨군다(`dropDefault_4ED290` 의 벗기·`4d`·가방에서 빼기·세계에 놓기·사라짐 시계).
     //   dead = 죽은 사람이면 벗을 때 남에게도 안 알린다(`GAME3_3.c:6321~6323`)
     void DropCarriedToWorld(Session& s, size_t at, double tx, double ty, bool dead);
+    Session::Carried TakeCarriedOut(Session& s, size_t at, bool dead);   // ★ 11-20 2-a — DropCarriedToWorld ①②(`sub_4ED0C0` · `4d` · 가방에서 뺌)
+    void PlaceCarriedInWorld(const Session::Carried& c, double tx, double ty, bool viaDropFn);   // ★ 11-20 2-a — ③(`createAt_4DAA50` · 버리기 함수를 거치면 사라짐 시계)
     // ★ 09-28 B4b — 죽을 때 가방 떨어뜨리기(`nox_xxx_dropAllItems_4EDA40` · 입은 평상복만 남김)
     void DropAllItems(Session& s);
     // ★ 09-28 B4b — 부활 때 가방 정리 + 기본 장비 새로(`playerMakeDefItems_4EF7D0` 의 a3 = 0 갈래 · `GAME3_3.c:7969~8043`)
@@ -5044,6 +5062,7 @@ private:
     unsigned long long shieldDropsTwoHand_ = 0;   // ★ 09-28 — 방패를 입어 내려놓게 한 두 손 무기(`sub_53E600`)
     struct WeaponDef { uint8_t classes = 0; uint16_t reqStrength = 0; uint16_t damageMin = 0; float coeff = 0.0f; };
     unsigned long long bowShot_[kBowShotCount] = {};       // ★ 09-29
+    unsigned long long chakramEv_[kChakramEvCount] = {};   // ★ 11-20 트레일러 전사 2
     unsigned long long arrowHit_[kArrowHitCount] = {};     // ★ 09-29
     unsigned long long weaponPick_[kWeaponPickCount] = {}; // ★ 09-29
     unsigned long long bowPoseEnded_ = 0;                  // ★ 09-29 — 활 쏜 뒤 상태 14 → 13(1초)

@@ -138,7 +138,9 @@ std::shared_ptr<const nox::Server::GameTables> BuildGameTables(const GameFiles& 
         //       `MercArcherArrow` 는 `SPEED = 800` · `COLLIDE = MonsterArrowCollide 10 10` 이다
         //     ★ 09-29 — **사람이 쏘는 화살**(활 ArcherArrow · 석궁 ArcherBolt · 화살통 없는 WeakArcherArrow — `shootBowCrossbow2_539D80`)
         for (const char* nm : { "Fireball", "StrongFireball", "TitanFireball", "ImpShot", "HarpoonBolt",
-                                "MercArcherArrow", "ArcherArrow", "ArcherBolt", "WeakArcherArrow" }) {
+                                "MercArcherArrow", "ArcherArrow", "ArcherBolt", "WeakArcherArrow",
+                                // ★ 11-20 트레일러 전사 2-a — 던지는 것 둘(SPEED 400 · 300 · AIRBORNE — 수리검 · 차크람 `GAME4_3.c:4345·4400`)
+                                "FanChakramInMotion", "RoundChakramInMotion" }) {
             const uint16_t w = tdb.WireByName(nm);
             const nox::ThingInfo* t2 = w ? tdb.ByWire(w) : nullptr;
             int amount = 0;

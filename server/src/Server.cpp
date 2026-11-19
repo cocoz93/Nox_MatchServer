@@ -16427,8 +16427,15 @@ static bool IsStreetClothes(const Session::Carried& c) {
 //      무기는 든 것일 때만 내려놓는다(53A140 이 가린다)
 //   ② 본인에게 `4d REPORT_DROP <번호2> <종류2>`(`netReportDrop_4D8B50`) → 가방에서 뺀다
 //   ③ 그 자리에 세계로(`createAt_4DAA50`) — 소개는 시야 갱신이 한다 · 사라짐 시계(`DropDecayFrame`)
+//   ★ 11-20 트레일러 전사 2-a — ①② 를 TakeCarriedOut · ③ 을 PlaceCarriedInWorld 로 떼어 냈다(차크람 던지기·떨어뜨리기가 같은 것을 쓴다)
 void Server::DropCarriedToWorld(Session& s, size_t at, double tx, double ty, bool dead) {
     if (at >= s.inventory.size()) return;
+    const Session::Carried c = TakeCarriedOut(s, at, dead);
+    PlaceCarriedInWorld(c, tx, ty, /*viaDropFn=*/true);
+}
+
+Session::Carried Server::TakeCarriedOut(Session& s, size_t at, bool dead) {
+    if (at >= s.inventory.size()) return Session::Carried{};
     const uint16_t nc = s.inventory[at].netCode;
     if (s.inventory[at].equipped) {
         if (s.inventory[at].weaponClass) {
@@ -16447,6 +16454,12 @@ void Server::DropCarriedToWorld(Session& s, size_t at, double tx, double ty, boo
     }
     s.inventory.erase(s.inventory.begin() + static_cast<long>(at));
     if (s.weaponNet == nc) s.weaponNet = 0;   // 들고 있지 않은 칸이어도 번호가 남지 않게(HeldWeapon 은 어차피 못 찾는다)
+    return c;
+}
+
+//   viaDropFn — 버리기(`drop_4ED790`)는 물건별 버리기 함수가 사라짐 시계를 건다 · 곧장 세계로(`createAt_4DAA50` — 차크람이 맞고 떨어질 때)는 안 건다
+void Server::PlaceCarriedInWorld(const Session::Carried& c, double tx, double ty, bool viaDropFn) {
+    const uint16_t nc = c.netCode;
     // 세계로 — 칸은 `INVENTORY_FAIL` 되돌리기와 같다
     WorldStatic w;
     w.netCode = nc; w.type = c.type; w.modifiable = c.modifiable; w.useAmount = c.useAmount;
@@ -16465,7 +16478,7 @@ void Server::DropCarriedToWorld(Session& s, size_t at, double tx, double ty, boo
     //   (✖ 전에는 버린 물약이 `potionPickup` 을 잃어 다시 주우면 「그 자리에서 마시기」·직업 거절을 안 탔다)
     w.pickupFn = c.pickupFn; w.pickupSound = c.pickupSound; w.bowReload = c.bowReload;
     w.potionPickup = (c.pickupFn == PickupFn::Potion);
-    w.decayFrame = DropDecayFrame(c.dropFn, c.decayExempt);
+    w.decayFrame = viaDropFn ? DropDecayFrame(c.dropFn, c.decayExempt) : 0u;
     statics_.push_back(w);
     freshStatics_.insert(nc);   // 시야 반경이 꺼진 판에서도 소개되게(틱 갱신의 freshStatics_ 자리)
 }
@@ -17017,6 +17030,104 @@ bool Server::ShootBowCrossbow(Session& s, Session::Carried& bow) {
     --bow.bowReload;
     ++bowShot_[static_cast<size_t>(BowShot::Reloading)];
     return false;
+}
+
+// ★ 11-20 트레일러 전사 2-a — 수리검(장비 비트 0x80 · `GAME4_3.c:4335~4378`) — 애니 44 의 가운데 칸에 하나 던진다.
+//   · 자리 = 사람 자리 + (몸 반지름 + 4) × 바라보는 쪽 — 사람 자리에서 거기까지 선 추적(깃발 4)이 막히면 소리 323 만
+//   · FanChakramInMotion — 주인 = 던진 이 · 든 수리검 수식 넷을 베낌(`modifSetItemAttrs_4E4990`) · 속도 = 바라보는 쪽 × 제 빠르기(+544) ·
+//     방향 둘 = 사람 방향 · 소리 891. 날기·맞기는 thing.bin 이 화살과 같다(UPDATE = ProjectileUpdate · COLLIDE = ArrowCollide → 닿음 갈래 6)
+//   · 무한(쓰임 짐 [2])이 아니면 수 하나 줄이고 남았으면 충전 알림 — 0 이 되면 가방에서 빼고(`sub_4ED0C0`) 가방의 다음 수리검(장비 비트 0x80)을 든다(`sub_539FB0`)
+//   ⚠ 무한 깃발은 우리 가방 항목에 없다(화살통과 같다 — 맵 물건은 0) · 늘 줄인다
+void Server::ThrowShuriken(Session& s) {
+    Session::Carried* sh = nullptr;
+    for (auto& c : s.inventory) if (c.netCode == s.weaponNet) { sh = &c; break; }
+    if (!sh) return;
+    const double r = static_cast<double>(kBodyRadius) + 4.0;
+    const uint8_t dir = s.facingPrev;                                       // +124 Direction1
+    const float sx = static_cast<float>(r * DirVecX(dir) + s.posX);
+    const float sy = static_cast<float>(r * DirVecY(dir) + s.posY);
+    if (!MapTraceRay(static_cast<float>(s.posX), static_cast<float>(s.posY), sx, sy, 0x4)) {
+        PlaySoundAt(323, static_cast<float>(s.posX), static_cast<float>(s.posY), 0, 0, s.sessionId);
+        ++chakramEv_[static_cast<size_t>(ChakramEv::Blocked)];
+        return;
+    }
+    const ProjTypeInfo* pt = ProjType("FanChakramInMotion");
+    if (!pt || pt->type == 0) return;                                       // 못 만들면 정답지는 공격 함수에서 그냥 돌아간다(`:4347~4349`)
+    MissileObj m;
+    m.netCode = nextShotNetCode_++;
+    m.type = pt->type;
+    m.flags = pt->flags;
+    m.posX = m.newX = m.prevX = sx;
+    m.posY = m.newY = m.prevY = sy;
+    m.dir1 = m.dir2 = dir;
+    m.createdFrame = m.frame136 = frame_;
+    m.speed = pt->speed;
+    for (int k = 0; k < 4; ++k) m.mods[k] = sh->mods[k];
+    m.velX = DirVecX(dir) * m.speed;
+    m.velY = DirVecY(dir) * m.speed;
+    m.collideKind = 6;                                                      // ArrowCollide
+    m.owner = s.sessionId;
+    missiles_.push_back(m); ++missilesMade_;
+    if (missiles_.size() > missilesPeak_) missilesPeak_ = missiles_.size();
+    PlaySoundAt(891, static_cast<float>(s.posX), static_cast<float>(s.posY), 0, 0, s.sessionId);
+    ++chakramEv_[static_cast<size_t>(ChakramEv::ShurikenThrown)];
+    --sh->charges;
+    if (sh->charges != 0) { SendCharges(s, *sh); return; }
+    const uint16_t nc = sh->netCode;
+    for (size_t i = 0; i < s.inventory.size(); ++i)
+        if (s.inventory[i].netCode == nc) { TakeCarriedOut(s, i, /*dead=*/false); break; }
+    ++chakramEv_[static_cast<size_t>(ChakramEv::ShurikenLast)];
+    for (size_t i = s.inventory.size(); i-- > 0;)                           // 가방 머리부터(우리 가방은 뒤가 머리 — TryReloadQuiver 와 같다)
+        if (s.inventory[i].weaponClass && s.inventory[i].equipBit == 0x80) {
+            PlayerEquipWeapon(s, s.inventory[i].netCode, /*failSound=*/true);   // `53A420(사람, 물건, 1, 1)`
+            break;
+        }
+}
+
+// ★ 11-20 트레일러 전사 2-a — 차크람(장비 비트 0x40 · `GAME4_3.c:4388~4419`) — 애니 44 의 가운데 칸에 던진다.
+//   · 자리·선 추적(깃발 5)은 수리검과 같다 — 막히면 소리 323 만(차크람은 손에 그대로)
+//   · 든 차크람을 가방에서 빼고(`sub_4ED0C0` — 남에게 벗기 · 본인 `4d`) RoundChakramInMotion 의 가방에 넣는다 · 수식 넷을 베낌 ·
+//     속도 = 바라보는 쪽 × 제 빠르기 · 방향 둘 = 사람 방향 · 갱신 짐 = 튕김 4 · 주인 자리 · 상태 2(`:4415~4418`) · 소리 891
+//   · 날기·돌아오기는 닿음 갈래 7 의 갱신(2-b) · 맞기(2-c)
+void Server::ThrowChakram(Session& s) {
+    size_t at = s.inventory.size();
+    for (size_t i = 0; i < s.inventory.size(); ++i) if (s.inventory[i].netCode == s.weaponNet) { at = i; break; }
+    if (at == s.inventory.size()) return;
+    const double r = static_cast<double>(kBodyRadius) + 4.0;
+    const uint8_t dir = s.facingPrev;
+    const float sx = static_cast<float>(r * DirVecX(dir) + s.posX);
+    const float sy = static_cast<float>(r * DirVecY(dir) + s.posY);
+    if (!MapTraceRay(static_cast<float>(s.posX), static_cast<float>(s.posY), sx, sy, 0x5)) {
+        PlaySoundAt(323, static_cast<float>(s.posX), static_cast<float>(s.posY), 0, 0, s.sessionId);
+        ++chakramEv_[static_cast<size_t>(ChakramEv::Blocked)];
+        return;
+    }
+    const ProjTypeInfo* pt = ProjType("RoundChakramInMotion");
+    if (!pt || pt->type == 0) return;                                       // `:4402~4404`
+    MissileObj m;
+    m.netCode = nextShotNetCode_++;
+    m.type = pt->type;
+    m.flags = pt->flags;
+    m.posX = m.newX = m.prevX = sx;
+    m.posY = m.newY = m.prevY = sy;
+    m.dir1 = m.dir2 = dir;
+    m.createdFrame = m.frame136 = frame_;
+    m.speed = pt->speed;
+    m.item = TakeCarriedOut(s, at, /*dead=*/false);
+    m.hasItem = true;
+    for (int k = 0; k < 4; ++k) m.mods[k] = m.item.mods[k];
+    m.velX = DirVecX(dir) * m.speed;
+    m.velY = DirVecY(dir) * m.speed;
+    m.ckBounce = 4;
+    m.ckHomeX = static_cast<float>(s.posX);
+    m.ckHomeY = static_cast<float>(s.posY);
+    m.ckState = 2;
+    m.collideKind = 7;                                                      // ChakramInMotionCollide
+    m.owner = s.sessionId;
+    missiles_.push_back(m); ++missilesMade_;
+    if (missiles_.size() > missilesPeak_) missilesPeak_ = missiles_.size();
+    PlaySoundAt(891, static_cast<float>(s.posX), static_cast<float>(s.posY), 0, 0, s.sessionId);
+    ++chakramEv_[static_cast<size_t>(ChakramEv::ChakramThrown)];
 }
 
 // `nox_xxx_shootBowCrossbow2_539D80`(`GAME4_3.c:4537~4618`) — 화살 하나를 만든다.
@@ -17952,6 +18063,7 @@ void Server::ApplyPreDamageEffects(const AttackSrc* src, int64_t by, const Targe
 //   ⚠ 옮기지 않은 갈래(다른 묶음): 활·석궁(0x4·0x8 화살 오브젝트 5) · 차크람·수리검(0x40·0x80 날아가는 오브젝트 5)
 //     · 마법 지팡이 0x47F0000(주문 4) · 무기 마법 효과 itemApplyAttackEffect(5) · 광전사 돌진(nine-defects 2-b)
 //   ✖ 09-23 정정 — 「함성(능력 4)」도 안 옮긴 갈래로 적혀 있었다. 함성은 nine-defects 2-a1·2-a2 에서 옮겼다(아래 함성 갈래)
+//   ✖ 11-20 정정 — 차크람·수리검(0x40·0x80)은 트레일러 전사 2-a 에서 옮겼다(맨 끝 갈래)
 bool Server::PlayerAttack(Session& s, uint32_t frame) {
     const uint32_t equip = WeaponEquipOf(s);
     const WeaponStats* w = WeaponStatsOf(s);
@@ -18152,8 +18264,17 @@ bool Server::PlayerAttack(Session& s, uint32_t frame) {
             }
             if (idx >= 1) idx += ready;                                      // `:4314~4323`
         }
+    } else {
+        // ★ 11-20 트레일러 전사 2-a — 차크람(0x40 · `GAME4_3.c:4380~4419`) · 수리검(0x80 · `:4327~4378`) — 둘 다 애니 44 ·
+        //   끝 시각을 걸고(`:4328~4330`) 칸이 칸 수 ÷ 2 가 되는 틱(지난 칸보다 클 때)에 하나 던진다. 0x40 을 먼저 본다(`:4148~4149`)
+        range(44);
+        setReady();
+        calcIdx();
+        if (midHit()) {
+            if (equip & 0x40) ThrowChakram(s);
+            else ThrowShuriken(s);
+        }
     }
-    // 차크람(0x40)·수리검(0x80) — 날아가는 오브젝트라 묶음 5 로
     s.animFrame = static_cast<uint8_t>(idx >= frames ? frames - 1 : idx);   // LABEL_159
     return idx < frames;
 }

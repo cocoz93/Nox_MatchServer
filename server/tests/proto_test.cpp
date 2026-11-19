@@ -24692,6 +24692,158 @@ void TestArmorEquip() {
 
 // ── 09-29 — 활·석궁·화살통: 들기·놓기의 화살통 갈래(`53A420` `:4954~4986` · `53A140` `:4768~4783`) · 줍기(`pickupAmmo_4F3B00` · `sub_53A720`) ·
 //    쏘기(`shootBowCrossbow1_539BD0` · `2_539D80`) · 사람 화살 닿음(`collideArrow_4EB490`) · 쏜 뒤 상태 14(`object_update.go:340~346`) ─────────
+// ★ 11-20 트레일러 전사 2 — 수리검·차크람(던지기 `GAME4_3.c:4327~4419` · 날기 `updateChakramInMotion_53DCC0` · 맞기 `collideChakram_4EAF00`)
+void TestChakram1120() {
+    using CE = nox::ChakramEv;
+    char msg[600];
+    const auto mb = nox::DecryptFile("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\modifier.bin", nox::kKeyModifier);
+    const std::string txt(mb.begin(), mb.end());
+    const std::vector<nox::Server::ModEffect> effs = nox::Server::ParseModEffects(txt);
+    auto idxOf = [&](const char* n) -> uint8_t {
+        for (size_t i = 0; i < effs.size(); ++i) if (effs[i].name == n) return static_cast<uint8_t>(i);
+        return 0xff;
+    };
+    const std::string a = "10.11.20.21:9521";
+    const uint16_t kRC = 2911, kFC = 2912, kRCM = 2913, kFCM = 2914;   // 시험 종류 번호(차크람 · 수리검 · 둘의 날아가는 것)
+    const uint16_t nRC = 620, nFC1 = 621, nFC2 = 622;                  // 바닥 물건 번호
+    auto run = [](nox::CSyncHost& srv, uint32_t& ms, int n, std::vector<nox::OutPacket>* keep) {   // 프레임을 정확히 n 개
+        for (int t = 0; t < n; ++t) {
+            const uint32_t f = srv->frame();
+            for (int g = 0; g < 100 && srv->frame() == f; ++g) {
+                ms += 5; std::vector<nox::OutPacket> o; srv.Tick(ms, o);
+                if (keep) keep->insert(keep->end(), o.begin(), o.end());
+            }
+        }
+    };
+    auto heard = [&](const std::vector<nox::OutPacket>& out, uint16_t id) {
+        int n = 0;
+        for (const auto& x : FlattenTo(out, a))
+            if (x.size() == 4 && (x[0] == static_cast<uint8_t>(nox::Op::AUDIO_EVENT) || x[0] == static_cast<uint8_t>(nox::Op::AUDIO_PLAYER_EVENT)) &&
+                (static_cast<uint16_t>(x[2] | (x[3] << 8)) & 0x3ff) == id) ++n;
+        return n;
+    };
+    auto has = [&](nox::CSyncHost& srv, uint16_t nc) {
+        for (const auto& x : srv->DebugInventory(Sid(srv, a))) if (x.netCode == nc) return true;
+        return false;
+    };
+    auto chOf = [&](nox::CSyncHost& srv, uint16_t nc) {
+        for (const auto& x : srv->DebugInventory(Sid(srv, a))) if (x.netCode == nc) return static_cast<int>(x.charges);
+        return -1;
+    };
+    auto sent = [&](const std::vector<nox::OutPacket>& out, nox::Op op, uint16_t nc) {   // 본인에게 간 `<op> <번호2> …` 수
+        int n = 0;
+        for (const auto& m : FlattenTo(out, a)) if (m.size() >= 3 && m[0] == static_cast<uint8_t>(op) && (m[1] | (m[2] << 8)) == nc) ++n;
+        return n;
+    };
+    // 워리어 하나(1000,1000 · 동쪽) · 차크람 하나 또는 수리검 둘(2발 · 5발)을 주워 첫 것을 든다 · 곰(몸 반지름 10 · 체력 1000)을 그 자리에
+    auto mk = [&](nox::CSyncHost& srv, uint32_t& ms, bool chakram, const std::vector<std::pair<float, float>>& bears) {
+        std::vector<nox::Server::SoundDefIn> sd;
+        for (uint16_t id : { 891, 892, 893, 323, 844 }) {
+            nox::Server::SoundDefIn d; d.id = id; d.maxDist = 600; d.merged = 0; d.samples = 1; sd.push_back(d);
+        }
+        srv->SetSoundDefs(sd);
+        GearTemplates(srv);
+        srv->SetModEffects(effs);
+        srv->SetPlayerAnimFrames(44, 6, 1);   // 시험값 — 6칸 · 붙듦 1 → 칸 3(공격 선 뒤 프레임 6)에 던진다
+        // ⭕ thing.bin RoundChakramInMotion SPEED 300 · FanChakramInMotion SPEED 400 · 둘 다 FLAGS AIRBORNE(0x4000)
+        srv->SetProjType("RoundChakramInMotion", kRCM, 300, 0x4000, 0);
+        srv->SetProjType("FanChakramInMotion", kFCM, 400, 0x4000, 0);
+        // ⭕ modifier.bin — RoundChakramInMotion 최소 5 · 계수 0.31 · FanChakramInMotion 4 · 0.25 · 힘 20 · 워리어만(1)
+        srv->SetWeaponDef(kRCM, 1, 20, 5, 0.31f);
+        srv->SetWeaponDef(kFCM, 1, 20, 4, 0.25f);
+        srv->SetWeaponDef(kRC, 1, 20);
+        srv->SetWeaponDef(kFC, 1, 20);
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+        std::vector<nox::Server::WorldStatic> st;
+        auto put = [&](uint16_t nc, uint16_t type, uint32_t bit, nox::PickupFn pf, uint8_t cur) {
+            nox::Server::WorldStatic x;
+            x.netCode = nc; x.type = type; x.x = 1000; x.y = 1000; x.modifiable = true;
+            x.equipBit = bit; x.isWeapon = true; x.weaponClass = true; x.subclass = bit;
+            x.pickupFn = pf; x.charges = cur; x.chargesMax = cur; x.pickupSound = 844;
+            st.push_back(x);
+        };
+        if (chakram) put(nRC, kRC, 0x40, nox::PickupFn::Weapon, 0);
+        else {
+            put(nFC1, kFC, 0x80, nox::PickupFn::Ammo, 2);
+            put(nFC2, kFC, 0x80, nox::PickupFn::Ammo, 5);
+            st.back().mods[3] = idxOf("Fire1");   // 수식이 다르면 안 합친다(`pickupAmmo_4F3B00` — 같은 종류·같은 수식이면 한 묶음 2 + 5 = 7 이 된다)
+        }
+        SetWeights(st, 8);
+        srv->SetWorldStatics(st);
+        nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
+        srv->SetTypeBody(1365, body);
+        for (size_t k = 0; k < bears.size(); ++k) {
+            srv->DebugSpawnPet(1365, bears[k].first, bears[k].second, Sid(srv, std::string()));
+            srv->DebugSetPetHealth(k, 1000);
+        }
+        srv->DebugSetAutoFight(false);
+        run(srv, ms, 1, nullptr);
+        std::vector<nox::OutPacket> o;
+        auto get = [&](uint16_t nc) { const std::vector<uint8_t> p = CodePacket(nox::Op::TRY_GET, nc); srv.OnPacket(a, p.data(), p.size(), o); };
+        if (chakram) get(nRC);
+        else { get(nFC1); get(nFC2); }
+        {   // 워리어는 기본 무기를 들고 들어와 빈손 줍기의 저절로 들기가 안 탄다 — 첫 것을 든다(`53A420`)
+            const std::vector<uint8_t> p = CodePacket(nox::Op::TRY_EQUIP, chakram ? nRC : nFC1);
+            srv.OnPacket(a, p.data(), p.size(), o);
+        }
+        srv->DebugSetFacing(Sid(srv, a), 0);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+        run(srv, ms, 30, nullptr);
+    };
+    // 한 번 클릭하고 ev 가 늘 때까지 — 돌려주는 값 = 늘어난 프레임 − 공격 상태가 선 프레임(못 늘면 −1)
+    auto throwAt = [&](nox::CSyncHost& srv, uint32_t& ms, std::vector<nox::OutPacket>& keep, CE ev) {
+        const unsigned long long n0 = srv->chakramEv(ev);
+        auto pkt = InputPacket(6);
+        srv.OnPacket(a, pkt.data(), pkt.size(), keep);
+        int startF = -1;
+        for (int t = 0; t < 20; ++t) {
+            run(srv, ms, 1, &keep);
+            if (startF < 0 && (srv->DebugStateOf(Sid(srv, a)) == nox::kPlayerStateAttack || srv->chakramEv(ev) != n0)) startF = static_cast<int>(srv->frame());
+            if (srv->chakramEv(ev) != n0) return static_cast<int>(srv->frame()) - startF;
+        }
+        return -1;
+    };
+    const uint8_t fire1 = idxOf("Fire1");
+    // ⑨ 2-a 수리검 — 한 발 = 프레임 6 · 수 2 → 1 · 충전 알림 · 소리 891 · 날아가는 것 FanChakramInMotion(닿음 6 · 든 것 수식 베낌)
+    //   · 둘째 발이면 수 0 → 가방에서 빠지고(`4d`) 가방의 다음 수리검을 든다
+    {
+        nox::CSyncHost srv; uint32_t ms = 0;
+        mk(srv, ms, false, {});
+        const bool held0 = srv->DebugWeaponNet(Sid(srv, a)) == nFC1;
+        srv->DebugSetHeldMods(Sid(srv, a), 0xff, 0xff, fire1, 0xff);
+        std::vector<nox::OutPacket> out;
+        const int f1 = throwAt(srv, ms, out, CE::ShurikenThrown);
+        const auto& ml = srv->missileList();
+        const bool m1 = ml.size() == 1 && ml[0].type == kFCM && ml[0].collideKind == 6 && ml[0].mods[2] == fire1 && ml[0].owner == Sid(srv, a);
+        const int ch1 = chOf(srv, nFC1);
+        const int rep1 = sent(out, nox::Op::REPORT_CHARGES, nFC1), s891 = heard(out, 891);
+        run(srv, ms, 15, &out);                                         // 첫 공격 끝
+        std::vector<nox::OutPacket> out2;
+        const int f2 = throwAt(srv, ms, out2, CE::ShurikenThrown);
+        const bool gone = !has(srv, nFC1) && sent(out2, nox::Op::REPORT_DROP, nFC1) == 1;
+        const bool next = srv->DebugWeaponNet(Sid(srv, a)) == nFC2;
+        std::snprintf(msg, sizeof(msg), "⑨ 수리검 — 처음 든 것 %d · 던진 프레임 %d·%d(6) · 날아가는 것 %d · 수 %d(1) · 충전 알림 %d(1) · 891 %d · 둘째 뒤 빠짐 %d · 다음 것 듦 %d · 마지막 %llu(1)",
+                      held0 ? 1 : 0, f1, f2, m1 ? 1 : 0, ch1, rep1, s891, gone ? 1 : 0, next ? 1 : 0, srv->chakramEv(CE::ShurikenLast));
+        Check(held0 && f1 == 6 && f2 == 6 && m1 && ch1 == 1 && rep1 == 1 && s891 >= 1 && gone && next && srv->chakramEv(CE::ShurikenLast) == 1, msg);
+    }
+    // ⑩ 2-a 차크람 — 던지면 손이 빈다(든 번호 0 · 가방에서 빠짐 · 본인 `4d`) · RoundChakramInMotion(닿음 7)이 그 차크람을 들고 튕김 4 · 상태 2 · 주인 자리
+    {
+        nox::CSyncHost srv; uint32_t ms = 0;
+        mk(srv, ms, true, {});
+        const bool held0 = srv->DebugWeaponNet(Sid(srv, a)) == nRC;
+        std::vector<nox::OutPacket> out;
+        const int f1 = throwAt(srv, ms, out, CE::ChakramThrown);
+        const auto& ml = srv->missileList();
+        const bool m1 = ml.size() == 1 && ml[0].type == kRCM && ml[0].collideKind == 7 && ml[0].hasItem && ml[0].item.netCode == nRC &&
+                        ml[0].ckBounce == 4 && ml[0].ckState == 2 && ml[0].ckHomeX == 1000.0f && ml[0].ckHomeY == 1000.0f;
+        const bool emptied = srv->DebugWeaponNet(Sid(srv, a)) == 0 && !has(srv, nRC) && sent(out, nox::Op::REPORT_DROP, nRC) == 1;
+        std::snprintf(msg, sizeof(msg), "⑩ 차크람 던지기 — 처음 든 것 %d · 던진 프레임 %d(6) · 날아가는 것 %d · 손 빔 %d · 891 %d",
+                      held0 ? 1 : 0, f1, m1 ? 1 : 0, emptied ? 1 : 0, heard(out, 891));
+        Check(held0 && f1 == 6 && m1 && emptied && heard(out, 891) >= 1, msg);
+    }
+}
+
 void TestBowQuiver() {
     using nox::CharClass;
     using BS = nox::BowShot;
@@ -36963,6 +37115,7 @@ int main() {
     TestPickupAutoEquip();
     TestArmorEquip();
     TestBowQuiver();
+    TestChakram1120();
     TestConnectZeroTail();
     TestReconnectAfterClose();
     TestSessionIds();
