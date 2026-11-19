@@ -24303,6 +24303,29 @@ void TestModEffects1120() {
                       nm(68), nm(72), f0, f1, f2, r1, b2, r0, b0);
         Check(effs[68].name == "FireRing1" && effs[72].name == "BlueFireRing1" && f0 == 0 && f1 > 0 && f2 > 0 && r1 == 1 && b1 == 0 && b2 == 1 && r2 == 0 && r0 == 0 && b0 == 0, msg);
     }
+    // ⑥ 1-f — 갑옷 품질(칸 0): 워리어 기본 입은 것(바지·운동화 0.01 둘 · 나무 방패 0 = 0.02) 모두에 품질6(11 · ×1.2) → 0.024 · 품질1(6 · ×0.94) → 0.0188
+    //   칸 1(재질)에 같은 번호를 넣으면 안 바뀐다(원본은 칸 0 만 부른다)
+    {
+        auto armorWith = [&](int slot, uint8_t mod) {
+            nox::CSyncHost srv;
+            GearTemplates(srv);
+            srv->SetModEffects(effs);
+            const std::string a = "10.11.20.7:9507";
+            srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+            const int64_t sid = Sid(srv, a);
+            const uint16_t wnet = srv->DebugWeaponNet(sid);
+            if (mod != 0xff)
+                for (const auto& c : srv->DebugInventory(sid))
+                    if (c.equipped && c.netCode != wnet)
+                        srv->DebugSetItemMods(sid, c.netCode, slot == 0 ? mod : 0xff, slot == 1 ? mod : 0xff, 0xff, 0xff);
+            return srv->DebugArmorValue(sid);
+        };
+        const float v0 = armorWith(0, 0xff), v6 = armorWith(0, 11), v1 = armorWith(0, 6), vm = armorWith(1, 11);
+        std::snprintf(msg, sizeof(msg), "⑥ 갑옷 품질 — 이름 %s·%s · 없음 %.5f(0.02) · 품질6 %.5f(0.024) · 품질1 %.5f(0.0188) · 재질 칸에 넣음 %.5f(0.02)",
+                      nm(11), nm(6), v0, v6, v1, vm);
+        Check(effs[11].name == "ArmorQuality6" && std::fabs(v0 - 0.02f) < 1e-6f && std::fabs(v6 - 0.024f) < 1e-6f && std::fabs(v1 - 0.0188f) < 1e-6f &&
+              std::fabs(vm - v0) < 1e-9f, msg);
+    }
     std::printf("  11-20 — 수식 효과: modifier.bin %zu칸 · 롱소드 %d → 위력6 %d · 불1 +3 · 번개4 +12 · 무적이면 효과 없음\n", effs.size(), base, pow6);
 }
 

@@ -17124,7 +17124,11 @@ float Server::ArmorValueOf(const Session& s) const {
     for (auto it = s.inventory.rbegin(); it != s.inventory.rend(); ++it) {
         if (!it->equipped || !IsArmorItem(*it)) continue;
         const auto d = gt_->armorDef.find(it->type);
-        v = (d != gt_->armorDef.end() ? d->second.value : ItemArmorValue(it->type)) + v;
+        float val = d != gt_->armorDef.end() ? d->second.value : ItemArmorValue(it->type);
+        // ★ 11-20 트레일러 전사 1-f — `itemApplyDefendEffect_415C00`(`GAME1.c:1985~2010`) — 칸 0(품질)의 막기 효과(+76)만 부른다:
+        //   ArmorMultiplier(`sub_4E0370` `GAME3_2.c:6693`) = 값 × f(float). 칸 0 에 다른 막기 효과가 붙은 수식은 데이터에 없다(DurabilityMultiplier 는 재질 칸 1)
+        if (const ModEffect* e = ModEffectOf(it->mods[0]); e && e->defend.fn == ModFn::ArmorMultiplier) val = e->defend.f * val;
+        v = val + v;
     }
     if (v > 1.0) v = 1.0f;
     return v;
