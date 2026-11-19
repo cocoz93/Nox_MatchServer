@@ -15966,6 +15966,9 @@ void Server::UpdateMissiles(uint32_t frame) {
             // ①-c updatePixie_53CD20 — 여기서는 **수명만** 본다.
             //   ⚠ 적 찾기·떼 짓기·주인 따라가기·되돌아오기는 유닛 움직임 묶음(6·7)이다.
             if (m.expireFrame != 0 && frame > m.expireFrame) { DestroyMissile(i); continue; }
+        } else if (m.collideKind == 7) {
+            // ★ 11-20 트레일러 전사 2-b — 차크람 `UPDATE = ChakramInMotionUpdate`(`updateChakramInMotion_53DCC0`) — 수명 대신 주인 쫓기·5초
+            if (!ChakramUpdate(m, frame)) { DestroyMissile(i); continue; }
         } else
         // ①-b SpellProjectileUpdate 53B940(`GAME4_3.c:5764`)
         {
@@ -17128,6 +17131,58 @@ void Server::ThrowChakram(Session& s) {
     if (missiles_.size() > missilesPeak_) missilesPeak_ = missiles_.size();
     PlaySoundAt(891, static_cast<float>(s.posX), static_cast<float>(s.posY), 0, 0, s.sessionId);
     ++chakramEv_[static_cast<size_t>(ChakramEv::ChakramThrown)];
+}
+
+// ★ 11-20 트레일러 전사 2-b — `nox_xxx_updateChakramInMotion_53DCC0`(`GAME4_3.c:7061~7119`) — 날아가는 차크람의 매 틱(움직이기 앞).
+//   · 가방(든 차크람)이 비었으면 지운다(거짓) · 마지막에 맞은 것(+12)이 사라졌으면 비운다
+//   · 주인(+508)이 없거나 사라졌으면(+16 & 0x20) 상태 1(떨어짐) · 쫓기(+8) 끔
+//   · 있으면 주인 자리(+16/+20)를 적고 — 안 보이면(`mapCheck_537110` = MapTraceVision) 쫓기 끔 · 보이고 상태 0 이면 쫓기 = 주인 ·
+//     보이고 상태가 0 이 아니면 아래 5초만(LABEL_19). 상태 0(돌아옴)이면 — 쫓는 주인이 죽었으면(0x8000) 상태 1 ·
+//     아니면 속도 = (주인 자리 − 내 자리) × 빠르기(+544) ÷ (거리 + 0.1) — 힘이 아니라 **속도를 바로** 바꾼다(+80/+84)
+//     ⚠ 안 보여서 쫓기가 꺼져도 주인 **자리**로는 계속 꺾는다 — 원본 그대로(`:7099~7111` 은 쫓기가 비면 죽음만 안 본다)
+//   · 만든 지(+128) 5 × FPS 넘으면 상태 1 · 쫓기 끔 — 그 뒤로는 안 꺾고 곧장 날다 무엇에 닿으면 떨어진다(2-c)
+bool Server::ChakramUpdate(MissileObj& m, uint32_t frame) {
+    if (!m.hasItem) return false;
+    if (m.ckLast.sessionId != kNoSession) {
+        if (sessions_.find(m.ckLast.sessionId) == sessions_.end()) m.ckLast = Target{};
+    } else if (m.ckLast.pet >= 0 && static_cast<size_t>(m.ckLast.pet) >= pets_.size()) {
+        m.ckLast = Target{};
+    }
+    auto own = sessions_.find(m.owner);
+    if (own == sessions_.end() || !own->second.inGame) {
+        m.ckState = 1;
+        m.ckHomeOwner = false;
+        ++chakramEv_[static_cast<size_t>(ChakramEv::OwnerGone)];
+    } else {
+        const Session& o = own->second;
+        m.ckHomeX = static_cast<float>(o.posX);
+        m.ckHomeY = static_cast<float>(o.posY);
+        bool label19 = false;
+        if (!MapTraceVision(m.posX, m.posY, m.ckHomeX, m.ckHomeY)) m.ckHomeOwner = false;
+        else if (m.ckState == 0) m.ckHomeOwner = true;
+        else label19 = true;
+        if (!label19 && m.ckState == 0) {
+            if (m.ckHomeOwner && o.respawnAtFrame != 0) {
+                m.ckHomeOwner = false;
+                m.ckState = 1;
+                ++chakramEv_[static_cast<size_t>(ChakramEv::OwnerDead)];
+            } else {
+                const double v8 = static_cast<double>(m.ckHomeX) - m.posX;
+                const double v9 = static_cast<double>(m.ckHomeY) - m.posY;
+                const float v11 = static_cast<float>(v9);
+                const float v10 = static_cast<float>(std::sqrt(v9 * v11 + v8 * v8) + 0.10000000149011612);   // qword_581450_10176
+                m.velX = static_cast<float>(v8 * m.speed / v10);
+                m.velY = static_cast<float>(v11 * m.speed / v10);
+                ++chakramEv_[static_cast<size_t>(ChakramEv::Steer)];
+            }
+        }
+    }
+    if (frame - m.createdFrame > 5u * kServerTickRate) {                     // LABEL_19
+        if (m.ckState != 1) ++chakramEv_[static_cast<size_t>(ChakramEv::Timeout)];
+        m.ckState = 1;
+        m.ckHomeOwner = false;
+    }
+    return true;
 }
 
 // `nox_xxx_shootBowCrossbow2_539D80`(`GAME4_3.c:4537~4618`) — 화살 하나를 만든다.

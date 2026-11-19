@@ -24842,6 +24842,25 @@ void TestChakram1120() {
                       held0 ? 1 : 0, f1, m1 ? 1 : 0, emptied ? 1 : 0, heard(out, 891));
         Check(held0 && f1 == 6 && m1 && emptied && heard(out, 891) >= 1, msg);
     }
+    // ⑪ 2-b 차크람 날기 — 매 틱 주인 자리(+16/+20)를 적는다 · 상태 2 면 안 꺾는다(속도 y 0) · 만든 지 5초(150프레임) 넘으면 상태 1(떨어짐)
+    {
+        nox::CSyncHost srv; uint32_t ms = 0;
+        mk(srv, ms, true, {});
+        std::vector<nox::OutPacket> out;
+        throwAt(srv, ms, out, CE::ChakramThrown);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1200);
+        run(srv, ms, 2, nullptr);
+        const auto& ml = srv->missileList();
+        const bool home = ml.size() == 1 && ml[0].ckHomeX == 1000.0f && ml[0].ckHomeY == 1200.0f && ml[0].velY == 0.0f && ml[0].ckState == 2;
+        const uint32_t made = ml.empty() ? 0 : ml[0].createdFrame;
+        while (srv->frame() - made < 140) run(srv, ms, 1, nullptr);
+        const int st140 = ml.size() == 1 ? ml[0].ckState : -1;
+        while (srv->frame() - made < 160) run(srv, ms, 1, nullptr);
+        const int st160 = ml.size() == 1 ? ml[0].ckState : -1;
+        std::snprintf(msg, sizeof(msg), "⑪ 차크람 날기 — 주인 자리 따라감·안 꺾음 %d · 상태 140프레임 %d(2) · 160프레임 %d(1) · 5초 %llu(1) · 꺾음 %llu(0)",
+                      home ? 1 : 0, st140, st160, srv->chakramEv(CE::Timeout), srv->chakramEv(CE::Steer));
+        Check(home && st140 == 2 && st160 == 1 && srv->chakramEv(CE::Timeout) == 1 && srv->chakramEv(CE::Steer) == 0, msg);
+    }
 }
 
 void TestBowQuiver() {

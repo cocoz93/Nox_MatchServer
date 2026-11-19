@@ -465,7 +465,9 @@ constexpr size_t kBowShotCount = static_cast<size_t>(BowShot::Count);
 enum class ArrowHit : uint8_t { Owner = 0, Dead, Hurt, NoHurt, BoltPass, Obstacle, Wall, Age, Count };
 constexpr size_t kArrowHitCount = static_cast<size_t>(ArrowHit::Count);
 // ★ 11-20 트레일러 전사 2 — 수리검·차크람(던지기 `GAME4_3.c:4327~4419` · 날기 `updateChakramInMotion_53DCC0` · 맞기 `collideChakram_4EAF00`)이 어디로 갔나
-enum class ChakramEv : uint8_t { ShurikenThrown = 0, ShurikenLast, ChakramThrown, Blocked, Count };
+enum class ChakramEv : uint8_t { ShurikenThrown = 0, ShurikenLast, ChakramThrown, Blocked,
+                                 Steer, Timeout, OwnerGone, OwnerDead,      // 2-b 날기 — 꺾은 틱 · 5초 · 주인 없음(틱) · 쫓던 주인 죽음
+                                 Count };
 constexpr size_t kChakramEvCount = static_cast<size_t>(ChakramEv::Count);
 // ★ 09-29 — 무기·화살통 줍기(`sub_53A720` `GAME4_3.c:5033~5128` · `pickupAmmo_4F3B00` `GAME3_3.c:10831~10903`)에서 난 일 —
 //   직업이 못 쓰는 무기라 못 주움(`:5089~5095`) · 같은 화살통에 합침 · 활·석궁을 들고 있어 화살통을 저절로 듦(`:5105~5111`) ·
@@ -4902,6 +4904,7 @@ private:
     void ShootArrow(Session& s, Session::Carried* quiver, uint32_t kind);   // `shootBowCrossbow2_539D80`
     void ThrowShuriken(Session& s);                         // ★ 11-20 트레일러 전사 2-a — 수리검(0x80 · `GAME4_3.c:4335~4378`)
     void ThrowChakram(Session& s);                          // ★ 11-20 트레일러 전사 2-a — 차크람(0x40 · `GAME4_3.c:4388~4419`)
+    bool ChakramUpdate(MissileObj& m, uint32_t frame);      // ★ 11-20 2-b — `updateChakramInMotion_53DCC0` · 거짓 = 지운다
     int ArrowDamage(int64_t owner, uint16_t arrowType) const;                     // `calcBoltDamage_4EF1E0` + 0.5 버림
     float ArrowDamageFloat(int64_t owner, uint16_t arrowType) const;              // ★ 11-20 1-e — 버리기 전 float(정의 없으면 0)
     void PlayWeaponPickupSound(const Session& s, uint16_t snd);                               // `sub_53A6C0`
