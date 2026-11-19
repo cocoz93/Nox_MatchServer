@@ -24861,6 +24861,63 @@ void TestChakram1120() {
                       home ? 1 : 0, st140, st160, srv->chakramEv(CE::Timeout), srv->chakramEv(CE::Steer));
         Check(home && st140 == 2 && st160 == 1 && srv->chakramEv(CE::Timeout) == 1 && srv->chakramEv(CE::Steer) == 0, msg);
     }
+    const int strW = nox::StrengthOnline(nox::CharClass::Warrior);
+    // calcBoltDamage_4EF1E0 float → +0.5 버림(`collideChakram_4EAF00` `:5052~5055`) — 최소 5 · 계수 0.31 · 힘 20
+    const int wantRC = static_cast<int>(static_cast<long long>(static_cast<double>(static_cast<float>((strW - 20) * static_cast<double>(0.31f) + 5.0)) + 0.5));
+    // ⑫ 2-c 차크람 맞고 받기 — 곰 하나(1150,1000) · 튕김 4 → 3 · 곰에서 되튀고 둘레에 딴 것이 없어 그대로 돌아와 주인에 닿으면 받는다
+    //   (가방 · 빈손이라 듦 · 본인 `4c` · 소리 892 · 날아가는 것 지움)
+    {
+        nox::CSyncHost srv; uint32_t ms = 0;
+        mk(srv, ms, true, { { 1150.0f, 1000.0f } });
+        std::vector<nox::OutPacket> out;
+        throwAt(srv, ms, out, CE::ChakramThrown);
+        for (int t = 0; t < 60 && !srv->missileList().empty(); ++t) run(srv, ms, 1, &out);
+        const int got = 1000 - static_cast<int>(srv->DebugPetHealth(0));
+        const bool caught = srv->missileList().empty() && has(srv, nRC) && srv->DebugWeaponNet(Sid(srv, a)) == nRC;
+        std::snprintf(msg, sizeof(msg), "⑫ 차크람 맞고 받기 — 곰 피해 %d(%d) · 맞힘 %llu(1) · 되튐 %llu(1) · 받음 %llu(1) · 가방·손 %d · 4c %d(1) · 892 %d",
+                      got, wantRC, srv->chakramEv(CE::Hurt), srv->chakramEv(CE::ReflectBounce), srv->chakramEv(CE::Caught), caught ? 1 : 0,
+                      sent(out, nox::Op::REPORT_MODIFIABLE_PICKUP, nRC), heard(out, 892));
+        Check(got == wantRC && srv->chakramEv(CE::Hurt) == 1 && srv->chakramEv(CE::ReflectBounce) == 1 && srv->chakramEv(CE::Caught) == 1 && caught &&
+              sent(out, nox::Op::REPORT_MODIFIABLE_PICKUP, nRC) == 1 && heard(out, 892) >= 1, msg);
+    }
+    // ⑬ 2-c 차크람 넷 맞히기 — 곰 둘(1150,1000 · 1150,1100) · 맞을 때마다 마지막 것을 빼고 둘레 400 안 가장 가까운 것으로 꺾어(`sub_4EB250`)
+    //   번갈아 넷을 맞히고 · 튕김이 0 이 되면 돌아옴(상태 0) → 주인 쪽으로 꺾어 받는다
+    {
+        nox::CSyncHost srv; uint32_t ms = 0;
+        mk(srv, ms, true, { { 1150.0f, 1000.0f }, { 1150.0f, 1100.0f } });
+        {   // 곰 몸을 30 으로 — 되튄 뒤 새 자리는 지난 자리(`projectileReflect_4E0A70` +64 = +72)인데 다시 고른 방향은 맞은 자리(+56)에서 재
+                //   한 틱 몫(약 19)만큼 어긋난다 — 몸이 10 이면 다음 곰을 스친다(원본 그대로 · 시험 몸 탓)
+            nox::Server::PhysBody big; big.shape = 2; big.r = 30.0f; big.cls = 0x2;
+            srv->SetTypeBody(1365, big);
+        }
+        std::vector<nox::OutPacket> out;
+        throwAt(srv, ms, out, CE::ChakramThrown);
+        for (int t = 0; t < 140 && !srv->missileList().empty(); ++t) run(srv, ms, 1, &out);
+        const int l0 = 1000 - static_cast<int>(srv->DebugPetHealth(0)), l1 = 1000 - static_cast<int>(srv->DebugPetHealth(1));
+        std::snprintf(msg, sizeof(msg), "⑬ 차크람 넷 맞히기 — 맞힘 %llu(4) · 다시 고름 %llu(3) · 돌아옴 %llu(1) · 꺾음 %llu(>0) · 받음 %llu(1) · 곰 피해 %d·%d(%d·%d) · 손 %d",
+                      srv->chakramEv(CE::Hurt), srv->chakramEv(CE::Retarget), srv->chakramEv(CE::Returning), srv->chakramEv(CE::Steer), srv->chakramEv(CE::Caught),
+                      l0, l1, 2 * wantRC, 2 * wantRC, srv->DebugWeaponNet(Sid(srv, a)) == nRC ? 1 : 0);
+        Check(srv->chakramEv(CE::Hurt) == 4 && srv->chakramEv(CE::Retarget) == 3 && srv->chakramEv(CE::Returning) == 1 && srv->chakramEv(CE::Steer) > 0 &&
+              srv->chakramEv(CE::Caught) == 1 && l0 == 2 * wantRC && l1 == 2 * wantRC && srv->DebugWeaponNet(Sid(srv, a)) == nRC, msg);
+    }
+    // ⑭ 2-c 수리검 흡혈 — 화살 갈래로 오는 것(클래스 WEAPON)은 피해 함수 안 피해 전 효과를 그 수식으로 부른다(`GAME3_2.c:7248`) ·
+    //   흡혈4(0.20) 수리검이 곰을 맞히면 워리어 체력이 는다 · 수식 없으면 그대로
+    {
+        auto vamp = [&](bool with) {
+            nox::CSyncHost srv; uint32_t ms = 0;
+            mk(srv, ms, false, { { 1150.0f, 1000.0f } });
+            if (with) srv->DebugSetHeldMods(Sid(srv, a), 0xff, 0xff, idxOf("Vampirism4"), 0xff);
+            srv->DebugSetHealth(Sid(srv, a), 50);
+            const int h0 = srv->HealthOf(Sid(srv, a));
+            std::vector<nox::OutPacket> out;
+            throwAt(srv, ms, out, CE::ShurikenThrown);
+            run(srv, ms, 20, &out);
+            return std::make_pair(srv->HealthOf(Sid(srv, a)) - h0, 1000 - static_cast<int>(srv->DebugPetHealth(0)));
+        };
+        const auto v = vamp(true), n0 = vamp(false);
+        std::snprintf(msg, sizeof(msg), "⑭ 수리검 흡혈 — 워리어 +%d(곰 피해 %d × 0.2) · 수식 없음 +%d(곰 %d)", v.first, v.second, n0.first, n0.second);
+        Check(v.second > 0 && v.first == static_cast<int>(v.second * 0.2f) && n0.first == 0 && n0.second == v.second, msg);
+    }
 }
 
 void TestBowQuiver() {

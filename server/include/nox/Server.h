@@ -467,6 +467,8 @@ constexpr size_t kArrowHitCount = static_cast<size_t>(ArrowHit::Count);
 // ★ 11-20 트레일러 전사 2 — 수리검·차크람(던지기 `GAME4_3.c:4327~4419` · 날기 `updateChakramInMotion_53DCC0` · 맞기 `collideChakram_4EAF00`)이 어디로 갔나
 enum class ChakramEv : uint8_t { ShurikenThrown = 0, ShurikenLast, ChakramThrown, Blocked,
                                  Steer, Timeout, OwnerGone, OwnerDead,      // 2-b 날기 — 꺾은 틱 · 5초 · 주인 없음(틱) · 쫓던 주인 죽음
+                                 Caught, SameTeam, Hurt, ReflectBounce, RandomBounce, Returning, Retarget,   // 2-c 맞기
+                                 DropWall, DropHit, DropOwnerGone,          //   떨어짐 — 벽(상태 1) · 맞고(상태 1) · 주인 없음
                                  Count };
 constexpr size_t kChakramEvCount = static_cast<size_t>(ChakramEv::Count);
 // ★ 09-29 — 무기·화살통 줍기(`sub_53A720` `GAME4_3.c:5033~5128` · `pickupAmmo_4F3B00` `GAME3_3.c:10831~10903`)에서 난 일 —
@@ -4905,6 +4907,13 @@ private:
     void ThrowShuriken(Session& s);                         // ★ 11-20 트레일러 전사 2-a — 수리검(0x80 · `GAME4_3.c:4335~4378`)
     void ThrowChakram(Session& s);                          // ★ 11-20 트레일러 전사 2-a — 차크람(0x40 · `GAME4_3.c:4388~4419`)
     bool ChakramUpdate(MissileObj& m, uint32_t frame);      // ★ 11-20 2-b — `updateChakramInMotion_53DCC0` · 거짓 = 지운다
+    bool ChakramCollideWall(MissileObj& m, float wnx, float wny, int gx, int gy);   // ★ 11-20 2-c — `collideChakram_4EAF00` 벽 갈래 · 거짓 = 지운다
+    bool ChakramCollide(MissileObj& m, const Target& tgt, bool obstacle, float hx, float hy, uint32_t mat);   // ★ 2-c — 맞은 것 갈래 · 거짓 = 지운다
+    bool ChakramRetarget(MissileObj& m);                    // ★ 2-c — `sub_4EB250` 둘레 400 안 가장 가까운 것
+    void ChakramRandomBounce(MissileObj& m);                // ★ 2-c — `sub_4EB3E0` 거꾸로 ±64
+    void ChakramRicochetFx(const MissileObj& m);            // ★ 2-c — `netSendPointFx_522FF0(150)` FX_RICOCHET
+    void MissileReflectFrom(MissileObj& m, float ox, float oy);   // ★ 2-c — `projectileReflect_4E0A70`(UpdateMissiles 의 reflectFrom 을 떼어 냄)
+    void ReportPickupTo(Session& s, const Session::Carried& c);   // ★ 2-c — `netReportPickup_4D8A60`
     int ArrowDamage(int64_t owner, uint16_t arrowType) const;                     // `calcBoltDamage_4EF1E0` + 0.5 버림
     float ArrowDamageFloat(int64_t owner, uint16_t arrowType) const;              // ★ 11-20 1-e — 버리기 전 float(정의 없으면 0)
     void PlayWeaponPickupSound(const Session& s, uint16_t snd);                               // `sub_53A6C0`

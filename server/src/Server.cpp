@@ -16139,20 +16139,7 @@ void Server::UpdateMissiles(uint32_t frame) {
                 if (od < wd) wallHit = false; else objHit = false;
             }
             // SpellProjectileCollide 4E9500(`GAME3_3.c:3925`) — 날아가는 것 쪽. 맞은 것 쪽 충돌 함수(PlayerCollide 등)는 광전사·버프 갈래뿐이라 4-a4·7
-            auto reflectFrom = [&](float ox, float oy) {     // projectileReflect_4E0A70
-                const double v3 = static_cast<double>(m.posX) - ox, v4 = static_cast<double>(m.posY) - oy;
-                m.dir1 = static_cast<uint8_t>(m.dir1 + 128);
-                const float v13 = static_cast<float>(std::sqrt(v4 * v4 + v3 * v3) + 0.1);
-                const double v6 = (v4 * m.velY + v3 * m.velX) / v13;
-                const float v9 = static_cast<float>(v6 * v3 / v13);
-                const float v10 = static_cast<float>(v6 * v4 / v13);
-                const float v11 = static_cast<float>(-v4);
-                const double v7 = (static_cast<double>(v11) * m.velX + v3 * m.velY) / v13;
-                const float v12 = static_cast<float>(v7 * v11 / v13);
-                m.velX = v12 - v9;
-                m.velY = static_cast<float>(v3 * v7 / v13) - v10;
-                m.newX = m.prevX; m.newY = m.prevY;
-            };
+            auto reflectFrom = [&](float ox, float oy) { MissileReflectFrom(m, ox, oy); };   // projectileReflect_4E0A70 — ★ 11-20 2-c 몸통은 MissileReflectFrom(차크람도 부른다)
             if (wallHit) {
                 // 7-f — 작살은 벽에 닿으면 **대상 없이** 제 닿음 함수를 타 조용히 끊긴다.
                 // ⚠ `HarpoonCollide` 가 `HarpoonBreak` 을 통해 이미 지웠으면 목록이 줄어 색인 i 가 다음 것을 가리킨다.
@@ -16199,15 +16186,23 @@ void Server::UpdateMissiles(uint32_t frame) {
                     erased = true;
                     continue;
                 }
-                // collideReflect_57B810 — 법선 부호 곱으로 속도 성분 맞바꿈
-                if (wny * wnx <= 0.0f) std::swap(m.velX, m.velY);
-                else { const float v3 = m.velX; m.velX = -m.velY; m.velY = -v3; }
+                if (m.collideKind == 7) {
+                    // ★ 11-20 트레일러 전사 2-c — 차크람은 제 닿음 함수가 되튐까지 한다(`collideChakram_4EAF00` a2 == 0 갈래 `GAME3_3.c:4989~5024`)
+                    if (!ChakramCollideWall(m, wnx, wny, th.gx, th.gy)) { DestroyMissile(i); erased = true; continue; }
+                } else {
+                    // collideReflect_57B810 — 법선 부호 곱으로 속도 성분 맞바꿈
+                    if (wny * wnx <= 0.0f) std::swap(m.velX, m.velY);
+                    else { const float v3 = m.velX; m.velX = -m.velY; m.velY = -v3; }
+                }
             } else if (objHit) {
                 bool dead = false;
                 if (hk == HitPlayer) dead = (sessions_.at(hSessionId).respawnAtFrame != 0);
                 if (!dead) {
                     bool handled = false;
-                    if (hk == HitPlayer) {
+                    // ★ 11-20 트레일러 전사 2-c — 아래 방패·대검·되받아치기 방패(27)는 원본에선 **피해 함수 안**(`GAME3_3.c:170~330`)이라
+                    //   피해를 주기 전에 받는 차크람 주인 갈래(`collideChakram_4EAF00` `:4995~5008`)는 이것을 안 탄다 —
+                    //   방패를 든 워리어(기본 나무 방패 · 가만 7틱이면 올림)가 돌아온 제 차크람을 되받아쳐 영영 못 받았다(⑫ 실측 f50)
+                    if (hk == HitPlayer && !(m.collideKind == 7 && hSessionId == m.owner)) {
                         Session& t = sessions_.at(hSessionId);
                         auto changeOwner = [&]() { MissileChangeOwner(m, t.sessionId, frame); };
                         const bool front = (TestTwoPointsAndDirection(static_cast<float>(t.posX), static_cast<float>(t.posY),
@@ -16321,6 +16316,10 @@ void Server::UpdateMissiles(uint32_t frame) {
                             src.byMonsterType = m.type;
                             src.rootIsMonster = MissileRootIsMonster(m);
                             src.missile = true;
+                            // ★ 11-20 트레일러 전사 2-c — 이 갈래로 오는 넷(ArcherArrow · ArcherBolt · WeakArcherArrow · FanChakramInMotion)은 다 CLASS 에 WEAPON 이 있다 →
+                            //   피해 함수가 때린 것(a3 = 화살 `:5296`)의 수식 넷으로 피해 전 효과(흡혈·독·마나 흡수)를 부른다(`GAME3_2.c:7248` 클래스 & 0x1001000)
+                            src.itemWeapon = true;
+                            for (int k = 0; k < 4; ++k) src.itemMods[k] = m.mods[k];
                             // ★ 11-20 1-e — 화살 수식(`GAME3_3.c:5281~5294`) — calcBoltDamage float 에 공격 효과(칸 넷 · 쏜 이 a2) →
                             //   맞은 것이 쏜 이가 아니면(위 Owner 갈래가 이미 거름) 맞히기 전 효과(칸 2·3) → +0.5 버림. 정의가 없으면 효과 없이 0(`:5223~5226`)
                             int arrowDmg = ArrowDamage(m.owner, m.type);
@@ -16350,6 +16349,14 @@ void Server::UpdateMissiles(uint32_t frame) {
                             }
                             if (!keep) { DestroyMissile(i); erased = true; }
                         }
+                        handled = true;
+                    }
+                    // ★ 11-20 트레일러 전사 2-c — 차크람(`collideChakram_4EAF00` a2 != 0 갈래 `GAME3_3.c:4985~5097`) — ChakramCollide
+                    if (!handled && m.collideKind == 7) {
+                        uint32_t mat = 0;                            // 맞은 것 재질(+24) — 쇠·돌(0x30)이면 불똥(`:4989~4991`) · 사람은 살(FLESH)
+                        if (hk == HitPet) mat = MaterialOfWire(pets_[static_cast<size_t>(hIdx)].type);
+                        else if (hk == HitObstacle) mat = MaterialOfWire(mt_->obstacles[static_cast<size_t>(hIdx)].wireType);
+                        if (!ChakramCollide(m, HitTargetOf(hk, hSessionId, hIdx), hk == HitObstacle, hx, hy, mat)) { DestroyMissile(i); erased = true; }
                         handled = true;
                     }
                     if (!handled && m.collideKind == 4) {
@@ -17182,6 +17189,232 @@ bool Server::ChakramUpdate(MissileObj& m, uint32_t frame) {
         m.ckState = 1;
         m.ckHomeOwner = false;
     }
+    return true;
+}
+
+// ★ 11-20 트레일러 전사 2-c — `nox_xxx_projectileReflect_4E0A70`(`GAME3_2.c:6979~7014`) — 맞은 것 자리(ox, oy)에서 날아가는 것 쪽을 법선으로
+//   속도를 뒤집고 방향 +128 · 새 자리 = 지난 자리. UpdateMissiles 의 reflectFrom 몸통을 그대로 떼어 냈다(차크람 맞기가 같은 것을 부른다)
+void Server::MissileReflectFrom(MissileObj& m, float ox, float oy) {
+    const double v3 = static_cast<double>(m.posX) - ox, v4 = static_cast<double>(m.posY) - oy;
+    m.dir1 = static_cast<uint8_t>(m.dir1 + 128);
+    const float v13 = static_cast<float>(std::sqrt(v4 * v4 + v3 * v3) + 0.1);
+    const double v6 = (v4 * m.velY + v3 * m.velX) / v13;
+    const float v9 = static_cast<float>(v6 * v3 / v13);
+    const float v10 = static_cast<float>(v6 * v4 / v13);
+    const float v11 = static_cast<float>(-v4);
+    const double v7 = (static_cast<double>(v11) * m.velX + v3 * m.velY) / v13;
+    const float v12 = static_cast<float>(v7 * v11 / v13);
+    m.velX = v12 - v9;
+    m.velY = static_cast<float>(v3 * v7 / v13) - v10;
+    m.newX = m.prevX; m.newY = m.prevY;
+}
+
+// ★ 11-20 트레일러 전사 2-c — `netSendPointFx_522FF0(150, 차크람 자리)` — FX_RICOCHET(0x96 = 150) `<x2> <y2>` 화면 안 사람에게
+void Server::ChakramRicochetFx(const MissileObj& m) {
+    const uint16_t ix = static_cast<uint16_t>(static_cast<int>(m.posX)), iy = static_cast<uint16_t>(static_cast<int>(m.posY));
+    const uint8_t msg[5] = { static_cast<uint8_t>(Op::FX_RICOCHET), static_cast<uint8_t>(ix), static_cast<uint8_t>(ix >> 8),
+                             static_cast<uint8_t>(iy), static_cast<uint8_t>(iy >> 8) };
+    SendFxAllCli(m.posX, m.posY, msg, sizeof(msg));
+}
+
+// ★ 11-20 트레일러 전사 2-c — `netReportPickup_4D8A60`·`4D8AD0`(`GAME3_2.c:4238~4278`) — 클래스 0x13001000(무기·갑옷·지팡이…)이면
+//   `4c <번호2> <종류2> <수식 넷>`(빈 칸 ff) · 아니면 `4b <번호2> <종류2>`. 갈래는 가방 항목의 `modifiable`(바닥 줍기와 같은 기준)
+//   ⚠ 뒤따르는 내구 알림(`itemReportHealth_4D87A0`)은 우리에 내구가 없어 뺀다
+void Server::ReportPickupTo(Session& s, const Session::Carried& c) {
+    if (c.modifiable) {
+        const uint8_t msg[9] = { static_cast<uint8_t>(Op::REPORT_MODIFIABLE_PICKUP), static_cast<uint8_t>(c.netCode), static_cast<uint8_t>(c.netCode >> 8),
+                                 static_cast<uint8_t>(c.type), static_cast<uint8_t>(c.type >> 8), c.mods[0], c.mods[1], c.mods[2], c.mods[3] };
+        EmitSeq(s, msg, sizeof(msg));
+    } else {
+        const uint8_t msg[5] = { static_cast<uint8_t>(Op::REPORT_PICKUP), static_cast<uint8_t>(c.netCode), static_cast<uint8_t>(c.netCode >> 8),
+                                 static_cast<uint8_t>(c.type), static_cast<uint8_t>(c.type >> 8) };
+        EmitSeq(s, msg, sizeof(msg));
+    }
+}
+
+// ★ 11-20 트레일러 전사 2-c — `sub_4EB3E0`(`GAME3_3.c:5161~5194`) — 튕김이 다 됐을 때: 빠르기는 그대로 · 방향 = 지금 방향 + 128 + 난수(−64~64) ·
+//   자리·새 자리 = 지난 자리(+72). 난수는 우리 난수열(정품과 같은 수열일 까닭이 없다)
+void Server::ChakramRandomBounce(MissileObj& m) {
+    const float v9 = static_cast<float>(std::sqrt(static_cast<double>(m.velX) * m.velX + static_cast<double>(m.velY) * m.velY));
+    const int v3 = DirFromVec(m.velX, m.velY);                              // `math_509ED0`
+    const int v4 = (static_cast<int>(NextRandom(129)) - 64 + v3 + 128) & 0xFF;   // randomInt_415FA0(−64, 64) · `:5178~5183` 0~255 로 감기
+    m.velX = static_cast<float>(v9 * DirVecX(static_cast<uint8_t>(v4)));
+    m.velY = static_cast<float>(v9 * DirVecY(static_cast<uint8_t>(v4)));
+    m.posX = m.newX = m.prevX;
+    m.posY = m.newY = m.prevY;
+    ++chakramEv_[static_cast<size_t>(ChakramEv::RandomBounce)];
+}
+
+// ★ 11-20 트레일러 전사 2-c — `sub_4EB250`·`sub_4EB340`(`GAME3_3.c:5102~5158`) — 차크람 둘레 ±400 안 유닛(클래스 0x20006 — 사람·몬스터) 중
+//   안 죽고·안 사라지고(0x8020) · 투명(버프 0)이 아니고 · 주인도 마지막에 맞은 것도 아니고 · 그것에서 차크람이 보이고(`mapCheck_537110`) ·
+//   거리² ≤ 160000 인 가장 가까운 것 → 있으면 상태 2 · 속도 = 그쪽 × 빠르기 ÷ (거리 + 0.1)
+//   ⚠ 편은 안 본다 — 원본 그대로(같은 편으로 가면 맞기에서 그냥 지나간다)
+bool Server::ChakramRetarget(MissileObj& m) {
+    float best = 10000000.0f;                                               // 1259902592 = 1.0e7f
+    bool found = false;
+    float bx = 0, by = 0;
+    auto consider = [&](float ux, float uy) {
+        if (!MapTraceVision(ux, uy, m.posX, m.posY)) return;
+        const double v2 = static_cast<double>(m.posX) - ux, v3 = static_cast<double>(m.posY) - uy;
+        const double v4 = v3 * v3 + v2 * v2;
+        if (v4 <= 160000.0 && v4 < best) { best = static_cast<float>(v4); bx = ux; by = uy; found = true; }
+    };
+    for (const auto& kv : sessions_) {
+        const Session& o = kv.second;
+        if (!o.inGame || o.observer || o.respawnAtFrame != 0 || o.buffs.Has(0)) continue;
+        if (o.sessionId == m.owner || o.sessionId == m.ckLast.sessionId) continue;
+        consider(static_cast<float>(o.posX), static_cast<float>(o.posY));
+    }
+    for (size_t k = 0; k < pets_.size(); ++k) {
+        const Creature& c = pets_[k];
+        if (c.dead || c.health == 0 || c.buffs.Has(0)) continue;
+        if (m.ckLast.pet == static_cast<int>(k)) continue;
+        const auto tb = gt_->typeBodies.find(c.type);
+        if (tb == gt_->typeBodies.end() || !(tb->second.cls & 0x20006u)) continue;
+        consider(static_cast<float>(c.x), static_cast<float>(c.y));
+    }
+    if (!found) return false;
+    m.ckState = 2;
+    const double v4 = static_cast<double>(bx) - m.posX, v5 = static_cast<double>(by) - m.posY;
+    const float v8 = static_cast<float>(v5);
+    const float v6 = static_cast<float>(std::sqrt(v5 * v8 + v4 * v4) + 0.10000000149011612);   // qword_581450_10176
+    m.velX = static_cast<float>(v4 * m.speed / v6);
+    m.velY = static_cast<float>(v8 * m.speed / v6);
+    ++chakramEv_[static_cast<size_t>(ChakramEv::Retarget)];
+    return true;
+}
+
+// ★ 11-20 트레일러 전사 2-c — `collideChakram_4EAF00` 벽 갈래(a2 == 0 · `GAME3_3.c:4989~5024`). 거짓 = 지운다
+//   · 불똥 150 · 튕김이 남았으면 벽 법선으로 되튐(`collideReflect_57B810` — 아래 두 줄이 UpdateMissiles 의 일반 갈래와 같은 몸통) ·
+//     아니면 거꾸로 흔들어 되튐(`sub_4EB3E0`)
+//   · 튕김 −1 — 이미 0 이고 상태 0(돌아옴)이면 상태 2 · 이 벽 칸에 맵 피해 1(종류 0 · `damageToMap_534BC0`)
+//   · 상태 1(떨어짐)이면 그 자리에 떨군다(`drop_4ED790` — 버리기 함수를 거친다) → 지움
+//   · 튕김이 0 이고(상태 0 에서 막 바뀐 게 아니면) 돌아옴(상태 0 · 쫓기 = 주인) · 아니면 둘레에서 다음 것을 고른다(`sub_4EB250`)
+bool Server::ChakramCollideWall(MissileObj& m, float wnx, float wny, int gx, int gy) {
+    if (!m.hasItem) return false;
+    ChakramRicochetFx(m);
+    if (m.ckBounce) {
+        if (wny * wnx <= 0.0f) std::swap(m.velX, m.velY);
+        else { const float v3 = m.velX; m.velX = -m.velY; m.velY = -v3; }
+        ++chakramEv_[static_cast<size_t>(ChakramEv::ReflectBounce)];
+    } else {
+        ChakramRandomBounce(m);
+    }
+    bool v23 = true;
+    if (m.ckBounce) --m.ckBounce;
+    else if (m.ckState == 0) { m.ckState = 2; v23 = false; }
+    WallHitter who;
+    who.present = true;
+    who.x = m.posX; who.y = m.posY; who.dir = m.dir1;
+    who.material = MaterialOfWire(m.type);
+    who.src = m.owner;
+    DamageToMap(gx, gy, 1, 0, who);
+    if (m.ckState == 1) {
+        PlaceCarriedInWorld(m.item, m.posX, m.posY, /*viaDropFn=*/true);
+        m.hasItem = false;
+        ++chakramEv_[static_cast<size_t>(ChakramEv::DropWall)];
+        return false;
+    }
+    if (!m.ckBounce && v23) {
+        m.ckState = 0;
+        m.ckHomeOwner = true;
+        ++chakramEv_[static_cast<size_t>(ChakramEv::Returning)];
+        return true;
+    }
+    ChakramRetarget(m);
+    return true;
+}
+
+// ★ 11-20 트레일러 전사 2-c — `nox_xxx_collideChakram_4EAF00` 맞은 것 갈래(a2 != 0 · `GAME3_3.c:4985~5097`). 거짓 = 지운다
+//   · 가방이 비었으면 지운다 · 맞은 것 재질이 쇠·돌(0x30)이면 불똥 150
+//   · 주인이면 받는다 — 가방에 넣고(`inventoryPutImpl_4F3070` — 본인에게 줍기 알림) · 든 무기가 없으면 든다(`53A420(주인, 차크람, 1, 1)`) · 소리 892 · 지움
+//   · 같은 편(`unitsHaveSameTeam_4EC520` = 우리 TargetIsEnemy 의 반대)이면 아무것도 안 하고 지나간다
+//   · 주인이 없거나 죽었으면(0x8020) 그 자리에 떨군다(`drop_4ED790`) · 지움
+//   · 맞은 것이 안 죽었고 차크람 정의가 있으면 — 피해 = calcBoltDamage(주인 힘, 정의) float → 공격 효과(수식 넷) → 맞히기 전 효과(칸 2·3) →
+//     피해 함수(종류 0 BLADE · `(long long)(f + 0.5)` · 때린 것 = 차크람 — 클래스 WEAPON 이라 피해 전 효과도 이 수식으로) →
+//     맞은 것이 살아 있으면 마지막에 맞은 것(+12) → 튕김이 남았으면 맞은 것에서 되튐(`projectileReflect_4E0A70`) · 아니면 거꾸로 흔들기 →
+//     튕김이 0 이고 상태 0 이면 상태 2 · 튕김 −1 → 상태 1 이면 소리 893 · 그 자리에 곧장 세계로(`createAt_4DAA50`) · 지움 →
+//     튕김이 방금 0 이 됐으면 돌아옴(상태 0 · 쫓기 = 주인) · 아니면 다음 것을 고른다(`sub_4EB250`)
+//   ⚠ 장애물 — 우리 장애물엔 체력이 없어 피해·맞히기 전 효과를 건너뛴다(화살 갈래와 같다) · 되튐·다시 고르기는 원본대로
+bool Server::ChakramCollide(MissileObj& m, const Target& tgt, bool obstacle, float hx, float hy, uint32_t mat) {
+    if (!m.hasItem) return false;
+    if (mat & 0x30u) ChakramRicochetFx(m);
+    if (!obstacle && tgt.sessionId != kNoSession && tgt.sessionId == m.owner) {
+        Session& o = sessions_.at(m.owner);
+        Session::Carried c = m.item;
+        m.hasItem = false;
+        c.equipped = false;
+        o.inventory.push_back(c);
+        ReportPickupTo(o, c);
+        if (o.weaponNet == 0) PlayerEquipWeapon(o, c.netCode, /*failSound=*/true);
+        PlaySoundAt(892, m.posX, m.posY, 0, 0, m.owner);
+        ++chakramEv_[static_cast<size_t>(ChakramEv::Caught)];
+        return false;
+    }
+    auto own = sessions_.find(m.owner);
+    if (!obstacle && own != sessions_.end() && !TargetIsEnemy(own->second, tgt)) {
+        ++chakramEv_[static_cast<size_t>(ChakramEv::SameTeam)];
+        return true;
+    }
+    if (own == sessions_.end() || !own->second.inGame || own->second.respawnAtFrame != 0) {
+        PlaceCarriedInWorld(m.item, m.posX, m.posY, /*viaDropFn=*/true);
+        m.hasItem = false;
+        ++chakramEv_[static_cast<size_t>(ChakramEv::DropOwnerGone)];
+        return false;
+    }
+    Session& o = own->second;
+    auto unitDead = [&]() {
+        if (tgt.sessionId != kNoSession) {
+            auto t = sessions_.find(tgt.sessionId);
+            return t == sessions_.end() || t->second.respawnAtFrame != 0;
+        }
+        if (tgt.pet >= 0 && static_cast<size_t>(tgt.pet) < pets_.size()) {
+            const Creature& k = pets_[static_cast<size_t>(tgt.pet)];
+            return k.dead || k.health == 0;
+        }
+        return false;                                                       // 장애물 — 죽음 깃발이 없다
+    };
+    if (unitDead() || !gt_->weaponDef.count(m.type)) return true;           // `:5046` — 아무것도 안 하고 지나간다
+    const uint8_t am[4] = { m.mods[0], m.mods[1], m.mods[2], m.mods[3] };    // 효과가 목록을 바꿀 수 있어 베낀다
+    float fdmg = ArrowDamageFloat(m.owner, m.type);                          // calcBoltDamage_4EF1E0(주인 힘, 정의)
+    ApplyAttackEffects(o, am, fdmg);
+    if (!obstacle) {
+        AttackSrc src;
+        src.x = m.posX; src.y = m.posY;
+        src.byMonsterType = m.type;
+        src.rootIsMonster = MissileRootIsMonster(m);
+        src.missile = true;
+        src.itemWeapon = true;                                               // 클래스 MISSILE+COMPLEX+WEAPON — 피해 함수 안 피해 전 효과(`GAME3_2.c:7248`)
+        for (int k = 0; k < 4; ++k) src.itemMods[k] = m.mods[k];
+        ApplyPreHitEffects(o, am, tgt, src, HitterMissile(m));
+        HurtTarget(tgt, static_cast<int>(static_cast<long long>(static_cast<double>(fdmg) + 0.5)), m.owner, 0, &src, HitterMissile(m));
+        ++chakramEv_[static_cast<size_t>(ChakramEv::Hurt)];
+    }
+    if (!unitDead()) m.ckLast = tgt;                                        // 장애물이면 빈 대상 — 유닛 다시 고르기에서 빼는 것이 없어진다(원본도 장애물을 적는다)
+    const uint8_t v17 = m.ckBounce;
+    if (v17) {
+        MissileReflectFrom(m, hx, hy);
+        ++chakramEv_[static_cast<size_t>(ChakramEv::ReflectBounce)];
+    } else {
+        ChakramRandomBounce(m);
+    }
+    bool v18 = true;
+    if (!v17 && !m.ckState) { m.ckState = 2; v18 = false; }
+    if (v17) m.ckBounce = static_cast<uint8_t>(v17 - 1);
+    if (m.ckState == 1) {
+        PlaySoundAt(893, m.posX, m.posY, 0, 0, m.owner);
+        PlaceCarriedInWorld(m.item, m.posX, m.posY, /*viaDropFn=*/false);
+        m.hasItem = false;
+        ++chakramEv_[static_cast<size_t>(ChakramEv::DropHit)];
+        return false;
+    }
+    if (!m.ckBounce && v18) {
+        m.ckHomeOwner = true;
+        m.ckState = 0;
+        ++chakramEv_[static_cast<size_t>(ChakramEv::Returning)];
+        return true;
+    }
+    ChakramRetarget(m);
     return true;
 }
 
