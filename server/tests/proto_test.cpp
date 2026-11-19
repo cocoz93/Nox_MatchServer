@@ -24188,6 +24188,41 @@ void TestModEffects1120() {
           rf.notPorted + rl.notPorted + rp.notPorted == 0, msg);
     std::snprintf(msg, sizeof(msg), "② 무적 곰 — 깎임 %d(0) · 관문 막음 %llu(1) · 불 효과 %llu(0)", ri.lost, ri.gate2, ri.fire);
     Check(ri.lost == 0 && ri.gate2 == 1 && ri.fire == 0, msg);
+    // ③ 1-c — 기절1(60 · 곰 질량 ≤ 15 → 붙잡힘 5) · 혼란1(88 · 3) · 되밀기 Impact1(80 · 힘 50 · 때린 이 → 곰 쪽 +x)
+    {
+        struct C3 { bool held = false, confused = false; double x = 0; unsigned long long stun = 0, conf = 0, rec = 0; };
+        auto hit = [&](uint8_t m2) {
+            C3 c;
+            nox::CSyncHost srv;
+            GearTemplates(srv);
+            srv->SetModEffects(effs);
+            srv->SetPlayerAnimFrames(28, 8, 0);
+            const std::string a = "10.11.20.3:9503";
+            srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+            srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+            srv->DebugSetAutoFight(false);
+            nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
+            srv->SetTypeBody(1365, body);
+            srv->DebugSpawnPet(1365, 1040.0f, 1000.0f, Sid(srv, std::string()));
+            srv->DebugSetPetHealth(0, 1000);
+            if (!srv->DebugSetHeldMods(Sid(srv, a), 0xff, 0xff, m2, 0xff)) return c;
+            std::vector<nox::OutPacket> out;
+            uint32_t ms = 0;
+            srv.Tick(ms, out);
+            for (int t = 0; t < 30; ++t) { ms += 33; srv.Tick(ms, out); }
+            auto click = InputPacket(6);
+            srv.OnPacket(a, click.data(), click.size(), out);
+            for (int t = 0; t < 12; ++t) { ms += 33; srv.Tick(ms, out); }
+            c.held = srv->DebugPetHasEnchant(0, 5); c.confused = srv->DebugPetHasEnchant(0, 3);
+            double y = 0; srv->DebugPetXY(0, c.x, y);
+            c.stun = srv->modFnStat(MF::Stun); c.conf = srv->modFnStat(MF::Confuse); c.rec = srv->modFnStat(MF::Recoil);
+            return c;
+        };
+        const C3 c0 = hit(0xff), cs = hit(60), cc = hit(88), cr = hit(80);
+        std::snprintf(msg, sizeof(msg), "③ 기절 붙잡힘 %d(1 · 없음 %d) · 혼란 %d(1 · 없음 %d) · 되밀기 곰 x %.1f(없음 %.1f보다 큼) · 효과 %llu·%llu·%llu",
+                      cs.held, c0.held, cc.confused, c0.confused, cr.x, c0.x, cs.stun, cc.conf, cr.rec);
+        Check(cs.held && !c0.held && cc.confused && !c0.confused && cr.x > c0.x + 1.0 && cs.stun == 1 && cc.conf == 1 && cr.rec == 1, msg);
+    }
     std::printf("  11-20 — 수식 효과: modifier.bin %zu칸 · 롱소드 %d → 위력6 %d · 불1 +3 · 번개4 +12 · 무적이면 효과 없음\n", effs.size(), base, pow6);
 }
 

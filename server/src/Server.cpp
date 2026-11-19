@@ -17606,8 +17606,30 @@ void Server::ApplyPreHitEffects(Session& s, const Target& t, const AttackSrc& sr
                 ++modFnStat_[static_cast<size_t>(h.fn)];
                 break;
             }
+            case ModFn::Stun:
+            case ModFn::Confuse: {
+                // ★ 11-20 1-c — `nox_xxx_stunEffect_4E04D0` · `nox_xxx_confuseEffect_4E0670`(`GAME3_2.c:6776~6830`) — 맞는 쪽이 몬스터·사람(+8 & 6)일 때
+                //   주문 74 castStun / 12 castConfuse(시전자 = 때린 이 · 세기 = i) → 사람이면 글 13(0 = 기절 · 1 = 혼란)
+                if (h.fn == ModFn::Stun) CastStun(s.sessionId, t, h.i);
+                else                     CastConfuse(s.sessionId, t, h.i);
+                if (t.sessionId != kNoSession) {
+                    auto ti = sessions_.find(t.sessionId);
+                    if (ti != sessions_.end()) InformSpell(ti->second, 13, h.fn == ModFn::Stun ? 0u : 1u);
+                }
+                ++modFnStat_[static_cast<size_t>(h.fn)];
+                break;
+            }
+            case ModFn::Recoil: {
+                // ★ 11-20 1-c — `nox_xxx_recoilEffect_4E0640`(`GAME3_2.c:6800`) — objectApplyForce(무기 자리 +56, 맞는 쪽, f)
+                //   ⚠ 원본은 **무기 물건의 자리**에서 민다. 가방 속 물건 자리는 줍기(`inventoryPutImpl_4F3070` `GAME3_3.c:10624~`)가 안 고쳐
+                //     주운 곳에 남는 것으로 읽힌다(따라오게 고치는 곳을 못 찾음 — 짐작). 우리는 가방 물건 자리를 안 들고 있어 **든 사람 자리**에서 민다
+                float ax = 0, ay = 0;
+                if (TargetXY(Target{ s.sessionId, -1 }, ax, ay)) ObjectApplyForce(ax, ay, t, h.f);
+                ++modFnStat_[static_cast<size_t>(h.fn)];
+                break;
+            }
             case ModFn::Empty: break;
-            default: ++modNotPorted_; break;   // Stun · Confuse · Recoil(1-c)
+            default: ++modNotPorted_; break;
         }
     }
 }
