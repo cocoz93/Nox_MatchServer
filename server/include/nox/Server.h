@@ -2896,6 +2896,44 @@ public:
         // ★ 4-c3b3b — 때린 이(a2)가 **몬스터**면 그 종류(아니면 0). 맞는 소리 맨 앞에서 그 몬스터 소리 모음의 맞히는 소리를 본다(`GAME3_2.c:7252~7254`)
         uint16_t monsterA2 = 0;
     };
+    // ★ 11-20 트레일러 전사 1-b — **수식 효과**(modifier.bin `EFFECTIVENESS` · `MATERIAL` · `ENCHANTMENT` 한 칸 = 정답지 `ModifierEff` obj_412ae0_t).
+    //   번호 = 읽는 차례(`server/modifiers.go:337` s.cnt — 위력·품질 0~11 · 재질 12~59 · 부여 60~ · UserColor1 = 179 정품 녹음과 같음).
+    //   물건 `+692` 넷(`Session::Carried::mods`)이 이 번호를 가리킨다. 열쇠마다 함수 하나와 값 둘(float · int — 이름 뒤 첫 낱말을 등록된 꼴로 읽는다 ·
+    //   `ModEffectParseFloat/Int` · 못 읽으면 −1). 함수 이름 → 갈래는 `legacy/modifiers.go:74~116` 등록 그대로
+    enum class ModFn : uint8_t {
+        None = 0,
+        // ATTACK·PREHIT·PREDAMAGE 표(`modDamageEffects`)
+        DamageMultiplier, Stun, Fire, FireRing, BlueFireRing, Recoil, Confuse, Lightning, DrainMana, Vampirism, Poison,
+        Sympathy, ProjectileSpeed, Readiness, Replenishment,
+        // DEFEND 표
+        ArmorMultiplier, DurabilityMultiplier, Inversion, Grip,
+        // UPDATE 표
+        Regeneration, ContinualReplenishment,
+        // ENGAGE 표(입기·벗기 둘 다 이 표)
+        BrillianceEngage, BrillianceDisengage, SpeedEngage, SpeedDisengage, FireProtectEngage, FireProtectDisengage,
+        LightningProtectEngage, LightningProtectDisengage, PoisonProtectEngage, PoisonProtectDisengage, RegenerationEngage, RegenerationDisengage,
+        Empty,     // 등록은 있으나 몸통이 빈 함수(nullsub — Frost · Panic · Resilience · Breaking · PunctureProne · Parasite · Attraction)
+        Count
+    };
+    struct ModHook { ModFn fn = ModFn::None; float f = 0.0f; int32_t i = 0; };
+    struct ModEffect {
+        std::string name;
+        ModHook attack, preHit, preDmg, defend, defendCollide, update, engage, disengage;   // +40 · +52 · +64 · +76 · +88 · +100 · +112 · +116
+    };
+    // modifier.bin 복호본(글자) → 번호 차례의 효과 표. unknown = 등록에 없는 함수 이름 수(정답지는 오류로 읽기를 멈춘다)
+    static std::vector<ModEffect> ParseModEffects(const std::string& txt, size_t* unknown = nullptr);
+    void SetModEffects(std::vector<ModEffect> v) { GtMut().modEffects = std::move(v); }
+    size_t ModEffectCount() const { return gt_->modEffects.size(); }
+    const ModEffect* ModEffectOf(uint8_t idx) const { return idx < gt_->modEffects.size() ? &gt_->modEffects[idx] : nullptr; }
+    unsigned long long modFnStat(ModFn f) const { return f < ModFn::Count ? modFnStat_[static_cast<size_t>(f)] : 0; }   // 효과 갈래가 불린 수
+    unsigned long long modNotPorted() const { return modNotPorted_; }   // 효과가 걸렸으나 아직 안 옮긴 갈래
+    unsigned long long modPreHitGate(int i) const { return i >= 0 && i < 3 ? modPreHitGate_[i] : 0; }   // 0 통과 · 1 적 아님 · 2 맞는 쪽 버프 23·27
+    // 시험용 — 든 무기(무기 칸)의 수식 넷을 바꾼다
+    bool DebugSetHeldMods(int64_t sessionId, uint8_t m0, uint8_t m1, uint8_t m2, uint8_t m3) {
+        auto it = sessions_.find(sessionId); if (it == sessions_.end()) return false;
+        for (auto& c : it->second.inventory) if (c.netCode == it->second.weaponNet) { c.mods[0] = m0; c.mods[1] = m1; c.mods[2] = m2; c.mods[3] = m3; return true; }
+        return false;
+    }
     // ★ 시험용 — 피해 함수(3-e)를 바로 부른다. pet < 0 이면 사람(addr), 아니면 소환수 자리 번호
     bool DebugHurt(int64_t sessionId, int pet, int dmg, int64_t by, uint8_t dtype
 , const AttackSrc* src = nullptr, HitterRef hitter = HitterRef{}) {
@@ -5807,6 +5845,7 @@ public:   // ★ 10-12 작업 7e-2 — 표 묶음과 같이 쓰기 입구는 바
         std::map<uint16_t, float> itemRadius;                 // ★ 09-28 B4b 물건 종류 → 몸 반지름
         std::map<uint16_t, WeaponDef> weaponDef;     // ★ 09-27 B3 — 종류 번호 → modifier.bin 무기 정의
         std::map<uint16_t, ArmorDef> armorDef;       // ★ 09-29 — 종류 번호 → modifier.bin 갑옷 정의
+        std::vector<ModEffect> modEffects;           // ★ 11-20 전사 1-b — 수식 번호 → 효과(ParseModEffects)
         std::map<uint16_t, Session::Carried> itemTemplate;   // ★ 09-27 B1 — 기본 장비 종류 틀
         std::vector<uint32_t> matByWire;
         std::vector<uint8_t> breastByWire;
@@ -6122,6 +6161,10 @@ private:
     unsigned long long petsKilled_ = 0;
     unsigned long long corpseStat_[4] = {};   // ★ 10-01 — 0 죽음 · 1 썩어 지움 · 2 즉시 지움(DESTROY_WHEN_DEAD) · 3 동시 시체 최대
     unsigned long long deadFnStat_[3] = {};   // ★ 11-19 — 죽음 시작(31)의 죽은 뒤 함수 갈래마다(0 EmberDemonDead · 1 DemonDead · 2 없음)
+    unsigned long long modFnStat_[static_cast<size_t>(ModFn::Count)] = {};   // ★ 11-20 1-b — 수식 효과 갈래마다
+    unsigned long long modNotPorted_ = 0, modPreHitGate_[3] = {};
+    void ApplyAttackEffects(const Session& s, float& dmg);   // itemApplyAttackEffect_538840 — 든 무기 칸 넷
+    void ApplyPreHitEffects(Session& s, const Target& t, const AttackSrc& src, HitterRef hr);   // playerPreAttackEffects_538290 — 칸 2·3
     unsigned long long soundsQueued_ = 0;
     unsigned long long soundsDropped_ = 0;
     unsigned long long soundsSent_ = 0;

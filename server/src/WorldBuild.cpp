@@ -471,6 +471,21 @@ std::shared_ptr<const nox::Server::GameTables> BuildGameTables(const GameFiles& 
             }
             srv.Log("[무기정의] modifier.bin %zu바이트 · 무기 %zu개 실음 · 종류표에 없음 %zu · 모르는 직업 이름 %zu\n",
                         mb.size(), nDef, nNoWire, nBadClass);
+            // ★ 11-20 트레일러 전사 1-b — 수식 효과 표(EFFECTIVENESS · MATERIAL · ENCHANTMENT · `Server::ParseModEffects` 주석)
+            {
+                size_t nUnknownFn = 0;
+                std::vector<nox::Server::ModEffect> effs = nox::Server::ParseModEffects(txt, &nUnknownFn);
+                size_t withFn = 0;
+                for (const auto& e : effs)
+                    if (e.attack.fn != nox::Server::ModFn::None || e.preHit.fn != nox::Server::ModFn::None || e.preDmg.fn != nox::Server::ModFn::None ||
+                        e.defend.fn != nox::Server::ModFn::None || e.update.fn != nox::Server::ModFn::None || e.engage.fn != nox::Server::ModFn::None)
+                        ++withFn;
+                const std::string n64 = effs.size() > 64 ? effs[64].name : std::string("(없음)");
+                const std::string n179 = effs.size() > 179 ? effs[179].name : std::string("(없음)");
+                srv.Log("[수식효과] %zu칸 · 효과 있는 칸 %zu · 모르는 함수 이름 %zu · 대조 64 = %s · 179 = %s\n",
+                            effs.size(), withFn, nUnknownFn, n64.c_str(), n179.c_str());
+                srv.SetModEffects(std::move(effs));
+            }
             // ★ 09-29 — `ARMOR_DEFINITIONS` → 갑옷 입기의 직업·힘 관문과 방어값(ARMOR_VALUE → `Modifier` +64 · `parseWeaponOrArmorDef412D40` `modifiers.go:325~329`).
             //   절은 다음 절 이름(ENCHANTMENT·EFFECTIVENESS·MATERIAL) 줄에서 끝난다
             if (armorAt != std::string::npos) {

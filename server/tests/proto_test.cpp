@@ -24109,6 +24109,88 @@ void TestMapMobs1119() {
     std::printf("  11-19 — 맵 몬스터 넷: 표 · 독 좀비 독(대상 없으면 1) · 큰 악마 자동 주문·화염구(TitanFireball) · 악마 터짐(둘레 피해·불똥·지움) · 거머리 대조\n");
 }
 
+// ── 11-20 트레일러 전사 1-b — 수식 효과(modifier.bin `Server::ParseModEffects`) · 휘두를 때 위력 배수 · 맞힐 때 불·번개 ─────
+//   ① 진짜 복호본을 읽어 번호 차례·값(빠진 `;` 칸 Speed4 포함)을 본다
+//   ② 워리어 롱소드로 곰을 한 대 — 수식 없음 / 위력6(×1.2) / 불1(+3 폭발) / 번개4(+12 전기) / 불1인데 곰이 무적(관문)
+void TestModEffects1120() {
+    using MF = nox::Server::ModFn;
+    char msg[400];
+    const auto mb = nox::DecryptFile("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\modifier.bin", nox::kKeyModifier);
+    const std::string txt(mb.begin(), mb.end());
+    size_t unk = 99;
+    const std::vector<nox::Server::ModEffect> effs = nox::Server::ParseModEffects(txt, &unk);
+    auto nm = [&](size_t i) { return i < effs.size() ? effs[i].name.c_str() : "(없음)"; };
+    // ① 번호 = 읽는 차례(위력·품질 0~11 · 재질 12~59 · 부여 60~ · UserColor1 = 179 정품 녹음)
+    {
+        std::snprintf(msg, sizeof(msg), "① 수식 표 — %zu칸(212 — UserColor 1~33) · 모르는 함수 %zu · 5 %s · 6 %s · 64 %s · 95 %s · 140 %s · 147 %s · 179 %s",
+                      effs.size(), unk, nm(5), nm(6), nm(64), nm(95), nm(140), nm(147), nm(179));
+        bool ok = effs.size() == 212 && unk == 0;
+        if (ok) {
+            const auto& wp6 = effs[5]; const auto& aq1 = effs[6]; const auto& f1 = effs[64]; const auto& l4 = effs[95];
+            const auto& rg1 = effs[140]; const auto& sp4 = effs[147];
+            ok = wp6.name == "WeaponPower6" && wp6.attack.fn == MF::DamageMultiplier && std::fabs(wp6.attack.f - 1.2f) < 1e-6f &&
+                 aq1.name == "ArmorQuality1" && aq1.defend.fn == MF::ArmorMultiplier && std::fabs(aq1.defend.f - 0.94f) < 1e-6f &&
+                 f1.name == "Fire1" && f1.preHit.fn == MF::Fire && f1.preHit.f == 3.0f &&
+                 l4.name == "Lightning4" && l4.preHit.fn == MF::Lightning && l4.preHit.f == 12.0f &&
+                 rg1.name == "Regeneration1" && rg1.update.fn == MF::Regeneration && rg1.update.i == 7200 && rg1.engage.fn == MF::RegenerationEngage &&
+                 sp4.name == "Speed4" && sp4.engage.fn == MF::SpeedEngage && sp4.disengage.fn == MF::SpeedDisengage && std::fabs(sp4.disengage.f - 0.2f) < 1e-6f &&
+                 effs[179].name == "UserColor1" && effs[211].name == "UserColor33";
+        }
+        Check(ok, msg);
+    }
+    // ② 한 대
+    struct R { int lost = -1; unsigned long long dm = 0, fire = 0, ltn = 0, gate0 = 0, gate2 = 0, notPorted = 0, melees = 0; int sparks30 = 0, blue = 0; };
+    auto fight = [&](uint8_t m0, uint8_t m2, uint8_t m3, bool invul) {
+        R r;
+        nox::CSyncHost srv;
+        GearTemplates(srv);
+        srv->SetModEffects(effs);
+        srv->SetPlayerAnimFrames(28, 8, 0);   // ⭕ thing.bin LONG_SWORD_STRIKE 8/0
+        const std::string a = "10.11.20.1:9501";
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv->DebugSetAutoFight(false);
+        nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
+        srv->SetTypeBody(1365, body);
+        srv->DebugSpawnPet(1365, 1040.0f, 1000.0f, Sid(srv, std::string()));
+        srv->DebugSetPetHealth(0, 1000);
+        if (invul) srv->DebugApplyEnchantPet(0, 23, 300, 1);
+        if (!srv->DebugSetHeldMods(Sid(srv, a), m0, 0xff, m2, m3)) return r;
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        for (int t = 0; t < 30; ++t) { ms += 33; srv.Tick(ms, out); }
+        out.clear();
+        const uint16_t hp0 = srv->DebugPetHealth(0);
+        auto click = InputPacket(6);
+        srv.OnPacket(a, click.data(), click.size(), out);
+        for (int t = 0; t < 12; ++t) { ms += 33; srv.Tick(ms, out); }
+        r.lost = hp0 - srv->DebugPetHealth(0);
+        r.dm = srv->modFnStat(MF::DamageMultiplier); r.fire = srv->modFnStat(MF::Fire); r.ltn = srv->modFnStat(MF::Lightning);
+        r.gate0 = srv->modPreHitGate(0); r.gate2 = srv->modPreHitGate(2); r.notPorted = srv->modNotPorted(); r.melees = srv->melees();
+        for (const auto& m : FlattenTo(out, a)) {
+            if (m.size() == 6 && m[0] == static_cast<uint8_t>(nox::Op::FX_SPARK_EXPLOSION) && m[5] == 30) ++r.sparks30;
+            if (m.size() == 5 && m[0] == static_cast<uint8_t>(nox::Op::FX_BLUE_SPARKS)) ++r.blue;
+        }
+        return r;
+    };
+    // 기대 피해 — calcBoltDamage(롱소드 kWeapons — 요구 힘 30 · 계수 0.30 · 최소 9) float 에 위력 배수를 곱한 뒤 +0.5 버림
+    const float f = static_cast<float>(static_cast<double>(nox::StrengthOnline(nox::CharClass::Warrior) - 30) * static_cast<double>(0.30f) + 9);
+    const int base = static_cast<int>(static_cast<long long>(static_cast<double>(f) + 0.5));
+    const int pow6 = static_cast<int>(static_cast<long long>(static_cast<double>(1.2f * f) + 0.5));
+    const R r0 = fight(0xff, 0xff, 0xff, false), rp = fight(5, 0xff, 0xff, false), rf = fight(0xff, 64, 0xff, false),
+            rl = fight(0xff, 0xff, 95, false), ri = fight(0xff, 64, 0xff, true);
+    std::snprintf(msg, sizeof(msg), "② 피해 — 없음 %d(%d) · 위력6 %d(%d) · 불1 %d(+3) · 번개4 %d(+12) · 불 효과 %llu·%llu · 번개 %llu · 배수 %llu · 불똥30 %d · 파란 불꽃 %d · 안 옮김 %llu",
+                  r0.lost, base, rp.lost, pow6, rf.lost, rl.lost, rf.fire, r0.fire, rl.ltn, rp.dm, rf.sparks30, rl.blue, rf.notPorted + rl.notPorted + rp.notPorted);
+    Check(r0.melees == 1 && r0.lost == base && rp.lost == pow6 && rp.dm == 1 && r0.dm == 0 &&
+          rf.lost == base + 3 && rf.fire == 1 && rf.sparks30 == 1 && rf.gate0 == 1 &&
+          rl.lost == base + 12 && rl.ltn == 1 && rl.blue == 1 && r0.fire == 0 && r0.gate0 == 0 &&
+          rf.notPorted + rl.notPorted + rp.notPorted == 0, msg);
+    std::snprintf(msg, sizeof(msg), "② 무적 곰 — 깎임 %d(0) · 관문 막음 %llu(1) · 불 효과 %llu(0)", ri.lost, ri.gate2, ri.fire);
+    Check(ri.lost == 0 && ri.gate2 == 1 && ri.fire == 0, msg);
+    std::printf("  11-20 — 수식 효과: modifier.bin %zu칸 · 롱소드 %d → 위력6 %d · 불1 +3 · 번개4 +12 · 무적이면 효과 없음\n", effs.size(), base, pow6);
+}
+
 // ── 09-29 — 새로 온 사람에게 먼저 온 사람의 입은 것 겉모습(`sub_4DDE10` → `sub_4D82F0`) · 평상복 색 수식 ─────────
 //   사람 판 09-28 「워리어가 컨저러를 볼 때 흰 티가 살색으로」 — 새로 온 쪽이 먼저 온 쪽의 평상복 색(수식)을 못 받았다
 void TestWornLooksForNewcomer() {
@@ -36587,6 +36669,7 @@ int main() {
     TestMonsterHearB6();
     TestMonsterCastB7();
     TestMapMobs1119();
+    TestModEffects1120();
     TestPickupAutoEquip();
     TestArmorEquip();
     TestBowQuiver();

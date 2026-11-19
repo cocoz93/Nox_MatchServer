@@ -17403,6 +17403,215 @@ int Server::CastCounterSpell(Session& caster) {
     return 1;
 }
 
+// ★ 11-20 트레일러 전사 1-b — modifier.bin 수식 효과 읽기(`nox_xxx_parseModifDesc_412AE0` `server/modifiers.go:334~391`).
+//   절 차례 = EFFECTIVENESS → MATERIAL → ENCHANTMENT(`Nox_xxx_parseModifierBin_412930` `:416~424`) · 한 칸 = 이름 줄 · `열쇠 = 값;` 줄들 · END.
+//   값은 여러 줄로 이어질 수 있고(ALLOWED_WEAPONS) `;` 가 빠진 칸도 있다(Speed4 DISENGAGEEFFECT) — 다음 `열쇠 =` 줄이나 END 에서 끊는다.
+//   효과 값은 이름 뒤 **첫 낱말**만 읽으므로(`firstWord`) 빠진 `;` 뒤 글자가 붙어도 값은 같다.
+//   ⚠ DEFENDCOLLIDE 열쇠 이름은 데이터에 한 번도 안 나와(복호본 0건) 읽지 않는다
+std::vector<Server::ModEffect> Server::ParseModEffects(const std::string& txt, size_t* unknown) {
+    // 표 0 = damage(ATTACK·PREHIT·PREDAMAGE) · 1 = defend · 2 = update · 3 = engage(입기·벗기) — `legacy/modifiers.go:74~116` 그대로
+    struct Reg { const char* name; uint8_t table; ModFn fn; char parse; };
+    static const Reg kReg[] = {
+        { "DamageMultiplierEffect", 0, ModFn::DamageMultiplier, 'f' }, { "StunEffect", 0, ModFn::Stun, 'i' },
+        { "FireEffect", 0, ModFn::Fire, 'f' }, { "FireRingEffect", 0, ModFn::FireRing, 'i' },
+        { "BlueFireRingEffect", 0, ModFn::BlueFireRing, 'i' }, { "FrostEffect", 0, ModFn::Empty, 'i' },
+        { "RecoilEffect", 0, ModFn::Recoil, 'f' }, { "ConfuseEffect", 0, ModFn::Confuse, 'i' },
+        { "LightningEffect", 0, ModFn::Lightning, 'f' }, { "DrainManaEffect", 0, ModFn::DrainMana, 'f' },
+        { "VampirismEffect", 0, ModFn::Vampirism, 'f' }, { "PoisonEffect", 0, ModFn::Poison, 'i' },
+        { "PanicEffect", 0, ModFn::Empty, 'i' }, { "SympathyEffect", 0, ModFn::Sympathy, 'f' },
+        { "ReadinessEffect", 0, ModFn::Readiness, 'i' }, { "ProjectileSpeedEffect", 0, ModFn::ProjectileSpeed, 'f' },
+        { "ReplenishmentEffect", 0, ModFn::Replenishment, 'i' },
+        { "ArmorMultiplierEffect", 1, ModFn::ArmorMultiplier, 'f' }, { "DurabilityMultiplierEffect", 1, ModFn::DurabilityMultiplier, 'f' },
+        { "ResilienceEffect", 1, ModFn::Empty, 'f' }, { "InversionEffect", 1, ModFn::Inversion, 'i' },
+        { "GripEffect", 1, ModFn::Grip, 'i' }, { "BreakingEffect", 1, ModFn::Empty, 'f' }, { "PunctureProneEffect", 1, ModFn::Empty, 'f' },
+        { "RegenerationUpdate", 2, ModFn::Regeneration, 'i' }, { "ParasiteUpdate", 2, ModFn::Empty, 'i' },
+        { "AttractionUpdate", 2, ModFn::Empty, 'i' }, { "ContinualReplenishmentUpdate", 2, ModFn::ContinualReplenishment, 'i' },
+        { "BrillianceEngage", 3, ModFn::BrillianceEngage, 'i' }, { "BrillianceDisengage", 3, ModFn::BrillianceDisengage, 'i' },
+        { "SpeedEngage", 3, ModFn::SpeedEngage, 'f' }, { "SpeedDisengage", 3, ModFn::SpeedDisengage, 'f' },
+        { "FireProtectEngage", 3, ModFn::FireProtectEngage, 'f' }, { "FireProtectDisengage", 3, ModFn::FireProtectDisengage, 'f' },
+        { "LightningProtectEngage", 3, ModFn::LightningProtectEngage, 'f' }, { "LightningProtectDisengage", 3, ModFn::LightningProtectDisengage, 'f' },
+        { "PoisonProtectEngage", 3, ModFn::PoisonProtectEngage, 'f' }, { "PoisonProtectDisengage", 3, ModFn::PoisonProtectDisengage, 'f' },
+        { "RegenerationEngage", 3, ModFn::RegenerationEngage, 0 }, { "RegenerationDisengage", 3, ModFn::RegenerationDisengage, 0 },
+    };
+    struct Key { const char* key; uint8_t table; ModHook ModEffect::*slot; };
+    static const Key kKeys[] = {
+        { "ATTACKEFFECT", 0, &ModEffect::attack }, { "ATTACKPREHITEFFECT", 0, &ModEffect::preHit },
+        { "ATTACKPREDAMAGEEFFECT", 0, &ModEffect::preDmg }, { "DEFENDEFFECT", 1, &ModEffect::defend },
+        { "UPDATEEFFECT", 2, &ModEffect::update }, { "ENGAGEEFFECT", 3, &ModEffect::engage }, { "DISENGAGEEFFECT", 3, &ModEffect::disengage },
+    };
+    auto trim = [](const std::string& v) {
+        size_t a = 0, b = v.size();
+        while (a < b && (v[a] == ' ' || v[a] == '\t' || v[a] == '\r')) ++a;
+        while (b > a && (v[b - 1] == ' ' || v[b - 1] == '\t' || v[b - 1] == '\r')) --b;
+        return v.substr(a, b - a);
+    };
+    auto firstWord = [](const std::string& v) {
+        size_t a = 0;
+        while (a < v.size() && (v[a] == ' ' || v[a] == '\t')) ++a;
+        size_t b = a;
+        while (b < v.size() && v[b] != ' ' && v[b] != '\t') ++b;
+        return v.substr(a, b - a);
+    };
+    size_t nUnknown = 0;
+    std::vector<ModEffect> out;
+    ModEffect cur;
+    bool inSection = false, inEntry = false;
+    std::string key, val;
+    auto finishStmt = [&]() {
+        if (key.empty()) return;
+        std::string v = val;
+        const size_t semi = v.find(';');
+        if (semi != std::string::npos) v = v.substr(0, semi);
+        v = trim(v);
+        for (const auto& k : kKeys) {
+            if (key != k.key || v.empty()) continue;
+            const std::string fname = firstWord(v);
+            const Reg* r = nullptr;
+            for (const auto& g : kReg) if (fname == g.name && g.table == k.table) { r = &g; break; }
+            if (!r) { ++nUnknown; break; }
+            ModHook& h = cur.*(k.slot);
+            h.fn = r->fn;
+            const std::string arg = firstWord(v.substr(fname.size()));
+            if (r->parse == 'f') {
+                char* end = nullptr;
+                const double d = std::strtod(arg.c_str(), &end);
+                h.f = (arg.empty() || end != arg.c_str() + arg.size()) ? -1.0f : static_cast<float>(d);   // ModEffectParseFloat — 못 읽으면 −1
+            } else if (r->parse == 'i') {
+                char* end = nullptr;
+                const long n = std::strtol(arg.c_str(), &end, 10);
+                h.i = (arg.empty() || end != arg.c_str() + arg.size()) ? -1 : static_cast<int32_t>(n);       // ModEffectParseInt
+            }
+            break;
+        }
+        key.clear(); val.clear();
+    };
+    const size_t start = txt.find("\nEFFECTIVENESS");
+    size_t pos = start == std::string::npos ? txt.size() : start + 1;
+    while (pos < txt.size()) {
+        size_t e = txt.find('\n', pos);
+        if (e == std::string::npos) e = txt.size();
+        const std::string line = trim(txt.substr(pos, e - pos));
+        pos = e + 1;
+        if (line.empty()) continue;
+        if (!inSection) {
+            if (line == "EFFECTIVENESS" || line == "MATERIAL" || line == "ENCHANTMENT") inSection = true;
+            continue;
+        }
+        if (!inEntry) {
+            if (line == "END") { inSection = false; continue; }
+            cur = ModEffect{};
+            cur.name = line;
+            inEntry = true;
+            continue;
+        }
+        if (line == "END") { finishStmt(); out.push_back(cur); inEntry = false; continue; }
+        const size_t eq = line.find('=');
+        bool isKey = eq != std::string::npos && eq > 0;
+        if (isKey) {
+            const std::string k = trim(line.substr(0, eq));
+            for (char c : k) if (!((c >= 'A' && c <= 'Z') || c == '_')) { isKey = false; break; }
+            if (isKey) { finishStmt(); key = k; val = line.substr(eq + 1); }
+        }
+        if (!isKey) val += " " + line;   // 이어지는 줄(ALLOWED_WEAPONS 의 `AXE -` 등)
+        if (val.find(';') != std::string::npos) finishStmt();
+    }
+    if (unknown) *unknown = nUnknown;
+    return out;
+}
+
+// ★ 11-20 1-b — `nox_xxx_itemApplyAttackEffect_538840`(`GAME4_3.c:3828~3851`) — 든 무기의 수식 **넷**의 공격 효과(+40)를 부른다.
+//   부르는 곳 = 휘두르기 판정 바로 앞(`:4113~4283` — calcBoltDamage 로 피해 float 을 짓고 → 이것 → playerTraceAttack).
+//   a5 = 피해 float 칸 — DamageMultiplier(`4E04C0`)가 `*a5 = valf × *a5` 로 곱한다(float 곱 · 버림은 sub_538510 의 +0.5)
+void Server::ApplyAttackEffects(const Session& s, float& dmg) {
+    const Session::Carried* w = HeldWeapon(s);
+    if (!w) return;
+    for (int m = 0; m < 4; ++m) {
+        const ModEffect* e = ModEffectOf(w->mods[m]);
+        if (!e) continue;
+        const ModHook& h = e->attack;
+        switch (h.fn) {
+            case ModFn::None: break;
+            case ModFn::DamageMultiplier:
+                dmg = h.f * dmg;
+                ++modFnStat_[static_cast<size_t>(h.fn)];
+                break;
+            // 빈 함수 — 활 장전(Readiness `itemCheckReadinessEffect_4E0960`)·화살통(Replenishment `GAME4_3.c:6515`)이 함수 주소로 따로 찾는다
+            case ModFn::Readiness: case ModFn::Replenishment: case ModFn::Empty: break;
+            // ProjectileSpeed — 이 자리의 a5 는 피해 float 칸이라 `a5 + 544` 쓰기는 꾸러미 밖(정답지 결함 · 화면에 안 나옴). 화살에 곱하는 자리는 `:4643`(1-e)
+            case ModFn::ProjectileSpeed: break;
+            default: ++modNotPorted_; break;   // FireRing · BlueFireRing(1-e)
+        }
+    }
+}
+
+// ★ 11-20 1-b — `nox_xxx_playerPreAttackEffects_538290`(`GAME4_3.c:3584~3621`) — 근접 한 대가 맞을 때 피해 함수 **앞**에
+//   든 무기의 **둘째·셋째 부여 칸(2·3)** 의 맞히기 전 효과(+52)를 부른다(`sub_538510` `:3729`).
+//   관문: 편 거르기 꺼짐(417DA0(1) — 우리 판은 늘 켬)이 아니면 **때린 이가 맞는 쪽의 적**이어야 · 맞는 쪽이 무적(23)·반사 방패(27)가 아니어야.
+//   효과 인자 = (수식, 무기, 때린 이, 맞는 쪽, 꾸러미) — 피해는 무기(src)로 때린 사람(by) 이름이다
+void Server::ApplyPreHitEffects(Session& s, const Target& t, const AttackSrc& src, HitterRef hr) {
+    const Session::Carried* w = HeldWeapon(s);
+    if (!w) return;
+    const uint8_t mods[2] = { w->mods[2], w->mods[3] };   // 피해가 가방을 바꿀 수 있어(감전 되갚기 · 죽음) 먼저 베낀다
+    bool any = false;
+    for (uint8_t mi : mods) { const ModEffect* e = ModEffectOf(mi); if (e && e->preHit.fn != ModFn::None) any = true; }
+    if (!any) return;
+    bool enemy = false;
+    bool shielded = false;
+    if (t.sessionId != kNoSession) {
+        auto it = sessions_.find(t.sessionId);
+        if (it == sessions_.end()) return;
+        enemy = OwnersEnemy(t.sessionId, false, s.sessionId, false);
+        shielded = it->second.buffs.Has(23) || it->second.buffs.Has(27);
+    } else {
+        if (t.pet < 0 || static_cast<size_t>(t.pet) >= pets_.size()) return;
+        const Creature& k = pets_[static_cast<size_t>(t.pet)];
+        enemy = OwnersEnemy(k.owner, k.owner == kNoSession, s.sessionId, false);
+        shielded = k.buffs.Has(23) || k.buffs.Has(27);
+    }
+    if (!enemy) { ++modPreHitGate_[1]; return; }
+    if (shielded) { ++modPreHitGate_[2]; return; }
+    ++modPreHitGate_[0];
+    for (uint8_t mi : mods) {
+        const ModEffect* e = ModEffectOf(mi);
+        if (!e) continue;
+        const ModHook& h = e->preHit;
+        switch (h.fn) {
+            case ModFn::None: break;
+            case ModFn::Fire: {
+                // `Nox_xxx_fireEffect_4E0550`(`server/modifiers.go:602~609`) — 맞는 쪽에 int(f) 폭발(7) 피해 → 불똥 그림(양 = int8(f × 10)) → 소리 WeaponEffectFire(224)
+                HurtTarget(t, static_cast<int>(h.f), s.sessionId, 7, &src, hr);
+                float x = 0, y = 0;
+                if (TargetXY(t, x, y)) {
+                    const int16_t ex = static_cast<int16_t>(x), ey = static_cast<int16_t>(y);
+                    const uint8_t fx[6] = { static_cast<uint8_t>(Op::FX_SPARK_EXPLOSION), static_cast<uint8_t>(ex), static_cast<uint8_t>(ex >> 8),
+                                            static_cast<uint8_t>(ey), static_cast<uint8_t>(ey >> 8),
+                                            static_cast<uint8_t>(static_cast<int8_t>(static_cast<long long>(static_cast<double>(h.f) * 10.0))) };
+                    SendFxAllCli(x, y, fx, sizeof(fx));
+                    PlaySoundAt(224, x, y, 0, 0, kNoSession, t);
+                }
+                ++modFnStat_[static_cast<size_t>(h.fn)];
+                break;
+            }
+            case ModFn::Lightning: {
+                // `nox_xxx_lightngEffect_4E06F0`(`GAME3_2.c:6833~6839`) — 피해 함수(+716)(맞는 쪽, 때린 이, 무기, (long long)f, 9 전기) → 점 효과 129(FX_BLUE_SPARKS) → 소리 225
+                HurtTarget(t, static_cast<int>(static_cast<long long>(h.f)), s.sessionId, 9, &src, hr);
+                float x = 0, y = 0;
+                if (TargetXY(t, x, y)) {
+                    const uint16_t fx16 = static_cast<uint16_t>(static_cast<int>(x)), fy16 = static_cast<uint16_t>(static_cast<int>(y));
+                    const uint8_t fx[5] = { static_cast<uint8_t>(Op::FX_BLUE_SPARKS), static_cast<uint8_t>(fx16), static_cast<uint8_t>(fx16 >> 8),
+                                            static_cast<uint8_t>(fy16), static_cast<uint8_t>(fy16 >> 8) };
+                    SendFxAllCli(x, y, fx, sizeof(fx));
+                    PlaySoundAt(225, x, y, 0, 0, kNoSession, t);
+                }
+                ++modFnStat_[static_cast<size_t>(h.fn)];
+                break;
+            }
+            case ModFn::Empty: break;
+            default: ++modNotPorted_; break;   // Stun · Confuse · Recoil(1-c)
+        }
+    }
+}
+
 // `GAME4_3.c:3855` playerAttack — 맨손(`:4020~4066`) · 무기(`:4067~4419`) · 끝(LABEL_159 `:4420~4439`). 참 = 아직 공격 중.
 //   무기 갈래는 **애니 한가운데 칸(frames/2)** 에 한 번 판정한다(지난 틱 칸보다 클 때만 — 같은 칸 두 번 방지).
 //   ⚠ 옮기지 않은 갈래(다른 묶음): 활·석궁(0x4·0x8 화살 오브젝트 5) · 차크람·수리검(0x40·0x80 날아가는 오브젝트 5)
@@ -17425,9 +17634,11 @@ bool Server::PlayerAttack(Session& s, uint32_t frame) {
         std::fflush(stdout);
     };
     // calcBoltDamage_4EF1E0 — (힘 − 요구힘) × 계수 + 최소 · float 로 담고 sub_538510 이 +0.5 버림
+    //   ★ 11-20 전사 1-b — 담은 float 에 무기 수식의 공격 효과(itemApplyAttackEffect_538840 — 위력 배수 등)를 먼저 건다(`:4105~4113` 차례)
     auto weaponDmg = [&]() {
-        const float f = static_cast<float>(static_cast<double>(s.strength - w->reqStrength) *
-                                           static_cast<double>(static_cast<float>(w->coeff)) + w->damageMin);
+        float f = static_cast<float>(static_cast<double>(s.strength - w->reqStrength) *
+                                     static_cast<double>(static_cast<float>(w->coeff)) + w->damageMin);
+        ApplyAttackEffects(s, f);
         return static_cast<int>(static_cast<long long>(static_cast<double>(f) + 0.5));
     };
     auto meleeInfo = [&](uint8_t type, bool overlap) {
@@ -17809,6 +18020,9 @@ bool Server::PlayerTraceAttack(Session& s, const AttackInfo& ai) {
         // ★ 4-c2 — 맞는 소리의 때린 것 = 든 무기(a3 · `GAME4_3.c:3986`), 맨손이면 때린 사람 몸(a2 · a3 = 0 `:4060`)
         HitterRef hr = HitterPlayerBody();
         if (ai.weapon) hr.type = WeaponWireOf(s);
+        // ★ 11-20 전사 1-b — 피해 함수 앞에 맞히기 전 효과(playerPreAttackEffects_538290 `:3729` — 무기가 있을 때만: 맨손은 a3 = 0)
+        if (ai.weapon && (kind == Player || kind == Pet))
+            ApplyPreHitEffects(s, kind == Player ? Target{ sessionId, -1 } : Target{ kNoSession, idx }, src, hr);
         if (kind == Player) {
             HurtTarget(Target{ sessionId, -1 }, ai.dmg, s.sessionId, ai.type, &src, hr);
             auto it = sessions_.find(sessionId);
