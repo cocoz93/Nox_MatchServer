@@ -6193,6 +6193,7 @@ private:
     int ReadinessOf(const Session::Carried* item) const;   // itemCheckReadinessEffect_4E0960(1-e)
     void ItemEngage(Session& s, const Session::Carried& item);      // ★ 1-g itemApplyEngageEffect_4F2FF0 — 칸 2·3
     void ItemDisengage(Session& s, const Session::Carried& item);   // ★ 1-g itemApplyDisengageEffect_4F3030 — 칸 2·3(입음 깃발을 끈 뒤 부른다)
+    void ItemsApplyUpdateEffect(Session& s, uint32_t frame);        // ★ 1-h ItemsApplyUpdateEffect — 입은 것 칸 넷 · 매 틱
     bool ItemFxElsewhere(const Session& s, uint8_t bit) const;      // ★ 1-g enchantItemTestInventory_4DFBB0
     double ItemProtectSum(const Session* s, ModFn engageFn) const;  // ★ 1-g 4DFE40 · 4DFF40 · 4E0040 의 입은 것 몫(칸 넷 · 자르기 전)
     void ApplyPreDamageEffects(const AttackSrc* src, int64_t by, const Target& victim, int dmg);   // itemApplyPreDamageEffect_4E13B0 — 칸 넷(1-d)

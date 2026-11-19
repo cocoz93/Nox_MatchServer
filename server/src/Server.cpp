@@ -5752,6 +5752,8 @@ void Server::UpdatePlayerMovement(uint32_t frame) {
             s.velX = s.velY = 0.0;
         }
     }
+    // ★ 11-20 트레일러 전사 1-h — updateUnitsAAA(`server_update.go:10~16`) — 사람마다 입은 것 갱신 효과를 BBB(아래 ImplA·ImplB) 앞에
+    for (auto& kv : sessions_) if (kv.second.inGame) ItemsApplyUpdateEffect(kv.second, frame);
     for (auto& kv : sessions_) {
         Session& s = kv.second;
         if (!s.inGame) continue;
@@ -17652,6 +17654,52 @@ void Server::ItemDisengage(Session& s, const Session::Carried& item) {
         }
         ++modFnStat_[static_cast<size_t>(h.fn)];
         PlaySoundAt(snd, static_cast<float>(s.posX), static_cast<float>(s.posY), 0, 0, s.sessionId);
+    }
+}
+// ★ 11-20 트레일러 전사 1-h — `ItemsApplyUpdateEffect`(`server/object.go:1842~1854`) — 입은(+16 & 0x100) 장비(깃발·무기·갑옷·지팡이)의 칸 넷 갱신 효과(+100).
+//   ⚠ Go 는 둘째 인자로 사람을 넘기지만 몸통 둘은 **물건**을 읽는다(+492 주인 · +8 클래스 · +736 쓰임 자료) → 물건과 그 주인으로 옮긴다
+//   modFnStat 은 이 둘만 「실제로 채운 번」을 센다(매 틱 불리는 수는 세지 않는다)
+void Server::ItemsApplyUpdateEffect(Session& s, uint32_t frame) {
+    for (auto& c : s.inventory) {
+        if (!c.equipped) continue;
+        for (int k = 0; k < 4; ++k) {
+            const ModEffect* e = ModEffectOf(c.mods[k]);
+            if (!e) continue;
+            const ModHook& h = e->update;
+            switch (h.fn) {
+                case ModFn::None: break;
+                case ModFn::Regeneration: {
+                    // `nox_xxx_effectRegeneration_4E01D0`(`GAME3_2.c:6624~6653`) — 주인이 죽지 않았고(+16 & 0x8020) 마지막 피해(+536)에서 FPS 프레임이 지났고
+                    //   체력 < 최대면 — 주기 = i(갑옷이고 입음 비트 0x4000 로브면 ÷3) × FPS ÷ 최대 체력 · 프레임이 주기로 나눠떨어지면 +1
+                    if (s.respawnAtFrame != 0) break;
+                    if (frame - s.lastDamageFrame < kServerTickRate) break;
+                    if (s.maxHealth == 0 || s.health >= s.maxHealth) break;
+                    uint32_t v4 = static_cast<uint32_t>(h.i);
+                    if (IsArmorItem(c) && (c.equipBit & 0x4000u)) v4 /= 3u;
+                    const uint32_t period = v4 * kServerTickRate / s.maxHealth;
+                    if (period != 0 && frame % period == 0) {                  // 0 이면 원본은 나눗셈에서 죽는다 — 데이터(i ≥ 450)로는 안 생긴다
+                        UnitAdjustHP(Target{ s.sessionId, -1 }, 1);
+                        ++modFnStat_[static_cast<size_t>(ModFn::Regeneration)];
+                    }
+                    break;
+                }
+                case ModFn::ContinualReplenishment: {
+                    // `nox_xxx_attribContinualReplen_4E02C0`(`GAME3_2.c:6656~6690`) — i 프레임마다 지팡이(클래스 0x1000)면 충전 +1(최대에서 자름) ·
+                    //   바뀌었고 주인이 사람이면 `64` 충전 알림
+                    if (h.i <= 0 || frame % static_cast<uint32_t>(h.i) != 0 || !c.wandClass) break;
+                    const uint8_t old = c.charges;
+                    uint8_t nv = static_cast<uint8_t>(old + 1);
+                    if (nv > c.chargesMax) nv = c.chargesMax;
+                    c.charges = nv;
+                    if (old != nv) {
+                        SendCharges(s, c);
+                        ++modFnStat_[static_cast<size_t>(ModFn::ContinualReplenishment)];
+                    }
+                    break;
+                }
+                default: ++modNotPorted_; break;
+            }
+        }
     }
 }
 // `nox_xxx_enchantItemTestInventory_4DFBB0`(`GAME3_2.c:6270~6319`) — 입은(+16 & 0x100) 장비(클래스 0x13001000)의 칸 넷 중 입기 효과(+112)가

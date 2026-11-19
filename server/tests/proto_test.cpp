@@ -24409,6 +24409,38 @@ void TestModEffects1120() {
                       fire0, fire1, fireCap, elec1, r0, r1);
         Check(fp4 != 0xff && lp4 != 0xff && pp4 != 0xff && fire0 == 100 && fire1 == 90 && fireCap == 50 && elec1 == 90 && r0 == 0 && r1 >= 50 && r1 <= 90, msg);
     }
+    // ⑧ 1-h — 재생4(입은 갑옷 칸 2): 체력 100 에서 300틱 → 주기(i × 30 ÷ 최대 체력)마다 +1 · 없으면 0
+    {
+        const uint8_t rg4 = idxOf("Regeneration4");
+        auto regen = [&](uint8_t m, int& gained, unsigned long long& stat, uint16_t& maxHp) {
+            nox::CSyncHost s2;
+            GearTemplates(s2);
+            s2->SetModEffects(effs);
+            const std::string a = "10.11.20.10:9510";
+            s2.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+            const int64_t sid = Sid(s2, a);
+            const uint16_t wnet = s2->DebugWeaponNet(sid);
+            for (const auto& c : s2->DebugInventory(sid)) if (c.equipped && c.netCode != wnet) { s2->DebugSetItemMods(sid, c.netCode, 0xff, 0xff, m, 0xff); break; }
+            std::vector<nox::OutPacket> o;
+            uint32_t ms = 0;
+            s2.Tick(ms, o);
+            s2->DebugSetHealth(sid, 100);
+            const int hp0 = s2->HealthOf(sid);
+            for (int t = 0; t < 300; ++t) { ms += 33; s2.Tick(ms, o); }
+            gained = s2->HealthOf(sid) - hp0;
+            stat = s2->modFnStat(MF::Regeneration);
+            maxHp = s2->MaxHealthOf(sid);
+        };
+        int g0 = 0, g1 = 0; unsigned long long s0 = 0, s1 = 0; uint16_t mh = 0;
+        regen(0xff, g0, s0, mh);
+        regen(rg4, g1, s1, mh);
+        const int ri = rg4 != 0xff ? effs[rg4].update.i : 0;
+        const int period = mh ? ri * 30 / mh : 0;
+        const int expect = period ? 300 / period : -1;
+        std::snprintf(msg, sizeof(msg), "⑧ 재생 — %s i %d · 최대 체력 %u · 주기 %d · 300틱 채움 없음 %d · 재생 %d(%d ±1) · 효과 %llu",
+                      rg4 != 0xff ? effs[rg4].name.c_str() : "(없음)", ri, mh, period, g0, g1, expect, s1);
+        Check(rg4 != 0xff && period > 0 && g0 == 0 && s0 == 0 && g1 >= expect - 1 && g1 <= expect + 1 && g1 > 0 && static_cast<int>(s1) == g1, msg);
+    }
     std::printf("  11-20 — 수식 효과: modifier.bin %zu칸 · 롱소드 %d → 위력6 %d · 불1 +3 · 번개4 +12 · 무적이면 효과 없음\n", effs.size(), base, pow6);
 }
 
