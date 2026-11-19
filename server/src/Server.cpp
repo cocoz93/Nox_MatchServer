@@ -1672,6 +1672,7 @@ bool Server::HurtTarget(const Target& t, int dmg,
         if (!attacker.none() || dtype == 12) BuffOff(Target{ s.sessionId, -1 }, 0);
         // ⚠ 입은 것 방어 효과 itemApplyDefendEffect2 · 무기 앞 피해 효과 itemApplyPreDamageEffect(아이템 5)
         s.lastDamageType = dtype;                          // +524(`GAME3_2.c:7234`)
+        ApplyPreDamageEffects(src, by, Target{ s.sessionId, -1 }, hp);   // ★ 11-20 전사 1-d — 무기 수식 피해 전 효과(`:7248~7250` — +524 뒤 · 맞는 소리 앞)
         // ★ 09-23 nine-defects 4-c2 — 맞는 소리(`:7251~7267` → 사람은 thing.bin `DAMAGESOUND = PlayerDamageSound`) — +524·+536 뒤 · 흡혈 앞
         PlayerDamageSound(s, hitter);
         DamageVampirism(attacker, Target{ s.sessionId, -1 }, hp);   // 흡혈(13)
@@ -1753,6 +1754,7 @@ bool Server::HurtTarget(const Target& t, int dmg,
     amount = DamageProtect(pets_[i].buffs, static_cast<uint8_t>(v15), amount);   // 불·전기 보호(버프 17·20 + 아이템 5)
     if (!attacker.none() || v15 == 12) BuffOff(t, 0);      // 맞으면 투명 풀림
     k.lastDamageType = static_cast<uint8_t>(v15);          // ★ 4-c3b2b — +524(`GAME3_2.c:7234` — 면역 관문 뒤 · 맞는 소리 앞)
+    ApplyPreDamageEffects(src, by, t, amount);             // ★ 11-20 전사 1-d — 무기 수식 피해 전 효과(`:7248~7250`) — 흡혈은 체력만, 소환수 목록은 안 바뀐다
     // ★ 09-23 nine-defects 4-c3a — 맞는 소리(`GAME3_2.c:7251~7267`) — 몬스터는 DAMAGESOUND 가 없어 기본 `532E20`(thing.bin 에
     //   `DAMAGESOUND` 를 적은 종류는 NewPlayer 하나뿐 — 실측). 흡혈(`:7269`) 앞
     PetDamageSound(k, static_cast<uint8_t>(v15), hitter);
@@ -17634,6 +17636,84 @@ void Server::ApplyPreHitEffects(Session& s, const Target& t, const AttackSrc& sr
     }
 }
 
+// ★ 11-20 1-d — `nox_xxx_itemApplyPreDamageEffect_4E13B0`(`GAME3_2.c:7410~7433`) — 피해 함수 안(`:7248~7250` — 때린 것 a3 가
+//   무기·지팡이 클래스 물건일 때 · +520·+524·+536 적은 뒤 · 맞는 소리 앞) 그 물건 수식 **넷**의 피해 전 효과(+64)를 부른다.
+//   효과 인자 = (수식, 물건, 때린 이 a2, 맞는 쪽 a1, &피해) — 피해 = 방어·보호를 지나 이 자리까지 온 값
+void Server::ApplyPreDamageEffects(const AttackSrc* src, int64_t by, const Target& victim, int dmg) {
+    if (!src || !src->itemWeapon) return;
+    auto ai = sessions_.find(by);
+    if (ai == sessions_.end()) return;                     // 효과 셋 다 때린 이(a3)가 있어야 한다(`:6847·6870` · 독은 그 자리를 읽는다)
+    Session& atk = ai->second;
+    for (int m = 0; m < 4; ++m) {
+        const ModEffect* e = ModEffectOf(src->itemMods[m]);
+        if (!e) continue;
+        const ModHook& h = e->preDmg;
+        switch (h.fn) {
+            case ModFn::None: break;
+            case ModFn::DrainMana: {
+                // `nox_xxx_drainMEffect_4E0740`(`GAME3_2.c:6842~6862`) — (long long)(f × 피해) · 0 이면 1 · 맞는 쪽 마나(unitGetOldMana_4EEC80 — 사람 +4 · 몬스터 1000)
+                //   보다 크면 그 마나만큼 · 맞는 쪽에서 빼고 때린 이에게 더한다(빼기는 사람만 몸이 있다)
+                int v5 = static_cast<int>(static_cast<long long>(static_cast<double>(h.f) * static_cast<double>(dmg)));
+                if (!v5) v5 = 1;
+                int have = 1000;
+                Session* vs = nullptr;
+                if (victim.sessionId != kNoSession) {
+                    auto vi = sessions_.find(victim.sessionId);
+                    if (vi == sessions_.end()) break;
+                    vs = &vi->second;
+                    have = vs->mana;
+                }
+                const int take = have < v5 ? have : v5;
+                if (vs) PlayerManaSub(*vs, take);
+                PlayerManaAdd(atk, take);
+                ++modFnStat_[static_cast<size_t>(h.fn)];
+                break;
+            }
+            case ModFn::Vampirism: {
+                // `nox_xxx_vampirismEffect_4E07C0`(`:6865~6889`) — 몬스터인데 하위 분류 0x40(UNDEAD)이면 안 든다 · (long long)(피해 × f) · 0 이면 1
+                //   · 맞는 쪽 지금 체력보다 크면 그 체력만큼 때린 이를 채운다(unitAdjustHP — 알림 없음)
+                int hpNow = 0;
+                if (victim.sessionId != kNoSession) {
+                    auto vi = sessions_.find(victim.sessionId);
+                    if (vi == sessions_.end()) break;
+                    hpNow = vi->second.health;
+                } else {
+                    if (victim.pet < 0 || static_cast<size_t>(victim.pet) >= pets_.size()) break;
+                    const Creature& k = pets_[static_cast<size_t>(victim.pet)];
+                    const auto tb = gt_->typeBodies.find(k.type);
+                    if (tb != gt_->typeBodies.end() && (tb->second.subclass & 0x40)) { ++modVampUndead_; break; }
+                    hpNow = k.health;
+                }
+                int v6 = static_cast<int>(static_cast<long long>(static_cast<double>(dmg) * static_cast<double>(h.f)));
+                if (!v6) v6 = 1;
+                UnitAdjustHP(Target{ by, -1 }, hpNow < v6 ? hpNow : v6);
+                ++modFnStat_[static_cast<size_t>(h.fn)];
+                break;
+            }
+            case ModFn::Poison: {
+                // `nox_xxx_poisonEffect_4E0850`(`:6892~6907`) — 맞는 쪽이 사람이고 방패 올림(상태 16)이며 때린 이 쪽을 보고 있으면 안 듦
+                //   · 아니면 activatePoison(맞는 쪽, 1, i) 이 걸었을 때 사람이면 글 13/2
+                Session* vs = nullptr;
+                if (victim.sessionId != kNoSession) {
+                    auto vi = sessions_.find(victim.sessionId);
+                    if (vi == sessions_.end()) break;
+                    vs = &vi->second;
+                    if (vs->moveState == 16 &&
+                        (TestTwoPointsAndDirection(static_cast<float>(vs->posX), static_cast<float>(vs->posY), vs->facingPrev,
+                                                   static_cast<float>(atk.posX), static_cast<float>(atk.posY)) & 1)) break;
+                }
+                if (ActivatePoison(victim, 1, h.i)) {
+                    if (vs) InformSpell(*vs, 13, 2);
+                    ++modFnStat_[static_cast<size_t>(h.fn)];
+                }
+                break;
+            }
+            case ModFn::Empty: break;
+            default: ++modNotPorted_; break;   // Sympathy(데이터에 없음)
+        }
+    }
+}
+
 // `GAME4_3.c:3855` playerAttack — 맨손(`:4020~4066`) · 무기(`:4067~4419`) · 끝(LABEL_159 `:4420~4439`). 참 = 아직 공격 중.
 //   무기 갈래는 **애니 한가운데 칸(frames/2)** 에 한 번 판정한다(지난 틱 칸보다 클 때만 — 같은 칸 두 번 방지).
 //   ⚠ 옮기지 않은 갈래(다른 묶음): 활·석궁(0x4·0x8 화살 오브젝트 5) · 차크람·수리검(0x40·0x80 날아가는 오브젝트 5)
@@ -18039,6 +18119,13 @@ bool Server::PlayerTraceAttack(Session& s, const AttackInfo& ai) {
         src.y = static_cast<float>(s.prevY);
         src.obj = ai.weapon;                                // +28 무기 오브젝트 — 죽음 알림의 무기 그림(3-d)
         src.objType = ai.weapon ? WeaponWireOf(s) : 0;
+        // ★ 11-20 전사 1-d — 든 무기(근접 무기 0x1000000 · 지팡이 0x1000)의 수식 넷 — 피해 함수 안 피해 전 효과가 읽는다
+        if (ai.weapon) {
+            if (const Session::Carried* hw = HeldWeapon(s)) {
+                src.itemWeapon = true;
+                for (int m = 0; m < 4; ++m) src.itemMods[m] = hw->mods[m];
+            }
+        }
         // ★ 4-c2 — 맞는 소리의 때린 것 = 든 무기(a3 · `GAME4_3.c:3986`), 맨손이면 때린 사람 몸(a2 · a3 = 0 `:4060`)
         HitterRef hr = HitterPlayerBody();
         if (ai.weapon) hr.type = WeaponWireOf(s);

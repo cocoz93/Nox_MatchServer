@@ -24223,6 +24223,53 @@ void TestModEffects1120() {
                       cs.held, c0.held, cc.confused, c0.confused, cr.x, c0.x, cs.stun, cc.conf, cr.rec);
         Check(cs.held && !c0.held && cc.confused && !c0.confused && cr.x > c0.x + 1.0 && cs.stun == 1 && cc.conf == 1 && cr.rec == 1, msg);
     }
+    // ④ 1-d — 피해 전 효과: 흡혈4(107 · 0.20 · 곰 38 → 워리어 +7) · 독1(108 · 곰 독 1) · 마나 흡수4(99 · 0.9 × 위저드가 깎인 체력만큼 마나를 뺌)
+    {
+        struct C4 { int hpGain = -1, poison = -1, victimLost = -1, victimMana = -1; unsigned long long vamp = 0, pois = 0, drain = 0; };
+        auto hit = [&](uint8_t m2, bool wizard) {
+            C4 c;
+            nox::CSyncHost srv;
+            GearTemplates(srv);
+            srv->SetModEffects(effs);
+            srv->SetPlayerAnimFrames(28, 8, 0);
+            const std::string a = "10.11.20.4:9504", b = "10.11.20.5:9505";
+            srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+            srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+            srv->DebugSetAutoFight(false);
+            if (wizard) {
+                srv.DebugEnterGame(b, 733, false, nox::CharClass::Wizard);
+                srv->DebugMoveTo(Sid(srv, b), 1040, 1000);
+            } else {
+                nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
+                srv->SetTypeBody(1365, body);
+                srv->DebugSpawnPet(1365, 1040.0f, 1000.0f, Sid(srv, std::string()));
+                srv->DebugSetPetHealth(0, 1000);
+            }
+            if (!srv->DebugSetHeldMods(Sid(srv, a), 0xff, 0xff, m2, 0xff)) return c;
+            std::vector<nox::OutPacket> out;
+            uint32_t ms = 0;
+            srv.Tick(ms, out);
+            for (int t = 0; t < 30; ++t) { ms += 33; srv.Tick(ms, out); }
+            srv->DebugSetHealth(Sid(srv, a), 50);
+            if (wizard) { srv->DebugSetHealth(Sid(srv, b), 100); srv->DebugSetMana(Sid(srv, b), 100); }
+            const int hpA0 = srv->HealthOf(Sid(srv, a));
+            auto click = InputPacket(6);
+            srv.OnPacket(a, click.data(), click.size(), out);
+            for (int t = 0; t < 12; ++t) { ms += 33; srv.Tick(ms, out); }
+            c.hpGain = srv->HealthOf(Sid(srv, a)) - hpA0;
+            if (wizard) { c.victimLost = 100 - srv->HealthOf(Sid(srv, b)); c.victimMana = srv->ManaOf(Sid(srv, b)); }
+            else c.poison = srv->DebugPetPoison(0);
+            c.vamp = srv->modFnStat(MF::Vampirism); c.pois = srv->modFnStat(MF::Poison); c.drain = srv->modFnStat(MF::DrainMana);
+            return c;
+        };
+        const C4 b0 = hit(0xff, false), bv = hit(107, false), bp = hit(108, false), w0 = hit(0xff, true), wd = hit(99, true);
+        const int expDrain = static_cast<int>(static_cast<long long>(static_cast<double>(0.9f) * static_cast<double>(wd.victimLost)));
+        std::snprintf(msg, sizeof(msg), "④ 이름 %s·%s·%s · 흡혈 워리어 +%d(+7 · 없음 +%d) · 곰 독 %d(1 · 없음 %d) · 위저드 깎임 %d · 마나 %d(없음 %d − %d) · 효과 %llu·%llu·%llu",
+                      nm(107), nm(108), nm(99), bv.hpGain, b0.hpGain, bp.poison, b0.poison, wd.victimLost, wd.victimMana, w0.victimMana, expDrain, bv.vamp, bp.pois, wd.drain);
+        Check(effs[107].name == "Vampirism4" && effs[108].name == "Venom1" && effs[99].name == "ManaSteal4" &&
+              bv.hpGain == 7 && b0.hpGain == 0 && bp.poison == 1 && b0.poison == 0 &&
+              wd.victimLost > 0 && expDrain > 0 && wd.victimMana == w0.victimMana - expDrain && bv.vamp == 1 && bp.pois == 1 && wd.drain == 1, msg);
+    }
     std::printf("  11-20 — 수식 효과: modifier.bin %zu칸 · 롱소드 %d → 위력6 %d · 불1 +3 · 번개4 +12 · 무적이면 효과 없음\n", effs.size(), base, pow6);
 }
 

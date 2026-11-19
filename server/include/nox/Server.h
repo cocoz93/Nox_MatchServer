@@ -2885,6 +2885,10 @@ public:
         bool rootIsMonster = false;
         bool obj = false;
         uint16_t objType = 0;
+        // ★ 11-20 트레일러 전사 1-d — 때린 것(a3)이 무기·지팡이 클래스 물건(0x1001000)이면 그 수식 넷(+692).
+        //   피해 함수 안 itemApplyPreDamageEffect_4E13B0(`GAME3_2.c:7248~7250`)가 읽는다 — 값으로 베껴 둬 가방이 바뀌어도 안전
+        bool itemWeapon = false;
+        uint8_t itemMods[4] = { 0xff, 0xff, 0xff, 0xff };
     };
     // ★ 09-23 nine-defects 4-c3b1 — 맞는 소리의 **「때린 것」**(정답지 obj2 = a3 가 있으면 a3, 없으면 a2 · `GAME3_2.c:7257~7261`).
     //   `AttackSrc` 와 따로 둔다 — `AttackSrc` 는 막기 판정·마지막 때린 것(+520)에도 쓰여, 없던 자리에 새로 넘기면 그쪽 동작까지 바뀐다.
@@ -2926,7 +2930,8 @@ public:
     size_t ModEffectCount() const { return gt_->modEffects.size(); }
     const ModEffect* ModEffectOf(uint8_t idx) const { return idx < gt_->modEffects.size() ? &gt_->modEffects[idx] : nullptr; }
     unsigned long long modFnStat(ModFn f) const { return f < ModFn::Count ? modFnStat_[static_cast<size_t>(f)] : 0; }   // 효과 갈래가 불린 수
-    unsigned long long modNotPorted() const { return modNotPorted_; }   // 효과가 걸렸으나 아직 안 옮긴 갈래
+    unsigned long long modNotPorted() const { return modNotPorted_; }
+    unsigned long long modVampUndead() const { return modVampUndead_; }   // 효과가 걸렸으나 아직 안 옮긴 갈래
     unsigned long long modPreHitGate(int i) const { return i >= 0 && i < 3 ? modPreHitGate_[i] : 0; }   // 0 통과 · 1 적 아님 · 2 맞는 쪽 버프 23·27
     // 시험용 — 든 무기(무기 칸)의 수식 넷을 바꾼다
     bool DebugSetHeldMods(int64_t sessionId, uint8_t m0, uint8_t m1, uint8_t m2, uint8_t m3) {
@@ -6163,8 +6168,10 @@ private:
     unsigned long long deadFnStat_[3] = {};   // ★ 11-19 — 죽음 시작(31)의 죽은 뒤 함수 갈래마다(0 EmberDemonDead · 1 DemonDead · 2 없음)
     unsigned long long modFnStat_[static_cast<size_t>(ModFn::Count)] = {};   // ★ 11-20 1-b — 수식 효과 갈래마다
     unsigned long long modNotPorted_ = 0, modPreHitGate_[3] = {};
+    unsigned long long modVampUndead_ = 0;   // ★ 11-20 1-d — 흡혈 수식이 언데드(하위 분류 0x40)라 안 든 번
     void ApplyAttackEffects(const Session& s, float& dmg);   // itemApplyAttackEffect_538840 — 든 무기 칸 넷
     void ApplyPreHitEffects(Session& s, const Target& t, const AttackSrc& src, HitterRef hr);   // playerPreAttackEffects_538290 — 칸 2·3
+    void ApplyPreDamageEffects(const AttackSrc* src, int64_t by, const Target& victim, int dmg);   // itemApplyPreDamageEffect_4E13B0 — 칸 넷(1-d)
     unsigned long long soundsQueued_ = 0;
     unsigned long long soundsDropped_ = 0;
     unsigned long long soundsSent_ = 0;
