@@ -1139,6 +1139,9 @@ struct Session {
     uint16_t poisonDecay = 0;      // +542 감쇠 계수기 — 독을 걸 때 1000, 0 이 되면 독 1 줄고 다시 1000
     float speedCur = 3.0f;         // +544 SpeedCur — CCC 가 매 틱 셈(느림·빠르게, 4-b3) · NewPlayer SPEED 96/32
     float speedBase = 3.0f;        // +548 SpeedBase — 접속 때 직업으로 덮어씀(`SpeedBaseOnline` · `GAME3_3.c:7668` · 10-02) · 3.0 은 덮기 전 thing.bin 값
+    float speedBonus = 0.0f;       // ★ 11-20 1-g — +552 SpeedBonus — 빠르기 수식을 입으면 += f · 벗으면 −= f(`effectSpeedEngage_4DFC30` · `4DFCA0`)
+    uint8_t itemFx = 0;            // ★ 11-20 1-g — +440 입은 것 효과 비트(1 불 막이 · 2 독 막이 · 4 번개 막이 · 8 광채 · 16 빠르기 · 32 재생)
+    uint8_t itemFxReported = 0;    // ★ 11-20 1-g — +2172 알린 값 — 다르면 `5b <비트>`(playerReportAnything `GAME3_2.c:4889~4892`)
     uint16_t seqImpId = 0;         // 0xcc 껍데기의 번호. 실측도 1씩 오른다
     // ★★★ **중요 메시지 대기열** (2026-09-13 — 정답지 `nox_xxx_netSendPacket_4E5030`·`netImportant_4E5770` 이식).
     //   EmitSeq 는 바로 안 보내고 여기 쌓는다. 틱마다 `[27 시각][aa][cc…]` 한 조각으로 싣고,
@@ -2932,6 +2935,13 @@ public:
     unsigned long long modFnStat(ModFn f) const { return f < ModFn::Count ? modFnStat_[static_cast<size_t>(f)] : 0; }   // 효과 갈래가 불린 수
     unsigned long long modNotPorted() const { return modNotPorted_; }
     unsigned long long modVampUndead() const { return modVampUndead_; }   // 효과가 걸렸으나 아직 안 옮긴 갈래
+    unsigned long long poisonResisted() const { return poisonResisted_; }   // ★ 1-g — 독 막이 굴림으로 독을 안 받은 수(`Health.c:ResistPoison`)
+    float DebugSpeedBonus(int64_t sid) const { auto it = sessions_.find(sid); return it == sessions_.end() ? 0.0f : it->second.speedBonus; }   // ★ 1-g
+    uint8_t DebugItemFx(int64_t sid) const { auto it = sessions_.find(sid); return it == sessions_.end() ? 0 : it->second.itemFx; }          // ★ 1-g
+    int DebugDamageProtect(int64_t sid, uint8_t dtype, int amount) const {   // ★ 1-g 시험용 — 사람의 불·전기 막이
+        auto it = sessions_.find(sid); return it == sessions_.end() ? amount : DamageProtect(it->second.buffs, &it->second, dtype, amount);
+    }
+    bool DebugActivatePoison(int64_t sid, int add, int cap) { return ActivatePoison(Target{ sid, -1 }, add, cap); }   // ★ 1-g
     unsigned long long modPreHitGate(int i) const { return i >= 0 && i < 3 ? modPreHitGate_[i] : 0; }   // 0 통과 · 1 적 아님 · 2 맞는 쪽 버프 23·27
     // 시험용 — 든 무기(무기 칸)의 수식 넷을 바꾼다
     bool DebugSetItemMods(int64_t sessionId, uint16_t nc, uint8_t m0, uint8_t m1, uint8_t m2, uint8_t m3) {   // ★ 11-20 1-e 시험용 — 가방 물건 번호로
@@ -5265,7 +5275,7 @@ private:
     void SendFxAllCli(float x, float y, const uint8_t* msg, size_t n);   // netSendFxAllCli_523030
     Target DamageAttacker(int64_t by, const AttackSrc* src) const;                               // 4-b1 a2
     void DamageShockBack(const Target& victim, const Buffs& vb, const Target& attacker, const AttackSrc* src);
-    int DamageProtect(const Buffs& b, uint8_t dtype, int amount) const;                                     // 4DFE40·4DFF40
+    int DamageProtect(const Buffs& b, const Session* wearer, uint8_t dtype, int amount) const;              // 4DFE40·4DFF40(★ 1-g 입은 것 몫 — 사람만)
     void DamageVampirism(const Target& attacker, const Target& victim, int amount);
     void UnitAdjustHP(const Target& t, int dv);                                 // unitAdjustHP_4EE460
     void MarkAssist(int64_t orig, const Target& targ);        // sub_4E7540(+3600 도운 사람) — 효과 묶음에서
@@ -6177,9 +6187,14 @@ private:
     unsigned long long modFnStat_[static_cast<size_t>(ModFn::Count)] = {};   // ★ 11-20 1-b — 수식 효과 갈래마다
     unsigned long long modNotPorted_ = 0, modPreHitGate_[3] = {};
     unsigned long long modVampUndead_ = 0;   // ★ 11-20 1-d — 흡혈 수식이 언데드(하위 분류 0x40)라 안 든 번
+    unsigned long long poisonResisted_ = 0;  // ★ 11-20 1-g — 독 막이 굴림으로 안 받은 번
     void ApplyAttackEffects(Session& s, const uint8_t* mods, float& dmg);   // itemApplyAttackEffect_538840 — 수식 넷(든 무기 · 화살)
     void ApplyPreHitEffects(Session& s, const uint8_t* mods4, const Target& t, const AttackSrc& src, HitterRef hr);   // playerPreAttackEffects_538290 — 칸 2·3
     int ReadinessOf(const Session::Carried* item) const;   // itemCheckReadinessEffect_4E0960(1-e)
+    void ItemEngage(Session& s, const Session::Carried& item);      // ★ 1-g itemApplyEngageEffect_4F2FF0 — 칸 2·3
+    void ItemDisengage(Session& s, const Session::Carried& item);   // ★ 1-g itemApplyDisengageEffect_4F3030 — 칸 2·3(입음 깃발을 끈 뒤 부른다)
+    bool ItemFxElsewhere(const Session& s, uint8_t bit) const;      // ★ 1-g enchantItemTestInventory_4DFBB0
+    double ItemProtectSum(const Session* s, ModFn engageFn) const;  // ★ 1-g 4DFE40 · 4DFF40 · 4E0040 의 입은 것 몫(칸 넷 · 자르기 전)
     void ApplyPreDamageEffects(const AttackSrc* src, int64_t by, const Target& victim, int dmg);   // itemApplyPreDamageEffect_4E13B0 — 칸 넷(1-d)
     unsigned long long soundsQueued_ = 0;
     unsigned long long soundsDropped_ = 0;

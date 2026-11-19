@@ -24326,6 +24326,89 @@ void TestModEffects1120() {
         Check(effs[11].name == "ArmorQuality6" && std::fabs(v0 - 0.02f) < 1e-6f && std::fabs(v6 - 0.024f) < 1e-6f && std::fabs(v1 - 0.0188f) < 1e-6f &&
               std::fabs(vm - v0) < 1e-9f, msg);
     }
+    auto idxOf = [&](const char* name) {
+        for (size_t i = 0; i < effs.size(); ++i) if (effs[i].name == name) return static_cast<uint8_t>(i);
+        return static_cast<uint8_t>(0xff);
+    };
+    // ⑦ 1-g — 입기·벗기: 기본 입은 것 둘(바지·운동화 등)을 벗고 빠르기4(Speed4 · 0.2)를 칸 2 에 붙여 하나 입으면 SpeedBonus 0.2 · 비트 16 · `68` 알림 ·
+    //   다음 틱 `5b 10` · 걷는 빠르기 +0.2 / 둘 다 입으면 0.4 · 하나 벗으면 비트 그대로 0.2 · 둘 다 벗으면 비트 0 · 0 · 빠르기 그대로
+    {
+        const uint8_t spd4 = idxOf("Speed4");
+        nox::CSyncHost srv;
+        GearTemplates(srv);
+        srv->SetModEffects(effs);
+        const std::string a = "10.11.20.8:9508";
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        const int64_t sid = Sid(srv, a);
+        const uint16_t wnet = srv->DebugWeaponNet(sid);
+        std::vector<uint16_t> worn;
+        for (const auto& c : srv->DebugInventory(sid)) if (c.equipped && c.netCode != wnet && worn.size() < 2) worn.push_back(c.netCode);
+        auto pkt = [&](nox::Op op, uint16_t nc, std::vector<nox::OutPacket>& out) { const auto p = CodePacket(op, nc); srv.OnPacket(a, p.data(), p.size(), out); };
+        std::vector<nox::OutPacket> o;
+        uint32_t ms = 0;
+        srv.Tick(ms, o);
+        for (int t = 0; t < 3; ++t) { ms += 33; srv.Tick(ms, o); }
+        bool ok = worn.size() == 2 && spd4 != 0xff;
+        float b1 = -1, b2 = -1, b3 = -1, b4 = -1, cur0 = 0, cur1 = 0, cur4 = 0; uint8_t f1 = 0, f3 = 0, f4 = 0xff; bool rep68 = false, rep5b = false;
+        if (ok) {
+            pkt(nox::Op::TRY_DEQUIP, worn[0], o); pkt(nox::Op::TRY_DEQUIP, worn[1], o);
+            srv->DebugSetItemMods(sid, worn[0], 0xff, 0xff, spd4, 0xff);
+            srv->DebugSetItemMods(sid, worn[1], 0xff, 0xff, spd4, 0xff);
+            ms += 33; srv.Tick(ms, o);
+            cur0 = srv->DebugSpeedCur(sid);
+            std::vector<nox::OutPacket> e1; pkt(nox::Op::TRY_EQUIP, worn[0], e1);
+            b1 = srv->DebugSpeedBonus(sid); f1 = srv->DebugItemFx(sid);
+            for (const auto& m : FlattenTo(e1, a))
+                if (m.size() == 8 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_STAT_MODIFIER)) { float f = 0; std::memcpy(&f, m.data() + 3, 4); if (f == b1) rep68 = true; }
+            std::vector<nox::OutPacket> t1; ms += 33; srv.Tick(ms, t1); ms += 33; srv.Tick(ms, t1);
+            for (const auto& m : FlattenTo(t1, a))
+                if (m.size() == 2 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_ITEM_ENCHANTMENT) && m[1] == 0x10) rep5b = true;
+            cur1 = srv->DebugSpeedCur(sid);
+            pkt(nox::Op::TRY_EQUIP, worn[1], o); b2 = srv->DebugSpeedBonus(sid);
+            pkt(nox::Op::TRY_DEQUIP, worn[0], o); b3 = srv->DebugSpeedBonus(sid); f3 = srv->DebugItemFx(sid);
+            pkt(nox::Op::TRY_DEQUIP, worn[1], o); b4 = srv->DebugSpeedBonus(sid); f4 = srv->DebugItemFx(sid);
+            ms += 33; srv.Tick(ms, o);
+            cur4 = srv->DebugSpeedCur(sid);
+        }
+        std::snprintf(msg, sizeof(msg), "⑦ 입기·벗기 빠르기 — %s(%u) · 하나 %.3f 비트 %u · 68 %d · 5b %d · 걸음 %.3f → %.3f · 둘 %.3f · 하나 벗음 %.3f 비트 %u · 둘 벗음 %.3f 비트 %u · 걸음 %.3f · 효과 %llu·%llu",
+                      ok ? effs[spd4].name.c_str() : "(없음)", spd4, b1, f1, rep68 ? 1 : 0, rep5b ? 1 : 0, cur0, cur1, b2, b3, f3, b4, f4, cur4,
+                      srv->modFnStat(MF::SpeedEngage), srv->modFnStat(MF::SpeedDisengage));
+        Check(ok && std::fabs(b1 - 0.2f) < 1e-6f && f1 == 0x10 && rep68 && rep5b && std::fabs(cur1 - (cur0 + 0.2f)) < 1e-5f && std::fabs(b2 - 0.4f) < 1e-6f &&
+              std::fabs(b3 - 0.2f) < 1e-6f && f3 == 0x10 && std::fabs(b4) < 1e-6f && f4 == 0 && std::fabs(cur4 - cur0) < 1e-5f &&
+              srv->modFnStat(MF::SpeedEngage) == 2 && srv->modFnStat(MF::SpeedDisengage) == 2, msg);
+    }
+    // ⑦' 1-g — 막이: 불 막이4(0.093) 한 칸 → 불 100 이 90 · 입은 둘 칸 넷 모두(0.744) → 0.5 에서 잘려 50 · 번개 막이4 한 칸 → 번개 100 이 90 ·
+    //   독 막이4(0.15) 둘 칸 넷 모두(1.2 → 0.7) → 독 100번 중 막힘이 대략 70 · 없으면 0
+    {
+        auto withMods = [&](nox::CSyncHost& s2, uint8_t m, int items, bool all4) {
+            GearTemplates(s2);
+            s2->SetModEffects(effs);
+            const std::string a = "10.11.20.9:9509";
+            s2.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+            const int64_t sid = Sid(s2, a);
+            const uint16_t wnet = s2->DebugWeaponNet(sid);
+            int n = 0;
+            std::vector<uint16_t> nets;
+            for (const auto& c : s2->DebugInventory(sid)) if (c.equipped && c.netCode != wnet && n < items) { nets.push_back(c.netCode); ++n; }
+            for (uint16_t nc : nets) s2->DebugSetItemMods(sid, nc, all4 ? m : 0xff, all4 ? m : 0xff, m, all4 ? m : 0xff);
+            return sid;
+        };
+        const uint8_t fp4 = idxOf("FireProtect4"), lp4 = idxOf("LightningProtect4"), pp4 = idxOf("PoisonProtect4");
+        int fire0 = 0, fire1 = 0, fireCap = 0, elec1 = 0;
+        { nox::CSyncHost s2; const int64_t sid = withMods(s2, 0xff, 0, false); fire0 = s2->DebugDamageProtect(sid, 1, 100); }
+        { nox::CSyncHost s2; const int64_t sid = withMods(s2, fp4, 1, false); fire1 = s2->DebugDamageProtect(sid, 1, 100); }
+        { nox::CSyncHost s2; const int64_t sid = withMods(s2, fp4, 2, true); fireCap = s2->DebugDamageProtect(sid, 1, 100); }
+        { nox::CSyncHost s2; const int64_t sid = withMods(s2, lp4, 1, false); elec1 = s2->DebugDamageProtect(sid, 9, 100); }
+        auto resist = [&](uint8_t m) {
+            nox::CSyncHost s2; const int64_t sid = withMods(s2, m, 2, true);
+            for (int k = 0; k < 100; ++k) s2->DebugActivatePoison(sid, 1, 100);
+            return s2->poisonResisted();
+        };
+        const unsigned long long r0 = resist(0xff), r1 = resist(pp4);
+        std::snprintf(msg, sizeof(msg), "⑦' 막이 — 불 100 → 없음 %d · 불 막이4 한 칸 %d(90) · 둘 칸 넷 %d(50) · 번개 막이4 한 칸 %d(90) · 독 100번 막힘 없음 %llu · 독 막이 %llu(대략 70)",
+                      fire0, fire1, fireCap, elec1, r0, r1);
+        Check(fp4 != 0xff && lp4 != 0xff && pp4 != 0xff && fire0 == 100 && fire1 == 90 && fireCap == 50 && elec1 == 90 && r0 == 0 && r1 >= 50 && r1 <= 90, msg);
+    }
     std::printf("  11-20 — 수식 효과: modifier.bin %zu칸 · 롱소드 %d → 위력6 %d · 불1 +3 · 번개4 +12 · 무적이면 효과 없음\n", effs.size(), base, pow6);
 }
 

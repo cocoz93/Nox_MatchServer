@@ -1363,9 +1363,13 @@ void Server::DamageShockBack(const Target& victim, const Buffs& vb, const Target
 }
 
 // 불·전기 보호(`checkFireProtect_4DFE40` · `checkElectrProtect_4DFF40`) — 아이템 몫(최대 0.5, 아이템 5) + 버프 세기 표 · 합 최대 0.6 · 곱한 뒤 0 이면 1
-int Server::DamageProtect(const Buffs& b, uint8_t dtype, int amount) const {
+//   ★ 11-20 1-g — 입은 것 몫 = 입은 물건 칸 넷의 입기 효과가 불 막이(sub_4DFD10) / 번개 막이(4DFD80)인 값 합 — 불은 0.5 넘으면 · 번개는 0.5 이상이면 0.5
+//     (`GAME3_2.c:6456` `>` · `:6524` `>=` 그대로) · 몬스터(wearer 없음)는 입은 것이 없어 0
+int Server::DamageProtect(const Buffs& b, const Session* wearer, uint8_t dtype, int amount) const {
     auto protect = [&](int buff, const char* table) {
-        const float items = 0.0f;                           // ⚠ 입은 것 마법부여 합(sub_4DFD10 · 4DFD80) — 아이템 5
+        const bool fire = (buff == 17);
+        const double sum = ItemProtectSum(wearer, fire ? ModFn::FireProtectEngage : ModFn::LightningProtectEngage);
+        const float items = (fire ? sum > 0.5 : sum >= 0.5) ? 0.5f : static_cast<float>(sum);
         float r = items;
         if (b.Has(buff)) r = static_cast<float>(BalanceFloatInd(table, static_cast<int>(b.power[buff]) - 1) + items);
         if (r > 0.60000002f) r = 0.60000002f;
@@ -1667,7 +1671,7 @@ bool Server::HurtTarget(const Target& t, int dmg,
         ++damageStops_["편검사통과"];
         const Target attacker = DamageAttacker(by, src);
         DamageShockBack(Target{ s.sessionId, -1 }, s.buffs, attacker, src);   // 감전(22) 되갚기
-        hp = DamageProtect(s.buffs, dtype, hp);            // 불·전기 보호(버프 17·20 + 아이템 5)
+        hp = DamageProtect(s.buffs, &s, dtype, hp);        // 불·전기 보호(버프 17·20 + 입은 것 ★ 1-g)
         // 맞으면 투명(0)이 풀린다 — 때린 이가 없으면 종류 12 일 때만(+528/+532 때린 자리는 몬스터 AI 7)
         if (!attacker.none() || dtype == 12) BuffOff(Target{ s.sessionId, -1 }, 0);
         // ⚠ 입은 것 방어 효과 itemApplyDefendEffect2 · 무기 앞 피해 효과 itemApplyPreDamageEffect(아이템 5)
@@ -1751,7 +1755,7 @@ bool Server::HurtTarget(const Target& t, int dmg,
             if (v15 == 9 || v15 == 17) { ++damageStops_["전기면역(소환수)"]; return true; }   // `:7142~7146` 1
         }
     }
-    amount = DamageProtect(pets_[i].buffs, static_cast<uint8_t>(v15), amount);   // 불·전기 보호(버프 17·20 + 아이템 5)
+    amount = DamageProtect(pets_[i].buffs, nullptr, static_cast<uint8_t>(v15), amount);   // 불·전기 보호(버프 17·20 · 몬스터는 입은 것 없음)
     if (!attacker.none() || v15 == 12) BuffOff(t, 0);      // 맞으면 투명 풀림
     k.lastDamageType = static_cast<uint8_t>(v15);          // ★ 4-c3b2b — +524(`GAME3_2.c:7234` — 면역 관문 뒤 · 맞는 소리 앞)
     ApplyPreDamageEffects(src, by, t, amount);             // ★ 11-20 전사 1-d — 무기 수식 피해 전 효과(`:7248~7250`) — 흡혈은 체력만, 소환수 목록은 안 바뀐다
@@ -6331,11 +6335,11 @@ void Server::UpdatePlayerMovement(uint32_t frame) {
         if (m.s->setPosThisTick) { m.s->prevX = m.s->posX; m.s->prevY = m.s->posY; m.s->setPosThisTick = false; }
     }
     // CCC: SpeedCur = (SpeedBonus + SpeedBase) × (1 − 0.2 × +541) · 느림(4)이면 × 0.5(`server.go:171~174`) — 빠르게(9) × 1.25 는 updateUnitBuffs 끝
-    //   ⚠ SpeedBonus(아이템 무게·마법부여 5) · +541 느려짐 겹수(독·5) 는 0
+    //   ★ 11-20 1-g — SpeedBonus = 빠르기 수식 입기·벗기(`4DFC30` · `4DFCA0`) · ⚠ +541 느려짐 겹수(독·5) 는 0
     //   ★ 10-02 — SpeedBase 는 사람마다 직업 값(`s.speedBase` · 접속 때 `SpeedBaseOnline`) — 전에는 모두 thing.bin 3.0
     for (auto& m : movers) {
         Session& s = *m.s;
-        s.speedCur = static_cast<float>((0.0 + static_cast<double>(s.speedBase)) * (1.0 - 0.2 * 0));
+        s.speedCur = static_cast<float>((static_cast<double>(s.speedBonus) + static_cast<double>(s.speedBase)) * (1.0 - 0.2 * 0));
         if (s.buffs.Has(4)) s.speedCur *= 0.5f;
     }
     // CCC: updateUnitBuffs_4FF620(`server.go:189`) — 버프 남은 틱 −1 · 0 이면 끔(4-a4)
@@ -6682,6 +6686,12 @@ void Server::PlayerReportAnything(Session& s) {
                                  static_cast<uint8_t>(bits >> 24) };
         EmitImportantRaw(s, msg, sizeof(msg));        // netReportArmorVal_4D8A30 — netSendPacket0
         s.armorReported = armor;
+    }
+    // ③ ★ 11-20 1-g — 입은 것 효과 비트 +440 ≠ +2172 → `5b <비트>`(sub_4D8840 `GAME3_2.c:4139~4147` · Packet0) · 금(`4a`)은 아직 없음
+    if (s.itemFxReported != s.itemFx) {
+        const uint8_t m5b[2] = { static_cast<uint8_t>(Op::REPORT_ITEM_ENCHANTMENT), s.itemFx };
+        EmitImportantRaw(s, m5b, sizeof(m5b));
+        s.itemFxReported = s.itemFx;
     }
     // ② 금 +2164 ≠ +2168 → `4a` · ③ 마법부여 표시 +440 ≠ +2172 → `5b` → 아이템(5) · 퀘스트(4096) 목숨·열쇠 → 모드(8)
     // ④ +2184(plrReadVals) → `dd` 총 체력(Packet1) · `de` 총 마나(sub_4E5450 · +2251 직업 0 = 워리어면 안 보냄) · `48` 능력치 14B(Packet0)
@@ -14542,7 +14552,9 @@ void Server::SetPoisonAmount(const Target& t, int amount) {
 
 // activatePoison_4EE7E0(`GAME3_3.c:7270`) — 독을 얹는다. 얹었으면 1
 //   거절: 대상 없음 · **무적(23)** · 관전 중인 사람 · 몬스터 특정 갈래(+12 & 0x200)
-//   ⚠ 저항 굴림(getPoisonDmg_4E0040 × 100)은 **입은 것에서 나온다** — 아이템 묶음. 지금은 저항 0 으로 둔다(지어내지 않는다)
+//   ★ 11-20 1-g — 저항 굴림(`GAME3_3.c:7299~7304`) = getPoisonDmg_4E0040(입은 것 독 막이 합 · 0.7 넘으면 0.7 + 버프 18 세기 표 · 0.9 넘으면 0.9) × 100 을
+//     버림(이 리포 nox_float2int 관례)한 값이 randomInt(0, 100) 보다 크면 글 ResistPoison 을 내고 안 건다
+//     ⚠ 원본은 막이가 0 이어도 난수를 한 번 뽑는다 — 우리는 막이가 있을 때만 뽑는다(결과는 같고 난수열만 다르다 · 우리 난수열은 원본과 어차피 다름)
 //   새 양 = 지금 + add 이고 cap 을 넘지 않는다 · 지금이 이미 cap 을 넘으면 그대로 둔다
 bool Server::ActivatePoison(const Target& t, int add, int cap) {
     uint8_t* pp = PoisonOf(t);
@@ -14552,6 +14564,20 @@ bool Server::ActivatePoison(const Target& t, int add, int cap) {
     if ((t.sessionId != kNoSession)) {
         const Session& s = sessions_.at(t.sessionId);
         if (s.observer || s.respawnAtFrame != 0) return false;
+    }
+    {
+        const Session* wearer = (t.sessionId != kNoSession) ? &sessions_.at(t.sessionId) : nullptr;
+        const double sum = ItemProtectSum(wearer, ModFn::PoisonProtectEngage);
+        const float items = sum > 0.69999999 ? 0.69999999f : static_cast<float>(sum);
+        double r = items;
+        if (b && b->Has(18)) r = BalanceFloatInd("PoisonSpellProtection", static_cast<int>(b->power[18]) - 1) + items;
+        if (r > 0.89999998) r = 0.89999998;
+        const int v7 = static_cast<int>(r * 100.0);
+        if (v7 > 0 && static_cast<int>(NextRandom(101)) < v7) {
+            if (wearer) SendPriMsg(sessions_.at(t.sessionId), "Health.c:ResistPoison");
+            ++poisonResisted_;
+            return false;
+        }
     }
     const int cur = static_cast<int>(*pp);
     int next = cur;
@@ -16408,6 +16434,7 @@ void Server::DropCarriedToWorld(Session& s, size_t at, double tx, double ty, boo
         } else {
             s.inventory[at].equipped = false;
             ReportEquipChange(s, s.inventory[at], false, /*toSelf=*/false, /*toOthers=*/!dead);
+            ItemDisengage(s, s.inventory[at]);                 // ★ 1-g — 버리기도 갑옷 벗기 `53E430`(`GAME3_3.c:6333` → `GAME4_3.c:7433`)를 탄다
         }
     }
     const Session::Carried c = s.inventory[at];
@@ -16766,12 +16793,13 @@ bool Server::PlayerEquipWeapon(Session& s, uint16_t nc, bool failSound) {
     if (!isQuiver) s.weaponNet = item->netCode;                                 // +104 — 화살통은 무기 칸을 안 바꾼다(`:4973`)
     // ★ 09-27 B5 — 충전 알림(`:4976~4979`) — 지팡이 클래스이고 SUBCLASS 가 마법 지팡이(0x47F0000)면 `64 <번호> <지금> <최대>`
     //   ★ 09-29 — 그 밖의 WEAPON 클래스(`:4980~4986`) — 화살통·수리검(비트 0x82)이면 충전 알림 (화살 수, 최대) · 활·석궁(0xC)이면 재장전 칸 0
-    //   ⚠ 마법부여 켜기 `4F2FF0`(`:4988`)는 우리 물건에 마법부여가 없어(맵 물건 수식을 안 읽어 늘 −1) 붙일 것이 없다
+    //   ★ 11-20 1-g — 입기 효과 `4F2FF0`(`:4988`) — 충전 알림 뒤 · 두 손 무기 방패 벗기 앞
     if (item->wandClass && (item->subclass & 0x47F0000)) { SendCharges(s, *item); ++wandChargesOnEquip_; }
     else if (!item->wandClass) {
         if (item->equipBit & 0x82) SendCharges(s, *item);
         else if (item->equipBit & 0xC) item->bowReload = 0;
     }
+    ItemEngage(s, *item);
     // ★ 09-27 B5 — `sub_53A3D0`(`:4989~4991` · `GAME4_3.c:4887~4903`) — 두 손 무기(무기 비트 0x7FFE40C)를 들면 입은 방패(갑옷 비트 0x3000000)를 벗는다(`53E430(1, 1)`).
     //   ★ 09-29 — 이제 갑옷 벗기(`PlayerDequipArmor` = `53E430(1,1)`)로. 방패 막기는 `ArmorEquipOf` 가 가방을 읽어 따라 꺼진다
     if (item->equipBit & 0x7FFE40C) {
@@ -16787,7 +16815,7 @@ bool Server::PlayerEquipWeapon(Session& s, uint16_t nc, bool failSound) {
 // ★ 09-27 B4 — 무기 내려놓기 `nox_xxx_playerDequipWeapon_53A140`(`GAME4_3.c:4755~4816`) — 사람 갈래.
 //   무기 클래스 아님 → 0(`:4760`) · 공격 중이면 상태 13(`:4764~4766`) · **든 무기가 아니면 0**(`:4767~4770` — 화살통만 예외) ·
 //   든 것의 듦 깃발 끔 · 본인 알림(a3 `4D8590`)·모두 알림(a4 `4D84C0`) · +104 = 0(`:4784~4795`)
-//   ⚠ 안 옮긴 것 — 마법부여 끄기 `4F3030`(`:4796`) — 우리 물건에 마법부여가 없다. `:4797~4814` 는 원본 exe 에 없는 GameEx 확장이라 안 옮긴다(소스 주석)
+//   ★ 11-20 1-g — 벗기 효과 `4F3030`(`:4796`) — 화살통 갈래·든 무기 갈래 둘 다 끝에서(입음 깃발을 끈 뒤). `:4797~4814` 는 원본 exe 에 없는 GameEx 확장이라 안 옮긴다(소스 주석)
 //     (09-27 B5 에서 지속 주문 끊기 `4FEB60`(`:4774`)은 옮김)
 //     (★ 09-29 — 활·석궁이면 화살통 내려놓기 `53A0F0(a3, a4)`(`:4771~4773`) · 화살통 갈래(`:4775~4783` — 깃발·비트 2 끄고 알림, 무기 칸은 그대로) 옮김.
 //      화살통도 **든 무기가 있어야** 내려놓는다(`:4768` 의 `!v11 ||`))
@@ -16807,6 +16835,7 @@ bool Server::PlayerDequipWeapon(Session& s, uint16_t nc, bool toSelf, bool toOth
         // ★ 09-29 `:4775~4783` — 화살통: 깃발(+16 & 0x100)·비트 2 끄고 본인(a3)·모두(a4)에게 알림. 무기 칸(+104)은 그대로
         item->equipped = false;
         ReportEquipChange(s, *item, false, toSelf, toOthers);
+        ItemDisengage(s, *item);                                           // ★ 1-g `:4796`
         gate(DequipGate::QuiverOff);
         return true;
     }
@@ -16818,6 +16847,7 @@ bool Server::PlayerDequipWeapon(Session& s, uint16_t nc, bool toSelf, bool toOth
     held->equipped = false;
     ReportEquipChange(s, *held, false, toSelf, toOthers);   // ★ 09-28 — 버리기는 a3 = 0(본인 알림 없음, `GAME3_3.c:6334`) · 죽음은 a4 도 0
     s.weaponNet = 0;
+    ItemDisengage(s, *held);                                // ★ 1-g `:4796`
     return gate(DequipGate::Dequipped);
 }
 
@@ -17087,6 +17117,7 @@ bool Server::PlayerEquipArmor(Session& s, uint16_t nc, bool failSound) {
     for (auto& c : s.inventory) if (c.netCode == nc) { item = &c; break; }   // 벗기가 가방을 안 바꾸지만 다시 잡아 둔다
     item->equipped = true;
     ReportEquipChange(s, *item, true);
+    ItemEngage(s, *item);                                                    // ★ 1-g `4F2FF0`(`GAME4_3.c:7562` — 방어값 다시 뒤 · 방패 갈래 앞)
     if (item->subclass & 2) {                                                // `sub_53E600` — 방패면 든 두 손 무기(0x7FFE40C)를 내려놓는다
         std::vector<uint16_t> twoHand;
         for (const auto& x : s.inventory)
@@ -17107,6 +17138,7 @@ bool Server::PlayerDequipArmor(Session& s, uint16_t nc, bool toSelf, bool toOthe
     if (!item || !IsArmorItem(*item) || !item->equipped) return gate(ArmorGate::NotWorn);
     item->equipped = false;
     ReportEquipChange(s, *item, false, toSelf, toOthers);
+    ItemDisengage(s, *item);                                                 // ★ 1-g `4F3030`(`GAME4_3.c:7433` — 방어값 다시 뒤)
     if ((item->subclass & 2) && (s.moveState == 15 || s.moveState == 16 || s.moveState == 17)) {
         PlayerSetState(s, kPlayerStateIdle, frame_, /*cancelShield=*/true);
         ++armorGate_[static_cast<size_t>(ArmorGate::ShieldBlockIdle)];
@@ -17555,6 +17587,108 @@ std::vector<Server::ModEffect> Server::ParseModEffects(const std::string& txt, s
     }
     if (unknown) *unknown = nUnknown;
     return out;
+}
+
+// ★ 11-20 트레일러 전사 1-g — 입기·벗기 효과(`itemApplyEngageEffect_4F2FF0` · `itemApplyDisengageEffect_4F3030` `GAME3_3.c:10578~10621`) —
+//   물건 부여 칸 2·3 의 +112 / +116 함수를 (효과, 사람, 물건)으로 부른다. 몸통 열둘(`GAME3_2.c:6256~6621`):
+//   켜기 = +440 비트를 켜고 소리 · 끄기 = 다른 입은 것에 같은 비트 입기 효과가 없을 때만 비트를 끄고 소리(끄기는 입음 깃발을 끈 뒤 불린다)
+//   빠르기 = SpeedBonus(+552) ± f — f 는 둘 다 **입기 칸 값(+120)** 을 읽는다(끄기 칸 +128 은 안 씀 · 데이터는 둘이 같다) → `68` 알림
+//   불·번개·독 막이 = 비트만(막는 몫은 맞을 때 ItemProtectSum 이 입은 것을 다시 센다) · 재생 = 비트만(채우기는 매 틱 효과)
+//   ⚠ 빠르기·재생 끄기만 「사람인가」(+8 & 4)를 본다 — 우리는 사람만 입으므로 늘 참
+void Server::ItemEngage(Session& s, const Session::Carried& item) {
+    for (int k = 2; k < 4; ++k) {
+        const ModEffect* e = ModEffectOf(item.mods[k]);
+        if (!e) continue;
+        const ModHook& h = e->engage;
+        uint16_t snd = 0;
+        switch (h.fn) {
+            case ModFn::None: continue;
+            case ModFn::BrillianceEngage:       s.itemFx |= 0x08; snd = 75; break;    // sub_4DFB50
+            case ModFn::SpeedEngage: {                                                // effectSpeedEngage_4DFC30
+                s.itemFx |= 0x10;
+                s.speedBonus = h.f + s.speedBonus;
+                uint32_t bits = 0; std::memcpy(&bits, &s.speedBonus, 4);
+                const uint8_t m68[8] = { static_cast<uint8_t>(Op::REPORT_STAT_MODIFIER), static_cast<uint8_t>(s.netCode), static_cast<uint8_t>(s.netCode >> 8),
+                                         static_cast<uint8_t>(bits), static_cast<uint8_t>(bits >> 8), static_cast<uint8_t>(bits >> 16), static_cast<uint8_t>(bits >> 24), 0 };
+                EmitImportantRaw(s, m68, sizeof(m68));                                // netReportStatsSpeed_4D9360(a3 = 0) — Packet0
+                snd = 59;
+                break;
+            }
+            case ModFn::FireProtectEngage:      s.itemFx |= 0x01; snd = 102; break;   // sub_4DFD10
+            case ModFn::LightningProtectEngage: s.itemFx |= 0x04; snd = 106; break;   // buff_4DFD80
+            case ModFn::PoisonProtectEngage:    s.itemFx |= 0x02; snd = 110; break;   // checkPoisonProtectEnch_4DFDE0
+            case ModFn::RegenerationEngage:     s.itemFx |= 0x20; snd = 123; break;   // sub_4E0140
+            default: ++modNotPorted_; continue;
+        }
+        ++modFnStat_[static_cast<size_t>(h.fn)];
+        PlaySoundAt(snd, static_cast<float>(s.posX), static_cast<float>(s.posY), 0, 0, s.sessionId);
+    }
+}
+void Server::ItemDisengage(Session& s, const Session::Carried& item) {
+    for (int k = 2; k < 4; ++k) {
+        const ModEffect* e = ModEffectOf(item.mods[k]);
+        if (!e) continue;
+        const ModHook& h = e->disengage;
+        auto off = [&](uint8_t bit) { if (!ItemFxElsewhere(s, bit)) s.itemFx = static_cast<uint8_t>(s.itemFx & ~bit); };
+        uint16_t snd = 0;
+        switch (h.fn) {
+            case ModFn::None: continue;
+            case ModFn::BrillianceDisengage:       off(0x08); snd = 76; break;    // sub_4DFB80
+            case ModFn::SpeedDisengage: {                                         // effectSpeedDisengage_4DFCA0
+                off(0x10);
+                s.speedBonus = s.speedBonus - e->engage.f;                        // +120 = 입기 칸 값
+                uint32_t bits = 0; std::memcpy(&bits, &s.speedBonus, 4);
+                const uint8_t m68[8] = { static_cast<uint8_t>(Op::REPORT_STAT_MODIFIER), static_cast<uint8_t>(s.netCode), static_cast<uint8_t>(s.netCode >> 8),
+                                         static_cast<uint8_t>(bits), static_cast<uint8_t>(bits >> 8), static_cast<uint8_t>(bits >> 16), static_cast<uint8_t>(bits >> 24), 0 };
+                EmitImportantRaw(s, m68, sizeof(m68));
+                snd = 60;
+                break;
+            }
+            case ModFn::FireProtectDisengage:      off(0x01); snd = 103; break;   // modifFireProtection_4DFD40
+            case ModFn::LightningProtectDisengage: off(0x04); snd = 107; break;   // sub_4DFDB0
+            case ModFn::PoisonProtectDisengage:    off(0x02); snd = 111; break;   // sub_4DFE10
+            case ModFn::RegenerationDisengage:     off(0x20); snd = 124; break;   // sub_4E0170
+            default: ++modNotPorted_; continue;
+        }
+        ++modFnStat_[static_cast<size_t>(h.fn)];
+        PlaySoundAt(snd, static_cast<float>(s.posX), static_cast<float>(s.posY), 0, 0, s.sessionId);
+    }
+}
+// `nox_xxx_enchantItemTestInventory_4DFBB0`(`GAME3_2.c:6270~6319`) — 입은(+16 & 0x100) 장비(클래스 0x13001000)의 칸 넷 중 입기 효과(+112)가
+//   표(`0x587000+200160` 다섯 칸 스물 바이트 — 광채·빠르기·불·번개·독·재생 `blob_init.go:1644~1653`)에서 이 비트에 짝지어진 함수면 참.
+//   ⚠ 표의 비트 칸은 정적 자료라 못 열었다 — 입기 함수마다 켜는 비트(8·16·1·4·2·32)와 같다고 둔다(이름 짐작)
+bool Server::ItemFxElsewhere(const Session& s, uint8_t bit) const {
+    ModFn want = ModFn::None;
+    switch (bit) {
+        case 0x08: want = ModFn::BrillianceEngage; break;
+        case 0x10: want = ModFn::SpeedEngage; break;
+        case 0x01: want = ModFn::FireProtectEngage; break;
+        case 0x04: want = ModFn::LightningProtectEngage; break;
+        case 0x02: want = ModFn::PoisonProtectEngage; break;
+        case 0x20: want = ModFn::RegenerationEngage; break;
+        default: return false;
+    }
+    for (const auto& c : s.inventory) {
+        if (!c.equipped) continue;
+        for (int k = 0; k < 4; ++k) {
+            const ModEffect* e = ModEffectOf(c.mods[k]);
+            if (e && e->engage.fn == want) return true;
+        }
+    }
+    return false;
+}
+// 막이 합의 입은 것 몫(`GAME3_2.c:6423~6442` 등) — 입은 장비 칸 넷의 입기 효과가 그 막이인 +120 값을 double 로 더한다(자르기는 부르는 쪽)
+double Server::ItemProtectSum(const Session* s, ModFn engageFn) const {
+    if (!s) return 0.0;
+    double v = 0.0;
+    for (const auto& c : s->inventory) {
+        if (!c.equipped) continue;
+        for (int k = 0; k < 4; ++k) {
+            const ModEffect* e = ModEffectOf(c.mods[k]);
+            if (e && e->engage.fn == engageFn) v = v + static_cast<double>(e->engage.f);
+        }
+    }
+    return v;
 }
 
 // ★ 11-20 1-e — `nox_xxx_itemCheckReadinessEffect_4E0960`(`GAME3_2.c:6933~6949`) — 물건 부여 칸 2·3 중 공격 효과가 Readiness(빈 함수 nullsub_22)인
