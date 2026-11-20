@@ -471,6 +471,10 @@ enum class ChakramEv : uint8_t { ShurikenThrown = 0, ShurikenLast, ChakramThrown
                                  DropWall, DropHit, DropOwnerGone,          //   떨어짐 — 벽(상태 1) · 맞고(상태 1) · 주인 없음
                                  Count };
 constexpr size_t kChakramEvCount = static_cast<size_t>(ChakramEv::Count);
+// ★ 11-20 트레일러 전사 3 — 좀비 되살아나기·불타 사라지기(`mobActionDead1/2_544D80/544EC0` · `mobRaiseZombie_534AB0` · `zombieBurnDelete_544CE0`)가 어디로 갔나
+enum class ZombieEv : uint8_t { Down = 0, Raise, CorpseHit, CorpseIgnored, SpotMuted,   // 3-a — 쓰러짐 · 일어남 · 누운 좀비가 맞음(때린 이 적음) · 좀비 아닌 시체가 맞음(바로 1) · 누운 좀비의 알아봄 소리 끔
+                                Count };
+constexpr size_t kZombieEvCount = static_cast<size_t>(ZombieEv::Count);
 // ★ 09-29 — 무기·화살통 줍기(`sub_53A720` `GAME4_3.c:5033~5128` · `pickupAmmo_4F3B00` `GAME3_3.c:10831~10903`)에서 난 일 —
 //   직업이 못 쓰는 무기라 못 주움(`:5089~5095`) · 같은 화살통에 합침 · 활·석궁을 들고 있어 화살통을 저절로 듦(`:5105~5111`) ·
 //   저절로 안 들어 충전을 따로 알림(`:5113~5123`) · 줍는 소리(`sub_53A6C0` — 830 지팡이 · 842 쇠 · 844 나무)
@@ -697,6 +701,7 @@ struct Creature {
     uint32_t decayFrame = 0;    // 썩어 지울 프레임(`unitSetDecayTime_511660`) · 0 이면 안 썩음(아레나 맵 몬스터)
     bool removeMe = false;      // 지금 지울 것(원본 `delayedDeleteObject_4E5CC0` — AI 돌기 뒤 한꺼번에)
     bool deadFnPending = false; // ★ 11-19 죽음 시작(31)이 켬 — 죽은 뒤 함수(악마 터짐)를 AI 돌기 뒤에 부른다(`MonsterDeadFn` 주석)
+    uint32_t zombieDeadDur = 0; // ★ 11-20 트레일러 전사 3-a — 좀비 +492 쓰러져 있을 프레임 수(죽음 시작이 ZombieDeadDuration 으로 뽑음) · 죽음(31)을 시작한 프레임(aiActionFrame)부터 잰다
     // 몸 깃발(+16) 덧칠 — thing.bin FLAGS 위에 죽음이 켜고 끄는 것(`PetObjFlags`) ·
     //   죽음 = 0x8000 켬 · 0x80 MISSILE_HIT 끔(`GAME4_1.c:476~478`) · 31 시작 = 0x18 ALLOW_OVERLAP·SHORT 켬(`GAME4_3.c:9893~9894`)
     uint32_t flagsSet = 0, flagsClear = 0;
@@ -4183,6 +4188,7 @@ public:
     }
     unsigned long long bowShot(BowShot k) const { return k < BowShot::Count ? bowShot_[static_cast<size_t>(k)] : 0; }          // ★ 09-29
     unsigned long long chakramEv(ChakramEv k) const { return k < ChakramEv::Count ? chakramEv_[static_cast<size_t>(k)] : 0; }  // ★ 11-20 트레일러 전사 2
+    unsigned long long zombieEv(ZombieEv k) const { return k < ZombieEv::Count ? zombieEv_[static_cast<size_t>(k)] : 0; }      // ★ 11-20 트레일러 전사 3
     unsigned long long arrowHit(ArrowHit k) const { return k < ArrowHit::Count ? arrowHit_[static_cast<size_t>(k)] : 0; }      // ★ 09-29
     unsigned long long weaponPick(WeaponPick k) const { return k < WeaponPick::Count ? weaponPick_[static_cast<size_t>(k)] : 0; }   // ★ 09-29
     unsigned long long quiverFromMap() const { return mt_->quiverFromMap; }   // ★ 09-29 — 맵 짐에서 화살 수를 읽어 실은 바닥 화살통
@@ -4906,6 +4912,8 @@ private:
     void ShootArrow(Session& s, Session::Carried* quiver, uint32_t kind);   // `shootBowCrossbow2_539D80`
     void ThrowShuriken(Session& s);                         // ★ 11-20 트레일러 전사 2-a — 수리검(0x80 · `GAME4_3.c:4335~4378`)
     void ThrowChakram(Session& s);                          // ★ 11-20 트레일러 전사 2-a — 차크람(0x40 · `GAME4_3.c:4388~4419`)
+    void ReportLoseCreature(const Creature& k);             // ★ 11-20 트레일러 전사 3-a — 주인(사람)에게 `6d` — 죽음 · 좀비 불타 사라지기 둘이 부른다
+    void RaiseZombie(Creature& k);                          // ★ 11-20 트레일러 전사 3-a — `mobRaiseZombie_534AB0`
     bool ChakramUpdate(MissileObj& m, uint32_t frame);      // ★ 11-20 2-b — `updateChakramInMotion_53DCC0` · 거짓 = 지운다
     bool ChakramCollideWall(MissileObj& m, float wnx, float wny, int gx, int gy);   // ★ 11-20 2-c — `collideChakram_4EAF00` 벽 갈래 · 거짓 = 지운다
     bool ChakramCollide(MissileObj& m, const Target& tgt, bool obstacle, float hx, float hy, uint32_t mat);   // ★ 2-c — 맞은 것 갈래 · 거짓 = 지운다
@@ -5075,6 +5083,7 @@ private:
     struct WeaponDef { uint8_t classes = 0; uint16_t reqStrength = 0; uint16_t damageMin = 0; float coeff = 0.0f; };
     unsigned long long bowShot_[kBowShotCount] = {};       // ★ 09-29
     unsigned long long chakramEv_[kChakramEvCount] = {};   // ★ 11-20 트레일러 전사 2
+    unsigned long long zombieEv_[kZombieEvCount] = {};     // ★ 11-20 트레일러 전사 3
     unsigned long long arrowHit_[kArrowHitCount] = {};     // ★ 09-29
     unsigned long long weaponPick_[kWeaponPickCount] = {}; // ★ 09-29
     unsigned long long bowPoseEnded_ = 0;                  // ★ 09-29 — 활 쏜 뒤 상태 14 → 13(1초)

@@ -1230,37 +1230,35 @@ void Server::KillPet(size_t idx) {
     // ★ 09-26 M4a — DIE(+60 · `nox_xxx_mobGenericDeath_544C40` `GAME4_3.c:9801~9804`) — 죽은 자리에서 모두에게.
     //   부르는 자리 둘(체력 0 · 죽음 버프 끝) 모두 죽음이라 여기서 낸다 · 지우기 전에(자리·종류가 필요)
     MonsterSound(pets_[idx], 14);
-    const uint16_t netCode = pets_[idx].netCode;
     const bool wild = (pets_[idx].owner == kNoSession);   // 주인 없는 것 = 맵의 몬스터
+    // ★ 11-20 트레일러 전사 3-a — 좀비는 31·30 을 쌓고 **바로 돌아간다**(`monsterCallDieFn_50A3D0` `GAME4_1.c:474~475`) —
+    //   MISSILE_HIT 끄기 · 버프 지우기 · 썩음 · 주인 `6d` 를 다 건너뛴다(일어날 몸이라). 버프는 피해 함수의 16 끄기(`GAME3_3.c:7166`)만
+    const bool zombie = IsZombieType(pets_[idx].type);
     {
         Creature& k = pets_[idx];                            // ⚠ 아래 퀘스트 웨이브가 `pets_` 에 넣기 전에 다 적는다(참조가 깨진다)
         k.dead = true;
         k.health = 0;
         k.flagsSet |= 0x8000;                                // DEAD(`GAME3_3.c:7164`)
-        k.flagsClear |= 0x80;                                // MISSILE_HIT 끔(`GAME4_1.c:476~478`)
+        if (!zombie) k.flagsClear |= 0x80;                   // MISSILE_HIT 끔(`GAME4_1.c:476~478`)
         AIClearStack(k);                                     // `monsterClearActionStack_50A3A0`
         AIPush(k, 31);
         AIPush(k, 30);
-        ClearBuffs(Target{ kNoSession, static_cast<int>(idx) });   // `unitClearBuffs_4FF580`(`:480`)
-        // 썩음 시간 — `randomInt` 는 양끝 포함
-        uint32_t secs = 0;
-        if (!wild) secs = 10 + NextRandom(11);               // 소환수(+1440 0x80) 10~20초
-        else if (questTotal_ > 0 || questStage_ > 0) secs = 5 + NextRandom(4);   // 퀘스트(4096) 5~8초
-        k.decayFrame = secs ? frame_ + secs * kServerTickRate : 0;   // 아레나 맵 몬스터는 안 썩음
+        if (zombie) {
+            BuffOff(Target{ kNoSession, static_cast<int>(idx) }, 16);   // 피해 함수의 `spellBuffOff_4FF5B0(unit, 16)`(좀비도 지난다)
+        } else {
+            ClearBuffs(Target{ kNoSession, static_cast<int>(idx) });   // `unitClearBuffs_4FF580`(`:480`)
+            // 썩음 시간 — `randomInt` 는 양끝 포함
+            uint32_t secs = 0;
+            if (!wild) secs = 10 + NextRandom(11);               // 소환수(+1440 0x80) 10~20초
+            else if (questTotal_ > 0 || questStage_ > 0) secs = 5 + NextRandom(4);   // 퀘스트(4096) 5~8초
+            k.decayFrame = secs ? frame_ + secs * kServerTickRate : 0;   // 아레나 맵 몬스터는 안 썩음
+        }
         ++corpseStat_[0];
     }
     // ★ 10-01 — 주인이 사람이면 `6d`(번호2 · Packet1) — `monsterCallDieFn_50A3D0`(`GAME4_1.c:491~498`) → `4D9200`(`GAME3_2.c:4617~4626`).
     //   클라는 제 소환수 목록에서 뺀다(`cdecode.c:1528~1552`) · 짝 = `ReportAcquireCreature` 의 `6c`
     //   ⚠ 안 옮김 — 미니맵 장부 지우기 `netUnmarkMinimapObj_417300` · 종류 윗비트(GameFlag28)
-    if (!wild) {
-        auto oi = sessions_.find(pets_[idx].owner);
-        if (oi != sessions_.end() && oi->second.inGame) {
-            const uint8_t lose[3] = { static_cast<uint8_t>(Op::REPORT_LOSE_CREATURE),
-                                      static_cast<uint8_t>(netCode), static_cast<uint8_t>(netCode >> 8) };
-            EmitSeq(oi->second, lose, sizeof(lose));
-            ++summonOwnSent_[2];
-        }
-    }
+    if (!wild && !zombie) ReportLoseCreature(pets_[idx]);   // ★ 11-20 3-a — 떼어 냄 · 좀비는 불타 사라질 때 보낸다(`zombieBurnDelete_544CE0`)
     ++petsKilled_;
     if (wild && questTotal_ > 0) {
         ++questKilled_;
@@ -1275,6 +1273,40 @@ void Server::KillPet(size_t idx) {
             }
         }
     }
+}
+
+// ★ 11-20 트레일러 전사 3-a — 주인(사람)에게 `6d`(번호2 · Packet1) — `KillPet` 끝에 있던 것을 떼어 냈다(좀비는 죽을 때 건너뛰고 불타 사라질 때 보낸다 · `GAME4_3.c:9830~9838`)
+void Server::ReportLoseCreature(const Creature& k) {
+    if (k.owner == kNoSession) return;
+    auto oi = sessions_.find(k.owner);
+    if (oi != sessions_.end() && oi->second.inGame) {
+        const uint8_t lose[3] = { static_cast<uint8_t>(Op::REPORT_LOSE_CREATURE),
+                                  static_cast<uint8_t>(k.netCode), static_cast<uint8_t>(k.netCode >> 8) };
+        EmitSeq(oi->second, lose, sizeof(lose));
+        ++summonOwnSent_[2];
+    }
+}
+
+// ★ 11-20 트레일러 전사 3-a — 좀비 일어나기(`mobRaiseZombie_534AB0` `GAME4_3.c:3027~3043`) — 맨 위가 죽음(31)일 때만:
+//   31 을 빼고 61(안 끊김) · 35(일어나기)를 쌓는다 · 소리 469 · 체력 가득(`unitHPsetOnMax_4EE6F0`) ·
+//   몸 깃발 `&= 0xFFFF7FA7`(DEAD 0x8000 · NO_COLLIDE 0x40 · SHORT 0x10 · ALLOW_OVERLAP 0x8 끔)
+//   우리 몸 깃발은 thing.bin 값 위의 덧칠이라 「지금 값에서 넷을 끈 것」이 되게 덧칠 둘을 다시 맞춘다
+void Server::RaiseZombie(Creature& k) {
+    if (!IsZombieType(k.type)) return;
+    if (k.aiStack[k.aiStackInd].action != 31) return;
+    AIPop(k);
+    AIPush(k, 61);
+    AIPush(k, 35);
+    PlaySoundAt(469, static_cast<float>(k.x), static_cast<float>(k.y), 0, 0, kNoSession, PetTarget(k));
+    k.dead = false;                                          // 0x8000 끔 — 다시 죽을 수 있다(`KillPet` 관문)
+    k.deadDone = false;
+    UnitAdjustHP(PetTarget(k), 999999);                      // 최대에서 잘려 가득 · 체력 알림
+    const auto tb = gt_->typeBodies.find(k.type);
+    const uint32_t base = (tb != gt_->typeBodies.end()) ? tb->second.flags : 0u;
+    const uint32_t now = PetObjFlags(k) & 0xFFFF7FA7u;
+    k.flagsSet = now & ~base;
+    k.flagsClear = base & ~now;
+    ++zombieEv_[static_cast<size_t>(ZombieEv::Raise)];
 }
 
 // ★ 10-01 — 실제 지우기(전에 `KillPet` 끝에 있던 것). 부르는 곳은 `FlushDeadPets` 하나.
@@ -1737,7 +1769,21 @@ bool Server::HurtTarget(const Target& t, int dmg,
     }
     // ── nox_xxx_damageDefaultProc_4E0B30 ──
     if (k.buffs.Has(23)) { ++invulnBlocked_; ++damageStops_["무적(소환수)"]; return true; }   // 무적(소리 71 → 10 · `:7064~7069` 1)
-    // ⚠ 몬스터 +2188·불 종류 +1440 깃발 · 죽은 좀비 갈래는 몬스터 AI(7)
+    // ⚠ 몬스터 +2188·불 종류 +1440 깃발은 안 옮겼다
+    // ★ 11-20 트레일러 전사 3-a — 시체(0x8000)는 여기서 1(`GAME3_2.c:7079~7092`) — 좀비만 때린 이(+520)·종류(+524)·프레임(+536)을 적는다
+    //   (+520 은 산 갈래와 같은 `DamageAttacker`) · ✖ 전에는 시체도 끝까지 내려가 맞는 소리·흡혈·감전 되갚기·INJURED 를 탔다(`KillPet` 관문이 두 번 죽음만 막았다)
+    if (k.dead) {
+        if (!IsZombieType(k.type)) { ++zombieEv_[static_cast<size_t>(ZombieEv::CorpseIgnored)]; ++damageStops_["시체(소환수)"]; return true; }
+        const Target corpseBy = DamageAttacker(by, src);
+        k.lastAttacker = Creature::SeenRef{};
+        if ((corpseBy.sessionId != kNoSession)) k.lastAttacker.sessionId = corpseBy.sessionId;
+        else if (corpseBy.pet >= 0 && static_cast<size_t>(corpseBy.pet) < pets_.size()) k.lastAttacker.petNet = pets_[static_cast<size_t>(corpseBy.pet)].netCode;
+        k.lastDamageType = dtype;
+        k.lastDamageFrame = frame_;
+        ++zombieEv_[static_cast<size_t>(ZombieEv::CorpseHit)];
+        ++damageStops_["누운 좀비(소환수)"];
+        return true;
+    }
     // ★ 09-20 — 때린 쪽 **뿌리가 몬스터인가**를 `src->byMonsterType` 으로 가른다.
     //   주인 없는 덫 화살은 몬스터가 아니므로 맵 몬스터에게 **적**이다(정답지 `object.go:1740`)
     const bool byMonsterRoot = byWild && src && src->rootIsMonster;
@@ -12035,11 +12081,19 @@ void Server::AIStart(Creature& k, uint8_t act) {
         }
         case 31: {   // ── 묶음 6-j 죽음 시작 — `mobActionDead1_544D80`
             // **속도·힘을 0 으로** 두고 오브젝트 깃발에 `0x18` 을 얹는다(시체는 안 움직인다)
-            //   ⚠ 풀려난 넋(`createReleasedSoul_544E60`)·좀비 시간표는 안 옮겼다
+            //   ⚠ 풀려난 넋(`createReleasedSoul_544E60`)은 안 옮겼다 · ★ 11-20 트레일러 전사 3-a — 좀비 시간표는 아래
             k.velX = 0; k.velY = 0;
             k.path.clear();
             k.deadFnPending = true;                          // ★ 11-19 — 죽은 뒤 함수(+232 · `:9877~9880`) — AI 를 다 돈 뒤 MonsterDeadFn
-            k.flagsSet |= 0x18;                              // ★ 10-01 — ALLOW_OVERLAP·SHORT(`GAME4_3.c:9893~9894` · 좀비 아님) — 길을 안 막고 낮다
+            // ★ 11-20 트레일러 전사 3-a — 좀비(`:9881~9889`)는 쓰러져 있을 시간 +492 = randomInt(ZombieDeadDuration 둘) · 깃발은 SHORT(0x10)만
+            //   (ALLOW_OVERLAP 0x8 을 안 얹어 누운 채로도 길을 막는다)
+            if (IsZombieType(k.type)) {
+                k.zombieDeadDur = kZombieDeadMin + NextRandom(kZombieDeadMax - kZombieDeadMin + 1);
+                k.flagsSet |= 0x10;
+                ++zombieEv_[static_cast<size_t>(ZombieEv::Down)];
+            } else {
+                k.flagsSet |= 0x18;                              // ★ 10-01 — ALLOW_OVERLAP·SHORT(`GAME4_3.c:9893~9894` · 좀비 아님) — 길을 안 막고 낮다
+            }
             break;
         }
         case 16: {   // ── 묶음 6-g(2) 근접 공격 시작 — `mobActionMelee1_532130`(`legacy/GAME4_3.c:1943`)
@@ -12345,13 +12399,24 @@ void Server::AIUpdate(Creature& k, uint8_t act) {
             break;
         case 31:     // ── 묶음 6-j 죽음 — `mobActionDead2_544EC0`
             // 갱신 목록에서 빼고, 종류표가 그러라고 하면 **치운다**.
-            //   ⚠ 좀비의 되살아나기(`mobRaiseZombie_534AB0`)와 불타 사라지기는 안 옮겼다
+            //   ★ 11-20 트레일러 전사 3 — 좀비의 되살아나기·불타 사라지기는 아래 좀비 갈래
             // ★ 10-01 — `deadDone` 을 AI 루프가 읽는다(다음 틱부터 AI·애니 안 돎 = `unitRemoveFromUpdatable_4DA920` `GAME4_3.c:9942`) ·
             //   보이는 목록·지금 상대 비움(`sub_544F70` `:9952~9987`) · STATUS 0x1 DESTROY_WHEN_DEAD(Ghost·Bomber)면 지울 표시(`:9945~9947`)
+            // ★ 11-20 트레일러 전사 3-a — 좀비(`:9929~9940`)는 갱신 목록에 남는다(치우지도 · 알아보기를 비우지도 않는다) —
+            //   죽음을 시작한 지 +492(쓰러져 있을 시간)가 넘었고 지금 상대(+1196)가 있으면 일어난다(`mobRaiseZombie_534AB0`)
+            //   · 「누워 있어라」(+1440 0x100000)는 맵 스크립트 `ZombieStayDown` 만 켠다 — 우리에게 맵 스크립트가 없어 늘 꺼짐으로 둔다
+            if (IsZombieType(k.type)) {
+                const bool hasEnemy = (k.enemySessionId != kNoSession) || k.enemyNet != 0;
+                if (frame_ - k.aiActionFrame > k.zombieDeadDur && hasEnemy) RaiseZombie(k);
+                break;
+            }
             k.deadDone = true;
             k.seen.clear();
             k.enemySessionId = kNoSession; k.enemyNet = 0; k.enemyPet = -1;
             if (MonsterBrainOf(k.type).status & 0x1) k.removeMe = true;
+            break;
+        case 35:     // ── ★ 11-20 트레일러 전사 3-a 일어나기 — `mobActionGetUp_534A90`(`GAME4_3.c:3016~3024`) — 애니가 끝나면(+483) 빠진다(아래 61 도 같이)
+            if (k.animDone) AIPop(k);
             break;
         case 4: {    // ── 묶음 6-i(2) 지키기 — `nox_xxx_mobActionGuard_546010`(`legacy/GAME5.c:738`)
             //
@@ -12967,7 +13032,9 @@ void Server::SightSeeEnemy(Creature& k, const Target& t) {
     if ((t.sessionId != kNoSession)) r.sessionId = t.sessionId; else r.petNet = pets_[static_cast<size_t>(t.pet)].netCode;
     k.seen.push_back(r);
     ++sightStat_[static_cast<size_t>(SightStat::Added)];
-    if (frame_ > k.spotSoundFrame && CreatureEnemyTo(k, t)) {                       // `:7552~7563`
+    // ★ 11-20 트레일러 전사 3-a — 누운 좀비는 알아봄 소리도 다음 소리 시계도 없다(`:7554`)
+    if (k.dead && IsZombieType(k.type) && frame_ > k.spotSoundFrame && CreatureEnemyTo(k, t)) ++zombieEv_[static_cast<size_t>(ZombieEv::SpotMuted)];
+    else if (frame_ > k.spotSoundFrame && CreatureEnemyTo(k, t)) {                  // `:7552~7563`
         MonsterSound(k, 16);                                                          // +68 RECOGNIZE
         k.spotSoundFrame = frame_ + static_cast<uint32_t>(2 * kServerTickRate) + NextRandom(static_cast<uint32_t>(2 * kServerTickRate + 1));
         ++sightStat_[static_cast<size_t>(SightStat::Spot)];
@@ -12988,7 +13055,7 @@ void Server::SightPickEnemy(Creature& k) {
 }
 
 void Server::UpdateSight(Creature& k) {
-    if (k.health == 0) return;                                        // `:7306` 죽은 것(0x8000)
+    if (k.health == 0 && !IsZombieType(k.type)) return;              // `:7306` 죽은 것(0x8000) — ★ 11-20 3-a 좀비는 누워서도 돈다
     const bool quest = questTotal_ > 0 || questStage_ > 0;
     const float base = quest ? 640.0f : 250.0f;                       // `:7309~7313` 게임 깃발 4096
     const float range = (base >= k.sightRange) ? base : k.sightRange;
@@ -19435,6 +19502,8 @@ void Server::RunTick(int ticks) {
             if (k.dead) {
                 if (k.deadDone) continue;                    // ★ 10-01 — 31 첫 갱신 뒤 갱신 목록 밖(`GAME4_3.c:9942`) — 시체는 그대로 그려지기만 한다
                 k.velX = 0; k.velY = 0;
+                // ★ 11-20 트레일러 전사 3-a — 누운 좀비는 알아보기를 돈다(`GAME4_2.c:7306` — 죽었어도 좀비면 안 돌아감) — 일어날 지금 상대(+1196)를 여기서 잡고 놓는다
+                if (IsZombieType(k.type) && !debugNoAutoFight_) UpdateSight(k);
                 AIRefreshStackArgs(k);
                 AIProcDeps(k);
                 MonsterAnimUpdate(k);

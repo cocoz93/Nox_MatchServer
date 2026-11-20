@@ -617,6 +617,13 @@ struct QuestStage {
 };
 // ★ 09-29 B2 — 식충식물 와이어 번호(위 `kMonsters` 표 · 정답지 `s.IsPlant`) — 되갚기가 다르게 간다(`server/object_ai.go:191~195`)
 constexpr uint16_t kCarnivorousPlantType = 1371;
+// ★ 11-20 트레일러 전사 3-a — 좀비 둘(`unitIsZombie_534A40` — 이름 "Zombie"·"VileZombie" · 와이어 번호는 위 `kMonsters` 표)
+constexpr uint16_t kZombieType = 1360;
+constexpr uint16_t kVileZombieType = 1361;
+inline bool IsZombieType(uint16_t wire) { return wire == kZombieType || wire == kVileZombieType; }
+// gamedata.bin `ZombieDeadDuration = 300 600;`(복호본 @0x2323 · `nox_datadump --near` 로 읽음) — 쓰러져 있는 최소·최대 프레임(30fps 로 10~20초)
+constexpr uint32_t kZombieDeadMin = 300;
+constexpr uint32_t kZombieDeadMax = 600;
 
 // ★ 09-29 B4 — 두뇌가 읽는 몬스터 값 ⭕ monster.bin(`STATUS` → 갱신자료 +1440 · `ARENA RETREAT_RATIO` +1336 · `RESUME_RATIO` +1344 · `FLEE_RANGE` +1356)
 //   위 `kMonsters` 열셋만(스크립트로 13종 전수 대조 — 09-29). ARENA 후퇴 비율은 **전부 0** 이다(SOLO 만 0.1~0.25) — 그래서 멀티에서

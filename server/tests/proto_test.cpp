@@ -24690,8 +24690,90 @@ void TestArmorEquip() {
     std::printf("  09-29 — 갑옷 입기·벗기: 방어값 = 입은 합(0.02→0.12 · 49 알림 · 1.0 자름) · 같은 부위 바꿔 입기 · 힘·직업 관문 · 줍기 전 직업 · 막기 자세 방패 벗기 · 방패 주워 바꿔 입기\n");
 }
 
-// ── 09-29 — 활·석궁·화살통: 들기·놓기의 화살통 갈래(`53A420` `:4954~4986` · `53A140` `:4768~4783`) · 줍기(`pickupAmmo_4F3B00` · `sub_53A720`) ·
-//    쏘기(`shootBowCrossbow1_539BD0` · `2_539D80`) · 사람 화살 닿음(`collideArrow_4EB490`) · 쏜 뒤 상태 14(`object_update.go:340~346`) ─────────
+// ── 11-20 트레일러 전사 3 — 좀비: 되살아나기(`mobActionDead1/2_544D80/544EC0` · `mobRaiseZombie_534AB0`) · 불타 사라지기(`zombieBurnDelete_544CE0`) ─────
+//   ① 좀비 — 죽으면 시체로 남아(치움 없음 · SHORT 0x10 만) 알아보기를 돌고 · 누운 몸을 때리면 때린 이만 적음 · 300~600 프레임 뒤 지금 상대가 있으면
+//      일어남(61·35 · 체력 가득 · 0x8000·0x40·0x10 끔) · 일어나기 애니가 끝나면 35 빠짐
+//   ② 독 좀비 — 죽은 뒤 상대가 멀어지면 알아보기가 놓아 안 일어남 · 곰(좀비 아님) 대조 — 첫 죽음 갱신에 치울 표시 · 시체를 때리면 바로 1
+static void ZombieSetup(nox::CSyncHost& srv, const std::string& a, uint16_t type) {
+    srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+    srv->DebugTeleport(Sid(srv, a), 1100.0f, 1000.0f);
+    srv->DebugApplyEnchant(Sid(srv, a), 23, 100000, 1);    // 무적 — 일어난 좀비가 때려도 그대로
+    srv->DebugSpawnPet(type, 1000, 1000, Sid(srv, std::string()));
+    LoadRealAttackAnims(srv);
+    srv->SetMonsterAnim(type, 14, 6, 1, false);             // 일어나기(35 → 14) 6칸
+    std::vector<nox::OutPacket> o;
+    srv.Tick(0, o);
+    srv->DebugSetPetPos(0, 1000, 1000);
+    srv->DebugSetPetEnemy(0, Sid(srv, a), -1);
+}
+
+void TestZombie1120() {
+    using ZE = nox::ZombieEv;
+    const std::string a = "10.11.20.31:9431";
+    const int64_t none = nox::kNoSession;
+    char msg[320];
+    // ① 좀비 — 쓰러짐 · 누운 몸 맞음 · 일어남 · 일어나기 끝
+    {
+        nox::CSyncHost srv; ZombieSetup(srv, a, 1360);
+        const int h0 = srv->DebugPetHealth(0);
+        std::vector<nox::OutPacket> o;
+        srv->DebugHurt(none, 0, 9999, Sid(srv, a), 0); srv.TakeOut(o);   // 칼로 죽임 — 되살아나기
+        uint32_t ms = srv->DebugNowMs();
+        for (int t = 0; t < 40; ++t) { ms += 34; srv.Tick(ms, o); }
+        const int top = srv->DebugAIAction(0, srv->DebugAIStackInd(0));
+        std::snprintf(msg, sizeof(msg), "① 죽은 좀비가 시체로 남아 죽음(31)에 있지 않다 — 몬스터 %zu · 죽음 %d · 치움 %d · 맨 위 %d · 쓰러짐 %llu · 깃발 0x%x · 상대 %lld",
+                      srv->pets(), int(srv->DebugPetDead(0)), int(srv->DebugPetDeadDone(0)), top, srv->zombieEv(ZE::Down), srv->DebugPetObjFlags(0),
+                      static_cast<long long>(srv->DebugPetEnemy(0)));
+        Check(srv->pets() == 1 && srv->DebugPetDead(0) && !srv->DebugPetDeadDone(0) && top == 31 && srv->zombieEv(ZE::Down) == 1 &&
+              (srv->DebugPetObjFlags(0) & 0x8018u) == 0x8010u && srv->DebugPetEnemy(0) == Sid(srv, a), msg);
+        srv->DebugHurt(none, 0, 10, Sid(srv, a), 0); srv.TakeOut(o);
+        std::snprintf(msg, sizeof(msg), "① 누운 좀비를 때렸는데 맞음 기록이 아니다 — 누운 좀비 맞음 %llu · 시체 무시 %llu · 체력 %d",
+                      srv->zombieEv(ZE::CorpseHit), srv->zombieEv(ZE::CorpseIgnored), int(srv->DebugPetHealth(0)));
+        Check(srv->zombieEv(ZE::CorpseHit) == 1 && srv->zombieEv(ZE::CorpseIgnored) == 0 && srv->DebugPetHealth(0) == 0 && srv->DebugPetDead(0), msg);
+        int raisedAt = -1;
+        for (int t = 40; t < 800 && raisedAt < 0; ++t) { ms += 34; srv.Tick(ms, o); if (srv->zombieEv(ZE::Raise) == 1) raisedAt = t; }
+        const int top1 = srv->DebugAIAction(0, srv->DebugAIStackInd(0)), below = srv->DebugAIAction(0, 0);
+        std::snprintf(msg, sizeof(msg), "① 좀비가 300~600 프레임 뒤에 안 일어났다 — 일어난 틱 %d · 맨 위 %d · 바닥 %d · 체력 %d/%d · 죽음 %d · 깃발 0x%x",
+                      raisedAt, top1, below, int(srv->DebugPetHealth(0)), h0, int(srv->DebugPetDead(0)), srv->DebugPetObjFlags(0));
+        Check(raisedAt >= 300 && raisedAt <= 680 && top1 == 35 && below == 61 && srv->DebugPetHealth(0) == h0 && h0 > 0 && !srv->DebugPetDead(0) &&
+              (srv->DebugPetObjFlags(0) & 0x8058u) == 0, msg);
+        for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, o); }
+        const int top2 = srv->DebugAIAction(0, srv->DebugAIStackInd(0));
+        std::snprintf(msg, sizeof(msg), "① 일어나기(35)가 애니 끝에 안 빠졌다 — 맨 위 %d", top2);
+        Check(top2 != 35 && top2 != 61 && srv->DebugAIStackInd(0) >= 0, msg);
+    }
+    // ② 독 좀비 — 상대가 멀어지면 놓고 안 일어남
+    {
+        nox::CSyncHost srv; ZombieSetup(srv, a, 1361);
+        std::vector<nox::OutPacket> o;
+        srv->DebugHurt(none, 0, 9999, Sid(srv, a), 0); srv.TakeOut(o);
+        uint32_t ms = srv->DebugNowMs();
+        for (int t = 0; t < 40; ++t) { ms += 34; srv.Tick(ms, o); }
+        srv->DebugTeleport(Sid(srv, a), 3000.0f, 3000.0f);
+        for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, o); }
+        std::snprintf(msg, sizeof(msg), "② 상대가 멀어졌는데 누운 독 좀비가 상대를 안 놓았다(누워서 알아보기를 안 돎) — 상대 %lld · 죽음 %d",
+                      static_cast<long long>(srv->DebugPetEnemy(0)), int(srv->DebugPetDead(0)));
+        Check(srv->DebugPetEnemy(0) == none && srv->DebugPetDead(0), msg);
+        for (int t = 0; t < 700; ++t) { ms += 34; srv.Tick(ms, o); }
+        const int top = srv->DebugAIAction(0, srv->DebugAIStackInd(0));
+        std::snprintf(msg, sizeof(msg), "② 상대 없는 독 좀비가 일어났다 — 일어남 %llu · 맨 위 %d · 죽음 %d", srv->zombieEv(ZE::Raise), top, int(srv->DebugPetDead(0)));
+        Check(srv->zombieEv(ZE::Raise) == 0 && top == 31 && srv->DebugPetDead(0) && srv->zombieEv(ZE::Down) == 1, msg);
+    }
+    {   // ② 곰 대조
+        nox::CSyncHost srv; ZombieSetup(srv, a, 1365);
+        std::vector<nox::OutPacket> o;
+        srv->DebugHurt(none, 0, 9999, Sid(srv, a), 0); srv.TakeOut(o);
+        uint32_t ms = srv->DebugNowMs();
+        for (int t = 0; t < 40; ++t) { ms += 34; srv.Tick(ms, o); }
+        srv->DebugHurt(none, 0, 10, Sid(srv, a), 0); srv.TakeOut(o);
+        std::snprintf(msg, sizeof(msg), "② 곰(좀비 아님)이 좀비처럼 갔다 — 치움 %d · 쓰러짐 %llu · 시체 무시 %llu · 누운 좀비 맞음 %llu · 깃발 0x%x",
+                      int(srv->DebugPetDeadDone(0)), srv->zombieEv(ZE::Down), srv->zombieEv(ZE::CorpseIgnored), srv->zombieEv(ZE::CorpseHit), srv->DebugPetObjFlags(0));
+        Check(srv->DebugPetDeadDone(0) && srv->zombieEv(ZE::Down) == 0 && srv->zombieEv(ZE::CorpseIgnored) == 1 && srv->zombieEv(ZE::CorpseHit) == 0 &&
+              (srv->DebugPetObjFlags(0) & 0x18u) == 0x18u, msg);
+    }
+    std::printf("  11-20 — 좀비: 시체로 남음(SHORT 만) · 누워서 알아보기 · 누운 몸 맞음 기록 · 300~600 프레임 뒤 일어남(61·35 · 체력 가득) · 상대 없으면 그대로 · 곰 대조\n");
+}
+
 // ★ 11-20 트레일러 전사 2 — 수리검·차크람(던지기 `GAME4_3.c:4327~4419` · 날기 `updateChakramInMotion_53DCC0` · 맞기 `collideChakram_4EAF00`)
 void TestChakram1120() {
     using CE = nox::ChakramEv;
@@ -24920,6 +25002,8 @@ void TestChakram1120() {
     }
 }
 
+// ── 09-29 — 활·석궁·화살통: 들기·놓기의 화살통 갈래(`53A420` `:4954~4986` · `53A140` `:4768~4783`) · 줍기(`pickupAmmo_4F3B00` · `sub_53A720`) ·
+//    쏘기(`shootBowCrossbow1_539BD0` · `2_539D80`) · 사람 화살 닿음(`collideArrow_4EB490`) · 쏜 뒤 상태 14(`object_update.go:340~346`) ─────────
 void TestBowQuiver() {
     using nox::CharClass;
     using BS = nox::BowShot;
@@ -37192,6 +37276,7 @@ int main() {
     TestArmorEquip();
     TestBowQuiver();
     TestChakram1120();
+    TestZombie1120();
     TestConnectZeroTail();
     TestReconnectAfterClose();
     TestSessionIds();
