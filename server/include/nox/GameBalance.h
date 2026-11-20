@@ -639,6 +639,12 @@ constexpr MonsterStats kMonsters[] = {
     { "Scorpion",           1373,   110,   30,   30.0,    70,  40, 50,  nullptr,         0.0,  0,  0, 1.3,  40000 },   // 전갈 · IMPALE · 독(ScorpionStrike)
     { "SpittingSpider",     1352,    70,   10,   15.0,    60,  20, 30,  "SpiderSpit",    200.0, 20, 30, 1.5,  20000 },   // 침 뱉는 거미 · BITE · 독 · 침(SpiderSpitCollide · 갈래 12)
     { "Wasp",               1331,    15,    5,   15.0,   120,   0,  0,  nullptr,         0.0,  0,  0, 1.3,   8000 },   // 말벌 · IMPALE · 독(WaspStrike) · 간격 키 없음
+    // ★ 11-21 트레일러 컨저러 C11-a — 주문 쓰는 넷(monster.bin 복호 WillOWisp 1723 · Lich 1256 · WizardGreen 1533 · UrchinShaman 902 줄).
+    //   넷 다 근접·발사체 없음(MELEE_ATTACK_RANGE 0 · MISSILE_NAME NULL) · 사거리 200 · 공격은 자동 주문뿐(`SpawnCreature`)
+    { "WillOWisp",          1326,    50,    0,    0.0,    50,   0,  0,  nullptr,       200.0,  0,  0, 1.5, 100000 },   // 도깨비불 · ARENA HEALTH 50(SOLO 200)
+    { "Lich",               1342,   300,    0,    0.0,    55,   0,  0,  nullptr,       200.0,  0,  0, 1.3, 120000 },   // 리치 · 모드 구분 없음
+    { "WizardGreen",        1335,   160,    0,    0.0,    80,   0,  0,  nullptr,       200.0,  0,  0, 1.2,  95000 },   // 녹색 마법사(113 「드라이어드」 자리 · 이름표 39)
+    { "UrchinShaman",       1340,    30,    0,    0.0,    80,   0,  0,  nullptr,       200.0,  0,  0, 1.3,  40000 },   // 성게 주술사 · ARENA 30·80·1.3(SOLO 40·70·1.4)
 };
 
 // ★ 09-23 nine-defects 2-a4 — monster.bin `STATUS` 에 **`CAN_CAST_SPELLS`** 가 있는 몬스터(정답지 `MonStatusCanCastSpells` 0x20 ·
@@ -725,6 +731,10 @@ inline MonsterBrainInfo MonsterBrainOf(uint16_t wire) {
         case 1373: return { 0x00, 0.0f, 1.0f,  0.0f };   // Scorpion
         case 1352: return { 0x08, 0.0f, 1.0f,  0.0f };   // SpittingSpider — CAN_DODGE
         case 1331: return { 0x01, 0.0f, 1.0f,  0.0f };   // Wasp — DESTROY_WHEN_DEAD
+        case 1326: return { 0x29, 0.0f, 0.5f,  0.0f };   // WillOWisp ★ 11-21 C11-a — DESTROY_WHEN_DEAD+CAN_CAST_SPELLS+CAN_DODGE · ARENA 후퇴 0 · 회복 0.5
+        case 1342: return { 0x28, 0.0f, 0.4f, 65.0f };   // Lich — CAN_CAST_SPELLS+CAN_DODGE · ARENA 후퇴 0(SOLO 0.2) · 회복 0.4 · 도망 거리 65
+        case 1335: return { 0x28, 0.25f, 0.5f, 0.0f };   // WizardGreen — 후퇴 0.25(모드 구분 없음 — 멀티에서도 물러난다) · 회복 0.5
+        case 1340: return { 0x28, 0.25f, 0.5f, 65.0f };  // UrchinShaman — 후퇴 0.25(모드 구분 없음) · 회복 0.5 · 도망 거리 65
         default:   return {};
     }
 }
@@ -772,6 +782,10 @@ inline MonsterMoveSound MonsterMoveSoundOf(uint16_t wire) {
         case 1373: return { 1, 5 };   // Scorpion
         case 1352: return { 0, 4 };   // SpittingSpider
         case 1331: return { 0, 0 };   // Wasp — 둘 다 0(파일 값)
+        case 1326: return { 0, 0 };   // WillOWisp ★ 11-21 C11-a — 둘 다 0(파일 값)
+        case 1342: return { 0, 4 };   // Lich
+        case 1335: return { 0, 4 };   // WizardGreen
+        case 1340: return { 0, 4 };   // UrchinShaman
         default:   return {};
     }
 }
@@ -789,6 +803,10 @@ inline int MonsterMissileFrameOf(uint16_t wire) {
         case 1339: return 4;   // Urchin ★ 11-21 C10 — 돌
         case 1316: return 4;   // FlyingGolem — 화살
         case 1352: return 4;   // SpittingSpider ★ 11-21 C9 — 침
+        case 1326: return 4;   // WillOWisp ★ 11-21 C11-a — 시전
+        case 1342: return 4;   // Lich
+        case 1335: return 4;   // WizardGreen
+        case 1340: return 4;   // UrchinShaman
         default:   return 0;   // 나머지는 파일 값 0
     }
 }
@@ -833,6 +851,7 @@ inline int MonsterMeleeFrameOf(uint16_t wire) {
         case 1373: return 5;   // Scorpion
         case 1352: return 4;   // SpittingSpider
         case 1331: return 5;   // Wasp
+        case 1342: return 4;   // Lich ★ 11-21 C11-a — 근접 함수 NULL · 사거리 0 이라 값만(도깨비불·녹색 마법사·성게 주술사는 0)
         default:   return 0;
     }
 }

@@ -1205,6 +1205,12 @@ uint16_t Server::SummonType(uint8_t spell) {
         case 94:  return 1373; // SUMMON_SCORPION           → Scorpion
         case 100: return 1352; // SUMMON_SPITTING_SPIDER    → SpittingSpider
         case 104: return 1331; // SUMMON_WASP               → Wasp
+        // ★ 11-21 C11-a — 주문 쓰는 넷(이름표 31 WillOWisp · 38 Lich · 39 WizardGreen · 40 UrchinShaman) ·
+        //   112~114 는 퀘스트 전용(SpellAccept 관문 「`!quest && 111~114` → 10」) — 아레나 예외는 시험 패치(P1)
+        case 105: return 1326; // SUMMON_WILLOWISP          → WillOWisp
+        case 112: return 1342; // SUMMON_LICH               → Lich
+        case 113: return 1335; // SUMMON_DRYAD              → WizardGreen(이름표 39 — 주문 이름과 달리 녹색 마법사)
+        case 114: return 1340; // SUMMON_URCHIN_SHAMAN      → UrchinShaman
         default: return 0;
     }
 }
@@ -7717,6 +7723,7 @@ bool Server::SpellAccept(uint8_t spell, Session& s, int64_t obj3, const SpellArg
             case 95: case 98: case 99: case 102: case 106: case 107: case 108:                 // ★ 11-21 C8 근접 일곱
             case 103: case 88:                                                                 // ★ 11-21 C10 원거리 둘
             case 91: case 94: case 100: case 104:                                              // ★ 11-21 C9 새 근접 함수 넷
+            case 105: case 112: case 113: case 114:                                            // ★ 11-21 C11-a 주문 쓰는 넷(112~114 는 위 퀘스트 관문)
             case 90: case 92: case 109: case 110: {                                            // Summon — 지속(크기별 시전 시간) · ★ 11-21 C4 근접 넷
                 DurFns f;
                 f.create = &Server::DurSummonCreate;
@@ -8063,7 +8070,9 @@ void Server::NetStartRaySpell(const DurSpell& d) {
     uint8_t typ = 0, val = static_cast<uint8_t>(d.level);
     // 하위 조각(연쇄 번개)은 **시작 쪽이 사람이 아닐 수도** 있다 — fromUnit 이 있으면 그쪽 번호를 쓴다
     uint16_t n1 = !d.fromUnit.none() ? UnitNetCode(d.fromUnit) : (petCaster ? d.casterPet : c->second.netCode);
-    if (petCaster && d.spell != 24) return;                  // 몬스터 빔은 전기 광선뿐(옮긴 것)
+    // 몬스터 빔은 전기 광선뿐(옮긴 것)
+    // ✖ 11-21 C11-a — 이제 사슬 번개(43)와 그 조각(7)도 몬스터 빔이다
+    if (petCaster && d.spell != 24 && d.spell != 43 && d.spell != 7) return;
     uint16_t n2 = UnitNetCode(d.target);
     switch (d.spell) {
         case 43:
@@ -8435,6 +8444,7 @@ int Server::DurChainLightningCreate(DurSpell& d) {
     d.field72 = 0.0f;
     d.field80 = 0;
     if ((d.caster != kNoSession)) DurCancelFor(24, d.caster);
+    else if (d.casterPet != 0) DurCancelForPet(24, d.casterPet);     // ★ 11-21 C11-a — 몬스터 시전자도(`:11632~11634` 주인이 누구든)
     if (!d.flag20) {
         auto c = sessions_.find(d.caster);
         if (c != sessions_.end() && c->second.inGame) {
@@ -8454,6 +8464,7 @@ int Server::DurChainLightningCreate(DurSpell& d) {
 //   빔 조각: (시전자→①) · (①→②) · (①→③) · (②나 ③→④) · (③이나 ②→⑤). 조각마다 `9e` 갈래 3
 //   피해: `LightningDamage`(아레나 1.5) + 소수 이월 · 종류 **17** · 조각마다 **같은 값**
 int Server::DurChainLightningTick(DurSpell& d) {
+    if (d.casterPet != 0) return DurChainLightningTickPet(d);   // ★ 11-21 C11-a — 몬스터 시전자(원본은 한 함수 · 갈래는 아래 함수 머리)
     auto c = sessions_.find(d.caster);
     if ((d.caster == kNoSession) || c == sessions_.end() || !c->second.inGame) return 1;
     Session& caster = c->second;
@@ -8544,6 +8555,138 @@ int Server::DurChainLightningTick(DurSpell& d) {
     PlayerSetState(caster, 10, frame_);
     PlayerManaSub(caster, 1);
     if (caster.manaPrev == 0) return 1;
+    return 0;
+}
+
+// ★ 11-21 트레일러 컨저러 C11-a — `lightningCanAttackCheck_52FF10`(`GAME4_3.c:389~434`)의 몬스터 주인 판.
+//   둘레(중심 cx,cy · 반지름 r) 안 · 주인 몬스터의 적(`unitIsEnemyTo_5330C0` = `CreatureEnemyTo`) · 죽음·사라짐(0x8020) 아님 ·
+//   `from` 자신·주인 자신 아님 · 이미 고른 것 아님 · `from` 이 볼 수 있음(`unitCanInteractWith_5370E0(source, …)`) · `from` 과 가장 가까운 것.
+//   가장 가까운 거리의 처음 값은 원본처럼 늘 `LightningRange`²(둘레만 ×0.95 등으로 줄어든다)
+//   ⚠ 「몬스터면서 서브클래스 0x8000」 거르기(`:407`)는 안 옮김 — 사람 판 `LightningSearch` 에도 없다
+Target Server::LightningSearchPet(const Creature& k, const Target& from, float cx, float cy, float r, float best2,
+                                  const std::vector<Target>& taken) const {
+    float fx = 0, fy = 0;
+    if (!TargetXY(from, fx, fy)) return Target{};
+    float best = best2;
+    Target found;
+    auto seenByFrom = [&](const Target& t) -> bool {
+        if (from.sessionId != kNoSession) {
+            auto it = sessions_.find(from.sessionId);
+            return it != sessions_.end() && it->second.inGame && CanInteract(it->second, t);
+        }
+        if (from.pet >= 0 && static_cast<size_t>(from.pet) < pets_.size()) return CanInteractFrom(pets_[static_cast<size_t>(from.pet)], t);
+        return false;
+    };
+    auto consider = [&](const Target& t, float tx, float ty) {
+        if (t.sessionId == from.sessionId && t.pet == from.pet) return;
+        if (!CreatureEnemyTo(k, t)) return;                              // 주인 자신은 여기서 빠진다(같은 크리처면 적 아님)
+        if (TargetDeadOrGone(t)) return;
+        for (const auto& q : taken) if (q.sessionId == t.sessionId && q.pet == t.pet) return;
+        const float ox = tx - cx, oy = ty - cy;
+        if (ox * ox + oy * oy > r * r) return;                           // 둘레 밖
+        if (!seenByFrom(t)) return;
+        const float dx = tx - fx, dy = ty - fy, d2 = dx * dx + dy * dy;
+        if (d2 >= best) return;
+        best = d2;
+        found = t;
+    };
+    for (const auto& kv : sessions_) {
+        const Session& o = kv.second;
+        if (!o.inGame || o.respawnAtFrame != 0) continue;
+        consider(Target{ o.sessionId, -1 }, static_cast<float>(o.posX), static_cast<float>(o.posY));
+    }
+    for (size_t i = 0; i < pets_.size(); ++i) {
+        if (pets_[i].health == 0) continue;
+        consider(Target{ kNoSession, static_cast<int>(i) }, static_cast<float>(pets_[i].x), static_cast<float>(pets_[i].y));
+    }
+    return found;
+}
+
+// ★ 11-21 트레일러 컨저러 C11-a — `onFrameLightning_52F8A0`(`GAME4_3.c:71~386`)의 몬스터 시전자 갈래(원본은 주인이 누구든 한 함수).
+//   끊김 — 달리기(8 · `:117`) · 만든 뒤 2틱 넘겨 맞음(`:134~137`) · **시전 자리(+28)에서 5 넘게 움직임**(`sub_4FEA70` · 클래스 & 2 = 몬스터만 `:139`)
+//   첫 대상 — 시전 자리 둘레 `LightningRange` 안에서 몬스터와 가장 가까운 적(`:170~173`) · 사람만 보는 「커서 아래 대상」 갈래(`:164~169`)는 없음
+//   튀기·빔 조각·피해(`LightningDamage` + 이월 · 종류 17 · 때린 것 = 몬스터 `:332~335`)는 사람 판과 같은 차례 · 마나·지팡이·자세(`:346~376`)는 사람만
+//   첫 조각의 시작은 몬스터 — `fromUnit` 을 비워 두고 빔은 시전자 번호(casterPet)로 보낸다(몬스터 색인은 목록이 당겨지면 바뀐다)
+//   ⚠ 안 옮긴 것(사람 판에도 없음) — 죽은 대상 점 효과 129(`:337~339`) · 1/3초마다 소리 78(`:377~380`) ·
+//     세기 4·5 의 셋째 대상 자리 고르기는 사람 판 꼴 그대로(몬스터 세기는 2~3 이라 안 탄다)
+int Server::DurChainLightningTickPet(DurSpell& d) {
+    const int ki = PetIndexByNet(d.casterPet);
+    if (ki < 0) return 1;
+    const Creature& k = pets_[static_cast<size_t>(ki)];
+    if (k.buffs.Has(8)) return 1;
+    const Target self{ kNoSession, ki };
+    if (frame_ - d.frame60 > 2 && TargetJustDamaged(self)) return 1;
+    if (std::fabs(d.posX - static_cast<float>(k.x)) >= 5.0f || std::fabs(d.posY - static_cast<float>(k.y)) >= 5.0f) {
+        ++castStat_[static_cast<size_t>(CastStat::ChainMoved)];
+        return 1;
+    }
+    const float range = static_cast<float>(BalanceFloat("LightningRange"));
+    const float best2 = range * range;
+    std::vector<DurSpell> prev;
+    prev.swap(d.sub108);
+    const int lvl = (d.level < 1) ? 1 : (d.level > 5 ? 5 : d.level);
+    std::vector<Target> t;
+    t.push_back(LightningSearchPet(k, self, d.posX, d.posY, range, best2, t));
+    if (t[0].none()) {                                        // 맞힐 것이 없다 — 옛 빔만 끄고 살려 둔다(`:174~189`)
+        for (const auto& sub : prev) if (!sub.target.none()) NetStopRaySpell(sub, sub.target);
+        return 0;
+    }
+    auto around = [&](const Target& from, float mul) -> Target {
+        float x = 0, y = 0;
+        if (!TargetXY(from, x, y)) return Target{};
+        return LightningSearchPet(k, from, x, y, range * mul, best2, t);
+    };
+    Target t1, t2, t3, t4;
+    if (lvl > 1) { t1 = around(t[0], 0.94999999f); if (!t1.none()) t.push_back(t1); }
+    if (lvl > 2) { t2 = around(t[0], 0.89999998f); if (!t2.none()) t.push_back(t2); }
+    if (lvl > 3 && !t1.none()) { t3 = around(t1, 0.85000002f); if (!t3.none()) t.push_back(t3); }
+    if (lvl > 4 && !t2.none()) { t4 = around(t2, 0.80000001f); if (!t4.none()) t.push_back(t4); }
+    auto addLink = [&](const Target& from, const Target& to) {
+        DurSpell sub;
+        sub.spell = 7;                                        // SPELL_CHAIN_LIGHTNING_BOLT — 빔 갈래 3
+        sub.level = d.level;
+        sub.casterPet = d.casterPet;
+        sub.fromUnit = from;
+        sub.target = to;
+        d.sub108.push_back(sub);
+    };
+    addLink(Target{}, t[0]);
+    if (lvl > 1 && !t1.none()) addLink(t[0], t1);
+    if (lvl > 2 && !t2.none()) addLink(t[0], t2);
+    if (lvl > 3 && !t3.none()) addLink(t1.none() ? t2 : t1, t3);
+    if (lvl > 4 && !t4.none()) addLink(t2.none() ? t1 : t2, t4);
+
+    const float v = d.field72 + static_cast<float>(BalanceFloat("LightningDamage"));
+    const int dmg = static_cast<int>(v);
+    d.field72 = v - static_cast<float>(dmg);
+    AttackSrc src;                                            // 에너지볼트 몬스터 갈래와 같은 꼴 — `k` 는 아래 피해부터 안 쓴다(목록이 당겨질 수 있다)
+    src.x = static_cast<float>(k.x); src.y = static_cast<float>(k.y);
+    src.byMonsterType = k.type;
+    src.byPet = ki;
+    src.rootIsMonster = (k.owner == kNoSession);
+    const int64_t kOwner = k.owner;
+    const HitterRef hitter = HitterMonster(k);
+    for (size_t i = 0; i < d.sub108.size(); ++i) {
+        const DurSpell& sub = d.sub108[i];
+        if (i < prev.size()) {
+            const DurSpell& old = prev[i];
+            const bool same = (old.target.sessionId == sub.target.sessionId && old.target.pet == sub.target.pet)
+                           && (old.fromUnit.sessionId == sub.fromUnit.sessionId && old.fromUnit.pet == sub.fromUnit.pet);
+            if (!same) {
+                if (!old.target.none()) NetStopRaySpell(old, old.target);
+                NetStartRaySpell(sub);
+            }
+        } else {
+            NetStartRaySpell(sub);
+        }
+        if (dmg > 0) {
+            HurtTarget(sub.target, dmg, kOwner, 17, &src, hitter);
+            ++castStat_[static_cast<size_t>(CastStat::ChainHit)];
+        }
+    }
+    for (size_t i = d.sub108.size(); i < prev.size(); ++i)
+        if (!prev[i].target.none()) NetStopRaySpell(prev[i], prev[i].target);
+    d.frame68 = durFrame_ + static_cast<uint32_t>(BalanceFloat("LightningSearchTime"));   // `:382~383` — 맞히는 동안 계속
     return 0;
 }
 
@@ -15083,7 +15226,8 @@ void Server::MonsterActionCast(Creature& k, int a2) {
 // `mobCast_541300` + `castSpellByUser_4FDD20` → `castSpell`(`spells.go:432~443`) — 그 자리를 보게 돌리고(`mobCalcDir_533CC0`) ·
 //   공격 주문(0x20)이면 투명(0)·무적(23)을 끄고 타원 방패(67)를 끈다 · 겨눔(0x4)이 아니거나 대상이 자기면 곧장 받아들임(`spellAccept`) ·
 //   겨눔이고 남이면 날아가는 주문(`createSpellFly_4FDDA0`) — 우리 몬스터에 없음
-//   받아들임 — 전기 광선(24) = 지속(30) · 점멸(4) = 지속(0, 대상 자기) · ★ 11-19 화염구(27) = 곧장 날림(`castFireball_52C790` — 겨눔 아님) · 그 밖은 안 옮김
+//   받아들임 — 전기 광선(24) = 지속(30) · 점멸(4) = 지속(0, 대상 자기) · ★ 11-19 화염구(27) = 곧장 날림(`castFireball_52C790` — 겨눔 아님) ·
+//   ★ 11-21 C11-a 사슬 번개(43) = 지속(30) · 그 밖은 안 옮김
 bool Server::MonsterCastSpellNow(Creature& k, uint8_t spell, const Target& target, float x, float y) {
     ++castStat_[static_cast<size_t>(CastStat::Cast)];
     if ((x != 0.0f || y != 0.0f) && (x != static_cast<float>(k.x) || y != static_cast<float>(k.y))) k.facingWant = DirFromVec(x - k.x, y - k.y);   // 제 자리면 안 돌림
@@ -15112,6 +15256,8 @@ bool Server::MonsterCastSpellNow(Creature& k, uint8_t spell, const Target& targe
     uint32_t dt = 0;
     if (spell == 24) { f.create = &Server::DurEnergyBoltCreate; f.update = &Server::DurEnergyBoltTick; dt = 30; }
     else if (spell == 4) { f.create = &Server::DurBlinkCreate; f.update = &Server::DurBlinkTick; dt = 0; }
+    // ★ 11-21 C11-a — 사슬 번개(43) — 사람과 같은 지속 함수 둘(틱 안에 몬스터 갈래) · dt 30(`spells.go` 43 갈래 = 사람과 같음)
+    else if (spell == 43) { f.create = &Server::DurChainLightningCreate; f.update = &Server::DurChainLightningTick; dt = 30; }
     else { ++castStat_[static_cast<size_t>(CastStat::NotPorted)]; return false; }
     ++castStat_[static_cast<size_t>(CastStat::Accepted)];
     return MonsterDurNew(k, spell, spell == 4 ? self : target, f, dt);
@@ -15124,6 +15270,9 @@ bool Server::MonsterDurNew(Creature& k, uint8_t spell, const Target& target, con
     const uint16_t net = k.netCode;
     const float kx = static_cast<float>(k.x), ky = static_cast<float>(k.y);
     const Target self = PetTarget(k);
+    // ★ 11-21 C11-a — 플라스마·사슬 번개는 이미 걸려 있으면 새로 안 만들고 참(`spells_dur.go:95~97` `Sub4FEE50` — 글리프 아님 · 취소 깃발 없음)
+    if (spell == 59 || spell == 43)
+        for (const auto& d0 : durSpells_) if (d0.spell == spell && d0.casterPet == net && !d0.flag20 && !(d0.flags88 & 1)) return true;
     DurCancelForPet(spell, net);
     DurOnNewSpell();
     DurSpell d;
@@ -16460,6 +16609,48 @@ void Server::SpawnCreature(uint16_t type, float x, float y, int64_t owner) {
         k.spells.push_back({ 39, 0x80000000u });
         k.spellLevel = 3;
     }
+    // ★ 11-21 트레일러 컨저러 C11-a — 주문 쓰는 넷(`GAME5.c:4211~4333` — 칸 = (자리 − 1488) / 4) · 원본은 주문 칸 표를 작은 번호부터
+    //   훑어 목록을 만드므로(`MonsterCastPick` 이 넣은 차례로 훑는다) **작은 번호부터** 넣는다
+    //   ⚠ 안 옮긴 것 — 반주문 깃발(0x8000000 · 13·38)은 넣지만 우리 두뇌에 그 고르기가 없어 안 쓰인다(큰 악마와 같음) ·
+    //     성게 주술사만 원본이 쉬는 때 넷(+1448 0~0.5초 · +1464 되받기 3~5초 · +1472 공격 0~3초 · +1480 달아날 때 1~3초)을 적는데
+    //     우리는 고르기 갈래별 상수(모든 몬스터 같음) ·
+    //     +2036 = 1 은 Beholder 와 같이 안 옮김
+    switch (type) {
+        case 1326:                                                   // WillOWisp(`:4305~4309`) — 사슬 번개 43 공격 · 세기 3
+            k.spells.push_back({ 43, 0x40000000u });
+            k.spellLevel = 3;
+            break;
+        case 1342:                                                   // Lich(`:4254~4267`) · 세기 3
+            k.spells.push_back({ 13, 0x08000000u });                 // +1540 반주문
+            k.spells.push_back({ 24, 0x40000000u });                 // +1584 전기 광선 공격
+            k.spells.push_back({ 27, 0x40000000u });                 // +1596 화염구 공격
+            k.spells.push_back({ 33, 0x20000000u });                 // +1620 실수(FUMBLE) 되받기
+            k.spells.push_back({ 38, 0x08000000u });                 // +1640 반전(INVERSION)
+            k.spells.push_back({ 39, 0x80000000u });                 // +1644 투명 달아날 때
+            k.spells.push_back({ 43, 0x40000000u });                 // +1660 사슬 번개 공격
+            k.spells.push_back({ 71, 0x10000000u });                 // +1772 충격 제 몸
+            k.spells.push_back({ 72, 0x20000000u });                 // +1776 느림 되받기
+            k.spellLevel = 3;
+            break;
+        case 1335:                                                   // WizardGreen(`:4293~4303`) · 세기 3
+            k.spells.push_back({ 4, 0x80000000u });                  // +1504 점멸 달아날 때
+            k.spells.push_back({ 12, 0x20000000u });                 // +1536 혼란 되받기
+            k.spells.push_back({ 38, 0x08000000u });                 // +1640 반전
+            k.spells.push_back({ 50, 0x40000000u });                 // +1688 마법 화살 공격
+            k.spells.push_back({ 58, 0x40000000u });                 // +1720 픽시 떼 공격
+            k.spells.push_back({ 60, 0x40000000u });                 // +1728 독 공격
+            k.spellLevel = 3;
+            break;
+        case 1340:                                                   // UrchinShaman(`:4315~4333` — 맨 끝 갈래) · **세기 2**
+            k.spells.push_back({ 12, 0x20000000u });                 // +1536 혼란 되받기
+            k.spells.push_back({ 38, 0x08000000u });                 // +1640 반전
+            k.spells.push_back({ 52, 0x40000000u });                 // +1696 운석 공격
+            k.spells.push_back({ 58, 0x40000000u });                 // +1720 픽시 떼 공격
+            k.spells.push_back({ 66, 0x80000000u });                 // +1752 밀기 달아날 때
+            k.spellLevel = 2;
+            break;
+        default: break;
+    }
     pets_.push_back(k);
 }
 
@@ -17420,7 +17611,8 @@ const Server::DurSpell* Server::DurFindByTarget(uint8_t spell, const Target& tar
 void Server::NetStopRaySpell(const DurSpell& d, const Target& who) {
     auto c = sessions_.find(d.caster);
     const bool petCaster = d.casterPet != 0;                  // ★ 09-29 B7 — 몬스터 시전자(번호 그대로) — 빔은 전기 광선뿐
-    if (petCaster && d.spell != 24) return;
+                                                             // ✖ 11-21 C11-a — 이제 사슬 번개(43)·조각(7)도
+    if (petCaster && d.spell != 24 && d.spell != 43 && d.spell != 7) return;
     if (!petCaster && ((d.caster == kNoSession) || c == sessions_.end() || !c->second.inGame)) return;
     auto netOf = [&](const Target& t) -> uint16_t {
         if ((t.sessionId != kNoSession)) {

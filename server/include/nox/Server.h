@@ -398,6 +398,8 @@ enum class CastStat : uint8_t {
     NotPorted,       // 몬스터 시전인데 안 옮긴 주문
     BeamHit,         // 몬스터 전기 광선이 한 틱 맞힘
     BeamMoved,       // 몬스터가 시전 자리에서 5 넘게 움직여 끊김(`sub_4FEA70`)
+    ChainHit,        // ★ 11-21 C11-a 몬스터 사슬 번개 조각 하나가 피해를 줌(조각마다 하나)
+    ChainMoved,      //   몬스터 사슬 번개 — 시전 자리에서 5 넘게 움직여 끊김
     Count
 };
 constexpr size_t kCastStatCount = static_cast<size_t>(CastStat::Count);
@@ -2133,6 +2135,16 @@ public:
     uint32_t DebugPetCastNextEscape(size_t i) const { return i < pets_.size() ? pets_[i].castNextEscape : 0; }
     // 몬스터가 연 지속 주문(주문 번호 · 시전자 번호)이 있나 · 그 대상
     bool DebugPetDurActive(uint8_t sp, uint16_t net) const { for (const auto& d : durSpells_) if (d.spell == sp && d.casterPet == net && !(d.flags88 & 1)) return true; return false; }
+    // ★ 11-21 C11-a — 몬스터 지속 주문의 만든 프레임(+60 · 없으면 0) · 주문 칸 깃발(없으면 0) · 세기 · 시전 한 번(쏘기 칸 갈래 `MonsterCastSpellNow` 곧장)
+    uint32_t DebugPetDurFrame(uint8_t sp, uint16_t net) const { for (const auto& d : durSpells_) if (d.spell == sp && d.casterPet == net && !(d.flags88 & 1)) return d.frame60; return 0; }
+    uint32_t DebugPetSpellMask(size_t i, uint8_t sp) const { if (i < pets_.size()) for (const auto& sf : pets_[i].spells) if (sf.first == sp) return sf.second; return 0; }
+    int DebugPetSpellLevel(size_t i) const { return i < pets_.size() ? pets_[i].spellLevel : 0; }
+    bool DebugPetCastNow(size_t i, uint8_t sp, const Target& t) {
+        if (i >= pets_.size()) return false;
+        float x = 0, y = 0;
+        TargetXY(t, x, y);
+        return MonsterCastSpellNow(pets_[i], sp, t, x, y);
+    }
     uint16_t DebugPetNet(size_t i) const { return i < pets_.size() ? pets_[i].netCode : 0; }
     uint16_t DebugPetType(size_t i) const { return i < pets_.size() ? pets_[i].type : 0; }   // ★ 11-20 C1
     int64_t DebugPetOwner(size_t i) const { return i < pets_.size() ? pets_[i].owner : kNoSession; }   // ★ 11-20 C1
@@ -5062,8 +5074,12 @@ private:
     //   ⚠ 에너지볼트와 달리 **앞쪽만 보는 검사가 없다** — 아무 쪽이나 걸린다.
     Target LightningSearch(const Session& owner, const Target& from, float range,
                            const std::vector<Target>& taken) const;
+    // ★ 11-21 C11-a — 같은 검사의 몬스터 주인 판 — 둘레 중심(cx,cy)·반지름 r · 가장 가까움은 `from` 에서 · 처음 값은 best2(원본 = LightningRange²)
+    Target LightningSearchPet(const Creature& k, const Target& from, float cx, float cy, float r, float best2,
+                              const std::vector<Target>& taken) const;
     int DurChainLightningCreate(DurSpell& d);                               // onStartLightning_52F820
     int DurChainLightningTick(DurSpell& d);                                 // onFrameLightning_52F8A0
+    int DurChainLightningTickPet(DurSpell& d);                              // ★ 11-21 C11-a — 같은 함수의 몬스터 시전자 갈래
     void SpawnCreature(uint16_t type, float x, float y, int64_t owner);                       // newObjectWithTypeInd + createAt
     void PlacedCollide(PlacedObj& o);                                       // 놓인 것의 닿음 함수(피해·마나 빨기)
     // mapDamageUnitsAround_4E25B0(`game.go:1407`) — 안쪽 r2 까지는 온전, 바깥 rr 까지 선형으로 준다.

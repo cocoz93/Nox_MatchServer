@@ -26668,6 +26668,280 @@ void TestNewStrikeFourSummon1121() {
     std::printf("  11-21 C9 새 근접 함수 넷 — 표 · thing.bin 이름·크기 · 크기별 시간 뒤 하나 · 오우거 앞쪽 둘레(내적 0.4 · +0.01) · 전갈·말벌·거미 독 · 침 느림\n");
 }
 
+// ── 11-21 C11-a 주문 쓰는 넷 — 도깨비불(105) · 리치(112) · 녹색 마법사(113) · 성게 주술사(114) ─────
+//   ① 표 — monster.bin 복호(WillOWisp 1723 · Lich 1256 · WizardGreen 1533 · UrchinShaman 902 줄) ARENA 값 · 두뇌·걸음 소리·시전 칸 4 ·
+//      리치만 때림 칸 4 · 소환 짝 넷 · 진짜 thing.bin 이름·번호·크기
+//   ② 소환 — 105 는 아레나에서 크기별 시간 뒤 하나 / 112~114 는 아레나 거절 · 퀘스트면 나온다 ·
+//      자동 주문(`nox_xxx_monsterAutoSpells_54C0C0` `GAME5.c:4211~4333`) 주문·깃발·세기 전수
+//   ③ 도깨비불 사슬 번개(43) — 몬스터 시전 → a(앞 100)·b(a 옆 60) 둘 다 깎임 · 빔 조각 `9e 03` 둘(도깨비불→a · a→b)
+//   ④ 시전 자리에서 5 넘게 움직이면 끊김 · ⑤ 이미 걸려 있으면 새로 안 만듦(`spells_dur.go:95~97`) · 사슬 번개가 켜지면 전기 광선(24)을 끔
+void TestCasterFourSummon1121() {
+    const std::string a = "10.11.21.31:9541", b = "10.11.21.32:9542";
+    using CS = nox::CastStat;
+    char msg[400];
+    struct SC { uint8_t spell; uint16_t type; const char* name; int health; int size; bool questOnly; };
+    const SC cases[] = { { 105, 1326, "WillOWisp", 50, 4, false }, { 112, 1342, "Lich", 300, 2, true },
+                         { 113, 1335, "WizardGreen", 160, 2, true }, { 114, 1340, "UrchinShaman", 30, 2, true } };
+    {   // ① 표
+        struct Row { uint16_t type; int hp, dmg; double range; int speed, mn, mx; double srange; double run; int exp; };
+        const Row rows[] = { { 1326, 50, 0, 0.0, 50, 0, 0, 200.0, 1.5, 100000 },
+                             { 1342, 300, 0, 0.0, 55, 0, 0, 200.0, 1.3, 120000 },
+                             { 1335, 160, 0, 0.0, 80, 0, 0, 200.0, 1.2, 95000 },
+                             { 1340, 30, 0, 0.0, 80, 0, 0, 200.0, 1.3, 40000 } };
+        std::string bad;
+        for (const Row& r : rows) {
+            const nox::MonsterStats* m = nox::FindMonster(r.type);
+            if (!m || m->missileName != nullptr || m->health != r.hp || m->meleeDamage != r.dmg || m->meleeRange != r.range || m->speed != r.speed ||
+                m->minDelay != r.mn || m->maxDelay != r.mx || m->missileRange != r.srange || m->missileMin != 0 || m->missileMax != 0 ||
+                m->runMul != r.run || m->experience != r.exp)
+                bad += " " + std::to_string(r.type);
+        }
+        std::snprintf(msg, sizeof(msg), "C11-a ① 표가 monster.bin(ARENA)과 다르다 —%s", bad.c_str());
+        Check(bad.empty(), msg);
+        struct St { uint16_t type; uint32_t status; float retreat, resume, flee; int sa, sb, shot, melee; };
+        const St st[] = { { 1326, 0x29, 0.0f, 0.5f, 0.0f, 0, 0, 4, 0 }, { 1342, 0x28, 0.0f, 0.4f, 65.0f, 0, 4, 4, 4 },
+                          { 1335, 0x28, 0.25f, 0.5f, 0.0f, 0, 4, 4, 0 }, { 1340, 0x28, 0.25f, 0.5f, 65.0f, 0, 4, 4, 0 } };
+        bad.clear();
+        for (const St& s : st) {
+            const nox::MonsterBrainInfo bi = nox::MonsterBrainOf(s.type);
+            const nox::MonsterMoveSound ms = nox::MonsterMoveSoundOf(s.type);
+            if (bi.status != s.status || bi.retreat != s.retreat || bi.resume != s.resume || bi.fleeRange != s.flee || ms.a != s.sa || ms.b != s.sb ||
+                nox::MonsterMissileFrameOf(s.type) != s.shot || nox::MonsterMeleeFrameOf(s.type) != s.melee ||
+                nox::MeleeStrikeOf(s.type).fn != nox::StrikeFn::None)
+                bad += " " + std::to_string(s.type);
+        }
+        std::snprintf(msg, sizeof(msg), "C11-a ① 두뇌·걸음 소리·시전 칸·때림 칸·근접 함수 표가 다르다 —%s", bad.c_str());
+        Check(bad.empty(), msg);
+        bad.clear();
+        for (const SC& sc : cases) if (nox::Server::SummonType(sc.spell) != sc.type) bad += " " + std::to_string(sc.spell);
+        std::snprintf(msg, sizeof(msg), "C11-a ① 소환 짝이 다르다 —%s", bad.c_str());
+        Check(bad.empty(), msg);
+        nox::ThingDb tdb;
+        if (tdb.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\thing.bin")) {
+            std::string got;
+            bool ok = true;
+            for (const SC& sc : cases) {
+                const uint16_t w = tdb.WireByName(sc.name);
+                const nox::ThingInfo* t = tdb.ByWire(w);
+                const uint32_t sub = t ? nox::Server::MonsterClassBitsOf(t->subclassRaw) : 0;
+                const int size = (sub & 0x4) ? 4 : ((sub & 0x2) ? 2 : 1);
+                got += " " + std::string(sc.name) + "=" + std::to_string(w) + "/크기" + std::to_string(size);
+                ok = ok && w == sc.type && size == sc.size;
+            }
+            std::snprintf(msg, sizeof(msg), "C11-a ① thing.bin 대조 —%s", got.c_str());
+            Check(ok, msg);
+        } else {
+            std::printf("  (C11-a ① thing.bin 대조 건너뜀)\n");
+        }
+    }
+    // ② 소환 · 자동 주문
+    struct Sp { uint8_t spell; uint32_t mask; };
+    auto wantSpells = [](uint16_t type, int& lvl) -> std::vector<Sp> {
+        switch (type) {
+            case 1326: lvl = 3; return { { 43, 0x40000000u } };
+            case 1342: lvl = 3; return { { 13, 0x08000000u }, { 24, 0x40000000u }, { 27, 0x40000000u }, { 33, 0x20000000u }, { 38, 0x08000000u },
+                                         { 39, 0x80000000u }, { 43, 0x40000000u }, { 71, 0x10000000u }, { 72, 0x20000000u } };
+            case 1335: lvl = 3; return { { 4, 0x80000000u }, { 12, 0x20000000u }, { 38, 0x08000000u }, { 50, 0x40000000u }, { 58, 0x40000000u },
+                                         { 60, 0x40000000u } };
+            case 1340: lvl = 2; return { { 12, 0x20000000u }, { 38, 0x08000000u }, { 52, 0x40000000u }, { 58, 0x40000000u }, { 66, 0x80000000u } };
+            default:   lvl = 0; return {};
+        }
+    };
+    auto mkSum = [&](nox::CSyncHost& srv) {
+        nox::Gamedata g; g.Parse("SummonDuration = 60, 210, 375;\n"); srv->SetGamedata(g);
+        uint8_t ph = 2;
+        for (const SC& sc : cases) {
+            srv->SetSpellDef(sc.spell, 0, 0x44542438u, { 0, 8, 2, 6, 5, static_cast<uint8_t>(ph++ % 9) });   // 깃발은 임프 것 · 음소는 주문마다 달리
+            nox::Server::PhysBody bb; bb.shape = 2; bb.r = 15.0f; bb.cls = 0x2;
+            bb.subclass = nox::Server::MonsterClassBitsOf(sc.size == 4 ? "LARGE_MONSTER" : "MEDIUM_MONSTER");
+            srv->SetTypeBody(sc.type, bb);
+        }
+        srv.DebugEnterGame(a, 887, false, nox::CharClass::Conjurer);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+    };
+    for (const SC& sc : cases) {
+        for (const bool quest : { false, true }) {
+            if (!sc.questOnly && quest) continue;
+            nox::CSyncHost srv; mkSum(srv);
+            if (quest) srv->StartQuest(2, 5000, 5000, 100.0);
+            std::vector<nox::OutPacket> out; uint32_t ms = 0;
+            srv.Tick(ms, out);
+            const size_t before = srv->pets();
+            srv->DebugFillMana(Sid(srv, a));
+            CastAndWait(srv, a, sc.spell, false, ms, out);
+            const size_t durAfter = srv->DurCount();
+            const int castT = (sc.size == 4) ? 375 : 210;
+            for (int t = 0; t < castT - 20; ++t) { ms += 34; srv.Tick(ms, out); }
+            int early = 0;
+            for (size_t i = 0; i < srv->pets(); ++i) if (srv->DebugPetType(i) == sc.type) ++early;
+            for (int t = 0; t < 60; ++t) { ms += 34; srv.Tick(ms, out); }
+            int idx = -1, n = 0;
+            for (size_t i = 0; i < srv->pets(); ++i) if (srv->DebugPetType(i) == sc.type && srv->DebugPetOwner(i) == Sid(srv, a)) { idx = static_cast<int>(i); ++n; }
+            const bool allowed = !sc.questOnly || quest;
+            if (!allowed) {
+                std::snprintf(msg, sizeof(msg), "C11-a ② 주문 %u 아레나 — 지속 %zu · 몬스터 %zu → %zu(거절이어야)", unsigned(sc.spell), durAfter, before, srv->pets());
+                Check(durAfter == 0 && n == 0 && srv->pets() == before, msg);
+                continue;
+            }
+            int lvl = 0;
+            const std::vector<Sp> want = wantSpells(sc.type, lvl);
+            std::string sbad;
+            if (idx >= 0) {
+                if (srv->DebugPetSpellCount(size_t(idx)) != want.size()) sbad += " 개수" + std::to_string(srv->DebugPetSpellCount(size_t(idx)));
+                for (const Sp& w : want)
+                    if (srv->DebugPetSpellMask(size_t(idx), w.spell) != w.mask) sbad += " " + std::to_string(w.spell);
+                if (srv->DebugPetSpellLevel(size_t(idx)) != lvl) sbad += " 세기" + std::to_string(srv->DebugPetSpellLevel(size_t(idx)));
+            }
+            std::snprintf(msg, sizeof(msg), "C11-a ② 주문 %u 퀘스트 %d — 지속 %zu · %d틱 앞 %d · 뒤 %d · 체력 %d(%d) · 자동 주문 어긋남%s",
+                          unsigned(sc.spell), int(quest), durAfter, castT - 20, early, n, idx >= 0 ? srv->DebugPetHealth(size_t(idx)) : -1, sc.health,
+                          sbad.empty() ? " 없음" : sbad.c_str());
+            Check(durAfter == 1 && early == 0 && n == 1 && srv->DebugPetHealth(size_t(idx)) == sc.health && sbad.empty(), msg);
+        }
+    }
+    // ③~⑤ 몬스터 사슬 번개 — 도깨비불(맵 몬스터 1000,1000) · a 앞 100 · b 는 a 옆 60 · 실물 깃발(43·24 = 0x42340033) · 시전 애니 8칸/붙듦 2
+    auto run = [](nox::CSyncHost& srv, uint32_t& ms, int n, std::vector<nox::OutPacket>* keep = nullptr) {
+        for (int t = 0; t < n; ++t) {
+            const uint32_t f = srv->frame();
+            for (int g = 0; g < 100 && srv->frame() == f; ++g) { ms += 5; std::vector<nox::OutPacket> o; srv.Tick(ms, o); if (keep) keep->insert(keep->end(), o.begin(), o.end()); }
+        }
+    };
+    auto mk = [&](nox::CSyncHost& srv, uint16_t type) {
+        nox::Gamedata g;
+        g.Parse("EnergyBoltDamage = 1.3, 1.6, 2.0, 2.3, 2.6;\nLightningDamage = 1.5;\nLightningRange = 240;\nLightningSearchTime = 30;\n");
+        srv->SetGamedata(g);
+        srv->SetSpellDef(43, 0, 0x42340033u, { 1, 2 });
+        srv->SetSpellDef(24, 0, 0x42340033u, { 3, 4 });
+        srv->SetMonsterAnim(type, 7, 8, 2, false);
+        srv.DebugEnterGame(a, 752, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(b, 753, false, nox::CharClass::Warrior);
+        srv->DebugTeleport(Sid(srv, a), 1100.0f, 1000.0f);
+        srv->DebugTeleport(Sid(srv, b), 1100.0f, 1060.0f);
+        srv->DebugSpawnPet(type, 1000, 1000, Sid(srv, std::string()));
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        srv->DebugSetFrame(1000);
+    };
+    {   // ③ 시전 → 사슬 두 조각
+        nox::CSyncHost srv; uint32_t ms = 0; mk(srv, 1326);
+        const uint16_t ha0 = srv->HealthOf(Sid(srv, a)), hb0 = srv->HealthOf(Sid(srv, b));
+        std::vector<nox::OutPacket> keep;
+        for (int t = 0; t < 400 && srv->castStat(CS::ChainHit) < 3; ++t) run(srv, ms, 1, &keep);
+        const uint16_t wn = srv->DebugPetNet(0);
+        int toA = 0, aToB = 0;
+        for (const auto& m : FlattenTo(keep, a)) {
+            if (m.size() != 7 || m[0] != static_cast<uint8_t>(nox::Op::FX_DURATION_SPELL) || m[1] != 3) continue;
+            const int n1 = m[3] | (m[4] << 8), n2 = m[5] | (m[6] << 8);
+            if (n1 == wn && n2 == 752) ++toA;
+            if (n1 == 752 && n2 == 753) ++aToB;
+        }
+        std::snprintf(msg, sizeof(msg), "C11-a ③ 도깨비불 사슬 번개 — 시전 %llu · 받음 %llu · 안옮김 %llu · 사슬맞힘 %llu · 걸림 %d · 빔 도깨비불→a %d · a→b %d · a %u→%u · b %u→%u",
+                      srv->castStat(CS::Cast), srv->castStat(CS::Accepted), srv->castStat(CS::NotPorted), srv->castStat(CS::ChainHit),
+                      int(srv->DebugPetDurActive(43, wn)), toA, aToB, unsigned(ha0), unsigned(srv->HealthOf(Sid(srv, a))), unsigned(hb0),
+                      unsigned(srv->HealthOf(Sid(srv, b))));
+        Check(srv->castStat(CS::Accepted) >= 1 && srv->castStat(CS::NotPorted) == 0 && srv->castStat(CS::ChainHit) >= 3 && srv->DebugPetDurActive(43, wn) &&
+              toA == 1 && aToB == 1 && srv->HealthOf(Sid(srv, a)) < ha0 && srv->HealthOf(Sid(srv, b)) < hb0, msg);
+        // ⑤ 이미 걸려 있으면 새로 안 만듦 — 만든 프레임 그대로
+        const uint32_t f0 = srv->DebugPetDurFrame(43, wn);
+        run(srv, ms, 2);
+        const bool again = srv->DebugPetCastNow(0, 43, nox::Target{ Sid(srv, a), -1 });
+        std::snprintf(msg, sizeof(msg), "C11-a ⑤ 걸린 사슬 번개를 다시 걸었다 — 받음 %d · 만든 프레임 %u → %u", int(again), f0, srv->DebugPetDurFrame(43, wn));
+        Check(again && f0 != 0 && srv->DebugPetDurFrame(43, wn) == f0, msg);
+        // ④ 시전 자리에서 10 움직이면 끊김
+        double px = 0, py = 0; srv->DebugPetXY(0, px, py);
+        srv->DebugSetPetPos(0, px, py + 10.0);
+        run(srv, ms, 1);
+        std::snprintf(msg, sizeof(msg), "C11-a ④ 도깨비불이 10 움직였는데 — 사슬끊김 %llu · 걸림 %d", srv->castStat(CS::ChainMoved), int(srv->DebugPetDurActive(43, wn)));
+        Check(srv->castStat(CS::ChainMoved) == 1 && !srv->DebugPetDurActive(43, wn), msg);
+    }
+    {   // ⑤ 리치 — 전기 광선(24)을 건 채로 사슬 번개(43)를 걸면 24 가 꺼진다
+        nox::CSyncHost srv; uint32_t ms = 0; mk(srv, 1342);
+        srv->DebugTeleport(Sid(srv, b), 3000.0f, 3000.0f);
+        const uint16_t ln = srv->DebugPetNet(0);
+        const bool c24 = srv->DebugPetCastNow(0, 24, nox::Target{ Sid(srv, a), -1 });
+        const bool on24 = srv->DebugPetDurActive(24, ln);
+        const bool c43 = srv->DebugPetCastNow(0, 43, nox::Target{ Sid(srv, a), -1 });
+        std::snprintf(msg, sizeof(msg), "C11-a ⑤ 리치 24 → 43 — 24 받음 %d 걸림 %d · 43 받음 %d · 24 남음 %d · 43 걸림 %d",
+                      int(c24), int(on24), int(c43), int(srv->DebugPetDurActive(24, ln)), int(srv->DebugPetDurActive(43, ln)));
+        Check(c24 && on24 && c43 && !srv->DebugPetDurActive(24, ln) && srv->DebugPetDurActive(43, ln), msg);
+    }
+    {   // ⑥ 부른 도깨비불(주인 a) — 주인은 적이 아니라 건너뛰고 b 를 맞힌다(`lightningCanAttackCheck_52FF10` 의 적 검사)
+        nox::CSyncHost srv; uint32_t ms = 0;
+        nox::Gamedata g;
+        g.Parse("LightningDamage = 1.5;\nLightningRange = 240;\nLightningSearchTime = 30;\n");
+        srv->SetGamedata(g);
+        srv->SetSpellDef(43, 0, 0x42340033u, { 1, 2 });
+        srv.DebugEnterGame(a, 754, false, nox::CharClass::Conjurer);
+        srv.DebugEnterGame(b, 755, false, nox::CharClass::Warrior);
+        srv->DebugTeleport(Sid(srv, a), 1030.0f, 1000.0f);
+        srv->DebugTeleport(Sid(srv, b), 1150.0f, 1000.0f);
+        srv->DebugSpawnPet(1326, 1000, 1000, Sid(srv, a));
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        srv->DebugSetFrame(1000);
+        const uint16_t ha0 = srv->HealthOf(Sid(srv, a)), hb0 = srv->HealthOf(Sid(srv, b));
+        const unsigned long long h0 = srv->castStat(CS::ChainHit);
+        const bool ok = srv->DebugPetCastNow(0, 43, nox::Target{ Sid(srv, b), -1 });
+        run(srv, ms, 3);
+        std::snprintf(msg, sizeof(msg), "C11-a ⑥ 주인 있는 도깨비불 — 받음 %d · 사슬맞힘 +%llu · 주인 a %u→%u(그대로여야) · b %u→%u",
+                      int(ok), srv->castStat(CS::ChainHit) - h0, unsigned(ha0), unsigned(srv->HealthOf(Sid(srv, a))), unsigned(hb0),
+                      unsigned(srv->HealthOf(Sid(srv, b))));
+        Check(ok && srv->castStat(CS::ChainHit) > h0 && srv->HealthOf(Sid(srv, a)) == ha0 && srv->HealthOf(Sid(srv, b)) < hb0, msg);
+    }
+    {   // ⑦-1 둘레(240) 밖이면 안 맞히고 지속은 살려 둔다(`:174~189` — 0 을 돌려준다)
+        nox::CSyncHost srv; uint32_t ms = 0; mk(srv, 1326);
+        srv->DebugTeleport(Sid(srv, a), 1300.0f, 1000.0f);
+        srv->DebugTeleport(Sid(srv, b), 3000.0f, 3000.0f);
+        const uint16_t wn = srv->DebugPetNet(0);
+        const uint16_t ha0 = srv->HealthOf(Sid(srv, a));
+        const bool ok = srv->DebugPetCastNow(0, 43, nox::Target{ Sid(srv, a), -1 });
+        run(srv, ms, 2);
+        std::snprintf(msg, sizeof(msg), "C11-a ⑦ 둘레 밖(300) — 받음 %d · 사슬맞힘 %llu(0) · 사슬끊김 %llu · 걸림 %d · a %u→%u",
+                      int(ok), srv->castStat(CS::ChainHit), srv->castStat(CS::ChainMoved), int(srv->DebugPetDurActive(43, wn)), unsigned(ha0),
+                      unsigned(srv->HealthOf(Sid(srv, a))));
+        Check(ok && srv->castStat(CS::ChainHit) == 0 && srv->DebugPetDurActive(43, wn) && srv->HealthOf(Sid(srv, a)) == ha0, msg);
+    }
+    for (int sw = 0; sw <= 1; ++sw) {   // ⑦-2 첫 대상은 가장 가까운 것 — 가까운 쪽을 바꿔 두 번(훑는 차례에 기대면 한쪽에서 걸린다)
+        nox::CSyncHost srv; uint32_t ms = 0; mk(srv, 1326);
+        const std::string& nearA = sw ? b : a;
+        const std::string& farA = sw ? a : b;
+        srv->DebugTeleport(Sid(srv, nearA), 1050.0f, 1000.0f);
+        srv->DebugTeleport(Sid(srv, farA), 1150.0f, 1000.0f);
+        const int nearNet = sw ? 753 : 752, farNet = sw ? 752 : 753;
+        const uint16_t wn = srv->DebugPetNet(0);
+        const bool ok = srv->DebugPetCastNow(0, 43, nox::Target{ Sid(srv, farA), -1 });
+        std::vector<nox::OutPacket> keep;
+        run(srv, ms, 2, &keep);
+        int toNear = 0, toFar = 0;
+        for (const auto& m : FlattenTo(keep, a)) {
+            if (m.size() != 7 || m[0] != static_cast<uint8_t>(nox::Op::FX_DURATION_SPELL) || m[1] != 3) continue;
+            const int n1 = m[3] | (m[4] << 8), n2 = m[5] | (m[6] << 8);
+            if (n1 == wn && n2 == nearNet) ++toNear;
+            if (n1 == wn && n2 == farNet) ++toFar;
+        }
+        std::snprintf(msg, sizeof(msg), "C11-a ⑦ 가까운 쪽 %s — 받음 %d · 빔 도깨비불→가까운 %d(1) · →먼 %d(0)", sw ? "b" : "a", int(ok), toNear, toFar);
+        Check(ok && toNear == 1 && toFar == 0, msg);
+    }
+    for (int inside = 1; inside >= 0; --inside) {   // ⑦-3 튀기 둘레는 ×0.95(228) — b 를 a 에서 220(안) · 235(밖 · 그래도 사거리 240 안)에 두고 두 번
+        nox::CSyncHost srv; uint32_t ms = 0; mk(srv, 1326);
+        const float gap = inside ? 220.0f : 235.0f;
+        srv->DebugTeleport(Sid(srv, b), 1100.0f, 1000.0f + gap);
+        const uint16_t wn = srv->DebugPetNet(0);
+        const uint16_t hb0 = srv->HealthOf(Sid(srv, b));
+        const bool ok = srv->DebugPetCastNow(0, 43, nox::Target{ Sid(srv, a), -1 });
+        std::vector<nox::OutPacket> keep;
+        run(srv, ms, 2, &keep);
+        int aToB = 0;
+        for (const auto& m : FlattenTo(keep, a)) {
+            if (m.size() != 7 || m[0] != static_cast<uint8_t>(nox::Op::FX_DURATION_SPELL) || m[1] != 3) continue;
+            if ((m[3] | (m[4] << 8)) == 752 && (m[5] | (m[6] << 8)) == 753) ++aToB;
+        }
+        std::snprintf(msg, sizeof(msg), "C11-a ⑦ 튀기 둘레 — a→b %.0f · 받음 %d · 빔 a→b %d(%d) · b %u→%u · 걸림 %d", gap, int(ok), aToB, inside,
+                      unsigned(hb0), unsigned(srv->HealthOf(Sid(srv, b))), int(srv->DebugPetDurActive(43, wn)));
+        Check(ok && aToB == inside && (inside ? srv->HealthOf(Sid(srv, b)) < hb0 : srv->HealthOf(Sid(srv, b)) == hb0), msg);
+    }
+    std::printf("  11-21 C11-a 주문 쓰는 넷 — 표 · thing.bin 이름·크기 · 105 아레나 · 112~114 퀘스트만 · 자동 주문 전수 · 몬스터 사슬 번개(두 조각 · 움직이면 끊김 · 다시 안 만듦 · 24 끔 · 주인 건너뜀 · 둘레 밖 · 가장 가까운 것 · 튀기 둘레 ×0.95)\n");
+}
+
 // ── 11-21 W10 벽(132) — `spell_magic_wall.go`(Create 297 · setWall 467 · Destroy 503 · 알림 106·170 · 부서짐 `wall.go:424`) ─────
 //   ⓪ 진짜 thing.bin — 이름 셋의 순번 · MagicWallSystemUseOnly 체력·+749(값은 찍기만 — 시험 몸통은 지어낸 정의 1번 · 체력 50 · +749 4)
 //   ① 동쪽 커서 · 세기 1 — 가운데 (47,43) 방향 10 + 양쪽 3칸(8·10 엇갈림) = 7칸 · 재질·방향·충돌 칸 · 체력 · 끝 = 시전 + 60×6초 ·
@@ -40159,6 +40433,7 @@ int main() {
     TestMeleeSevenSummon1121();
     TestRangedTwoSummon1121();
     TestNewStrikeFourSummon1121();
+    TestCasterFourSummon1121();
     TestMagicWall1121();
     TestModEffects1120();
     TestPickupAutoEquip();
