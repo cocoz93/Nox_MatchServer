@@ -611,6 +611,9 @@ constexpr MonsterStats kMonsters[] = {
     // ★ 11-20 C1 — 골렘 둘 ⭕ monster.bin 복호(`nox_datadump --out`) ARENA 값 · 둘 다 LARGE(크기 4) · 근접 함수는 앞쪽 둘레 피해 + 땅 흔들기(`GolemStrike`)
     { "StoneGolem",         1324,   300,  100,   50.0,    50,  60, 90,  nullptr,         0.0,  0,  0, 1.3, 120000 },   // 돌 골렘 · CRUSH · 밀기 없음 · StoneGolemStrike · 죽음 GolemDead(시체 남음)
     { "MechanicalGolem",    1318,   275,  100,   50.0,    55,  60, 90,  nullptr,         0.0,  0,  0, 1.3, 130000 },   // 기계 골렘 · CRUSH · 밀기 100 · MechGolemStrike · 죽음 MechGolemDead · DESTROY_WHEN_DEAD
+    // ★ 11-21 C4 — 근접만 하는 둘 ⭕ monster.bin 복호(`_out/qa_1120/monster_dec_lines.txt`) · 둘 다 MonsterStrike · 죽음 함수 없음
+    { "Mimic",              1372,   300,   75,   20.0,    60,   0,  0,  nullptr,         0.0,  0,  0, 1.3,  90000 },   // 미믹 · CLAW · 체력 모드 구분 없음 · 간격은 SOLO(20~30)뿐 → 아레나 0
+    { "OgreBrute",          1390,   120,   35,   30.0,    70,  20, 30,  nullptr,         0.0,  0,  0, 1.38, 60000 },   // 오우거 브루트 · IMPACT · 밀기 20 · 간격 모드 구분 없음
 };
 
 // ★ 09-23 nine-defects 2-a4 — monster.bin `STATUS` 에 **`CAN_CAST_SPELLS`** 가 있는 몬스터(정답지 `MonStatusCanCastSpells` 0x20 ·
@@ -679,6 +682,8 @@ inline MonsterBrainInfo MonsterBrainOf(uint16_t wire) {
         case 1361: return { 0x00, 0.0f, 1.0f,  0.0f };   // VileZombie
         case 1324: return { 0x00, 0.0f, 1.0f,  0.0f };   // StoneGolem ★ 11-20 C1(STATUS CAN_HEAR 뿐)
         case 1318: return { 0x01, 0.0f, 1.0f,  0.0f };   // MechanicalGolem DESTROY_WHEN_DEAD
+        case 1372: return { 0x00, 0.0f, 0.20f, 0.0f };   // Mimic ★ 11-21 C4 — ARENA 후퇴 0 · 회복 0.20
+        case 1390: return { 0x00, 0.0f, 0.35f, 0.0f };   // OgreBrute — ARENA 후퇴 0 · 회복 0.35
         default:   return {};
     }
 }
@@ -708,6 +713,8 @@ inline MonsterMoveSound MonsterMoveSoundOf(uint16_t wire) {
         case 1361: return { 1, 5 };   // VileZombie
         case 1324: return { 0, 4 };   // StoneGolem ★ 11-20 C1
         case 1318: return { 0, 4 };   // MechanicalGolem
+        case 1372: return { 1, 5 };   // Mimic ★ 11-21 C4
+        case 1390: return { 2, 10 };  // OgreBrute
         default:   return {};
     }
 }
@@ -749,6 +756,8 @@ inline int MonsterMeleeFrameOf(uint16_t wire) {
         case 1361: return 5;   // VileZombie
         case 1324: return 5;   // StoneGolem ★ 11-20 C1(근접 애니 13칸)
         case 1318: return 5;   // MechanicalGolem(근접 애니 8칸)
+        case 1372: return 5;   // Mimic ★ 11-21 C4
+        case 1390: return 7;   // OgreBrute
         default:   return 0;
     }
 }
@@ -778,6 +787,8 @@ inline MeleeStrikeInfo MeleeStrikeOf(uint16_t wire) {
         case 1361: return { StrikeFn::VileZombie, 10, 0.0f, 10, 1, 3 }; // VileZombie CLAW · 독 10% · 세기 1 · 최대 3
         case 1324: return { StrikeFn::Golem, 2,   0.0f, 0, 0, 0 };  // StoneGolem CRUSH ★ 11-20 C1
         case 1318: return { StrikeFn::Golem, 2, 100.0f, 0, 0, 0 };  // MechanicalGolem CRUSH · 밀어내기 100(MELEE_ATTACK_IMPACT)
+        case 1372: return { StrikeFn::Monster, 10, 0.0f, 0, 0, 0 };   // Mimic CLAW ★ 11-21 C4
+        case 1390: return { StrikeFn::Monster, 11, 20.0f, 0, 0, 0 };  // OgreBrute IMPACT · 밀어내기 20
         default:   return {};                                          // Imp·EvilCherub·Beholder·Demon — NULL
     }
 }

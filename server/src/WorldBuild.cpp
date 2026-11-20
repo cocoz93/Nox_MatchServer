@@ -605,6 +605,27 @@ std::shared_ptr<const nox::Server::GameTables> BuildGameTables(const GameFiles& 
             }
             srv.Log("[나는몬스터] AIRBORNE 몬스터 %zu종 —%s%s\n", nFly, names.c_str(), nFly > 12 ? " …" : "");
         }
+        // ★ 11-21 트레일러 컨저러 C4 — 소환 짝 대조. 원본은 `guideNameByN_427230(주문 − 74)` 이름으로 종류를 찾는다(`GAME4.c:4090~4091`).
+        //   이름표 = 메모리 0x587000 + 70500 의 40칸(`GAME1_1.c:5633` · 문자열은 blob 의 GUIDE_INVALID 뒤 40개) — 그 이름을 thing.bin 에서 찾아
+        //   우리 손 짝(`Server::SummonType`)과 견준다. 「틀림」이 0 이 아니면 그 짝이 엉뚱한 몬스터를 부른다
+        {
+            static const char* const kGuideNames[41] = {
+                "GUIDE_INVALID", "Bat", "BlackBear", "Bear", "Beholder", "Bomber", "CarnivorousPlant", "AlbinoSpider", "SmallAlbinoSpider",
+                "EvilCherub", "EmberDemon", "Ghost", "GiantLeech", "Imp", "FlyingGolem", "MechanicalGolem", "Mimic", "GruntAxe", "OgreBrute",
+                "OgreWarlord", "Scorpion", "Shade", "Skeleton", "SkeletonLord", "Spider", "SmallSpider", "SpittingSpider", "StoneGolem", "Troll",
+                "Urchin", "Wasp", "WillOWisp", "Wolf", "BlackWolf", "WhiteWolf", "Zombie", "VileZombie", "Demon", "Lich", "WizardGreen", "UrchinShaman" };
+            int same = 0, diff = 0, none = 0;
+            std::string diffs, nones;
+            for (int g = 1; g <= 40; ++g) {
+                const uint8_t sp = static_cast<uint8_t>(74 + g);
+                const uint16_t want = tdb.WireByName(kGuideNames[g]);
+                const uint16_t have = nox::Server::SummonType(sp);
+                if (have == 0) { ++none; nones += " " + std::to_string(sp); }
+                else if (have == want) ++same;
+                else { ++diff; diffs += " " + std::to_string(sp) + ":" + kGuideNames[g] + "=" + std::to_string(want) + "/우리" + std::to_string(have); }
+            }
+            srv.Log("[소환 짝 대조] 맞음 %d · 틀림 %d%s · 짝 없음 %d(%s )\n", same, diff, diffs.c_str(), none, nones.c_str());
+        }
         // 충돌 함수 · 무기 그림 · Magic(옛 「TRY_COLLIDE 가 찾을 것」 블록의 게임 데이터 몫 — 맵 오브젝트 목록 · `[충돌 함수]` 줄은 방 쪽)
         {
             auto firstWord = [](const std::string& raw) {

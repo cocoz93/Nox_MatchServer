@@ -25392,7 +25392,116 @@ void TestTurnUndead1121() {
                       ml.empty() ? 0.0 : ml[0].posY, srv->turnUndeadStat(TS::WallStop), ml.size());
         Check(ml.size() == 43 && ml[0].posX == x30 && ml[0].posX > 1080.0f && ml[0].posX < 1103.0f && srv->turnUndeadStat(TS::WallStop) >= 10, msg);
     }
-    std::printf("  11-21 언데드 쫓기 — 조각 43 · 4 걸음 · 71 프레임 · 언데드만 · 양 나눠 깎기 · 누운 좀비 불탐 · 벽에서 멈춤\n");
+    std::printf("  11-21 언데드 쫓기 — 조각 43 · 4 걸음 · 71 프레임 · 언데드만 · 양 나눠깎기 · 누운 좀비 불탐 · 벽에서 멈춤\n");
+}
+
+// ── 11-21 트레일러 컨저러 C4 — 근접만 하는 소환수 넷(미믹 90 · 오우거 브루트 92 · 좀비 109 · 독 좀비 110) ─────
+//   ① 표 — monster.bin 값 · 근접 함수·피해 종류·밀기 · 때림칸 · 걸음 소리 · 두뇌 · 소환 짝 = thing.bin 이름(원본 이름표 16·18·35·36)과 크기 갈래
+//   ② 소환 — 주문마다 크기별 시간(작은 60 · 중간 210 · 큰 375) 뒤 그 종류 하나 · 주인 = 시전자 · 체력 = 표 · `7e`·`6c` 한 번씩
+//   ③ 한도 4 — 미믹(큰 4) 뒤 좀비 거절 · 브루트 + 좀비(2 + 2) 뒤 독 좀비 거절
+void TestSummonMore1121() {
+    const std::string a = "10.11.21.1:9511";
+    char msg[320];
+    struct SC { uint8_t spell; uint16_t type; const char* name; int health; int size; };
+    const SC cases[] = { { 90, 1372, "Mimic", 300, 4 }, { 92, 1390, "OgreBrute", 120, 2 },
+                         { 109, 1360, "Zombie", 75, 2 }, { 110, 1361, "VileZombie", 150, 2 } };
+    // ① 표
+    {
+        const nox::MonsterStats* mi = nox::FindMonster(1372); const nox::MonsterStats* ob = nox::FindMonster(1390);
+        Check(mi && ob && mi->health == 300 && mi->meleeDamage == 75 && mi->meleeRange == 20.0 && mi->speed == 60 && mi->minDelay == 0 && mi->maxDelay == 0 &&
+              mi->runMul == 1.3 && mi->experience == 90000 &&
+              ob->health == 120 && ob->meleeDamage == 35 && ob->meleeRange == 30.0 && ob->speed == 70 && ob->minDelay == 20 && ob->maxDelay == 30 &&
+              ob->runMul == 1.38 && ob->experience == 60000 && !mi->missileName && !ob->missileName,
+              "C4 ① 미믹·브루트 표가 monster.bin 과 다르다");
+        const nox::MeleeStrikeInfo ms = nox::MeleeStrikeOf(1372), bs = nox::MeleeStrikeOf(1390);
+        Check(ms.fn == nox::StrikeFn::Monster && ms.dtype == 10 && ms.impact == 0.0f && bs.fn == nox::StrikeFn::Monster && bs.dtype == 11 && bs.impact == 20.0f,
+              "C4 ① 근접 함수 표(MonsterStrike · CLAW / IMPACT 밀기 20)가 다르다");
+        const nox::MonsterMoveSound s1 = nox::MonsterMoveSoundOf(1372), s2 = nox::MonsterMoveSoundOf(1390);
+        Check(nox::MonsterMeleeFrameOf(1372) == 5 && nox::MonsterMeleeFrameOf(1390) == 7 && s1.a == 1 && s1.b == 5 && s2.a == 2 && s2.b == 10 &&
+              nox::MonsterBrainOf(1372).status == 0 && nox::MonsterBrainOf(1372).resume == 0.20f && nox::MonsterBrainOf(1390).resume == 0.35f &&
+              nox::MonsterMissileFrameOf(1372) == 0 && nox::MonsterMissileFrameOf(1390) == 0,
+              "C4 ① 때림칸·걸음 소리·두뇌 표가 다르다");
+        bool pairs = true;
+        for (const SC& c : cases) pairs = pairs && nox::Server::SummonType(c.spell) == c.type;
+        Check(pairs && nox::Server::SummonType(74) == 0 && nox::Server::SummonType(115) == 0, "C4 ① 소환 짝(90·92·109·110)이 다르다");
+        nox::ThingDb tdb;
+        if (tdb.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\thing.bin")) {
+            std::string got;
+            bool ok = true;
+            for (const SC& c : cases) {
+                const uint16_t w = tdb.WireByName(c.name);
+                const nox::ThingInfo* t = tdb.ByWire(w);
+                const uint32_t sub = t ? nox::Server::MonsterClassBitsOf(t->subclassRaw) : 0;
+                const int size = (sub & 0x4) ? 4 : ((sub & 0x2) ? 2 : 1);
+                got += " " + std::string(c.name) + "=" + std::to_string(w) + "/크기" + std::to_string(size);
+                ok = ok && w == c.type && size == c.size;
+            }
+            std::snprintf(msg, sizeof(msg), "C4 ① thing.bin 대조 —%s", got.c_str());
+            Check(ok, msg);
+        } else {
+            std::printf("  (C4 ① thing.bin 대조 건너뜀)\n");
+        }
+    }
+    auto body = [](int size) {
+        nox::Server::PhysBody bb; bb.shape = 2; bb.r = 15.0f; bb.cls = 0x2;
+        bb.subclass = nox::Server::MonsterClassBitsOf(size >= 4 ? "LARGE_MONSTER" : (size >= 2 ? "MEDIUM_MONSTER" : "SMALL_MONSTER"));
+        return bb;
+    };
+    auto mkSum = [&](nox::CSyncHost& srv) {
+        nox::Gamedata g; g.Parse("SummonDuration = 60, 210, 375;\n"); srv->SetGamedata(g);
+        uint8_t ph = 4;
+        for (const SC& c : cases) {
+            srv->SetSpellDef(c.spell, 0, 0x44542438u, { 0, 8, 2, 6, 5, ph++ });   // 깃발은 임프 것 · 음소는 주문마다 달리
+            srv->SetTypeBody(c.type, body(c.size));
+        }
+        srv.DebugEnterGame(a, 880, false, nox::CharClass::Conjurer);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+    };
+    // ② 주문마다 — 시간 하나 전엔 없고 · 그 뒤 그 종류 하나
+    for (const SC& c : cases) {
+        nox::CSyncHost srv; mkSum(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv->DebugFillMana(Sid(srv, a));
+        CastAndWait(srv, a, c.spell, false, ms, out);
+        const size_t durAfter = srv->DurCount();
+        const int wait = c.size >= 4 ? 375 : 210;
+        for (int t = 0; t < wait - 20; ++t) { ms += 34; srv.Tick(ms, out); }
+        const size_t early = srv->pets();
+        for (int t = 0; t < 60 && srv->pets() == 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        std::snprintf(msg, sizeof(msg), "C4 ② 주문 %u — 지속 %zu · %d틱 앞 몬스터 %zu · 뒤 %zu · 종류 %u(%u 이어야) · 주인 %d · 체력 %d(%d) · 7e %llu · 6c %llu",
+                      unsigned(c.spell), durAfter, wait - 20, early, srv->pets(), srv->pets() ? unsigned(srv->DebugPetType(0)) : 0u, unsigned(c.type),
+                      srv->pets() ? int(srv->DebugPetOwner(0) == Sid(srv, a)) : -1, srv->pets() ? srv->DebugPetHealth(0) : -1, c.health,
+                      srv->summonFxSent(0), srv->summonOwnSent(0));
+        Check(durAfter == 1 && early == 0 && srv->pets() == 1 && srv->DebugPetType(0) == c.type && srv->DebugPetOwner(0) == Sid(srv, a) &&
+              srv->DebugPetHealth(0) == c.health && srv->summonFxSent(0) == 1 && srv->summonOwnSent(0) == 1, msg);
+    }
+    // ③ 한도 4
+    struct LC { uint8_t first, second, third; };
+    for (const LC& lc : { LC{ 90, 109, 0 }, LC{ 92, 109, 110 } }) {
+        nox::CSyncHost srv; mkSum(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.Tick(ms, out);
+        for (const uint8_t sp : { lc.first, lc.second }) {
+            srv->DebugFillMana(Sid(srv, a));
+            CastAndWait(srv, a, sp, false, ms, out);
+            for (int t = 0; t < 400 && srv->DurCount() > 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        }
+        const size_t afterTwo = srv->pets();
+        const bool refusedSecond = HasPriMsg(out, a, "Summon.c:CreatureControlFailed");
+        out.clear();
+        if (lc.third) {
+            srv->DebugFillMana(Sid(srv, a));
+            CastAndWait(srv, a, lc.third, false, ms, out);
+            for (int t = 0; t < 30; ++t) { ms += 34; srv.Tick(ms, out); }
+        }
+        const bool refused = HasPriMsg(out, a, "Summon.c:CreatureControlFailed");
+        std::snprintf(msg, sizeof(msg), "C4 ③ %u → %u → %u — 두 번 뒤 몬스터 %zu(둘째 거절 글 %d) · 마지막 몬스터 %zu · 거절 글 %d",
+                      unsigned(lc.first), unsigned(lc.second), unsigned(lc.third), afterTwo, int(refusedSecond), srv->pets(), int(refused));
+        if (lc.third == 0) Check(afterTwo == 1 && srv->DebugPetType(0) == 1372 && refusedSecond, msg);   // 미믹(4) 뒤 좀비는 시작에서 거절
+        else               Check(afterTwo == 2 && !refusedSecond && srv->pets() == 2 && refused, msg);
+    }
+    std::printf("  11-21 C4 소환수 넷 — 표 · thing.bin 이름·크기 대조 · 크기별 시간 뒤 하나 · 한도 4\n");
 }
 
 // ── 11-20 트레일러 전사 1-b — 수식 효과(modifier.bin `Server::ParseModEffects`) · 휘두를 때 위력 배수 · 맞힐 때 불·번개 ─────
@@ -38630,6 +38739,7 @@ int main() {
     TestDurTwoTick1120();
     TestLightningHold1121();
     TestTurnUndead1121();
+    TestSummonMore1121();
     TestModEffects1120();
     TestPickupAutoEquip();
     TestArmorEquip();

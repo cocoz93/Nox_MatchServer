@@ -1178,6 +1178,12 @@ uint16_t Server::SummonType(uint8_t spell) {
         case 89:  return 1318; // SUMMON_MECHANICAL_GOLEM   → MechanicalGolem
         case 101: return 1324; // SUMMON_STONE_GOLEM        → StoneGolem
         case 111: return 1347; // SUMMON_DEMON              → Demon
+        // ★ 11-21 트레일러 컨저러 C4 — 근접만 하는 넷(이름표 16 Mimic · 18 OgreBrute · 35 Zombie · 36 VileZombie) ·
+        //   번호는 서버가 뜰 때 thing.bin 이름으로 다시 대조한다(`[소환 짝 대조]` · WorldBuild)
+        case 90:  return 1372; // SUMMON_MIMIC              → Mimic
+        case 92:  return 1390; // SUMMON_OGRE_BRUTE         → OgreBrute
+        case 109: return 1360; // SUMMON_ZOMBIE             → Zombie
+        case 110: return 1361; // SUMMON_VILE_ZOMBIE        → VileZombie
         default: return 0;
     }
 }
@@ -7370,7 +7376,8 @@ bool Server::SpellAccept(uint8_t spell, Session& s, int64_t obj3, const SpellArg
             }
             case 75: case 76: case 77: case 78: case 79: case 80: case 81: case 82: case 83:
             case 84: case 85: case 86: case 87:
-            case 89: case 101: case 111: {                                                     // Summon — 지속(크기별 시전 시간) · ★ 11-20 C1 센 소환수 셋
+            case 89: case 101: case 111:                                                       // ★ 11-20 C1 센 소환수 셋
+            case 90: case 92: case 109: case 110: {                                            // Summon — 지속(크기별 시전 시간) · ★ 11-21 C4 근접 넷
                 DurFns f;
                 f.create = &Server::DurSummonCreate;
                 f.update = &Server::DurSummonTick;
