@@ -7296,6 +7296,14 @@ bool Server::SpellAccept(uint8_t spell, Session& s, int64_t obj3, const SpellArg
                 fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 0) ? 1 : 0;
                 break;
             }
+            case 56: {                                                                         // ★ 11-20 W3 ManaBomb(과부하) — 지속 · dt 0(`spells.go:313~314`)
+                DurFns f;
+                f.create = &Server::DurManaBombCreate;
+                f.update = &Server::DurManaBombTick;
+                f.destroy = &Server::DurManaBombEnd;
+                fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 0) ? 1 : 0;
+                break;
+            }
             case 43: {                                                                         // ChainLightning — 지속(사슬 번개) · dt 30
                 DurFns f;
                 f.create = &Server::DurChainLightningCreate;
@@ -8180,6 +8188,127 @@ int Server::DurShieldTick(DurSpell& d) {
 // sub_52F670(`:11553`) — 끝날 때 버프 26 을 끈다
 void Server::DurShieldDestroy(DurSpell& d) {
     if (!d.target.none()) BuffOff(d.target, 26);
+}
+
+// ★ 11-20 트레일러 위저드 W3 — 과부하(SPELL_MANA_BOMB 56 · gamedata 주석의 이름은 Obliteration). 원본 `GAME4_3.c:1088~1230` 셋.
+//   사람이 걸면 **끝 프레임이 없다**(dt 0) — 틱마다 세기만큼 마나를 쓰며 힘을 키우다가 **마나가 0 이 되면** 제자리에서 터진다.
+//   글리프(또는 사람 아닌 시전자)면 `ManaBombGlyphDuration`(60) 뒤에 터진다.
+//   gamedata(모드 앞머리 없음 = 두 모드 같음) — 시작 힘 `10, 20, 30, 40, 50` · 틱당 `1, 2, 3, 4, 5` · 바깥 300 · 안쪽 150 · 흔들기 30
+//
+// nox_xxx_manaBomb_530F90 — 시작.
+//   · +72 힘 = `ManaBombInitPower[세기-1]` · +76 그림 오브젝트 없음 · +84 안 터짐
+//   · 사람이고 글리프가 아니면 묶기(5)·닻(14)·반마법(29)을 **10초 · 세기 5** 로 · 무게(+120)를 +80 에 담고 99999.9 로 박는다(밀리지 않게)
+//     · 속도(+80)·힘(+88) 을 0 으로 — +96(Pos24)은 우리에게 없는 칸이라 안 옮긴다
+//   · 아니면 끝 프레임(+68) = 지금 + `ManaBombGlyphDuration`
+//   · 시작 자리(+28)에 `ManaBombCharge`(thing.bin 699 · SIMPLE · NO_COLLIDE) 를 놓는다 — 임자 없음(`createAt(obj, 0, x, y)`)
+int Server::DurManaBombCreate(DurSpell& d) {
+    d.pool = static_cast<int>(BalanceFloatInd("ManaBombInitPower", d.level - 1));
+    d.obj76Net = 0;
+    d.field84 = 0;
+    auto c = sessions_.find(d.caster);
+    const bool player = (d.caster != kNoSession) && c != sessions_.end();
+    if (!player || d.flag20) {
+        d.frame68 = frame_ + static_cast<uint32_t>(BalanceFloat("ManaBombGlyphDuration"));
+    } else {
+        Session& s = c->second;
+        const int dur = 10 * static_cast<int>(kServerTickRate);
+        ApplyEnchant(Target{ s.sessionId, -1 }, 5, dur, 5);      // ENCHANT_HELD
+        ApplyEnchant(Target{ s.sessionId, -1 }, 14, dur, 5);     // ENCHANT_ANCHORED
+        ApplyEnchant(Target{ s.sessionId, -1 }, 29, dur, 5);     // ENCHANT_ANTI_MAGIC
+        d.mass80 = s.massOverride;
+        s.massOverride = 99999.8984375f;                         // 1203982323(0x47C34FF3)
+        s.velX = 0; s.velY = 0;
+        s.forceX = 0; s.forceY = 0;
+    }
+    if (PlacedObj* o = PlaceObject(NamedType("ManaBombCharge"), d.posX, d.posY, kNoSession, kPlacedNoLife, /*kind=*/0))
+        d.obj76Net = o->netCode;
+    ++mbStat_[static_cast<size_t>(MbStat::Start)];
+    return 0;
+}
+
+// +76 그림 오브젝트 지우기(`delayedDeleteObject_4E5CC0` · +76 = 0)
+void Server::ManaBombChargeOff(DurSpell& d) {
+    if (d.obj76Net == 0) return;
+    for (size_t i = 0; i < placed_.size(); ++i) {
+        if (placed_[i].netCode != d.obj76Net) continue;
+        DestroyPlaced(i);
+        break;
+    }
+    d.obj76Net = 0;
+    ++mbStat_[static_cast<size_t>(MbStat::ChargeOff)];
+}
+
+// nox_xxx_manaBombBoom_5310C0 — 틱마다(0 = 이어 감 · 1 = 끝).
+//   ① 시전자도 글리프도 없으면 끝
+//   ② 터질 때 = 끝 프레임 하루 전(+68 − 1 == 지금) **또는** 시전자가 사람이고 지금 마나(+4 · `unitGetOldMana_4EEC80` 는 이름과 달리 +4 를 읽는다)가 0
+//   ③ 그림 오브젝트 — 사람(글리프 아님)이면 마나 15 아래에서 · 그 밖이면 끝까지 10 프레임 안쪽에서 지운다
+//   ④ 터지면 — 자리 = 글리프면 시작 자리 · 아니면 시전자 자리. 둘레 피해(바깥 300 · 안쪽 150 · 힘 · **종류 15** · who = 시전자)
+//      — 벽 피해 깃발(`gameSetWallsDamage_4E25A0(1)`)이 켜져 있어 who 를 **안 거른다**(`game.go:1418`) → **시전자 자신도 맞는다**
+//      · 화면 흔들기 30 · 점 그림 0x81(BLUE_SPARKS)·0x9A(WHITE_FLASH) · 소리 81(임자 = 시전자) · +84 = 1
+//   ⑤ 아니면 힘 += `ManaBombDeltaPower[세기-1]` · 사람(글리프 아님)이면 마나 −세기
+int Server::DurManaBombTick(DurSpell& d) {
+    auto c = sessions_.find(d.caster);
+    Session* cs = ((d.caster != kNoSession) && c != sessions_.end()) ? &c->second : nullptr;
+    if (!cs && !d.flag20) return 1;
+    bool boom = (d.frame68 - 1 == frame_);
+    bool byMana = false;
+    if (cs && cs->mana == 0) { boom = true; byMana = true; }
+    if (d.obj76Net != 0) {
+        const bool keep = (!d.flag20 && cs) ? (cs->mana >= 15u) : (static_cast<uint32_t>(d.frame68 - frame_) >= 10u);
+        if (!keep) ManaBombChargeOff(d);
+    }
+    const int power = d.pool;
+    if (boom) {
+        float x = d.posX, y = d.posY;
+        if (!d.flag20) {
+            if (!cs) return 1;
+            x = static_cast<float>(cs->posX); y = static_cast<float>(cs->posY);
+        }
+        AttackSrc ws;
+        const AttackSrc* wsp = nullptr;
+        if (cs) { ws.x = static_cast<float>(cs->prevX); ws.y = static_cast<float>(cs->prevY); wsp = &ws; }
+        DamageUnitsAround(x, y, static_cast<float>(BalanceFloat("ManaBombOutRadius")), static_cast<float>(BalanceFloat("ManaBombInRadius")),
+                          power, 15, d.caster, Target{}, HitterBySession(d.caster), wsp, WallHitterOfSession(d.caster));
+        SendJiggle(x, y, static_cast<int>(BalanceFloat("ManaBombShakeMag")));
+        const int16_t ix = static_cast<int16_t>(x), iy = static_cast<int16_t>(y);
+        for (const Op op : { Op::FX_BLUE_SPARKS, Op::FX_WHITE_FLASH }) {          // netSendPointFx_522FF0(129) · (154)
+            const uint8_t fx[5] = { static_cast<uint8_t>(op), static_cast<uint8_t>(ix), static_cast<uint8_t>(ix >> 8),
+                                    static_cast<uint8_t>(iy), static_cast<uint8_t>(iy >> 8) };
+            SendFxAllCli(x, y, fx, sizeof(fx));
+        }
+        if (cs) PlaySoundAt(81, static_cast<float>(cs->posX), static_cast<float>(cs->posY), 0, 0, cs->sessionId, Target{ cs->sessionId, -1 });
+        d.field84 = 1;
+        mbLastPower_ = power;
+        ++mbStat_[static_cast<size_t>(byMana ? MbStat::BoomMana : MbStat::BoomTime)];
+        return 1;
+    }
+    d.pool = power + static_cast<int>(BalanceFloatInd("ManaBombDeltaPower", d.level - 1));
+    if (!d.flag20 && cs) PlayerManaSub(*cs, d.level);
+    return 0;
+}
+
+// sub_531290 — 끝(터졌든 끊겼든).
+//   · 그림 오브젝트가 남았으면 지운다
+//   · 글리프가 아니고 시전자가 사람이면 버프 5·14·29 를 끄고 무게를 +80 에 담아 둔 값으로 되돌린다
+//   · **안 터졌으면**(+84 == 0) 시작 자리(+28)에 끊김 그림 0xA3(MANA_BOMB_CANCEL)
+void Server::DurManaBombEnd(DurSpell& d) {
+    ManaBombChargeOff(d);
+    if (!d.flag20) {
+        auto c = sessions_.find(d.caster);
+        if ((d.caster != kNoSession) && c != sessions_.end()) {
+            BuffOff(Target{ d.caster, -1 }, 5);
+            BuffOff(Target{ d.caster, -1 }, 14);
+            BuffOff(Target{ d.caster, -1 }, 29);
+            c->second.massOverride = d.mass80;
+        }
+    }
+    if (d.field84 == 0) {
+        const int16_t ix = static_cast<int16_t>(d.posX), iy = static_cast<int16_t>(d.posY);
+        const uint8_t fx[5] = { static_cast<uint8_t>(Op::FX_MANA_BOMB_CANCEL), static_cast<uint8_t>(ix), static_cast<uint8_t>(ix >> 8),
+                                static_cast<uint8_t>(iy), static_cast<uint8_t>(iy >> 8) };
+        SendFxAllCli(d.posX, d.posY, fx, sizeof(fx));
+        ++mbStat_[static_cast<size_t>(MbStat::Cancel)];
+    }
 }
 
 // unitShield_52F690(`:11557`) — 그 대상에게 걸린 **방패 주문(51)** 을 찾아 주머니에서 뺀다.

@@ -980,6 +980,9 @@ struct Session {
     };
     std::vector<Carried> inventory;
     int       strength  = 0;       // 맨손·무기 피해 계산에 쓴다 · **무게**도 여기서 나온다(아래 PlayerMassOf)
+    // ★ 11-20 W3 — 무게(+120)를 **갈아 끼운 값**. 0 이면 힘에서 셈한다. 과부하 모으기가 99999.9 로 박는다(`GAME4_3.c:1109~1110`)
+    //   — 우리 무게는 칸이 아니라 힘에서 늘 셈하므로, 원본이 +120 에 덮어쓰는 자리를 이 칸으로 받는다
+    float     massOverride = 0.0f;
     // ★★ 묶음 5 — **들 무게의 밑천**(정답지 오브젝트 `+490` · `CarryCapacity`).
     //   ⚠⚠ **thing.bin 의 `CARRYCAPACITY = 100` 이 아니다.** 그것은 오브젝트를 만들 때의 기본값이고
     //     (`server/object.go:330`), 사람은 접속·레벨업 때 `plrReadVals_4EEDC0` 가 **힘에서 다시 계산해
@@ -2186,7 +2189,9 @@ public:
     //   전부 여기로 모아 같은 잣대로 낸다 — 아니면 「식은 같은데 값이 다르다」를 숫자로 못 말한다.
     // ★★ 09-22 — 사람 **무게**. 정답지 `GAME3_3.c:7701` 대로 힘에서 셈한다(위저드 15.6·컨저러 18.8·워리어 30).
     //   ⚠ 상수로 두면 안 된다 — 직업마다 다르다. 힘이 아직 안 들어왔으면(0) 정답지와 같은 바닥값 10 이 된다
-    double PlayerMassOf(const Session& s) const { return PlayerMassFromStrength(s.strength); }
+    double PlayerMassOf(const Session& s) const {
+        return s.massOverride > 0.0f ? static_cast<double>(s.massOverride) : PlayerMassFromStrength(s.strength);   // ★ 11-20 W3 갈아 끼운 무게
+    }
     // ★ 2-b2 — `sub_4E86E0`(`GAME3_3.c:3272~3306`) 무게를 실은 탄성 충돌. 둘 다 **옛 속도로** 새 속도를 셈한다.
     //   무게는 float(+120), 둘째 몫 계수(v9 = 2·m2/합)도 float 칸에 담긴다 — 그대로 옮겼다
     static void ElasticExchange(float m1, double& v1x, double& v1y, float m2, double& v2x, double& v2y) {
@@ -4088,6 +4093,11 @@ public:
     // ★ 11-20 트레일러 위저드 W2 — 마법 화살 갈래(만든 수만으로는 「맞아 터짐 · 시간 다 됨 · 벽 튕김 · 수 한도 거절」을 못 가른다)
     enum class MmStat : uint8_t { Made = 0, BoomHit, BoomAge, WallBounce, TooMany, Reflect, BoomCounter, Count };
     unsigned long long mmStat(MmStat k) const { return mmStat_[static_cast<size_t>(k)]; }
+    // ★ 11-20 W3 과부하 갈래 — 모으기 시작 · 터짐(마나 0) · 터짐(글리프 시간) · 터지기 전 끊김(0xA3) · 모으기 그림 지움(마나 15 아래 · 끝)
+    enum class MbStat : uint8_t { Start = 0, BoomMana, BoomTime, Cancel, ChargeOff, Count };
+    unsigned long long mbStat(MbStat k) const { return mbStat_[static_cast<size_t>(k)]; }
+    int mbLastPower() const { return mbLastPower_; }                     // 마지막으로 터진 힘(+72)
+    float DebugMassOf(int64_t sid) const { auto i = sessions_.find(sid); return i == sessions_.end() ? 0.0f : static_cast<float>(PlayerMassOf(i->second)); }
     // ★★ **갱신에 실린 누계.** 「지금 살아 있는 수」는 30프레임 표본이라
     //   덫이 쏘는 박자와 어긋나면 **살아 있어도 0 으로 보인다**(09-16 에 이걸로 헛짚었다).
     //   「클라에 갔나」는 반드시 **누계**로 물어야 한다.
@@ -4729,6 +4739,9 @@ private:
         float field72 = 0.0f;            // +72 소수 이월(회복·흡수 계수가 0.5 같은 소수라 틱마다 남는 몫을 쌓는다)
         int pool = 0;                    // +18(u32) 방패가 막아 낼 남은 양(ShieldHealth). 0 이 되면 주문이 끝난다
         uint32_t field80 = 0, field84 = 0;
+        // ★ 11-20 W3 과부하(56) — +76 모으기 그림 오브젝트(`ManaBombCharge`)의 번호 · +80 갈아 끼우기 전 무게 · +84 터졌나(field84)
+        uint16_t obj76Net = 0;
+        float mass80 = 0.0f;
         uint32_t flags88 = 0;            // +88 1 = 취소됨(다음 차례에 지운다)
         uint16_t casterPet = 0;          // ★ 09-29 B7 — 몬스터 시전자(번호) — 0 이면 사람(`caster`)
         // ★ 10-01 소환(75~87) — `summonStart_500DA0`(`GAME4.c:4086~4126`)이 **시작 때** 적는 것
@@ -4780,6 +4793,11 @@ private:
     int DurGreaterHealCreate(DurSpell& d);                                 // sub_52F220
     int DurGreaterHealTick(DurSpell& d);                                   // sub_52F2E0
     int DurDrainMana(DurSpell& d);                                         // nox_xxx_spellDrainMana_52E210
+    // ★ 11-20 트레일러 위저드 W3 — 과부하(SPELL_MANA_BOMB 56 · 원본 이름 Obliteration)
+    int DurManaBombCreate(DurSpell& d);                                    // nox_xxx_manaBomb_530F90
+    int DurManaBombTick(DurSpell& d);                                      // nox_xxx_manaBombBoom_5310C0
+    void DurManaBombEnd(DurSpell& d);                                      // sub_531290
+    void ManaBombChargeOff(DurSpell& d);                                   // +76 그림 오브젝트 지우기(delayedDeleteObject)
     // ── 묶음 4-c1 밀기·당기기·땅흔들기 ──
     void PushUnitsAround(float cx, float cy, float outer, float inner, float power);                    // mapPushUnitsAround_52E040 + unitPushAroundFn_52E0E0
     int CastPushPull(const Session& caster, int lvl, bool pull);                                        // castPush_52C000 · castPull_52BFA0
@@ -5578,6 +5596,8 @@ private:
     unsigned long long flagStatusSent_ = 0;   // 깃발 HUD 를 보낸 횟수 (과잉 감시용)
     unsigned long long invulnBlocked_ = 0;    // 부활 무적으로 막은 피해 횟수
     unsigned long long missilesMade_ = 0;     // 날아가는 것을 만든 누계
+    unsigned long long mbStat_[static_cast<size_t>(MbStat::Count)] = {};   // ★ 11-20 W3 과부하 갈래
+    int mbLastPower_ = 0;
     unsigned long long mmStat_[static_cast<size_t>(MmStat::Count)] = {};   // ★ 11-20 W2 마법 화살 갈래
     unsigned long long missilesGone_ = 0;     // 날아가는 것이 사라진 누계
     unsigned long long missileEntriesSent_ = 0;   // 갱신에 실린 누계

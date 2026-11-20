@@ -117,7 +117,8 @@ std::shared_ptr<const nox::Server::GameTables> BuildGameTables(const GameFiles& 
                                 "SmallFist", "MediumFist", "LargeFist",
                                 "SmallFlameCleanse", "MediumFlameCleanse", "FlameCleanse", "LargeFlameCleanse",
                                 "SmallBlueFlameCleanse", "MediumBlueFlameCleanse", "BlueFlameCleanse", "LargeBlueFlameCleanse",
-                                "ArachnaphobiaFocus", "SmallSpider", "Pixie" }) {
+                                "ArachnaphobiaFocus", "SmallSpider", "Pixie",
+                                "ManaBombCharge" }) {   // ★ 11-20 W3 과부하 모으기 그림(`GAME4_3.c:1095`)
             const uint16_t w = tdb.WireByName(nm);
             srv.SetNamedType(nm, w);
             srv.Log("[종류] %s = %u%s\n", nm, static_cast<unsigned>(w), w ? "" : " ⚠ 못 찾음");

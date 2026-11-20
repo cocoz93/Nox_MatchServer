@@ -1090,6 +1090,7 @@ const std::vector<TestSpellDef>& TestSpellDefs() {
     static const std::vector<TestSpellDef> kDefs = {
         {  4, 10, 0x811c0491, { 5, 3, 1 } },                // SPELL_BLINK
         { 50, 15, 0x62240038, { 3, 1, 5, 1 } },             // SPELL_MAGIC_MISSILE(11-20 W2 · thing.bin 실측)
+        { 56, 10, 0x02140420, { 1, 1, 3, 3, 7, 7, 5, 5 } }, // SPELL_MANA_BOMB(11-20 W3 · thing.bin 실측 — CAN_COUNTER 0x40000 있음)
         { 24,  0, 0x42340033, { 7, 5, 3, 1 } },             // SPELL_LIGHTNING
         { 12, 10, 0x222000b5, { 5, 3, 5 } },                // SPELL_CONFUSE(겨눈 주문 · 4-a2)
         { 41, 30, 0x01400214, { 8, 1, 6 } },                // SPELL_LESSER_HEAL(겨눈 · 공격 아님)
@@ -8388,6 +8389,111 @@ void TestMagicMissile() {
         }
     }
     std::printf("  W2 — 마법 화살 발 수·퍼짐·채우기·시전 전 거절·직격+둘레·3초·쫓기·벽 튕김·되받아치기·반주문 터짐\n");
+}
+
+// ── 11-20 트레일러 위저드 W3 — 과부하(SPELL_MANA_BOMB 56 · Obliteration) ─────────────
+//
+// 원본 `nox_xxx_manaBomb_530F90` · `nox_xxx_manaBombBoom_5310C0` · `sub_531290`(`GAME4_3.c:1088~1230`).
+//   사람이 걸면 묶기(5)·닻(14)·반마법(29) + 무게 99999.9 · 틱마다 마나 −세기 · 힘 +`ManaBombDeltaPower[세기-1]` ·
+//   **마나가 0 이 되면** 시전자 자리에서 바깥 300 · 안쪽 150 둘레 피해(종류 15 — 갑옷·막기 없음) · 시전자 자신도 맞는다.
+//   끊기면(반주문 — 주문 깃발 CAN_COUNTER) 안 터지고 시작 자리에 0xA3. 값은 gamedata.bin 실측(모드 앞머리 없음).
+void TestManaBomb() {
+    const std::string a = "10.9.30.1:9301";   // 시전자(위저드)
+    const std::string b = "10.9.30.2:9302";   // 안쪽 100 — 힘 그대로
+    const std::string c = "10.9.30.3:9303";   // 225 — 반
+    const std::string d = "10.9.30.4:9304";   // 멀리 — 안 닿음
+    using MB = nox::Server::MbStat;
+    auto mk = [&](nox::CSyncHost& srv, std::vector<nox::OutPacket>& out, uint32_t& ms) {
+        nox::Gamedata g;
+        g.Parse("ManaBombInitPower = 10, 20, 30, 40, 50;\n" "ManaBombDeltaPower = 1, 2, 3, 4, 5;\n"
+                "ManaBombInRadius = 150;\n" "ManaBombOutRadius = 300;\n" "ManaBombShakeMag = 30;\n"
+                "ManaBombGlyphDuration = 60;\n" "SummonDuration = 60, 210, 375;\n" "CounterspellRange = 600;\n");
+        srv->SetGamedata(g);
+        RegSpell(srv, 56);
+        srv->SetNamedType("ManaBombCharge", 699);                          // thing.bin 실측 699
+        srv.DebugEnterGame(a, 830, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 831, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(c, 832, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(d, 833, false, nox::CharClass::Wizard);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv->DebugMoveTo(Sid(srv, b), 1100, 1000);
+        srv->DebugMoveTo(Sid(srv, c), 1225, 1000);
+        srv->DebugMoveTo(Sid(srv, d), 2000, 2000);
+        ms = 0; srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        for (const auto& x : { a, b, c, d }) srv->DebugSetHealth(Sid(srv, x), 150);   // 시전자가 제 폭발(60)에 죽지 않게
+    };
+    auto hasOp = [&](const std::vector<nox::OutPacket>& out, const std::string& to, nox::Op op) {
+        return FindMsg(FlattenTo(out, to), static_cast<uint8_t>(op)) != nullptr;
+    };
+
+    // ① 세기 3 · 마나 30 — 모으기 → 마나 0 → 터짐(힘 30 + 3 × 10 = 60) · 둘레 피해 · 끝나면 되돌리기
+    {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
+        const int64_t sa = Sid(srv, a);
+        const float mass0 = srv->DebugMassOf(sa);
+        srv->DebugSetMana(sa, 30);
+        srv->DebugSpellAccept(sa, 56, 3); srv.TakeOut(out);
+        Check(srv->mbStat(MB::Start) == 1, "W3 ① 과부하가 시작되지 않았다");
+        Check(srv->DebugHasEnchant(sa, 5) && srv->DebugHasEnchant(sa, 14) && srv->DebugHasEnchant(sa, 29),
+              "W3 ① 묶기(5)·닻(14)·반마법(29)이 안 걸렸다");
+        Check(srv->DebugMassOf(sa) > 99999.0f, "W3 ① 무게를 99999.9 로 안 박았다(밀리면 안 된다)");
+        Check(srv->PlacedCount() == 1 && srv->DebugPlacedType(0) == 699, "W3 ① 모으기 그림(ManaBombCharge 699)을 안 놓았다");
+        ms += 34; srv.Tick(ms, out);
+        if (srv->ManaOf(sa) != 27) std::printf("  [과부하] 한 틱 뒤 마나 %u — 27(세기 3 만큼) 이어야 한다\n", srv->ManaOf(sa));
+        Check(srv->ManaOf(sa) == 27, "W3 ① 틱마다 세기만큼 마나를 안 썼다");
+        uint16_t hp0[4];
+        { int k = 0; for (const auto& x : { a, b, c, d }) hp0[k++] = srv->HealthOf(Sid(srv, x)); }
+        int ticks = 1;
+        bool chargeOffBeforeBoom = false;
+        out.clear();
+        for (; ticks < 40 && srv->mbStat(MB::BoomMana) == 0; ++ticks) {
+            ms += 34; srv.Tick(ms, out);
+            if (srv->mbStat(MB::BoomMana) == 0 && srv->mbStat(MB::ChargeOff) == 1 && srv->PlacedCount() == 0) chargeOffBeforeBoom = true;
+        }
+        if (ticks != 11 || srv->mbLastPower() != 60) std::printf("  [과부하] 터진 틱 %d · 힘 %d — 11 · 60 이어야 한다\n", ticks, srv->mbLastPower());
+        Check(srv->mbStat(MB::BoomMana) == 1 && ticks == 11, "W3 ① 마나가 0 이 된 다음 틱에 터지지 않았다");
+        Check(srv->mbLastPower() == 60, "W3 ① 터진 힘이 30 + 3 × 10 이 아니다(시작 힘·틱당 힘 표)");
+        Check(chargeOffBeforeBoom, "W3 ① 마나 15 아래에서 모으기 그림을 안 지웠다");
+        int lost[4];
+        { int k = 0; for (const auto& x : { a, b, c, d }) { lost[k] = static_cast<int>(hp0[k]) - static_cast<int>(srv->HealthOf(Sid(srv, x))); ++k; } }
+        if (lost[0] != 60 || lost[1] != 60 || lost[2] != 30 || lost[3] != 0)
+            std::printf("  [과부하] 잃은 값 시전자 %d · 100 %d · 225 %d · 멀리 %d — 60 · 60 · 30 · 0 이어야 한다\n", lost[0], lost[1], lost[2], lost[3]);
+        Check(lost[1] == 60 && lost[2] == 30 && lost[3] == 0, "W3 ① 둘레 피해(안쪽 150 그대로 · 225 에서 반 · 300 밖 없음)가 다르다");
+        Check(lost[0] == 60, "W3 ① 시전자 자신이 안 맞았다(원본 둘레는 who 를 안 거른다)");
+        Check(hasOp(out, a, nox::Op::FX_BLUE_SPARKS) && hasOp(out, a, nox::Op::FX_WHITE_FLASH), "W3 ① 터짐 그림 0x81·0x9A 가 없다");
+        ms += 34; srv.Tick(ms, out);                                         // 끝(지우기)은 다음 차례
+        Check(!srv->DebugHasEnchant(sa, 5) && !srv->DebugHasEnchant(sa, 14) && !srv->DebugHasEnchant(sa, 29),
+              "W3 ① 끝났는데 묶기·닻·반마법이 남았다");
+        Check(srv->DebugMassOf(sa) == mass0, "W3 ① 끝났는데 무게가 안 돌아왔다");
+        Check(srv->mbStat(MB::Cancel) == 0 && !hasOp(out, a, nox::Op::FX_MANA_BOMB_CANCEL), "W3 ① 터졌는데 끊김 그림(0xA3)을 냈다");
+    }
+
+    // ② 끊기 — 반주문(주문 깃발 CAN_COUNTER)이면 안 터지고 0xA3 · 피해 없음 · 되돌리기는 같다
+    {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
+        const int64_t sa = Sid(srv, a);
+        const float mass0 = srv->DebugMassOf(sa);
+        srv->DebugSetMana(sa, 50);
+        srv->DebugSpellAccept(sa, 56, 1); srv.TakeOut(out);
+        for (int t = 0; t < 3; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv->ManaOf(sa) == 47, "W3 ② 세기 1 이 틱마다 1 을 안 썼다(시험 전제)");
+        uint16_t hp0[4];
+        { int k = 0; for (const auto& x : { a, b, c, d }) hp0[k++] = srv->HealthOf(Sid(srv, x)); }
+        out.clear();
+        srv->DebugCastCounterSpell(Sid(srv, b)); srv.TakeOut(out);
+        ms += 34; srv.Tick(ms, out);
+        Check(srv->mbStat(MB::Cancel) == 1 && srv->mbStat(MB::BoomMana) == 0, "W3 ② 반주문에 안 끊겼거나 터졌다");
+        Check(hasOp(out, a, nox::Op::FX_MANA_BOMB_CANCEL), "W3 ② 끊김 그림 0xA3 이 없다");
+        bool same = true;
+        { int k = 0; for (const auto& x : { a, b, c, d }) { if (srv->HealthOf(Sid(srv, x)) != hp0[k]) same = false; ++k; } }
+        Check(same, "W3 ② 끊겼는데 누가 깎였다");
+        Check(!srv->DebugHasEnchant(sa, 5) && srv->DebugMassOf(sa) == mass0 && srv->PlacedCount() == 0,
+              "W3 ② 끊긴 뒤 묶기·무게·모으기 그림이 안 돌아왔다");
+        for (int t = 0; t < 60; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv->ManaOf(sa) == 47 && srv->mbStat(MB::BoomMana) == 0, "W3 ② 끊긴 뒤에도 마나를 쓰거나 터졌다");
+    }
+    std::printf("  W3 — 과부하 모으기(묶기·무게·마나 −세기)·마나 0 에 터짐(힘 표·둘레·시전자 자신)·끝 되돌리기·반주문 끊김(0xA3)\n");
 }
 
 // ── 묶음 4-d(1) — 에너지볼트(Energy Bolt 24) ──────────────────────────
@@ -37451,6 +37557,7 @@ int main() {
     TestArachnaphobia();
     TestPixieSwarm();
     TestMagicMissile();               // ★ 11-20 트레일러 위저드 W2
+    TestManaBomb();                   // ★ 11-20 트레일러 위저드 W3
     TestEnergyBolt();
     TestChainLightning();
     TestDeathRay();
