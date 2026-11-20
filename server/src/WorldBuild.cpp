@@ -140,7 +140,9 @@ std::shared_ptr<const nox::Server::GameTables> BuildGameTables(const GameFiles& 
         for (const char* nm : { "Fireball", "StrongFireball", "TitanFireball", "ImpShot", "HarpoonBolt",
                                 "MercArcherArrow", "ArcherArrow", "ArcherBolt", "WeakArcherArrow",
                                 // ★ 11-20 트레일러 전사 2-a — 던지는 것 둘(SPEED 400 · 300 · AIRBORNE — 수리검 · 차크람 `GAME4_3.c:4345·4400`)
-                                "FanChakramInMotion", "RoundChakramInMotion" }) {
+                                "FanChakramInMotion", "RoundChakramInMotion",
+                                // ★ 11-20 트레일러 위저드 W2 — 마법 화살(SPEED 64 · AIRBORNE+FLICKER+NO_COLLIDE_OWNER · BoomCollide — 인자 없음)
+                                "MagicMissile" }) {
             const uint16_t w = tdb.WireByName(nm);
             const nox::ThingInfo* t2 = w ? tdb.ByWire(w) : nullptr;
             int amount = 0;

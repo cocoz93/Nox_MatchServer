@@ -1089,6 +1089,7 @@ struct TestSpellDef { uint8_t id; uint8_t mana; uint32_t flags; std::vector<uint
 const std::vector<TestSpellDef>& TestSpellDefs() {
     static const std::vector<TestSpellDef> kDefs = {
         {  4, 10, 0x811c0491, { 5, 3, 1 } },                // SPELL_BLINK
+        { 50, 15, 0x62240038, { 3, 1, 5, 1 } },             // SPELL_MAGIC_MISSILE(11-20 W2 · thing.bin 실측)
         { 24,  0, 0x42340033, { 7, 5, 3, 1 } },             // SPELL_LIGHTNING
         { 12, 10, 0x222000b5, { 5, 3, 5 } },                // SPELL_CONFUSE(겨눈 주문 · 4-a2)
         { 41, 30, 0x01400214, { 8, 1, 6 } },                // SPELL_LESSER_HEAL(겨눈 · 공격 아님)
@@ -8151,6 +8152,242 @@ void TestPixieSwarm() {
         Check(srv->missiles() == 0, "90초가 지났는데 픽시가 남아 있다(수명이 빠졌나)");
     }
     std::printf("  4-c4(5) — 픽시떼 수 채우기·세기별 수·시전자 둘레·수명 (날아다니는 AI 는 묶음 6·7)\n");
+}
+
+// ── 11-20 트레일러 위저드 W2 — 마법 화살(SPELL_MAGIC_MISSILE 50) ─────────────
+//
+// `spellMissiles.Cast`·`CastCustom`(`spell_missiles.go:26~91`) — 몸 방향 + 0 · −16 · +16 · −32 … 로 퍼진 `MagicMissileCount[세기-1]`발.
+//   제 것이 이미 날면 모자란 만큼만 · 하나도 못 더하면 「너무 많음」. 시전 전 검사(`GAME4.c:2803`)는 이미 다 차 있으면 3 으로 거절.
+// `updateMagicMissile_53BDA0` — 3초(90틱) · 대상 없으면 8틱마다 600 안에서 찾기 · 한 틱에 ±42 꺾기 · 감쇠 0.8.
+// `collideBoom_4E9770` — 직격 8(종류 7) · 둘레 바깥 15 · 안쪽 5 · 23 · 밀기 50/50 힘 20 · 벽이면 튕겨 반 빠르기로 계속 · 되받아치기(27)면 주인만 바뀐다.
+//   값은 gamedata.bin 실측(`MagicMissileCount` ARENA `2, 3, 4, 5, 6` · 피해 8 · 둘레 23 · 15.0 · 50.0 · 20.0)과 thing.bin(704 · SPEED 64)이다.
+void TestMagicMissile() {
+    const std::string a = "10.9.20.1:9201";
+    const std::string b = "10.9.20.2:9202";
+    // bCls — 맞는 쪽 직업. 전사는 가만히 서면 방패를 스스로 올려(`object_update.go:327~338`) 앞에서 오는 화살을 막으니 피해를 재는 칸은 위저드로 둔다
+    auto mk = [&](nox::CSyncHost& srv, const char* count, nox::CharClass bCls = nox::CharClass::Warrior) {
+        nox::Gamedata g;
+        const std::string gd = std::string("MagicMissileCount = ") + count + ";\n"
+            "MagicMissileDamage = 8;\n" "MagicMissileSplashDamage = 23;\n" "MagicMissileRange = 15.0f;\n"
+            "MagicMissilePushRange = 50.0f;\n" "MagicMissileForce = 20.0f;\n" "SummonDuration = 60, 210, 375;\n"
+            "CounterspellRange = 600;\n";
+        g.Parse(gd);
+        srv->SetGamedata(g);
+        srv->SetProjType("MagicMissile", 704, 64, /*AIRBORNE+FLICKER+NO_COLLIDE_OWNER*/ 0x20004400u, 0);
+        RegSpell(srv, 50);
+        srv.DebugEnterGame(a, 790, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 791, false, bCls);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv->DebugMoveTo(Sid(srv, b), 3000, 3000);                          // 기본은 멀리(대상 없음)
+    };
+    auto start = [&](nox::CSyncHost& srv, uint32_t& ms, std::vector<nox::OutPacket>& out) {
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);                                         // 물리 자리를 맞춘다(DebugMoveTo 는 틱이 돌아야 posX 에 간다)
+        srv->DebugSetFacing(Sid(srv, a), 0);                                 // +x
+    };
+    using MS = nox::Server::MmStat;
+
+    // ① 세기 3 → **네 발** · 종류 704 · 방향 0 · 240(−16) · 16 · 224(−32) · 빠르기 4 × 0.8~1.2
+    {
+        nox::CSyncHost srv; mk(srv, "2, 3, 4, 5, 6");
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        srv->DebugSpellAccept(Sid(srv, a), 50, 3); srv.TakeOut(out);
+        if (srv->missiles() != 4) std::printf("  [마법 화살] 세기 3 에 나온 수 %zu — 4 여야 한다\n", srv->missiles());
+        Check(srv->missiles() == 4 && srv->mmStat(MS::Made) == 4, "W2 ① 세기 3 마법 화살이 네 발이 아니다");
+        const uint8_t want[4] = { 0, 240, 16, 224 };
+        for (size_t i = 0; i < 4 && i < srv->missiles(); ++i) {
+            Check(srv->DebugMissileType(i) == 704, "W2 ① 마법 화살 종류가 704 가 아니다");
+            if (srv->DebugMissileDir(i) != want[i]) std::printf("  [마법 화살] %zu 번째 방향 %u — %u 이어야 한다\n", i, srv->DebugMissileDir(i), want[i]);
+            Check(srv->DebugMissileDir(i) == want[i], "W2 ① 퍼짐 방향이 0·−16·+16·−32 가 아니다");
+            const float sp = srv->DebugMissileSpeed(i);
+            Check(sp >= 3.2f - 1e-4f && sp <= 4.8f + 1e-4f, "W2 ① 빠르기가 4 × (0.8~1.2) 밖이다");
+        }
+    }
+
+    // ② 세기 1 → **두 발**(표가 세기를 탄다)
+    {
+        nox::CSyncHost srv; mk(srv, "2, 3, 4, 5, 6");
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        srv->DebugSpellAccept(Sid(srv, a), 50, 1); srv.TakeOut(out);
+        Check(srv->missiles() == 2, "W2 ② 세기 1 마법 화살이 두 발이 아니다");
+    }
+
+    // ③ **모자란 만큼만** — 두 발 날 때 세기 3 이면 둘을 더해 넷 · 다 찼으면 「너무 많음」으로 하나도 안 만든다
+    {
+        nox::CSyncHost srv; mk(srv, "2, 3, 4, 5, 6");
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        srv->DebugSpellAccept(Sid(srv, a), 50, 1); srv.TakeOut(out);
+        srv->DebugSpellAccept(Sid(srv, a), 50, 3); srv.TakeOut(out);
+        if (srv->missiles() != 4) std::printf("  [마법 화살] 채운 뒤 수 %zu — 4 여야 한다\n", srv->missiles());
+        Check(srv->missiles() == 4, "W2 ③ 모자란 만큼만 채우지 않았다");
+        Check(srv->mmStat(MS::TooMany) == 0, "W2 ③ 아직 안 찼는데 「너무 많음」이 셌다");
+        srv->DebugSpellAccept(Sid(srv, a), 50, 3); srv.TakeOut(out);
+        Check(srv->missiles() == 4 && srv->mmStat(MS::TooMany) == 1, "W2 ③ 다 찼는데 더 만들었거나 「너무 많음」을 안 셌다");
+    }
+
+    // ④ 시전 전 검사 — 제 마법 화살이 이미 표만큼 날면 **3 으로 거절**(효과 함수까지 안 간다 → 「너무 많음」도 안 는다)
+    {
+        nox::CSyncHost srv; mk(srv, "2, 3, 4, 5, 6");
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        srv->DebugSpellAccept(Sid(srv, a), 50, 3); srv.TakeOut(out);
+        Check(srv->missiles() == 4, "W2 ④ 네 발이 안 났다(시험 전제)");
+        const unsigned long long rej0 = srv->castRejCant();
+        CastAndWait(srv, a, 50, false, ms, out);
+        Check(srv->castRejCant() == rej0 + 1, "W2 ④ 다 찼는데 시전 전 검사가 거절하지 않았다");
+        Check(srv->mmStat(MS::TooMany) == 0 && srv->mmStat(MS::Made) == 4, "W2 ④ 거절돼야 할 시전이 효과 함수까지 갔다");
+    }
+
+    // ④b 반대 방향 — **안 찼으면** 시전이 통과해 효과 함수가 돈다(검사가 늘 거절하면 여기서 걸린다)
+    {
+        nox::CSyncHost srv; mk(srv, "2, 3, 4, 5, 6");
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        const unsigned long long rej0 = srv->castRejCant();
+        CastAndWait(srv, a, 50, false, ms, out);
+        Check(srv->castRejCant() == rej0, "W2 ④b 빈 상태인데 시전 전 검사가 거절했다");
+        Check(srv->mmStat(MS::Made) == 4, "W2 ④b 시전으로 네 발이 안 났다(온라인 세기 3)");
+    }
+
+    // ⑤ 직격 + 둘레 — 한 발짜리 표(SOLO 값)로 앞의 사람을 맞힌다. 잃는 값 = 직격 8 + 둘레 23 × 감쇠(터진 자리 기준)
+    {
+        nox::CSyncHost srv; mk(srv, "1, 2, 3, 4, 5", nox::CharClass::Wizard);
+        srv->DebugMoveTo(Sid(srv, b), 1150, 1000);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        const uint16_t bHp = srv->HealthOf(Sid(srv, b));
+        const float armor = srv->DebugArmorValue(Sid(srv, b));
+        out.clear();
+        srv->DebugSpellAccept(Sid(srv, a), 50, 1); srv.TakeOut(out);
+        Check(srv->missiles() == 1, "W2 ⑤ 한 발이 안 났다(시험 전제)");
+        for (int t = 0; t < 100 && srv->missiles() > 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv->missiles() == 0 && srv->mmStat(MS::BoomHit) == 1, "W2 ⑤ 앞의 사람에게 맞아 터지지 않았다");
+        const int lost = static_cast<int>(bHp) - static_cast<int>(srv->HealthOf(Sid(srv, b)));
+        const auto toB = FlattenTo(out, b);
+        const auto* fx = FindMsg(toB, static_cast<uint8_t>(nox::Op::FX_LESSER_EXPLOSION));
+        Check(fx != nullptr && fx->size() == 5, "W2 ⑤ 작은 터짐 그림(0x86 · 5바이트)을 못 찾음");
+        if (fx && fx->size() == 5) {
+            // ⚠ 밀기(힘 20)가 같은 틱에 몸을 옮기기 전 자리가 아니라 **지금 자리**다 — 밀림은 다음 틱부터 자리에 들어가므로 같다고 본다(틀리면 여기서 드러난다)
+            const double bx = srv->DebugPosX(Sid(srv, b)), by = srv->DebugPosY(Sid(srv, b));
+            const double ex = static_cast<int16_t>((*fx)[1] | ((*fx)[2] << 8));
+            const double ey = static_cast<int16_t>((*fx)[3] | ((*fx)[4] << 8));
+            const double dist = std::sqrt((bx - ex) * (bx - ex) + (by - ey) * (by - ey));
+            float rd = 23.0f;
+            if (dist > 15.0) rd = 0.0f; else if (dist >= 5.0) rd *= static_cast<float>(1.0 - (dist - 5.0) / (15.0 - 5.0));
+            // 피해 함수가 종류 7 을 (1 − 갑옷) 배로 줄이고 소수부를 다음 피해로 넘긴다(`Server.cpp` HurtTarget) — 직격 → 둘레 순서로 같은 셈
+            double rem = 0.0;
+            auto hurt = [&](int d) {
+                if (d <= 0) return 0;
+                const float f = static_cast<float>((1.0 - static_cast<double>(armor)) * d + rem);
+                const int v = static_cast<int>(f);
+                rem = static_cast<double>(f) - v;
+                return v == 0 ? 1 : v;
+            };
+            const int want = hurt(8) + hurt(static_cast<int>(rd));
+            if (lost != want) std::printf("  [마법 화살] 터진 자리에서 %.1f · 갑옷 %.3f · 잃은 값 %d — %d(직격 8 + 둘레 %d, 갑옷 감쇠) 이어야 한다\n", dist, armor, lost, want, static_cast<int>(rd));
+            Check(lost > 0 && lost == want, "W2 ⑤ 잃은 값이 직격 8 + 둘레 23 감쇠(갑옷 반영)와 다르다");
+        }
+    }
+
+    // ⑥ 대상이 없으면 **3초(90틱)** 날다 제자리에서 터진다 — 85틱엔 살아 있고 95틱이면 없다
+    {
+        nox::CSyncHost srv; mk(srv, "2, 3, 4, 5, 6");
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        srv->DebugSpellAccept(Sid(srv, a), 50, 1); srv.TakeOut(out);
+        for (int t = 0; t < 85; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv->missiles() == 2 && srv->mmStat(MS::BoomAge) == 0, "W2 ⑥ 3초가 안 됐는데 사라졌다");
+        for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv->missiles() == 0 && srv->mmStat(MS::BoomAge) == 2, "W2 ⑥ 3초가 지났는데 안 터졌다");
+    }
+
+    // ⑦ **쫓아 휜다** — 옆(+y 250)에 선 적을 향해 꺾여 맞는다. 곧장 날면(+x) 절대 못 맞힌다
+    {
+        nox::CSyncHost srv; mk(srv, "1, 2, 3, 4, 5", nox::CharClass::Wizard);
+        srv->DebugMoveTo(Sid(srv, b), 1000, 1250);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        const uint16_t bHp = srv->HealthOf(Sid(srv, b));
+        srv->DebugSpellAccept(Sid(srv, a), 50, 1); srv.TakeOut(out);
+        for (int t = 0; t < 100 && srv->missiles() > 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        if (srv->mmStat(MS::BoomHit) != 1) std::printf("  [마법 화살] 옆 적 — 맞음 %llu · 시간 끝 %llu\n", srv->mmStat(MS::BoomHit), srv->mmStat(MS::BoomAge));
+        Check(srv->mmStat(MS::BoomHit) == 1 && srv->HealthOf(Sid(srv, b)) < bHp, "W2 ⑦ 옆의 적을 쫓아가 맞히지 못했다");
+    }
+
+    // ⑦b **막혀도 터진다** — 가만히 선 전사는 방패를 올린다(13 → 15 → 16). 앞에서 온 화살은 피해만 막히고(방패 막기) 화살은 그 자리에서 사라진다
+    //   (`collideBoom_4E9770` 이 피해 함수 결과를 안 보고 둘레·밀기·지우기로 간다 `GAME3_3.c:4073~4096`)
+    {
+        nox::CSyncHost srv; mk(srv, "1, 2, 3, 4, 5");
+        srv->DebugMoveTo(Sid(srv, b), 1150, 1000);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        srv->DebugSetFacing(Sid(srv, b), 128);                               // −x — 시전자 쪽
+        for (int t = 0; t < 30; ++t) { ms += 34; srv.Tick(ms, out); }        // 방패 올릴 틈
+        Check(srv->DebugStateOf(Sid(srv, b)) == 16, "W2 ⑦b 전사가 방패를 안 올렸다(시험 전제)");
+        const uint16_t bHp = srv->HealthOf(Sid(srv, b));
+        srv->DebugSpellAccept(Sid(srv, a), 50, 1); srv.TakeOut(out);
+        for (int t = 0; t < 100 && srv->missiles() > 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv->mmStat(MS::BoomHit) == 1 && srv->missiles() == 0, "W2 ⑦b 방패에 막힌 화살이 안 터졌다");
+        Check(srv->HealthOf(Sid(srv, b)) == bHp, "W2 ⑦b 방패를 올린 앞쪽인데 깎였다");
+    }
+
+    // ⑧ **벽이면 튕긴다** — 앞 칸(47,43 → x 1081~1103)에 닿아도 안 사라지고 계속 난다(벽 칸에 피해 · 그림 0x86)
+    {
+        nox::CSyncHost srv; mk(srv, "1, 2, 3, 4, 5");
+        srv->SetWalls({ { 47, 43 } });
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        srv->DebugSpellAccept(Sid(srv, a), 50, 1); srv.TakeOut(out);
+        int t = 0;
+        for (; t < 40 && srv->mmStat(MS::WallBounce) == 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv->mmStat(MS::WallBounce) >= 1, "W2 ⑧ 앞의 벽에 닿았는데 튕김을 안 셌다");
+        Check(srv->missiles() == 1, "W2 ⑧ 벽에 닿자 사라졌다(튕겨 계속 날아야 한다)");
+        Check(srv->mmStat(MS::BoomHit) == 0 && srv->mmStat(MS::BoomAge) == 0, "W2 ⑧ 벽에서 터짐으로 셌다");
+    }
+
+    // ⑨ 되받아치기(27) — 겨눈 대상이 앞쪽으로 받으면 **주인만 바뀌고** 안 터진다 → 그 화살이 시전자에게 돌아가 맞는다
+    {
+        nox::CSyncHost srv; mk(srv, "1, 2, 3, 4, 5");
+        srv->DebugMoveTo(Sid(srv, b), 1150, 1000);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        srv->DebugSetFacing(Sid(srv, b), 128);                               // −x — 시전자 쪽을 본다
+        srv->DebugApplyEnchant(Sid(srv, b), 27, 600, 1);
+        srv->DebugAimAt(Sid(srv, a), 1150, 1000);                            // 커서 밑 = b → 대상 b
+        const uint16_t aHp = srv->HealthOf(Sid(srv, a)), bHp = srv->HealthOf(Sid(srv, b));
+        srv->DebugSpellAccept(Sid(srv, a), 50, 1); srv.TakeOut(out);
+        for (int t = 0; t < 100 && srv->missiles() > 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        if (srv->mmStat(MS::Reflect) != 1) std::printf("  [마법 화살] 되받아치기 %llu · 맞음 %llu · 시간 끝 %llu\n", srv->mmStat(MS::Reflect), srv->mmStat(MS::BoomHit), srv->mmStat(MS::BoomAge));
+        Check(srv->mmStat(MS::Reflect) == 1, "W2 ⑨ 되받아치기(27)가 주인을 안 바꿨다");
+        Check(srv->HealthOf(Sid(srv, b)) == bHp, "W2 ⑨ 되받아친 쪽이 깎였다");
+        Check(srv->mmStat(MS::BoomHit) == 1 && srv->HealthOf(Sid(srv, a)) < aHp, "W2 ⑨ 되받아친 화살이 시전자에게 돌아가 맞지 않았다");
+    }
+    // ⑩ **반주문이면 그 자리에서 터진다** — 반주문 대상(`MISSILE_COUNTERSPELL`)이라 `BoomCollide(0,0)`(`spell_counter.go:29~33`).
+    //   막 쏜 화살은 시전자 앞 14 에 있다 → 둘레(바깥 15 · 안쪽 5)가 **시전자 자신에게** 닿는다(원본 둘레 피해는 임자를 안 거른다 `game.go:1418~1423`).
+    //   직격이 없는 이 갈래가 둘레 값(15 · 5 · 23)을 재는 유일한 칸이다
+    {
+        nox::CSyncHost srv; mk(srv, "1, 2, 3, 4, 5", nox::CharClass::Wizard);
+        srv->SetCounterMissileType(704);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        const uint16_t aHp = srv->HealthOf(Sid(srv, a));
+        const float armor = srv->DebugArmorValue(Sid(srv, a));
+        srv->DebugSpellAccept(Sid(srv, a), 50, 1); srv.TakeOut(out);
+        Check(srv->missiles() == 1, "W2 ⑩ 한 발이 안 났다(시험 전제)");
+        out.clear();
+        srv->DebugCastCounterSpell(Sid(srv, a)); srv.TakeOut(out);
+        Check(srv->missiles() == 0 && srv->mmStat(MS::BoomCounter) == 1, "W2 ⑩ 반주문에 마법 화살이 터지지 않았다");
+        const auto toA = FlattenTo(out, a);
+        const auto* fx = FindMsg(toA, static_cast<uint8_t>(nox::Op::FX_LESSER_EXPLOSION));
+        Check(fx != nullptr && fx->size() == 5, "W2 ⑩ 반주문 터짐에 작은 터짐 그림(0x86)이 없다");
+        if (fx && fx->size() == 5) {
+            const double ax = srv->DebugPosX(Sid(srv, a)), ay = srv->DebugPosY(Sid(srv, a));
+            const double ex = static_cast<int16_t>((*fx)[1] | ((*fx)[2] << 8));
+            const double ey = static_cast<int16_t>((*fx)[3] | ((*fx)[4] << 8));
+            const double dist = std::sqrt((ax - ex) * (ax - ex) + (ay - ey) * (ay - ey));
+            float rd = 23.0f;
+            if (dist > 15.0) rd = 0.0f; else if (dist >= 5.0) rd *= static_cast<float>(1.0 - (dist - 5.0) / (15.0 - 5.0));
+            const int d = static_cast<int>(rd);
+            int want = 0;
+            if (d > 0) { const int v = static_cast<int>(static_cast<float>((1.0 - static_cast<double>(armor)) * d)); want = v == 0 ? 1 : v; }
+            const int lost = static_cast<int>(aHp) - static_cast<int>(srv->HealthOf(Sid(srv, a)));
+            if (lost != want || want == 0) std::printf("  [마법 화살] 반주문 터짐 — 시전자에서 %.1f · 둘레 %d · 잃은 값 %d — %d 이어야 한다\n", dist, d, lost, want);
+            Check(want > 0, "W2 ⑩ 시험 전제 — 터진 자리가 둘레 15 안이 아니다");
+            Check(lost == want, "W2 ⑩ 둘레 피해(바깥 15 · 안쪽 5 · 23)가 시전자에게 맞게 안 들어갔다");
+        }
+    }
+    std::printf("  W2 — 마법 화살 발 수·퍼짐·채우기·시전 전 거절·직격+둘레·3초·쫓기·벽 튕김·되받아치기·반주문 터짐\n");
 }
 
 // ── 묶음 4-d(1) — 에너지볼트(Energy Bolt 24) ──────────────────────────
@@ -37213,6 +37450,7 @@ int main() {
     TestCleansingFlame();
     TestArachnaphobia();
     TestPixieSwarm();
+    TestMagicMissile();               // ★ 11-20 트레일러 위저드 W2
     TestEnergyBolt();
     TestChainLightning();
     TestDeathRay();

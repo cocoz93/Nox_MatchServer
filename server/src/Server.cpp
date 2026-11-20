@@ -6898,7 +6898,8 @@ int Server::SpellCheckClass(const Session& s, uint8_t spell) const {
 
 // checkPlrCantCastSpell_4FD150(`GAME4.c:2706`)
 //   ⚠ 옮기지 않은 갈래 — KOTR 왕관·깃발볼 공(17·16)은 모드 8 ·
-//     주먹(29)·자연의 힘(31)·유성(52) 이미 있음 3 · 매직미사일(50)·픽시(58) 개수 표는 그 효과(4-c) 와 함께
+//     주먹(29)·자연의 힘(31)·유성(52) 이미 있음 3 · 픽시(58) 개수 표는 그 효과(4-c) 와 함께
+//   ★ 11-20 W2 — 매직미사일(50) 개수 표는 옮겼다(아래)
 int Server::CheckPlrCantCastSpell(const Session& s, uint8_t spell, bool glyph) const {
     if (!glyph && flags_.size() > 0 && (SpellFlags(spell) & 0x80000)) {
         // CTF(게임 깃발 32) — 가진 것 가운데 FLAG 클래스(0x10000000)가 있으면 13
@@ -6907,6 +6908,16 @@ int Server::CheckPlrCantCastSpell(const Session& s, uint8_t spell, bool glyph) c
     if (s.buffs.Has(29)) return 14;                        // LABEL_9 — 반마법(ANTI_MAGIC 29) 버프면 14(4-a4)
     const bool quest = (questTotal_ > 0 || questStage_ > 0);
     if (!quest && (spell == 111 || spell == 112 || spell == 113 || spell == 114)) return 10;   // sub_4D7100 — 퀘스트 전용 소환
+    // ★ 11-20 트레일러 위저드 W2 — `case 50`(`GAME4.c:2803~2810`) — 제 마법 화살(`unitIsUnitTT_4E7C80`)이 이미
+    //   `MagicMissileCount[세기-1]` 개 이상 날고 있으면 3 · 시전 자체를 안 받는다(쏠 때의 「너무 많음」 글과 다른 문이다)
+    if (spell == 50) {
+        const ProjTypeInfo* pt = ProjType("MagicMissile");
+        if (pt && pt->type != 0) {
+            int have = 0;
+            for (const auto& m : missiles_) if (m.type == pt->type && m.owner == s.sessionId) ++have;
+            if (have >= static_cast<int>(BalanceFloatInd("MagicMissileCount", SpellPower(s, spell) - 1))) return 3;
+        }
+    }
     return 0;
 }
 
@@ -7361,6 +7372,7 @@ bool Server::SpellAccept(uint8_t spell, Session& s, int64_t obj3, const SpellArg
             case 10: case 11: fnc = CastCleansingFlame(spell, s, lvl); break;            // spellCastCleansingFlame_52D5C0
             case 2: fnc = CastArachnaphobia(s, arg); break;                              // spellArachna_52DC80
             case 58: fnc = CastPixieSwarm(spell, s, lvl); break;                        // castPixies_540440
+            case 50: fnc = CastMagicMissile(spell, s, lvl); break;                      // ★ 11-20 W2 spellMissiles.Cast(`spells.go:300`)
             case 65: fnc = CastPushPull(s, fl5, /*pull=*/true); break;                          // castPull_52BFA0
             case 66: fnc = CastPushPull(s, fl5, /*pull=*/false); break;                         // castPush_52C000
             case 41: fnc = CastLesserHeal(spell, s, targ); break;                            // sub_52DD50 LesserHeal
@@ -15151,6 +15163,71 @@ int Server::CastPixieSwarm(uint8_t spell, Session& caster, int lvl) {
     return 1;
 }
 
+// ★ 11-20 트레일러 위저드 W2 — 마법 화살(SPELL_MAGIC_MISSILE 50) — `spellMissiles.Cast` · `CastCustom`(`spell_missiles.go:26~91`).
+//   · 칸 값은 libs `things/spell_ext.go:41` SetDefaults — spells.yml 이 없으면 이것이다(정품 thing.bin 에는 이 칸이 없다):
+//     퍼짐 16 · 종류 MagicMissile · 앞 4 · 속도 곱 0.1 · 빠르기 무작위 0.8~1.2 · 찾는 거리 600 · 수 0(= gamedata 표)
+//   · 수 = `MagicMissileCount[세기-1]`(ARENA 2·3·4·5·6). 제 마법 화살(`CountSubOfType`)이 이미 날면 **모자란 만큼만** —
+//     하나도 못 더하면 글 `mmissile.c:TooManyMissiles` 를 주고 0(정답지가 두 번 읽는 것도 그대로 한 값이라 하나로 쓴다)
+//   · i 번째 방향 = 몸 방향(+124) + 퍼짐 × ((i+1)/2), 홀수 i 는 빼기 → 0 · −16 · +16 · −32 · +32 · −48
+//   · 자리 = 시전자 + 시전자 속도 + 방향 × (몸 반지름 + 4) · 시전자→그 자리 선 추적(1|4)이 막히면 **그 발만** 거른다
+//   · 빠르기(+544) = 무작위(0.8, 1.2) × SpeedBase(SPEED 64 → 4) · 방향 둘(+124·+126) = 그 방향 · 속도 = 시전자 속도 + 방향 × 빠르기 × 0.1
+//   · 대상 = `spellFlySearchTarget(커서, 날아가는 것, 0x20, 600, 0, 주인)` — 주인 커서 밑 적이 먼저, 없으면 커서 둘레 600 에서 가장 가까운 적
+//   · 끝에 시전 소리(`MagicMissileCast`) 한 번(발 수와 상관없이)
+//   ⚠ 정답지는 날아가는 것에 시전자 버프를 안 옮긴다(`createSpellFly_4FDDA0` 의 적외선 복사는 Magic 전용) — 그래서 `m.buffs` 는 비운다
+int Server::CastMagicMissile(uint8_t spell, Session& caster, int lvl) {
+    const ProjTypeInfo* pt = ProjType("MagicMissile");
+    if (!pt || pt->type == 0) return 1;                      // newObjectByTypeID 가 0 — 만들 것이 없다(정답지도 터지지 않고 지나간다)
+    int have = 0;
+    for (const auto& m : missiles_) if (m.type == pt->type && m.owner == caster.sessionId) ++have;
+    const int maxCnt = static_cast<int>(BalanceFloatInd("MagicMissileCount", lvl - 1));
+    int cnt = maxCnt;
+    if (have + cnt > maxCnt) cnt = maxCnt - have;
+    if (cnt <= 0) {
+        ++mmStat_[static_cast<size_t>(MmStat::TooMany)];
+        SendPriMsg(caster, "mmissile.c:TooManyMissiles");   // netPriMsgToPlayer_4DA2C0
+        return 0;
+    }
+    constexpr uint16_t kSpread = 16;
+    constexpr float kOffset = 4.0f, kVelMult = 0.1f, kSearchDist = 600.0f;
+    constexpr double kSpeedMin = 0.80000001, kSpeedMax = 1.2;
+    const float cx = static_cast<float>(caster.posX), cy = static_cast<float>(caster.posY);
+    const float cvx = static_cast<float>(caster.velX), cvy = static_cast<float>(caster.velY);
+    const float rdist = static_cast<float>(kBodyRadius) + kOffset;   // Shape.Circle.R + Offset
+    for (int i = 0; i < cnt; ++i) {
+        int doff = static_cast<int16_t>(kSpread * static_cast<uint16_t>((i + 1) / 2));
+        if (i % 2 == 1) doff = -doff;
+        const int dir = (static_cast<int>(caster.facingPrev) + doff) & 0xFF;   // RoundDir(Direction1 + doff)
+        const float dvx = DirVecX(dir), dvy = DirVecY(dir);
+        const float px = cx + cvx + dvx * rdist;
+        const float py = cy + cvy + dvy * rdist;
+        if (!MapTraceRay(cx, cy, px, py, 0x1 | 0x4)) continue;   // MapTraceFlag1|MapTraceFlag3
+        MissileObj m;
+        m.netCode = nextShotNetCode_++;
+        if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;
+        m.type = pt->type;
+        m.flags = pt->flags;
+        m.posX = m.newX = m.prevX = px;
+        m.posY = m.newY = m.prevY = py;
+        m.dir1 = m.dir2 = static_cast<uint8_t>(dir);         // SetDir — +124 · +126 둘 다
+        m.createdFrame = m.frame136 = frame_;
+        m.speed = static_cast<float>((kSpeedMin + (kSpeedMax - kSpeedMin) * NextRandomFloat()) * pt->speed);   // FloatClamp(0.8, 1.2) × Speed()
+        m.velX = cvx + dvx * (m.speed * kVelMult);
+        m.velY = cvy + dvy * (m.speed * kVelMult);
+        m.owner = caster.sessionId;                          // CreateObjectAt(msl, owner, p2) — +508
+        m.ud0 = m.ud2 = caster.sessionId;                    // mud.Owner(갱신 짐 [0])
+        m.ud1 = SpellFlySearchTarget(true, static_cast<float>(caster.aimX), static_cast<float>(caster.aimY), px, py,
+                                     caster.sessionId, kNoSession, 0x20, kSearchDist, &caster, &m.buffs);   // mud.Target([1])
+        m.spell = spell;                                     // mud.SpellID
+        m.level = lvl;
+        m.collideKind = 8;                                   // BoomCollide · MagicMissileUpdate
+        missiles_.push_back(m); ++missilesMade_;
+        ++mmStat_[static_cast<size_t>(MmStat::Made)];
+    }
+    if (gt_->spellDefs[spell].valid && gt_->spellDefs[spell].castSound != 0)
+        PlaySoundAt(gt_->spellDefs[spell].castSound, cx, cy, 0, 0, caster.sessionId, Target{ caster.sessionId, -1 });   // Audio.EventObj(시전 소리, 시전자) — 시전자 본인에게는 0xA7
+    return 1;
+}
+
 // 놓인 것의 **닿음 함수** — 몸이 겹친 것에 한 틱마다 한 번.
 //   · `collideDamage_4E9430` — 피해 = **양 >> 1**, 단 양이 1 이면 홀수 프레임만 1. 갈래·팀을 안 가린다
 //   · `collideManadrain_4E9490` — **사람에게만**, 마나를 **양만큼** 깎는다(피해가 아니다)
@@ -15364,6 +15441,35 @@ void Server::FireballExplode(MissileObj& m, const Target& hit) {
         static_cast<uint8_t>(amount),
     };
     SendFxAllCli(m.posX, m.posY, fx, sizeof(fx));
+}
+
+// ★ 11-20 트레일러 위저드 W2 — `collideBoom_4E9770`(`GAME3_3.c:4029~4098`)의 **터지는 몫**. 벽 튕김 갈래(a2 없음 · a3 있음)는 UpdateMissiles 가 한다.
+//   · 늘 먼저 작은 터짐 그림 `86 <x u16> <y u16>`(`netSendPointFx_522FF0(134)`) — 벽에 튕길 때도 나간다
+//   · 맞은 것이 있으면 직격 `MagicMissileDamage`(8) · 종류 7 · 때린 이 = 주인 사슬의 사람 · 때린 것 = 화살(a3 = a1)
+//     — 방패·대검·되받아치기(27)는 피해 함수 안에서 막는다(`GAME3_3.c:173~330`). **막혀도 아래 터짐은 그대로 간다**(정답지가 피해 결과를 안 본다)
+//   · 둘레 피해 = 바깥 `MagicMissileRange`(15) · 안쪽 5 · `MagicMissileSplashDamage`(23) · 종류 7 · who = 화살 · **뺄 것 없음**(a7 = 0 — 직격 맞은 것도 또 받는다)
+//   · 밀기 = 둘레 `MagicMissilePushRange`(50) · 안쪽도 50(→ 둘레 안이면 줄지 않는다) · 힘 `MagicMissileForce`(20)
+//   · 소리 84 → 지움(부르는 쪽이 DestroyMissile)
+//   ⚠ 안 옮긴 것 — 퀘스트(게임 깃발 4096)에서 같은 편 사람끼리 지나가기 · 반전(`checkInversionEffect_4FA4F0` 든 물건 마법부여) · 그을음(sMakeScorch)
+void Server::MagicMissileBoom(MissileObj& m, const Target& hit) {
+    const int16_t ex = static_cast<int16_t>(m.posX), ey = static_cast<int16_t>(m.posY);
+    const uint8_t fx[5] = { static_cast<uint8_t>(Op::FX_LESSER_EXPLOSION),
+                            static_cast<uint8_t>(ex), static_cast<uint8_t>(ex >> 8), static_cast<uint8_t>(ey), static_cast<uint8_t>(ey >> 8) };
+    SendFxAllCli(m.posX, m.posY, fx, sizeof(fx));
+    AttackSrc src;                                           // a3 = 화살(MISSILE) · +72 지난 자리(피해 함수 앞쪽 판정 `GAME3_3.c:220`)
+    src.x = m.prevX; src.y = m.prevY;
+    src.byMonsterType = m.type;
+    src.rootIsMonster = MissileRootIsMonster(m);
+    src.missile = true;
+    if (!hit.none()) HurtTarget(hit, static_cast<int>(BalanceFloat("MagicMissileDamage")), m.owner, 7, &src, HitterMissile(m));
+    WallHitter fw;                                           // 둘레 끝의 벽 피해 who = 화살(MISSILE — 방향 없음 · 재질은 그 종류)
+    fw.present = true; fw.x = m.posX; fw.y = m.posY; fw.material = MaterialOfWire(m.type);
+    fw.src = m.owner;
+    DamageUnitsAround(m.posX, m.posY, static_cast<float>(BalanceFloat("MagicMissileRange")), 5.0f,
+                      static_cast<int>(BalanceFloat("MagicMissileSplashDamage")), 7, m.owner, Target{}, HitterObj(m.type), &src, fw);
+    const float pr = static_cast<float>(BalanceFloat("MagicMissilePushRange"));
+    PushUnitsAround(m.posX, m.posY, pr, pr, static_cast<float>(BalanceFloat("MagicMissileForce")));
+    PlaySoundAt(84, m.posX, m.posY);                         // aud_501960(84, 화살, 0, 0) — 임자는 화살이라 사람 누구에게도 0xA7 이 아니다(`network.go:677`)
 }
 
 // ★ 11-19 — 죽은 뒤 함수(monster.bin `DEAD_FUNCTION` +232 · 죽음 시작 `mobActionDead1_544D80` `GAME4_3.c:9877~9880` 이 부른다).
@@ -16063,6 +16169,42 @@ void Server::UpdateMissiles(uint32_t frame) {
         } else if (m.collideKind == 7) {
             // ★ 11-20 트레일러 전사 2-b — 차크람 `UPDATE = ChakramInMotionUpdate`(`updateChakramInMotion_53DCC0`) — 수명 대신 주인 쫓기·5초
             if (!ChakramUpdate(m, frame)) { DestroyMissile(i); continue; }
+        } else if (m.collideKind == 8) {
+            // ★ 11-20 트레일러 위저드 W2 — 마법 화살 `updateMagicMissile_53BDA0`(`GAME4_3.c:5932~5992`)
+            //   ① 주인(갱신 짐 [0])이 지워졌거나 만든 지 3초(3 × FPS = 90틱)를 넘으면 제 닿음 함수를 대상·벽 없이(a2 = a3 = 0) 불러 그 자리에서 터진다
+            //   ② 대상([1])이 지워졌거나(0x20) 죽었으면(0x8000) 놓는다 · 대상이 없으면 **8틱마다**(프레임 & 7 == 0) 둘레 600 에서 새로 찾는다 —
+            //      찾은 것이 제 주인(+508)이면 버린다
+            //   ③ 대상이 있으면 방향(+126)을 **한 틱에 42씩** 그쪽으로 꺾는다(외적 부호가 0 이상이면 +42 · 아니면 −42 · 0~255 로 감는다)
+            //   ④ 힘 = 방향(+126) × 빠르기(+544) · 감쇠(+112) = 0.8(1061997773) — 대상이 없어도 지금 방향으로 민다
+            auto ownIt = sessions_.find(m.ud0);
+            const bool ownerGone = (m.ud0 == kNoSession) || ownIt == sessions_.end() || !ownIt->second.inGame;
+            if (ownerGone || frame - m.createdFrame > 3u * kServerTickRate) {
+                ++mmStat_[static_cast<size_t>(MmStat::BoomAge)];
+                MagicMissileBoom(m, Target{});
+                DestroyMissile(i);
+                continue;
+            }
+            if (m.ud1.sessionId != kNoSession) {
+                auto it = sessions_.find(m.ud1.sessionId);
+                if (it == sessions_.end() || !it->second.inGame || it->second.respawnAtFrame != 0) m.ud1 = Target{};
+            } else if (m.ud1.pet >= 0 && (static_cast<size_t>(m.ud1.pet) >= pets_.size() || pets_[static_cast<size_t>(m.ud1.pet)].dead)) {
+                m.ud1 = Target{};
+            }
+            if (m.ud1.none() && (frame & 7u) == 0) {
+                m.ud1 = SpellFlySearchTarget(false, 0, 0, m.posX, m.posY, m.owner, kNoSession, 0x20, 600.0f, &ownIt->second, &m.buffs);
+                if (m.ud1.sessionId != kNoSession && m.ud1.sessionId == m.owner) m.ud1 = Target{};
+            }
+            if (!m.ud1.none()) {
+                float tx = 0, ty = 0;
+                if (m.ud1.sessionId != kNoSession) { tx = static_cast<float>(sessions_.at(m.ud1.sessionId).posX); ty = static_cast<float>(sessions_.at(m.ud1.sessionId).posY); }
+                else { tx = static_cast<float>(pets_[static_cast<size_t>(m.ud1.pet)].x); ty = static_cast<float>(pets_[static_cast<size_t>(m.ud1.pet)].y); }
+                const int d = m.dir2;
+                const double cross = static_cast<double>(ty - m.posY) * DirVecX(d) - static_cast<double>(tx - m.posX) * DirVecY(d);
+                m.dir2 = static_cast<uint8_t>(cross >= 0.0 ? d + 42 : d - 42);   // short 자리 감기(`:5969~5983`) = 8비트 넘침
+            }
+            m.forceX = DirVecX(m.dir2) * m.speed;
+            m.forceY = DirVecY(m.dir2) * m.speed;
+            m.damping = 0.8f;                                 // 1061997773 = 0x3F4CCCCD
         } else
         // ①-b SpellProjectileUpdate 53B940(`GAME4_3.c:5764`)
         {
@@ -16280,7 +16422,24 @@ void Server::UpdateMissiles(uint32_t frame) {
                     erased = true;
                     continue;
                 }
-                if (m.collideKind == 7) {
+                if (m.collideKind == 8) {
+                    // ★ 11-20 트레일러 위저드 W2 — `collideBoom_4E9770` 의 a2 == 0 · a3 != 0 갈래(`GAME3_3.c:4053~4055·4075~4089`) —
+                    //   작은 터짐 그림(134) → 법선으로 되튐(collideReflect_57B810) → 방향(+126) = 새 속도의 방향(`math_509ED0`) → 속도 반 →
+                    //   막은 벽 칸(`sub_537760`)에 `MagicMissileDamage` · 종류 7 · 때린 것 = 화살 → **안 지우고** 계속 난다
+                    const int16_t ex = static_cast<int16_t>(m.posX), ey = static_cast<int16_t>(m.posY);
+                    const uint8_t lfx[5] = { static_cast<uint8_t>(Op::FX_LESSER_EXPLOSION),
+                                             static_cast<uint8_t>(ex), static_cast<uint8_t>(ex >> 8), static_cast<uint8_t>(ey), static_cast<uint8_t>(ey >> 8) };
+                    SendFxAllCli(m.posX, m.posY, lfx, sizeof(lfx));
+                    if (wny * wnx <= 0.0f) std::swap(m.velX, m.velY);
+                    else { const float v3 = m.velX; m.velX = -m.velY; m.velY = -v3; }
+                    m.dir2 = DirFromVec(m.velX, m.velY);
+                    m.velX *= 0.5f; m.velY *= 0.5f;
+                    WallHitter who;
+                    who.present = true; who.x = m.posX; who.y = m.posY; who.material = MaterialOfWire(m.type);
+                    who.src = m.owner;
+                    DamageToMap(th.gx, th.gy, static_cast<int>(BalanceFloat("MagicMissileDamage")), 7, who);
+                    ++mmStat_[static_cast<size_t>(MmStat::WallBounce)];
+                } else if (m.collideKind == 7) {
                     // ★ 11-20 트레일러 전사 2-c — 차크람은 제 닿음 함수가 되튐까지 한다(`collideChakram_4EAF00` a2 == 0 갈래 `GAME3_3.c:4989~5024`)
                     if (!ChakramCollideWall(m, wnx, wny, th.gx, th.gy)) { DestroyMissile(i); erased = true; continue; }
                 } else {
@@ -16301,11 +16460,14 @@ void Server::UpdateMissiles(uint32_t frame) {
                         auto changeOwner = [&]() { MissileChangeOwner(m, t.sessionId, frame); };
                         const bool front = (TestTwoPointsAndDirection(static_cast<float>(t.posX), static_cast<float>(t.posY),
                                                                       t.facingPrev, m.prevX, m.prevY) & 1) != 0;
-                        if (t.moveState == 16 && front) {            // 방패 올림 앞쪽 — 되받아침(소리 878 → 10)
+                        // ★ 11-20 W2 — 마법 화살(8)은 이 두 갈래를 안 탄다 — 원본은 방패·대검 막기를 **피해 함수 안**에서 하고(`GAME3_3.c:252~330`),
+                        //   `collideBoom_4E9770` 은 그 결과를 안 보고 터진다(`:4073~4096`). 막기는 MagicMissileBoom 의 HurtTarget 이 한다
+                        const bool boom = (m.collideKind == 8);
+                        if (!boom && t.moveState == 16 && front) {   // 방패 올림 앞쪽 — 되받아침(소리 878 → 10)
                             reflectFrom(hx, hy);
                             changeOwner();
                             handled = true;
-                        } else if (t.moveState == kPlayerStateIdle && (WeaponEquipOf(t) & 0x400) && front) {
+                        } else if (!boom && t.moveState == kPlayerStateIdle && (WeaponEquipOf(t) & 0x400) && front) {
                             reflectFrom(hx, hy);                     // 대검 가만 앞쪽 — 되받아침 + 상태 18~20(소리 890 → 10)
                             changeOwner();
                             PlayerSetState(t, static_cast<uint8_t>(18 + NextRandom(3)), frame);
@@ -16323,9 +16485,22 @@ void Server::UpdateMissiles(uint32_t frame) {
                                 m.ud0 = m.ud2 = t.sessionId;
                             } else {
                                 changeOwner();
+                                // ★ 11-20 W2 — 마법 화살은 제 닿음 함수 안에서 주인을 바꾸고 소리 122 를 낸 뒤 **터지지 않고** 돌아간다(`GAME3_3.c:4062~4068`)
+                                if (boom) {
+                                    PlaySoundAt(122, static_cast<float>(t.posX), static_cast<float>(t.posY), 0, 0, t.sessionId, Target{ t.sessionId, -1 });
+                                    ++mmStat_[static_cast<size_t>(MmStat::Reflect)];
+                                }
                             }
                             handled = true;
                         }
+                    }
+                    // ★ 11-20 트레일러 위저드 W2 — 마법 화살 `collideBoom_4E9770`(a2 != 0) — 사람·크리처·장애물 가리지 않고 터진다(아군도 — 퀘스트 갈래만 안 옮김)
+                    if (!handled && m.collideKind == 8) {
+                        ++mmStat_[static_cast<size_t>(MmStat::BoomHit)];
+                        MagicMissileBoom(m, HitTargetOf(hk, hSessionId, hIdx));
+                        DestroyMissile(i);
+                        erased = true;
+                        handled = true;
                     }
                     // collidePixie_4EA080 — **적일 때만** 인자만큼 피해(종류 11 충격)를 주고 제가 사라진다
                     if (!handled && m.collideKind == 2) {
@@ -17923,6 +18098,12 @@ int Server::CastCounterSpell(Session& caster) {
         ++counterMissiles_;
         const uint16_t nc = m.netCode;
         if (m.type != gt_->magicType.type && m.collideKind == 1) FireballExplode(m, Target{});   // SparkExplosionCollide(0,0)
+        // ★ 11-20 W2 — 마법 화살(thing.bin `MISSILE_COUNTERSPELL+MAGIC`)은 `BoomCollide(0,0)` — 대상도 벽도 없으니 **그 자리에서 터진다**
+        //   (`collideBoom_4E9770` 둘 다 없음 갈래 = 그림 0x86 · 둘레 · 밀기 · 소리 84 · 지우기 `GAME3_3.c:4053~4096`)
+        else if (m.type != gt_->magicType.type && m.collideKind == 8) {
+            ++mmStat_[static_cast<size_t>(MmStat::BoomCounter)];
+            MagicMissileBoom(m, Target{});
+        }
         // 픽시(2)·Magic·그 밖 — 대상 없는 닿음이 아무 일도 안 하거나 지우기뿐이다. 아직 남아 있으면 지운다
         if (i < missiles_.size() && missiles_[i].netCode == nc) DestroyMissile(i);
     }

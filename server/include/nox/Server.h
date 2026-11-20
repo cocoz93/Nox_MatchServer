@@ -4085,6 +4085,9 @@ public:
     //   셋을 나란히 놓으면 갈린다 — 만든 0 이면 안 쏜 것, 만든 N·사라진 N·지금 0 이면 즉사다.
     unsigned long long missilesMade() const { return missilesMade_; }
     unsigned long long missilesGone() const { return missilesGone_; }
+    // ★ 11-20 트레일러 위저드 W2 — 마법 화살 갈래(만든 수만으로는 「맞아 터짐 · 시간 다 됨 · 벽 튕김 · 수 한도 거절」을 못 가른다)
+    enum class MmStat : uint8_t { Made = 0, BoomHit, BoomAge, WallBounce, TooMany, Reflect, BoomCounter, Count };
+    unsigned long long mmStat(MmStat k) const { return mmStat_[static_cast<size_t>(k)]; }
     // ★★ **갱신에 실린 누계.** 「지금 살아 있는 수」는 30프레임 표본이라
     //   덫이 쏘는 박자와 어긋나면 **살아 있어도 0 으로 보인다**(09-16 에 이걸로 헛짚었다).
     //   「클라에 갔나」는 반드시 **누계**로 물어야 한다.
@@ -4627,7 +4630,9 @@ private:
         uint8_t collideAmount = 0;       // SparkExplosionCollide 의 인자(불덩이 192 · 센 불덩이·거인 불덩이 255)
         int fromPet = -1;                // 묶음 6-g(3b) — 이것을 쏜 소환수(제 몸에는 안 맞는다)
         // ★ 2 = PixieCollide — 적에게 닿으면 인자만큼 피해(종류 11 충격)를 주고 **제가 사라진다**
-        uint32_t expireFrame = 0;        // 0 이 아니면 이 프레임에 사라진다(픽시 — 30~90초)
+        // ★ 8 = BoomCollide(마법 화살 `MagicMissile` · 11-20 W2) — 갱신 MagicMissileUpdate(3초 · 대상 쫓아 ±42 휘기) ·
+        //   닿으면 직격 + 둘레 피해 + 밀기 뒤 사라지고, 벽이면 튕겨 반 빠르기로 계속 난다
+        uint32_t expireFrame = 0;       // 0 이 아니면 이 프레임에 사라진다(픽시 — 30~90초)
         // ★ 11-20 트레일러 전사 2-a — 차크람(RoundChakramInMotion)은 던진 차크람을 **제 가방에** 넣고 난다(`inventoryPutImpl_4F3070(날아가는 것, 차크람, 1)` `GAME4_3.c:4408`).
         //   갱신 짐 28바이트(`object_update.go:94`) — +4 남은 튕김(4) · +8 쫓는 것(주인이거나 없음) · +12 마지막에 맞은 것 · +16/+20 주인 자리 ·
         //   +24 상태(2 = 날아감 · 0 = 돌아옴 · 1 = 떨어짐)
@@ -4799,6 +4804,7 @@ private:
     int CastCleansingFlame(uint8_t spell, Session& caster, int lvl);        // spellCastCleansingFlame_52D5C0
     int CastArachnaphobia(Session& caster, const SpellArg& arg);            // spellArachna_52DC80
     int CastPixieSwarm(uint8_t spell, Session& caster, int lvl);            // castPixies_540440
+    int CastMagicMissile(uint8_t spell, Session& caster, int lvl);          // ★ 11-20 W2 spellMissiles.Cast(`spell_missiles.go:26`)
     int CastDeathRay(Session& caster, const SpellArg& arg);                // castDeathRay(spell_death_ray.go:19)
     // ── 묶음 4-f 소환 ──
     // SummonSize — thing.bin 몬스터 갈래로 정한다: 작은 것 1 · 중간 2 · 큰 것 4(`object_monster.go:652`).
@@ -4864,7 +4870,8 @@ private:
                            const AttackSrc* whoSrc = nullptr,  // ★ 09-27 S1 — 피해 함수의 v9(= a3 없음 → who) · 막기 판정·때린 이 자리
                            const WallHitter& wallWho = WallHitter{});   // ★ 09-29 Z1-A — 끝의 벽 피해가 보는 who
     void FireballExplode(MissileObj& m, const Target& hit);                 // fireballCollide_4E9AC0
-    void MonsterDeadFn(size_t idx);                                         // ★ 11-19 monster.bin DEAD_FUNCTION(+232) — 악마 둘의 터짐
+    void MagicMissileBoom(MissileObj& m, const Target& hit);                // ★ 11-20 W2 collideBoom_4E9770 의 터지는 몫(벽 튕김 갈래 빼고)
+    void MonsterDeadFn(size_t idx);                                        // ★ 11-19 monster.bin DEAD_FUNCTION(+232) — 악마 둘의 터짐
     // ── 묶음 4-c2a 독 ──
     uint8_t* PoisonOf(const Target& t);                                                                  // +540 자리
     bool ActivatePoison(const Target& t, int add, int cap);                 // activatePoison_4EE7E0
@@ -5571,6 +5578,7 @@ private:
     unsigned long long flagStatusSent_ = 0;   // 깃발 HUD 를 보낸 횟수 (과잉 감시용)
     unsigned long long invulnBlocked_ = 0;    // 부활 무적으로 막은 피해 횟수
     unsigned long long missilesMade_ = 0;     // 날아가는 것을 만든 누계
+    unsigned long long mmStat_[static_cast<size_t>(MmStat::Count)] = {};   // ★ 11-20 W2 마법 화살 갈래
     unsigned long long missilesGone_ = 0;     // 날아가는 것이 사라진 누계
     unsigned long long missileEntriesSent_ = 0;   // 갱신에 실린 누계
     // ★ 09-19 — 「항목에 담았다」와 「와이어에 나갔다」를 가른다.
