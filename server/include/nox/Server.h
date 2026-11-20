@@ -4201,6 +4201,30 @@ public:
         auto it = sessions_.find(sid);
         if (it != sessions_.end()) { it->second.screenHalfW = w; it->second.screenHalfH = h; }
     }
+    // ★ 11-21 C6 매혹(9) 갈래 — 켤 때: 글리프(혼란만) · 못 찾음 · 몬스터 아님(제 소환수 포함) · 안내서에 없는 종 · 안내서 없음 · 켬 /
+    //   틱: 대상 사라짐·죽음 · 거리 300 넘음 · 부릴 수 없음(BOMBER) · 한도 넘음 · 이미 내 것 · 얻음. 세는 자리마다 하나(시험은 개수를 본다)
+    enum class CharmStat : uint8_t { Glyph = 0, NoTarget, NotMonster, NotCharmable, NoGuide, Start,
+                                     Gone, Distance, Impossible, Limit, AlreadyOwned, Done, Count };
+    unsigned long long charmStat(CharmStat k) const { return charmStat_[static_cast<size_t>(k)]; }
+    // 안내서 번호(1~40) → 종류 와이어 번호 — WorldBuild 가 thing.bin 이름으로 채운다(`loadGuides_427070` · Bomber 칸은 0)
+    void SetGuideType(int g, uint16_t type) { if (g > 0 && g < 41) GtMut().guideTypes[g] = type; }
+    // creatureIsCharmableByTT_4272B0 — 종류가 안내서 표 몇 번인가(없으면 0 · 0 칸은 건너뜀)
+    uint8_t GuideIndexOfType(uint16_t type) const {
+        if (type == 0) return 0;
+        for (int g = 1; g < 41; ++g) if (gt_->guideTypes[g] == type) return static_cast<uint8_t>(g);
+        return 0;
+    }
+    // 시험용 — 안내서 칸 하나를 바로 세우거나 지운다(`GuideAward` 는 무리 안내서·와이어·소리까지 내서 따로 둔다)
+    void DebugSetGuide(int64_t sid, uint8_t g, uint8_t v) {
+        auto it = sessions_.find(sid);
+        if (it != sessions_.end() && g < 41) it->second.guideLvl[g] = v;
+    }
+    // 시험용 — 크리처 i 가 사람 sid 를 적으로 보나(`CreatureEnemyTo`) · 사람이 크리처를 적으로 보나(`TargetIsEnemy`)
+    bool DebugPetEnemyTo(size_t i, int64_t sid) const { return i < pets_.size() && CreatureEnemyTo(pets_[i], Target{ sid, -1 }); }
+    bool DebugPlayerEnemyToPet(int64_t sid, size_t i) const {
+        auto it = sessions_.find(sid);
+        return it != sessions_.end() && TargetIsEnemy(it->second, Target{ kNoSession, static_cast<int>(i) });
+    }
     unsigned long long mbStat(MbStat k) const { return mbStat_[static_cast<size_t>(k)]; }
     int mbLastPower() const { return mbLastPower_; }                     // 마지막으로 터진 힘(+72)
     float DebugMassOf(int64_t sid) const { auto i = sessions_.find(sid); return i == sessions_.end() ? 0.0f : static_cast<float>(PlayerMassOf(i->second)); }
@@ -4968,6 +4992,9 @@ private:
     int DurSwapTick(DurSpell& d);                                         // ★ 11-21 W9 sub_530D30
     int DurTeleTargetCreate(DurSpell& d);                                 // ★ 11-21 W9 sub_530A30_spell_execdur
     int DurTeleTargetTick(DurSpell& d);                                   // ★ 11-21 W9 castTTT_530B70
+    int DurCharmCreate(DurSpell& d);                                      // ★ 11-21 C6 charmCreature1_5011F0
+    int DurCharmTick(DurSpell& d);                                        // ★ 11-21 C6 charmCreatureFinish_5013E0
+    void DurCharmEnd(DurSpell& d);                                        // ★ 11-21 C6 charmCreature2_501690
     void SendTeleportFx(float ox, float oy, float nx, float ny);          // netSendPointFx 137 두 번
     int DurBlinkCreate(DurSpell& d);                                      // spellBlink2_530310
     int DurBlinkTick(DurSpell& d);                                        // spellBlink1_530380
@@ -5741,6 +5768,7 @@ private:
     unsigned long long turnUndeadStat_[static_cast<size_t>(TurnUndeadStat::Count)] = {};   // ★ 11-21 W6 언데드 쫓기 갈래
     unsigned long long ovalStat_[static_cast<size_t>(OvalStat::Count)] = {};               // ★ 11-21 W7 타원 방패 갈래
     unsigned long long teleStat_[static_cast<size_t>(TeleStat::Count)] = {};               // ★ 11-21 W9 자리 바꾸기·대상에게 순간이동 갈래
+    unsigned long long charmStat_[static_cast<size_t>(CharmStat::Count)] = {};             // ★ 11-21 C6 매혹 갈래
     uint32_t durFrame_ = 0;   // ★ 11-20 C2 — `SpellCastByPlayer` 가 지금 도는 걸음의 프레임(한 번에 여러 틱이면 frame_ 보다 작다 — 끝 프레임 견주기는 이 값으로)
     unsigned long long missilesGone_ = 0;     // 날아가는 것이 사라진 누계
     unsigned long long missileEntriesSent_ = 0;   // 갱신에 실린 누계
@@ -6102,6 +6130,7 @@ public:   // ★ 10-12 작업 7e-2 — 표 묶음과 같이 쓰기 입구는 바
         std::vector<PhonemeNode> phonemeTree = std::vector<PhonemeNode>(1);   // [0] = 뿌리
         std::map<std::string, uint16_t> namedTypes;   // 이름 → 와이어 종류(thing.bin 에서 받는다)
         std::vector<int> noTeleFloors;                // ★ 11-21 W9 순간이동 금지 바닥 번호 다섯(없는 이름은 -1) · 비면 「안 읽음」 — 금지 없음
+        uint16_t guideTypes[41] = {};                 // ★ 11-21 C6 안내서 번호 → 종류 와이어(0 = 없음 · Bomber 칸은 원본도 0)
         std::set<uint16_t> arrowTypes;                // 화살·쇠뇌살 — 이 종류만 갱신에 프레임이 붙는다(AddArrowType 주석)
         Gamedata gamedata;                            // 묶음 4-a4 gamedata.bin
         bool hasGamedata = false;

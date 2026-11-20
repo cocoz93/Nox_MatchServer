@@ -642,6 +642,14 @@ std::shared_ptr<const nox::Server::GameTables> BuildGameTables(const GameFiles& 
                 else { ++diff; diffs += " " + std::to_string(sp) + ":" + kGuideNames[g] + "=" + std::to_string(want) + "/우리" + std::to_string(have); }
             }
             srv.Log("[소환 짝 대조] 맞음 %d · 틀림 %d%s · 짝 없음 %d(%s )\n", same, diff, diffs.c_str(), none, nones.c_str());
+            // ★ 11-21 C6 — 매혹(9)의 「안내서 표에 있는 종인가」 표(`loadGuides_427070` `common__magic__comguide.c:22~31` — Bomber 칸만 0)
+            int got = 0;
+            for (int g = 1; g <= 40; ++g) {
+                const uint16_t w = (std::string(kGuideNames[g]) == "Bomber") ? 0 : tdb.WireByName(kGuideNames[g]);
+                srv.SetGuideType(g, w);
+                if (w != 0) ++got;
+            }
+            srv.Log("[안내서 표] 종류 찾음 %d / 40(Bomber 칸은 원본도 0)\n", got);
         }
         // 충돌 함수 · 무기 그림 · Magic(옛 「TRY_COLLIDE 가 찾을 것」 블록의 게임 데이터 몫 — 맵 오브젝트 목록 · `[충돌 함수]` 줄은 방 쪽)
         {

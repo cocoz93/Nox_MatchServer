@@ -208,6 +208,14 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                     srv.teleStat(TS::TttNoTele), srv.teleStat(TS::TttBlocked), srv.teleStat(TS::TttStart), srv.teleStat(TS::TttGone),
                     srv.teleStat(TS::TttAnchor), srv.teleStat(TS::TttDone));
         }
+        {   // ★ 11-21 C6 — 매혹(9) 갈래 · 시험이 같은 칸을 센다(`TestCharm1121`)
+            using CS = nox::Server::CharmStat;
+            srv.Log("[매혹] 글리프 %llu · 못 찾음 %llu · 몬스터 아님 %llu · 안내서에 없는 종 %llu · 안내서 없음 %llu · 켬 %llu"
+                    " / 사라짐 %llu · 거리 %llu · 부릴 수 없음 %llu · 한도 %llu · 이미 내 것 %llu · 얻음 %llu\n",
+                    srv.charmStat(CS::Glyph), srv.charmStat(CS::NoTarget), srv.charmStat(CS::NotMonster), srv.charmStat(CS::NotCharmable),
+                    srv.charmStat(CS::NoGuide), srv.charmStat(CS::Start), srv.charmStat(CS::Gone), srv.charmStat(CS::Distance),
+                    srv.charmStat(CS::Impossible), srv.charmStat(CS::Limit), srv.charmStat(CS::AlreadyOwned), srv.charmStat(CS::Done));
+        }
         // ★ 10-01 — 클라 대체 무기 알림 `e0`(비움 · 가방에 없음 · 맞음 · 직업·힘 안 맞아 `e0 0 01` 되돌림)
         srv.Log("[대체무기] 비움 %llu · 없음 %llu · 맞음 %llu · 되돌림 %llu\n", srv.secondaryWeaponStat(0),
                     srv.secondaryWeaponStat(1), srv.secondaryWeaponStat(2), srv.secondaryWeaponStat(3));

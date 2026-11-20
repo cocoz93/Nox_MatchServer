@@ -7403,6 +7403,14 @@ bool Server::SpellAccept(uint8_t spell, Session& s, int64_t obj3, const SpellArg
                 fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 0) ? 1 : 0;
                 break;
             }
+            case 9: {                                                                          // ★ 11-21 C6 Charm — 매혹(`spells.go:234~235`)
+                DurFns f;
+                f.create = &Server::DurCharmCreate;
+                f.update = &Server::DurCharmTick;
+                f.destroy = &Server::DurCharmEnd;
+                fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 0) ? 1 : 0;
+                break;
+            }
             case 75: case 76: case 77: case 78: case 79: case 80: case 81: case 82: case 83:
             case 84: case 85: case 86: case 87:
             case 89: case 101: case 111:                                                       // ★ 11-20 C1 센 소환수 셋
@@ -9128,6 +9136,110 @@ int Server::DurTeleTargetTick(DurSpell& d) {
     }
     MarkAssist(c->second.sessionId, d.target);
     return 1;
+}
+
+// ── 11-21 C6 매혹(9) ──────────────────────────────────────────────────────
+//
+// 깃발 0x047400a2 — 겨눔(0x4)이 아니라 날리지 않고 바로 받는다. 대상은 켤 때 **커서 자리(+52) 둘레 300** 에서 다시 찾는다.
+// 실패마다 시전자에게 소리 16 `CharmFailure`(`aud_501960(16, 시전자)` — 음 이름은 `sound.go` 16번째).
+//
+// charmCreature1_5011F0(`GAME4.c:4265~4342`) — 켤 때
+//   ① 글리프가 건 것(+20)이면 대상(+48)에 혼란(3) `ConfuseEnchantDuration` · 도운 사람 · 끝
+//   ② 커서 자리 둘레 300 에서 대상 찾기(`spellFlySearchTarget_540610`(자리, 시전자, 주문 깃발, 300, 0, 시전자)) — 없으면 글 `CharmNoCreatureCloseEnough`
+//   ③ 몬스터(+8 & 2)가 아니거나 **이미 제가 부리는 것**(`creatureIsMonitored_500CC0` — 소환 상태이고 주인이 시전자)이면 소리만 · 끝
+//   ④ 사람 시전자면 종류가 안내서 표에 있어야(`creatureIsCharmableByTT_4272B0` — 없으면 `CreatureNotCharmable`) 그 안내서를 가져야(+4244 — 없으면 `NeedGuideToCharm`)
+//      (⚠ 치트 `nox_cheat_charmall` 은 안 옮김 — 늘 꺼짐)
+//   ⑤ 시간 = 안내서 크기(1·2·4 — `guideGetUnitSize_427460`)별 `CharmSmall/Medium/LargeDuration[세기−1]`(nox_float2int = 이 리포 관례대로 버림)
+//      +68 = 지금 + 시간 · 대상에 버프 28(매혹 중) 시간+1 · 세기 5 · 빛줄기 켬(`netStartDurationRaySpell` 갈래 2)
+//   ⚠ 크기는 우리 `SummonSizeOf`(thing.bin 몬스터 크기 갈래)로 갈음 — 원본은 클라 쪽 종류 표 +36 의 같은 갈래(1 → 1 · 2 → 2 · 그 밖 4)
+int Server::DurCharmCreate(DurSpell& d) {
+    auto c = sessions_.find(d.caster);
+    if (d.flag20) {
+        ApplyEnchant(d.target, 3, static_cast<int>(static_cast<float>(BalanceFloat("ConfuseEnchantDuration"))), d.level);
+        MarkAssist(d.caster, d.target);
+        ++charmStat_[static_cast<size_t>(CharmStat::Glyph)];
+        return 1;
+    }
+    if (c == sessions_.end() || !c->second.inGame) return 1;
+    Session& cs = c->second;
+    const Target ct{ d.caster, -1 };
+    const float cx = static_cast<float>(cs.posX), cy = static_cast<float>(cs.posY);
+    auto fail = [&](const char* msg, CharmStat why) {
+        d.target = Target{};                                  // a1[12] = 0 — 끝날 때 빛줄기 끄기·버프 끄기가 안 닿는다
+        if (msg) SendPriMsg(cs, msg);
+        PlaySoundAt(16, cx, cy, 0, 0, cs.sessionId, ct);
+        ++charmStat_[static_cast<size_t>(why)];
+        return 1;
+    };
+    d.target = SpellFlySearchTarget(true, d.pos2X, d.pos2Y, cx, cy, d.caster, d.caster, SpellFlags(d.spell), 300.0f, &cs, &cs.buffs);
+    if (d.target.none()) return fail("Summon.c:CharmNoCreatureCloseEnough", CharmStat::NoTarget);
+    if (d.target.pet < 0 || static_cast<size_t>(d.target.pet) >= pets_.size()) return fail(nullptr, CharmStat::NotMonster);
+    const Creature& k = pets_[static_cast<size_t>(d.target.pet)];
+    if (k.owner == d.caster && k.health > 0) return fail(nullptr, CharmStat::NotMonster);   // 이미 제가 부리는 것
+    const uint8_t g = GuideIndexOfType(k.type);
+    if (g == 0) return fail("Summon.c:CreatureNotCharmable", CharmStat::NotCharmable);
+    if (cs.guideLvl[g] == 0) return fail("Summon.c:NeedGuideToCharm", CharmStat::NoGuide);
+    const int size = SummonSizeOf(k.type);
+    const char* key = (size <= 1) ? "CharmSmallDuration" : (size == 2 ? "CharmMediumDuration" : "CharmLargeDuration");
+    const int dur = static_cast<int>(static_cast<float>(BalanceFloatInd(key, d.level - 1)));
+    d.frame68 = frame_ + static_cast<uint32_t>(dur);
+    ApplyEnchant(d.target, 28, static_cast<uint16_t>(dur) + 1, 5);
+    NetStartRaySpell(d);
+    ++charmStat_[static_cast<size_t>(CharmStat::Start)];
+    return 0;
+}
+
+// charmCreatureFinish_5013E0(`GAME4.c:4346~4458`) — 틱
+//   ① 대상이 없거나 죽음·지워짐(+16 & 0x8020)이면 소리 16 · 끝
+//   ② 시전자와 대상의 가장자리 거리(`calcDistance_4E6C00`)가 300 넘으면 글 `CharmBrokenDistance` · 소리 16 · 끝
+//   ③ 끝 프레임(+68 − 1)이 아니면 이어 간다
+//   ④ 대상 하위 분류 BOMBER(+12 & 0x2000)면 `CreatureControlImpossible` · 거느린 크기 + 이번 크기 > 4 면 `CreatureControlFailed`
+//   ⑤ 버프 28 끔 · 이미 시전자 것이면 `CreatureAlreadyOwned` · 끝
+//   ⑥ 주인을 시전자로 · 소환 상태(+1440 0x80) · 명령(사람 = `SummonOrderAll` 기본 4 따라와) · 하위 분류 MONITOR·MIGRATE ·
+//      얻음 알림(`6c`·`dd`) · 시전자에게 켜짐 소리(`spellGetAud44(9, 1)`)
+//   ⚠ 소환 상태(+1440 0x80)는 따로 칸이 없다 — 우리는 주인 칸이 곧 소환 상태(`CountControlledCreatures`·`OrderUnit` 이 주인으로 센다)
+//   ⚠ 안 옮김 — 팀 바꾸기(우리 크리처는 팀 칸이 없고 주인으로 편을 가른다) · 미니맵 장부·`SendSimpleObject2`(소환과 같음) ·
+//     협동(4096) 체력 갈래 · 크리처 하나하나의 하위 분류(우리는 종류 표 값만 있다) · 사람별 `SummonOrderAll`(우리는 「모두에게 명령」을 적어 두지 않아 늘 4)
+int Server::DurCharmTick(DurSpell& d) {
+    auto c = sessions_.find(d.caster);
+    if (c == sessions_.end() || !c->second.inGame) return 1;
+    Session& cs = c->second;
+    const Target ct{ d.caster, -1 };
+    const float cx = static_cast<float>(cs.posX), cy = static_cast<float>(cs.posY);
+    auto fail = [&](const char* msg, CharmStat why) {
+        if (msg) SendPriMsg(cs, msg);
+        PlaySoundAt(16, cx, cy, 0, 0, cs.sessionId, ct);
+        ++charmStat_[static_cast<size_t>(why)];
+        return 1;
+    };
+    if (d.target.none() || TargetDeadOrGone(d.target)) return fail(nullptr, CharmStat::Gone);
+    if (d.target.pet < 0 || static_cast<size_t>(d.target.pet) >= pets_.size()) return fail(nullptr, CharmStat::Gone);
+    if (CalcDistanceEdge(pets_[static_cast<size_t>(d.target.pet)], ct, cx, cy) > 300.0)
+        return fail("Summon.c:CharmBrokenDistance", CharmStat::Distance);
+    if (d.frame68 - 1 != durFrame_) return 0;               // ★ 11-20 — 「지금」 = 이 걸음의 프레임(표식 순간이동과 같은 까닭)
+    Creature& k = pets_[static_cast<size_t>(d.target.pet)];
+    constexpr uint32_t kBomberBit = 1u << 13;                // MonsterClassBitsOf 표의 13번째 = BOMBER(0x2000)
+    const auto tb = gt_->typeBodies.find(k.type);
+    if (tb != gt_->typeBodies.end() && (tb->second.subclass & kBomberBit))
+        return fail("Summon.c:CreatureControlImpossible", CharmStat::Impossible);
+    if (CountControlledCreatures(d.caster) + SummonSizeOf(k.type) > kSummonLimit)
+        return fail("Summon.c:CreatureControlFailed", CharmStat::Limit);
+    BuffOff(d.target, 28);
+    if (k.owner == d.caster) return fail("Summon.c:CreatureAlreadyOwned", CharmStat::AlreadyOwned);
+    k.owner = d.caster;
+    EnactUnitOrder(cs, k, 4);                                // orderUnit_533900(시전자, 대상, SummonOrderAll) — 기본 4(`player.go:836`)
+    ReportAcquireCreature(cs, k);
+    const uint16_t onSnd = gt_->spellDefs[d.spell].valid ? gt_->spellDefs[d.spell].onSound : 0;   // spellGetAud44(spell, 1) — SpellSoundOn 은 겨눔이 아니면 시전 소리라 안 씀
+    PlaySoundAt(onSnd, cx, cy, 0, 0, cs.sessionId, ct);
+    ++charmStat_[static_cast<size_t>(CharmStat::Done)];
+    return 1;
+}
+
+// charmCreature2_501690(`GAME4.c:4462~4474`) — 끝날 때(얻었든 끊겼든) 대상이 살아 있으면 붙잡힘(5)·매혹 중(28) 끔
+void Server::DurCharmEnd(DurSpell& d) {
+    if (d.target.none() || TargetDeadOrGone(d.target)) return;
+    BuffOff(d.target, 5);
+    BuffOff(d.target, 28);
 }
 
 // ── 묶음 5-f 플라스마(59) ─────────────────────────────────────────────
@@ -13752,6 +13864,9 @@ bool Server::TargetDeadOrGone(const Target& t) const {
 // `unitIsEnemyTo_5330C0`(크리처, 대상) — 뿌리 주인으로 가른다(`OwnersEnemy` 와 같은 규칙 · 그쪽은 투사체 계수를 올리므로 따로 둔다)
 //   같은 주인 → 적 아님 · 둘 다 주인 없는 몬스터 → 적 아님 · 한쪽이 주인 없음 → 적 · 둘 다 사람 쪽 → `IsEnemyTo`(팀)
 bool Server::CreatureEnemyTo(const Creature& k, const Target& t) const {
+    // ★ 11-21 C6 — 어느 쪽이든 매혹 중(버프 28)이면 적 아님(원본 `IsEnemyTo` `server/object.go:1748~1750`) — 빛줄기에 붙들린 몬스터는 안 싸운다
+    if (k.buffs.Has(28)) return false;
+    if (const Buffs* tb = BuffsOf(t)) if (tb->Has(28)) return false;
     int64_t tOwner = 0;
     if ((t.sessionId != kNoSession)) tOwner = t.sessionId;
     else if (t.pet >= 0 && static_cast<size_t>(t.pet) < pets_.size()) {
@@ -19067,6 +19182,9 @@ Target Server::FindObjectAtCursor(const Session& s) const {
 
 // IsEnemyTo(사람, 대상) — 사람이면 팀 규칙 · 소환수면 주인 기준(맵 몬스터는 늘 적 · 내 것은 친구)
 bool Server::TargetIsEnemy(const Session& s, const Target& t) const {
+    // ★ 11-21 C6 — 어느 쪽이든 매혹 중(버프 28)이면 적 아님(원본 `IsEnemyTo` `server/object.go:1748~1750`)
+    if (s.buffs.Has(28)) return false;
+    if (const Buffs* tb = BuffsOf(t)) if (tb->Has(28)) return false;
     if ((t.sessionId != kNoSession)) {
         if (t.sessionId == s.sessionId) return false;
         auto it = sessions_.find(t.sessionId);

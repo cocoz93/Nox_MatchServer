@@ -25895,6 +25895,201 @@ void TestSwapTele1121() {
     }
     std::printf("  11-21 W9 자리 바꾸기·대상에게 순간이동 — 맞바꿈 · 닻 · 벽 · 화면 경계 · 자기 자신 / 커서로 · 선 막힘 · 금지 바닥 · 닻 · 투명\n");
 }
+// ★ 11-21 C6 매혹(9) — 켬 `charmCreature1_5011F0` · 틱 `charmCreatureFinish_5013E0` · 끝 `charmCreature2_501690`(`GAME4.c:4265~4474`)
+//   맵 임프(1328 · 안내서 13 · 작은 것)를 자동 싸움을 끈 채 세우고, 패킷 시전으로 갈래마다 센다(시험은 개수를 본다)
+void TestCharm1121() {
+    const std::string a = "10.11.21.15:9525";   // 시전자(컨저러)
+    const uint16_t kImp = 1328;
+    const uint8_t kGuideImp = 13;
+    char msg[420];
+    using CS = nox::Server::CharmStat;
+    auto countRay = [](const std::vector<nox::OutPacket>& out, const std::string& to, uint8_t typ) {
+        int n = 0;
+        for (const auto& m : FlattenTo(out, to))
+            if (m.size() == 7 && m[0] == static_cast<uint8_t>(nox::Op::FX_DURATION_SPELL) && m[1] == typ) ++n;
+        return n;
+    };
+    auto countOp = [](const std::vector<nox::OutPacket>& out, const std::string& to, uint8_t op) {
+        int n = 0;
+        for (const auto& m : FlattenTo(out, to)) if (!m.empty() && m[0] == op) ++n;
+        return n;
+    };
+    auto hasPri = [](const std::vector<nox::OutPacket>& out, const std::string& to, const std::string& key) {
+        for (const auto& m : FlattenTo(out, to))
+            if (m.size() == 3 + key.size() + 1 && m[0] == static_cast<uint8_t>(nox::Op::INFORM) && m[1] == 15 &&
+                std::string(m.begin() + 3, m.begin() + 3 + static_cast<long>(key.size())) == key) return true;
+        return false;
+    };
+    // sub = 임프 몬스터 하위 분류(0x1 작은 것 · 0x2000 BOMBER) · guide = 안내서 표에 임프를 넣나 · have = 시전자가 안내서를 가졌나
+    auto setup = [&](nox::CSyncHost& srv, std::vector<nox::OutPacket>& out, uint32_t& ms, uint32_t sub, bool guide, bool have) {
+        srv->SetSpellDef(9, 10, 0x047400a2u, { 0, 2, 7 });   // thing.bin SPELL_CHARM(겨눔 0x4 없음 · 0x20 적만 찾음)
+        srv->SetSoundDefs({ nox::Server::SoundDefIn{ 16, 600, 0, 1, 0 } });   // 소리는 16 CharmFailure 하나만 — soundsQueued 가 16 만 센다
+        nox::Gamedata g;
+        g.Parse("CharmSmallDuration = 20, 20, 20, 20, 20;\n" "CharmMediumDuration = 40, 40, 40, 40, 40;\n"
+                "CharmLargeDuration = 60, 60, 60, 60, 60;\n");
+        srv->SetGamedata(g);
+        nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2; body.subclass = sub;
+        srv->SetTypeBody(kImp, body);
+        if (guide) srv->SetGuideType(kGuideImp, kImp);
+        srv.DebugEnterGame(a, 902, false, nox::CharClass::Conjurer);
+        if (have) srv->DebugSetGuide(Sid(srv, a), kGuideImp, 1);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv->DebugSetAutoFight(false);
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.TakeOut(out);
+        out.clear();
+    };
+    auto cast = [&](nox::CSyncHost& srv, std::vector<nox::OutPacket>& out, uint32_t& ms, int cx, int cy) {
+        srv->DebugAimAt(Sid(srv, a), cx, cy);
+        srv->DebugFillMana(Sid(srv, a));
+        CastAndWait(srv, a, 9, false, ms, out);
+        srv.TakeOut(out);
+    };
+    auto run = [&](nox::CSyncHost& srv, std::vector<nox::OutPacket>& out, uint32_t& ms, int ticks) {
+        for (int t = 0; t < ticks; ++t) { ms += 34; srv.Tick(ms, out); }
+        srv.TakeOut(out);
+    };
+
+    {   // ⓪ 진짜 gamedata.bin — 크기별 매혹 시간 세 줄이 세기 다섯 칸으로 있나(없으면 0 프레임이라 끝 프레임이 안 온다)
+        nox::Gamedata g;
+        if (g.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\gamedata.bin")) {
+            const auto s = g.Array("ARENA", "CharmSmallDuration");
+            const auto m = g.Array("ARENA", "CharmMediumDuration");
+            const auto l = g.Array("ARENA", "CharmLargeDuration");
+            std::snprintf(msg, sizeof(msg), "C6 ⓪ gamedata — 작은 %zu칸(%.0f~%.0f) · 중간 %zu칸(%.0f~%.0f) · 큰 %zu칸(%.0f~%.0f)",
+                          s.size(), s.empty() ? 0.0 : s.front(), s.empty() ? 0.0 : s.back(),
+                          m.size(), m.empty() ? 0.0 : m.front(), m.empty() ? 0.0 : m.back(),
+                          l.size(), l.empty() ? 0.0 : l.front(), l.empty() ? 0.0 : l.back());
+            std::printf("  %s\n", msg);
+            Check(s.size() >= 5 && m.size() >= 5 && l.size() >= 5 && s.front() > 0 && m.front() > 0 && l.front() > 0, msg);
+        } else {
+            std::printf("  (C6 ⓪ gamedata.bin 없음 — 진짜 데이터 대조 건너뜀)\n");
+        }
+    }
+    {   // ① 안내서 있음 — 빛줄기 켬(갈래 2) · 매혹 중엔 서로 적 아님 · 20프레임 뒤 내 것 · `6c` · 빛줄기 끔(갈래 9) · 버프 28 꺼짐
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        setup(srv, out, ms, 0x1, true, true);
+        srv->DebugSpawnPet(kImp, 1100, 1000, Sid(srv, std::string()));
+        const bool enemyBefore = srv->DebugPetEnemyTo(0, Sid(srv, a)) && srv->DebugPlayerEnemyToPet(Sid(srv, a), 0);
+        cast(srv, out, ms, 1100, 1000);
+        const int on = countRay(out, a, 2);
+        const bool held = srv->DebugPetHasEnchant(0, 28);
+        const bool enemyDuring = srv->DebugPetEnemyTo(0, Sid(srv, a)) || srv->DebugPlayerEnemyToPet(Sid(srv, a), 0);
+        out.clear();
+        run(srv, out, ms, 12);
+        const unsigned long long early = srv->charmStat(CS::Done);
+        int t = 0;
+        for (; t < 30 && srv->charmStat(CS::Done) == 0; ++t) run(srv, out, ms, 1);
+        const int acq = countOp(out, a, static_cast<uint8_t>(nox::Op::REPORT_ACQUIRE_CREATURE));
+        const int off = countRay(out, a, 9);
+        std::snprintf(msg, sizeof(msg), "C6 ① 매혹 — 켬 %llu · 빛줄기 켬 %d · 버프 28 %d · 전 적 %d · 중 적 %d · 12틱 얻음 %llu · 그 뒤 %d틱 얻음 %llu · "
+                      "주인 a %d · 6c %d · 빛줄기 끔 %d · 끝 뒤 버프 28 %d",
+                      srv->charmStat(CS::Start), on, held ? 1 : 0, enemyBefore ? 1 : 0, enemyDuring ? 1 : 0, early, t, srv->charmStat(CS::Done),
+                      srv->DebugPetOwner(0) == Sid(srv, a) ? 1 : 0, acq, off, srv->DebugPetHasEnchant(0, 28) ? 1 : 0);
+        Check(srv->charmStat(CS::Start) == 1 && on == 1 && held && enemyBefore && !enemyDuring && early == 0 &&
+              srv->charmStat(CS::Done) == 1 && srv->DebugPetOwner(0) == Sid(srv, a) && acq == 1 && off == 1 &&
+              !srv->DebugPetHasEnchant(0, 28), msg);
+    }
+    {   // ② 안내서 없음 — 글 NeedGuideToCharm · 소리 16 하나 · 빛줄기 없음 · 주인 그대로
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        setup(srv, out, ms, 0x1, true, false);
+        srv->DebugSpawnPet(kImp, 1100, 1000, Sid(srv, std::string()));
+        const unsigned long long q0 = srv->soundsQueued();
+        cast(srv, out, ms, 1100, 1000);
+        run(srv, out, ms, 30);
+        std::snprintf(msg, sizeof(msg), "C6 ② 안내서 없음 — 안내서 없음 %llu · 켬 %llu · 글 %d · 소리 16 %llu · 빛줄기 %d · 주인 없음 %d",
+                      srv->charmStat(CS::NoGuide), srv->charmStat(CS::Start), hasPri(out, a, "Summon.c:NeedGuideToCharm") ? 1 : 0,
+                      srv->soundsQueued() - q0, countRay(out, a, 2), srv->DebugPetOwner(0) == 0 ? 1 : 0);
+        Check(srv->charmStat(CS::NoGuide) == 1 && srv->charmStat(CS::Start) == 0 && hasPri(out, a, "Summon.c:NeedGuideToCharm") &&
+              srv->soundsQueued() - q0 == 1 && countRay(out, a, 2) == 0 && srv->DebugPetOwner(0) == 0, msg);
+    }
+    {   // ③ 안내서 표에 없는 종 — 글 CreatureNotCharmable
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        setup(srv, out, ms, 0x1, false, true);
+        srv->DebugSpawnPet(kImp, 1100, 1000, Sid(srv, std::string()));
+        cast(srv, out, ms, 1100, 1000);
+        std::snprintf(msg, sizeof(msg), "C6 ③ 표에 없는 종 — 안 됨 %llu · 안내서 없음 %llu · 켬 %llu · 글 %d",
+                      srv->charmStat(CS::NotCharmable), srv->charmStat(CS::NoGuide), srv->charmStat(CS::Start),
+                      hasPri(out, a, "Summon.c:CreatureNotCharmable") ? 1 : 0);
+        Check(srv->charmStat(CS::NotCharmable) == 1 && srv->charmStat(CS::NoGuide) == 0 && srv->charmStat(CS::Start) == 0 &&
+              hasPri(out, a, "Summon.c:CreatureNotCharmable"), msg);
+    }
+    {   // ④ 커서 둘레 300 에 몬스터 없음 — 글 CharmNoCreatureCloseEnough
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        setup(srv, out, ms, 0x1, true, true);
+        srv->DebugSpawnPet(kImp, 1100, 1000, Sid(srv, std::string()));
+        cast(srv, out, ms, 1100, 1450);                  // 임프에서 450
+        std::snprintf(msg, sizeof(msg), "C6 ④ 못 찾음 — 못 찾음 %llu · 켬 %llu · 글 %d",
+                      srv->charmStat(CS::NoTarget), srv->charmStat(CS::Start), hasPri(out, a, "Summon.c:CharmNoCreatureCloseEnough") ? 1 : 0);
+        Check(srv->charmStat(CS::NoTarget) == 1 && srv->charmStat(CS::Start) == 0 && hasPri(out, a, "Summon.c:CharmNoCreatureCloseEnough"), msg);
+    }
+    {   // ⑤ 켠 뒤 가장자리 거리 300 을 넘김 — 글 CharmBrokenDistance · 소리 16 · 끝 함수가 버프 28 끔 · 주인 그대로
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        setup(srv, out, ms, 0x1, true, true);
+        srv->DebugSpawnPet(kImp, 1100, 1000, Sid(srv, std::string()));
+        cast(srv, out, ms, 1100, 1000);
+        const bool started = srv->charmStat(CS::Start) == 1;
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1310);        // 중심 거리 √(100²+310²) ≈ 325.7 − 반지름 10 − 사람 10 ≈ 305.7
+        const unsigned long long q0 = srv->soundsQueued();
+        run(srv, out, ms, 3);
+        std::snprintf(msg, sizeof(msg), "C6 ⑤ 거리 — 켬 %d · 거리 %llu · 얻음 %llu · 글 %d · 소리 16 %llu · 버프 28 %d · 주인 없음 %d",
+                      started ? 1 : 0, srv->charmStat(CS::Distance), srv->charmStat(CS::Done),
+                      hasPri(out, a, "Summon.c:CharmBrokenDistance") ? 1 : 0, srv->soundsQueued() - q0,
+                      srv->DebugPetHasEnchant(0, 28) ? 1 : 0, srv->DebugPetOwner(0) == 0 ? 1 : 0);
+        Check(started && srv->charmStat(CS::Distance) == 1 && srv->charmStat(CS::Done) == 0 && hasPri(out, a, "Summon.c:CharmBrokenDistance") &&
+              srv->soundsQueued() - q0 == 1 && !srv->DebugPetHasEnchant(0, 28) && srv->DebugPetOwner(0) == 0, msg);
+    }
+    {   // ⑤-2 가장자리 거리 300 안(≈ 293) — 끊기지 않고 얻음(⑤ 와 짝 — 거리 문턱 양쪽)
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        setup(srv, out, ms, 0x1, true, true);
+        srv->DebugSpawnPet(kImp, 1100, 1000, Sid(srv, std::string()));
+        cast(srv, out, ms, 1100, 1000);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1297);        // √(100²+297²) ≈ 313.4 − 20 ≈ 293.4
+        run(srv, out, ms, 30);
+        std::snprintf(msg, sizeof(msg), "C6 ⑤-2 거리 안 — 거리 %llu · 얻음 %llu", srv->charmStat(CS::Distance), srv->charmStat(CS::Done));
+        Check(srv->charmStat(CS::Distance) == 0 && srv->charmStat(CS::Done) == 1, msg);
+    }
+    {   // ⑥ 이미 크기 4 를 거느림 — 끝 프레임에 CreatureControlFailed · 주인 그대로
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        setup(srv, out, ms, 0x1, true, true);
+        srv->DebugSpawnPet(kImp, 1100, 1000, Sid(srv, std::string()));
+        for (int n = 0; n < 4; ++n) srv->DebugSpawnPet(kImp, 900, 1000, Sid(srv, a));   // 작은 것 넷 = 4
+        cast(srv, out, ms, 1100, 1000);
+        run(srv, out, ms, 30);
+        std::snprintf(msg, sizeof(msg), "C6 ⑥ 한도 — 켬 %llu · 한도 %llu · 얻음 %llu · 글 %d · 주인 없음 %d",
+                      srv->charmStat(CS::Start), srv->charmStat(CS::Limit), srv->charmStat(CS::Done),
+                      hasPri(out, a, "Summon.c:CreatureControlFailed") ? 1 : 0, srv->DebugPetOwner(0) == 0 ? 1 : 0);
+        Check(srv->charmStat(CS::Start) == 1 && srv->charmStat(CS::Limit) == 1 && srv->charmStat(CS::Done) == 0 &&
+              hasPri(out, a, "Summon.c:CreatureControlFailed") && srv->DebugPetOwner(0) == 0, msg);
+    }
+    {   // ⑦ 하위 분류 BOMBER(0x2000) — 끝 프레임에 CreatureControlImpossible
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        setup(srv, out, ms, 0x1 | 0x2000, true, true);
+        srv->DebugSpawnPet(kImp, 1100, 1000, Sid(srv, std::string()));
+        cast(srv, out, ms, 1100, 1000);
+        run(srv, out, ms, 30);
+        std::snprintf(msg, sizeof(msg), "C6 ⑦ 부릴 수 없음 — 켬 %llu · 부릴 수 없음 %llu · 얻음 %llu · 글 %d",
+                      srv->charmStat(CS::Start), srv->charmStat(CS::Impossible), srv->charmStat(CS::Done),
+                      hasPri(out, a, "Summon.c:CreatureControlImpossible") ? 1 : 0);
+        Check(srv->charmStat(CS::Start) == 1 && srv->charmStat(CS::Impossible) == 1 && srv->charmStat(CS::Done) == 0 &&
+              hasPri(out, a, "Summon.c:CreatureControlImpossible"), msg);
+    }
+    {   // ⑧ 매혹 중에 대상이 죽음 — 사라짐 · 소리 16 · 얻음 없음
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        setup(srv, out, ms, 0x1, true, true);
+        srv->DebugSpawnPet(kImp, 1100, 1000, Sid(srv, std::string()));
+        cast(srv, out, ms, 1100, 1000);
+        srv->DebugSetPetHealth(0, 0);
+        const unsigned long long q0 = srv->soundsQueued();
+        run(srv, out, ms, 30);
+        std::snprintf(msg, sizeof(msg), "C6 ⑧ 죽음 — 켬 %llu · 사라짐 %llu · 얻음 %llu · 소리 16 %llu",
+                      srv->charmStat(CS::Start), srv->charmStat(CS::Gone), srv->charmStat(CS::Done), srv->soundsQueued() - q0);
+        Check(srv->charmStat(CS::Start) == 1 && srv->charmStat(CS::Gone) == 1 && srv->charmStat(CS::Done) == 0 &&
+              srv->soundsQueued() - q0 == 1, msg);
+    }
+    std::printf("  11-21 C6 매혹 — 얻음 · 안내서 없음 · 표에 없는 종 · 못 찾음 · 거리 문턱 양쪽 · 한도 · 부릴 수 없음 · 죽음\n");
+}
 
 // ── 11-20 트레일러 전사 1-b — 수식 효과(modifier.bin `Server::ParseModEffects`) · 휘두를 때 위력 배수 · 맞힐 때 불·번개 ─────
 //   ① 진짜 복호본을 읽어 번호 차례·값(빠진 `;` 칸 Speed4 포함)을 본다
@@ -39136,6 +39331,7 @@ int main() {
     TestCounterSpellCast1121();
     TestOgreWarlord1121();
     TestSwapTele1121();
+    TestCharm1121();
     TestModEffects1120();
     TestPickupAutoEquip();
     TestArmorEquip();
