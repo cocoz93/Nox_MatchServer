@@ -4153,6 +4153,11 @@ public:
     enum class WandStat : uint8_t { Use = 0, Shot, Depleted, Cooldown, NoType, BashOn, BashHit, CastKeepCharge,
                                     StarHit, StarPass, StarWall, StarAge, StarCounter, Count };
     unsigned long long wandStat(WandStat k) const { return wandStat_[static_cast<size_t>(k)]; }
+    // ★ 11-20 C2 자연의 힘(31) — 모으기 시작 · 모으기 그림 지움 · 공 놓음 · 놓을 자리 막힘(시전자 자리로) · 달리기(8)로 끊김 · 공 종류 없음 ·
+    //   공끼리 지움(상대를 지운 수) · 둘레 피해 부름 · 유닛에 닿음(피해) · 장애물에 닿음(안 옮김) · 벽 튕김 · 수명(4초)
+    enum class FonStat : uint8_t { Start = 0, ChargeOff, Launch, LaunchBlocked, RunEnd, NoType,
+                                   BallCancel, BallNearby, BallHit, BallObstacle, BallWall, BallAge, Count };
+    unsigned long long fonStat(FonStat k) const { return fonStat_[static_cast<size_t>(k)]; }
     unsigned long long mbStat(MbStat k) const { return mbStat_[static_cast<size_t>(k)]; }
     int mbLastPower() const { return mbLastPower_; }                     // 마지막으로 터진 힘(+72)
     float DebugMassOf(int64_t sid) const { auto i = sessions_.find(sid); return i == sessions_.end() ? 0.0f : static_cast<float>(PlayerMassOf(i->second)); }
@@ -4856,6 +4861,12 @@ private:
     int DurManaBombTick(DurSpell& d);                                      // nox_xxx_manaBombBoom_5310C0
     void DurManaBombEnd(DurSpell& d);                                      // sub_531290
     void ManaBombChargeOff(DurSpell& d);                                   // +76 그림 오브젝트 지우기(delayedDeleteObject)
+    int DurFonCreate(DurSpell& d);                                         // ★ 11-20 C2 sub_52EF30 — 모으기 그림
+    int DurFonTick(DurSpell& d);                                           // ★ 11-20 C2 sub_52EFD0 — 끝 하루 전에 죽음의 공
+    void DurFonEnd(DurSpell& d);                                           // ★ 11-20 C2 sub_52F1D0 — 그림 지우기
+    void FonChargeOff(DurSpell& d);                                        // ★ 11-20 C2 +76 그림 지우기
+    void FonLaunch(DurSpell& d, Session* cs);                              // ★ 11-20 C2 죽음의 공 만들기(`GAME4_2.c:11232~11290`)
+    bool DeathBallUpdate(size_t i, uint32_t frame);                        // ★ 11-20 C2 updateDeathBall_53D080 — false 면 지운다
     // ── 묶음 4-c1 밀기·당기기·땅흔들기 ──
     void PushUnitsAround(float cx, float cy, float outer, float inner, float power);                    // mapPushUnitsAround_52E040 + unitPushAroundFn_52E0E0
     int CastPushPull(const Session& caster, int lvl, bool pull);                                        // castPush_52C000 · castPull_52BFA0
@@ -5667,6 +5678,8 @@ private:
     int mbLastPower_ = 0;
     unsigned long long mmStat_[static_cast<size_t>(MmStat::Count)] = {};   // ★ 11-20 W2 마법 화살 갈래
     unsigned long long wandStat_[static_cast<size_t>(WandStat::Count)] = {}; // ★ 11-20 W4 지팡이 갈래
+    unsigned long long fonStat_[static_cast<size_t>(FonStat::Count)] = {};   // ★ 11-20 C2 자연의 힘 갈래
+    uint32_t durFrame_ = 0;   // ★ 11-20 C2 — `SpellCastByPlayer` 가 지금 도는 걸음의 프레임(한 번에 여러 틱이면 frame_ 보다 작다 — 끝 프레임 견주기는 이 값으로)
     unsigned long long missilesGone_ = 0;     // 날아가는 것이 사라진 누계
     unsigned long long missileEntriesSent_ = 0;   // 갱신에 실린 누계
     // ★ 09-19 — 「항목에 담았다」와 「와이어에 나갔다」를 가른다.

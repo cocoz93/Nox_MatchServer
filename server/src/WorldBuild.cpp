@@ -118,7 +118,8 @@ std::shared_ptr<const nox::Server::GameTables> BuildGameTables(const GameFiles& 
                                 "SmallFlameCleanse", "MediumFlameCleanse", "FlameCleanse", "LargeFlameCleanse",
                                 "SmallBlueFlameCleanse", "MediumBlueFlameCleanse", "BlueFlameCleanse", "LargeBlueFlameCleanse",
                                 "ArachnaphobiaFocus", "SmallSpider", "Pixie",
-                                "ManaBombCharge" }) {   // ★ 11-20 W3 과부하 모으기 그림(`GAME4_3.c:1095`)
+                                "ManaBombCharge",       // ★ 11-20 W3 과부하 모으기 그림(`GAME4_3.c:1095`)
+                                "ForceOfNatureCharge" }) {   // ★ 11-20 C2 자연의 힘 모으기 그림(`GAME4_2.c:11195`)
             const uint16_t w = tdb.WireByName(nm);
             srv.SetNamedType(nm, w);
             srv.Log("[종류] %s = %u%s\n", nm, static_cast<unsigned>(w), w ? "" : " ⚠ 못 찾음");
@@ -145,7 +146,9 @@ std::shared_ptr<const nox::Server::GameTables> BuildGameTables(const GameFiles& 
                                 // ★ 11-20 트레일러 위저드 W2 — 마법 화살(SPEED 64 · AIRBORNE+FLICKER+NO_COLLIDE_OWNER · BoomCollide — 인자 없음)
                                 "MagicMissile",
                                 // ★ 11-20 트레일러 위저드 W4 — 노란 별 지팡이(SulphorousFlare·Shower)가 쏘는 것(SPEED 350 · YellowStarShotCollide 2)
-                                "YellowStarShot" }) {
+                                "YellowStarShot",
+                                // ★ 11-20 트레일러 컨저러 C2 — 자연의 힘이 놓는 죽음의 공(SPEED 두 줄 200·150 — 뒤 값 · AIRBORNE+FLICKER · DeathBallCollide — 인자 없음)
+                                "DeathBall" }) {
             const uint16_t w = tdb.WireByName(nm);
             const nox::ThingInfo* t2 = w ? tdb.ByWire(w) : nullptr;
             int amount = 0;

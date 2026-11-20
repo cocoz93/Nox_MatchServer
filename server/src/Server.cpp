@@ -6909,7 +6909,7 @@ int Server::SpellCheckClass(const Session& s, uint8_t spell) const {
 
 // checkPlrCantCastSpell_4FD150(`GAME4.c:2706`)
 //   ⚠ 옮기지 않은 갈래 — KOTR 왕관·깃발볼 공(17·16)은 모드 8 ·
-//     주먹(29)·자연의 힘(31)·유성(52) 이미 있음 3 · 픽시(58) 개수 표는 그 효과(4-c) 와 함께
+//     주먹(29)·유성(52) 이미 있음 3 · 픽시(58) 개수 표는 그 효과(4-c) 와 함께
 //   ★ 11-20 W2 — 매직미사일(50) 개수 표는 옮겼다(아래)
 int Server::CheckPlrCantCastSpell(const Session& s, uint8_t spell, bool glyph) const {
     if (!glyph && flags_.size() > 0 && (SpellFlags(spell) & 0x80000)) {
@@ -6919,6 +6919,13 @@ int Server::CheckPlrCantCastSpell(const Session& s, uint8_t spell, bool glyph) c
     if (s.buffs.Has(29)) return 14;                        // LABEL_9 — 반마법(ANTI_MAGIC 29) 버프면 14(4-a4)
     const bool quest = (questTotal_ > 0 || questStage_ > 0);
     if (!quest && (spell == 111 || spell == 112 || spell == 113 || spell == 114)) return 10;   // sub_4D7100 — 퀘스트 전용 소환
+    // ★ 11-20 트레일러 컨저러 C2 — `case 31`(`GAME4.c:2797~2802`) — 제 죽음의 공(`unitIsUnitTT_4E7C80` = `CountSubOfType` · 종류 = DeathBall
+    //   `spells.go:100`)이 하나라도 있으면 3 · 시전 자체를 안 받는다
+    if (spell == 31) {
+        const ProjTypeInfo* pt = ProjType("DeathBall");
+        if (pt && pt->type != 0)
+            for (const auto& m : missiles_) if (m.type == pt->type && m.owner == s.sessionId && !m.destroyed) return 3;
+    }
     // ★ 11-20 트레일러 위저드 W2 — `case 50`(`GAME4.c:2803~2810`) — 제 마법 화살(`unitIsUnitTT_4E7C80`)이 이미
     //   `MagicMissileCount[세기-1]` 개 이상 날고 있으면 3 · 시전 자체를 안 받는다(쏠 때의 「너무 많음」 글과 다른 문이다)
     if (spell == 50) {
@@ -7305,6 +7312,14 @@ bool Server::SpellAccept(uint8_t spell, Session& s, int64_t obj3, const SpellArg
                 DurFns f;
                 f.update = &Server::DurDrainMana;
                 fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 0) ? 1 : 0;
+                break;
+            }
+            case 31: {                                                                         // ★ 11-20 C2 ForceOfNature(자연의 힘) — 지속 · dt 2 × FPS / 3(`spells.go:268~269`)
+                DurFns f;
+                f.create = &Server::DurFonCreate;
+                f.update = &Server::DurFonTick;
+                f.destroy = &Server::DurFonEnd;
+                fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 2u * kServerTickRate / 3u) ? 1 : 0;
                 break;
             }
             case 56: {                                                                         // ★ 11-20 W3 ManaBomb(과부하) — 지속 · dt 0(`spells.go:313~314`)
@@ -8321,6 +8336,159 @@ void Server::DurManaBombEnd(DurSpell& d) {
         SendFxAllCli(d.posX, d.posY, fx, sizeof(fx));
         ++mbStat_[static_cast<size_t>(MbStat::Cancel)];
     }
+}
+
+// ★ 11-20 트레일러 컨저러 C2 — 자연의 힘(SPELL_FORCE_OF_NATURE 31). 원본 셋 `GAME4_2.c:11165~11326` · 갈래 `spells.go:268~269`(dt = 2 × FPS / 3 = 20틱).
+//   모으는 동안 시전자는 방향만 돈다(`object_update.go:497` — 우리 `DurActive(31)` 이미 있음) · 끝 하루 전에 앞쪽으로 **죽음의 공**(DeathBall)을 놓는다.
+//   gamedata ARENA — 닿음 피해 255 · 둘레 피해 100(바깥 50 · 안 0) · 공끼리 지우는 거리 150 · 지팡이 한도(ForceOfNatureStaffLimit 3)는 줍기 몫이라 안 봄
+//
+// sub_52EF30 — 시작. 글리프(+20)면 +72 방향 = 글리프(+24)의 +124 · 자리 = 글리프 자리 / 아니면 사람이 든 무기(+104)가 0x200000 이고
+//   그 짐 +96 & 4 면 +88 |= 2(지팡이로 건 자연의 힘 — 끝에서 +96 의 4 를 끈다) · +72 = 시전자 방향(+124) · 자리 = 시전자 자리
+//   → 그 자리에 `ForceOfNatureCharge`(thing.bin 1224 · NO_COLLIDE · 그리기는 클라 `DeathBallChargeUpdateDraw`)를 임자 없이(`createAt(obj, 0, …)`) 놓는다
+//   ⚠ 안 옮김 — 지팡이 표시(+88·+96 — `ForceOfNatureStaff` 줍기 한도와 함께) · 글리프 방향(+24 오브젝트가 우리에게 없다 → 0)
+int Server::DurFonCreate(DurSpell& d) {
+    float x = d.posX, y = d.posY;
+    if (!d.flag20) {
+        auto c = sessions_.find(d.caster);
+        if ((d.caster != kNoSession) && c != sessions_.end()) { x = static_cast<float>(c->second.posX); y = static_cast<float>(c->second.posY); }
+    }
+    d.obj76Net = 0;
+    if (PlacedObj* o = PlaceObject(NamedType("ForceOfNatureCharge"), x, y, kNoSession, kPlacedNoLife, /*kind=*/0))
+        d.obj76Net = o->netCode;
+    ++fonStat_[static_cast<size_t>(FonStat::Start)];
+    return 0;
+}
+
+// +76 그림 오브젝트 지우기(`delayedDeleteObject_4E5CC0` · +76 = 0)
+void Server::FonChargeOff(DurSpell& d) {
+    if (d.obj76Net == 0) return;
+    for (size_t i = 0; i < placed_.size(); ++i) {
+        if (placed_[i].netCode != d.obj76Net) continue;
+        DestroyPlaced(i);
+        break;
+    }
+    d.obj76Net = 0;
+    ++fonStat_[static_cast<size_t>(FonStat::ChargeOff)];
+}
+
+// sub_52EFD0 — 틱마다(0 = 이어 감 · 1 = 끝).
+//   ① 시전자가 달리기(ENCHANT_RUN 8)면 끝 — 공 없이
+//   ② 끝 프레임 7 전(+68 − 7 == 지금)이면 모으기 그림을 지운다
+//   ③ 끝 프레임 하루 전(+68 − 1 == 지금)이면 공을 놓고 끝(`FonLaunch`)
+//   ④ 아니면 사람(글리프 아님)에게 상태 10(시전 자세 — `playerSetState_4FA020`)
+//   ⚠ 원본은 시전자(+16)가 비면 ①을 건너뛰고 ③에서 그 칸을 읽는다(사람 시전은 늘 있다) — 우리는 시전자가 사라졌으면 끝낸다
+//   「지금」 = 이 걸음의 프레임(`durFrame_`) — 한 번에 두 틱을 돌면 frame_ 는 이미 뒤라 「하루 전」이 안 맞고 다음 걸음에 끝 검사가 먼저 끊는다(공이 안 나감)
+int Server::DurFonTick(DurSpell& d) {
+    auto c = sessions_.find(d.caster);
+    Session* cs = ((d.caster != kNoSession) && c != sessions_.end() && c->second.inGame) ? &c->second : nullptr;
+    if (!cs && !d.flag20) return 1;
+    if (cs && cs->buffs.Has(8)) { ++fonStat_[static_cast<size_t>(FonStat::RunEnd)]; return 1; }
+    if (d.frame68 - 7u == durFrame_ && d.obj76Net != 0) FonChargeOff(d);
+    if (d.frame68 - 1u == durFrame_) {
+        FonLaunch(d, cs);
+        return 1;
+    }
+    if (!d.flag20 && cs) PlayerSetState(*cs, 10, durFrame_);
+    return 0;
+}
+
+// sub_52EFD0 의 공 놓기(`GAME4_2.c:11232~11290`)
+//   · 자리 — 글리프면 +28(시작 자리) · 방향 +72 · 내밀기 0 / 사람이면 시전자 자리 · 방향(+124) · 내밀기 = 몸 모양(+172)이 원이면 반지름 + 4
+//     (점 4 · 상자 긴 변 + 4 · 그 밖 24 — 사람은 원)
+//   · 시전자 자리 → 내민 자리 선 추적(5)이 막히면 시전자 자리 그대로(`:11275~11278`)
+//   · `createAt(공, 시전자, 자리)` · 힘(+80) = 방향 × 빠르기(+544 — DeathBall SPEED 150 → 150/32 × 2) · 글리프(+20 == 1)면 0(제자리 공)
+//   · +124·+126 = 방향 · 소리 38(ForceOfNatureRelease · `aud_501960(38, 시전자)`)
+void Server::FonLaunch(DurSpell& d, Session* cs) {
+    const ProjTypeInfo* pt = ProjType("DeathBall");
+    if (!pt || pt->type == 0) { ++fonStat_[static_cast<size_t>(FonStat::NoType)]; return; }   // newObjectByTypeID 0 — 정답지도 그냥 끝(1)
+    float sx = d.posX, sy = d.posY;
+    uint8_t dir = 0;
+    double off = 0.0;
+    if (!d.flag20 && cs) {
+        sx = static_cast<float>(cs->posX); sy = static_cast<float>(cs->posY);
+        dir = cs->facingPrev;
+        off = kBodyRadius + 4.0;
+    }
+    const float dvx = DirVecX(dir), dvy = DirVecY(dir);
+    float px = static_cast<float>(sx + dvx * off), py = static_cast<float>(sy + dvy * off);
+    if (!MapTraceRay(sx, sy, px, py, 0x5)) { px = sx; py = sy; ++fonStat_[static_cast<size_t>(FonStat::LaunchBlocked)]; }
+    MissileObj m;
+    m.netCode = nextShotNetCode_++;
+    if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;
+    m.type = pt->type;
+    m.flags = pt->flags;
+    m.posX = m.newX = m.prevX = px;
+    m.posY = m.newY = m.prevY = py;
+    m.dir1 = m.dir2 = dir;
+    m.createdFrame = m.frame136 = frame_;
+    m.speed = pt->speed;
+    if (!d.flag20) { m.velX = dvx * m.speed; m.velY = dvy * m.speed; }
+    m.owner = d.caster;
+    m.ud0 = m.ud2 = d.caster;
+    m.spell = 31;
+    m.level = d.level;
+    m.collideKind = 10;                                     // DeathBallCollide · DeathBallUpdate
+    missiles_.push_back(m); ++missilesMade_;
+    if (cs) PlaySoundAt(38, static_cast<float>(cs->posX), static_cast<float>(cs->posY), 0, 0, cs->sessionId, Target{ cs->sessionId, -1 });
+    ++fonStat_[static_cast<size_t>(FonStat::Launch)];
+}
+
+// sub_52F1D0 — 끝(놓았든 끊겼든). 그림이 남았으면 지운다 · ⚠ 지팡이 +96 의 4 끄기는 안 옮김(시작의 +88 표시와 함께)
+void Server::DurFonEnd(DurSpell& d) {
+    FonChargeOff(d);
+}
+
+// ★ 11-20 C2 — 죽음의 공 갱신 `nox_xxx_updateDeathBall_53D080`(`object_death_ball.go:17~52`). false 면 부르는 쪽이 지운다
+//   ① 프레임이 FPS/3(10)의 배수가 **아닐** 때 — 둘레 `DeathBallCancelRange`(150) 안의 다른 죽음의 공 가운데 시야(`MapTraceVision`)가 통하는 것마다
+//      찾음 · 아직 안 지워진 것이면 초록 번개 그림(`netSendFxGreenBolt_523790` = `98 <x1 y1 x2 y2 u16> <10 u16>` · 두 점 가운데서 모두에게) + 그것을 지운다 →
+//      하나라도 찾았으면 저도 지운다(지우기는 늦은 지우기라 아래 둘레 피해는 이 틱에도 간다)
+//   ② 만든 지 10 프레임이 넘었으면 둘레 피해 — 바깥 `DeathBallOutRadius`(50) · 안 `DeathBallInRadius`(0) · `DeathBallNearbyDamage`(100) · CRUSH(2) · who = 공
+//   ③ 4초(`SecToFrames(4)` = 120)가 넘었으면 지운다
+//   ⚠ 안 옮김 — 그을음(`sMakeScorch_537AF0`) · 둘레는 중심 거리(원본 `EachMissileInCircle` 은 칸 겹침)
+bool Server::DeathBallUpdate(size_t i, uint32_t frame) {
+    bool gone = false;
+    if (frame % (kServerTickRate / 3u) != 0u) {
+        const float r = static_cast<float>(BalanceFloat("DeathBallCancelRange"));
+        const float mx = missiles_[i].posX, my = missiles_[i].posY;
+        bool found = false;
+        for (size_t j = 0; j < missiles_.size(); ++j) {
+            if (j == i) continue;
+            MissileObj& o = missiles_[j];
+            if (o.type != missiles_[i].type) continue;
+            const float dx = o.posX - mx, dy = o.posY - my;
+            if (dx * dx + dy * dy > r * r) continue;
+            if (!MapTraceVision(mx, my, o.posX, o.posY)) continue;
+            found = true;
+            if (o.destroyed) continue;
+            const uint16_t x1 = static_cast<uint16_t>(static_cast<int>(mx)), y1 = static_cast<uint16_t>(static_cast<int>(my));
+            const uint16_t x2 = static_cast<uint16_t>(static_cast<int>(o.posX)), y2 = static_cast<uint16_t>(static_cast<int>(o.posY));
+            const uint8_t fx[11] = { static_cast<uint8_t>(Op::FX_GREEN_BOLT),
+                                     static_cast<uint8_t>(x1), static_cast<uint8_t>(x1 >> 8), static_cast<uint8_t>(y1), static_cast<uint8_t>(y1 >> 8),
+                                     static_cast<uint8_t>(x2), static_cast<uint8_t>(x2 >> 8), static_cast<uint8_t>(y2), static_cast<uint8_t>(y2 >> 8),
+                                     10, 0 };
+            SendFxAllCli(static_cast<float>(x1) + static_cast<float>(x2 - x1) * 0.5f, static_cast<float>(y1) + static_cast<float>(y2 - y1) * 0.5f, fx, sizeof(fx));
+            o.destroyed = true;                                // 늦은 지우기 — UpdateMissiles 가 그 차례(또는 끝)에 지운다
+            ++fonStat_[static_cast<size_t>(FonStat::BallCancel)];
+        }
+        if (found) gone = true;
+    }
+    const MissileObj m = missiles_[i];                         // 둘레 피해가 무엇을 바꿔도 값이 안 흔들리게 떠 둔다
+    const uint32_t df = frame - m.createdFrame;
+    if (df > 10u) {
+        AttackSrc src;
+        src.x = m.posX; src.y = m.posY;
+        src.byMonsterType = m.type;
+        src.rootIsMonster = MissileRootIsMonster(m);
+        src.missile = true;
+        WallHitter fw;                                         // 벽 피해 who = 공(`doDamageWalls` 참)
+        fw.present = true; fw.x = m.posX; fw.y = m.posY; fw.material = MaterialOfWire(m.type);
+        fw.src = m.owner;
+        DamageUnitsAround(m.posX, m.posY, static_cast<float>(BalanceFloat("DeathBallOutRadius")), static_cast<float>(BalanceFloat("DeathBallInRadius")),
+                          static_cast<int>(BalanceFloat("DeathBallNearbyDamage")), 2, m.owner, Target{}, HitterMissile(m), &src, fw);
+        ++fonStat_[static_cast<size_t>(FonStat::BallNearby)];
+    }
+    if (df > 4u * kServerTickRate) { gone = true; ++fonStat_[static_cast<size_t>(FonStat::BallAge)]; }
+    return !gone;
 }
 
 // unitShield_52F690(`:11557`) — 그 대상에게 걸린 **방패 주문(51)** 을 찾아 주머니에서 뺀다.
@@ -16427,6 +16595,7 @@ void Server::NetStopRaySpell(const DurSpell& d, const Target& who) {
 
 // spellCastByPlayer(spells_dur.go:62) — 틱마다 castByBook 다음
 void Server::SpellCastByPlayer(uint32_t frame) {
+    durFrame_ = frame;                                       // ★ 11-20 C2 — 지속 함수가 「끝 프레임 하루 전」을 이 걸음 기준으로 본다
     auto alive = [&](int64_t a) {
         auto s = sessions_.find(a);
         return s != sessions_.end() && s->second.inGame;
@@ -16469,6 +16638,8 @@ bool Server::DebugDurNew(int64_t caster, uint8_t spell, uint32_t dt, int createR
 // 날아가는 것들 한 틱 — updateUnitsCallUpdate(server_update.go:72) 의 투사체 몫. 사람 적분 **앞**에서 부른다
 void Server::UpdateMissiles(uint32_t frame) {
     for (size_t i = 0; i < missiles_.size();) {
+        // ★ 11-20 C2 — 늦은 지우기 표시(+16 & 0x20 — 죽음의 공끼리 지움)가 선 것은 돌지 않고 지운다
+        if (missiles_[i].destroyed) { DestroyMissile(i); continue; }
         MissileObj& m = missiles_[i];
         // 만든 틱에는 안 돈다(ObjectsAddPending 뒤) — 우리 틀은 시전 목록(SpellCastByBook)이 이 뒤에 돌아 저절로 그렇다
         // ①-a ProjectileUpdate 53AC10(`object_update.go:938`) — 불덩이 같은 **보통 투사체**의 주기 함수.
@@ -16543,6 +16714,9 @@ void Server::UpdateMissiles(uint32_t frame) {
             m.forceX = DirVecX(m.dir2) * m.speed;
             m.forceY = DirVecY(m.dir2) * m.speed;
             m.damping = 0.8f;                                 // 1061997773 = 0x3F4CCCCD
+        } else if (m.collideKind == 10) {
+            // ★ 11-20 트레일러 컨저러 C2 — 죽음의 공 `UPDATE = DeathBallUpdate`(`DeathBallUpdate` 머리 주석) — 힘을 안 주고 처음 속도 그대로 난다(감쇠 1)
+            if (!DeathBallUpdate(i, frame)) { DestroyMissile(i); continue; }
         } else if (m.collideKind == 9) {
             // ★ 11-20 트레일러 위저드 W4 — 노란 별도 `UPDATE = ProjectileUpdate`(40틱) — 때가 되면 닿음 함수를 대상·벽 없이(0,0) 부른다:
             //   그림 136 만 나고(`collideSulphurShot2_4E9D80` 은 둘 다 없으면 아무 일 없음) 지운다
@@ -16799,6 +16973,17 @@ void Server::UpdateMissiles(uint32_t frame) {
                     DamageToMap(static_cast<int>(m.newX * 0.043478262f), static_cast<int>(m.newY * 0.043478262f),
                                 static_cast<int>(m.collideAmount), 11, who);
                     ++wandStat_[static_cast<size_t>(WandStat::StarWall)];
+                } else if (m.collideKind == 10) {
+                    // ★ 11-20 C2 — `collideDeathBall_4E9E90` 대상 없음 · 자리 있음 갈래(`object_death_ball.go:82~90`) — 되튀기(`collideReflect_57B810` — 마법 화살과 같은 식) ·
+                    //   소리 37(ForceOfNatureReflect · 임자 = 공) · 막은 칸(`traceHitResult` = 이 추적이 막힌 칸)에 맵 피해 `DeathBallCollideDamage`(255) · CRUSH · 공은 안 사라진다
+                    if (wny * wnx <= 0.0f) std::swap(m.velX, m.velY);
+                    else { const float v3 = m.velX; m.velX = -m.velY; m.velY = -v3; }
+                    PlaySoundAt(37, m.posX, m.posY);
+                    WallHitter who;
+                    who.present = true; who.x = m.posX; who.y = m.posY; who.material = MaterialOfWire(m.type);
+                    who.src = m.owner;
+                    DamageToMap(th.gx, th.gy, static_cast<int>(BalanceFloat("DeathBallCollideDamage")), 2, who);
+                    ++fonStat_[static_cast<size_t>(FonStat::BallWall)];
                 } else if (m.collideKind == 7) {
                     // ★ 11-20 트레일러 전사 2-c — 차크람은 제 닿음 함수가 되튐까지 한다(`collideChakram_4EAF00` a2 == 0 갈래 `GAME3_3.c:4989~5024`)
                     if (!ChakramCollideWall(m, wnx, wny, th.gx, th.gy)) { DestroyMissile(i); erased = true; continue; }
@@ -16814,13 +16999,31 @@ void Server::UpdateMissiles(uint32_t frame) {
                     bool handled = false;
                     // ★ 11-20 트레일러 위저드 W4 — 노란 별은 닿을 때마다 먼저 그림 136(`GAME3_3.c:4292~4294`) · 같은 편(주인 사슬 · 팀)이면
                     //   피해 함수를 안 부른다(`:4267`) — 되받아치기(방패·대검·27)는 원본에선 피해 함수 안이라 같은 편이면 안 탄다
+                    // ★ 11-20 C2 — `collideDeathBall_4E9E90` 대상 갈래(`object_death_ball.go:58~81`) — 문이 아니면 `DeathBallCollideDamage`(255) · CRUSH ·
+                    //   임자 = 주인 사슬의 사람 · 때린 것 = 공 · **공은 안 사라지고** 지나간다(겹친 틱마다 다시). 방패·대검 되받아치기 갈래는
+                    //   주문 투사체·불덩이 닿음 함수 몫이라 이 공은 안 탄다(막기는 피해 함수 안에서)
+                    //   ⚠ 안 옮김 — 문에 닿으면 문 방향으로 되튀기(+소리 FireExtinguish) · 장애물(통·상자)에 주는 피해
+                    if (m.collideKind == 10) {
+                        if (hk == HitObstacle) {
+                            ++fonStat_[static_cast<size_t>(FonStat::BallObstacle)];
+                        } else {
+                            AttackSrc src;
+                            src.x = m.posX; src.y = m.posY;
+                            src.byMonsterType = m.type;
+                            src.rootIsMonster = MissileRootIsMonster(m);
+                            src.missile = true;
+                            HurtTarget(HitTargetOf(hk, hSessionId, hIdx), static_cast<int>(BalanceFloat("DeathBallCollideDamage")), m.owner, 2, &src, HitterMissile(m));
+                            ++fonStat_[static_cast<size_t>(FonStat::BallHit)];
+                        }
+                        handled = true;
+                    }
                     const bool star = (m.collideKind == 9);
                     const bool starFriend = star && YellowStarSameTeam(m, HitTargetOf(hk, hSessionId, hIdx));
                     if (star) YellowStarFx(m);
                     // ★ 11-20 트레일러 전사 2-c — 아래 방패·대검·되받아치기 방패(27)는 원본에선 **피해 함수 안**(`GAME3_3.c:170~330`)이라
                     //   피해를 주기 전에 받는 차크람 주인 갈래(`collideChakram_4EAF00` `:4995~5008`)는 이것을 안 탄다 —
                     //   방패를 든 워리어(기본 나무 방패 · 가만 7틱이면 올림)가 돌아온 제 차크람을 되받아쳐 영영 못 받았다(⑫ 실측 f50)
-                    if (hk == HitPlayer && !(m.collideKind == 7 && hSessionId == m.owner) && !starFriend) {
+                    if (!handled && hk == HitPlayer && !(m.collideKind == 7 && hSessionId == m.owner) && !starFriend) {
                         Session& t = sessions_.at(hSessionId);
                         auto changeOwner = [&]() { MissileChangeOwner(m, t.sessionId, frame); };
                         const bool front = (TestTwoPointsAndDirection(static_cast<float>(t.posX), static_cast<float>(t.posY),
@@ -17054,6 +17257,8 @@ void Server::UpdateMissiles(uint32_t frame) {
         missiles_[i].forceX = missiles_[i].forceY = 0;
         ++i;
     }
+    // ★ 11-20 C2 — 이 틱에 지운 표시가 섰는데 차례가 이미 지난 것(앞 번호의 죽음의 공)을 쓸어 낸다(원본 늦은 지우기는 프레임 끝)
+    for (size_t i = 0; i < missiles_.size();) { if (missiles_[i].destroyed) DestroyMissile(i); else ++i; }
 }
 
 // ★ 09-27 B1 — 직업 기본 장비를 서버 가방에 싣는다.
@@ -18479,7 +18684,7 @@ void Server::WarcryBreakCasts(Session& s, double dist) {
 //   ① 둘레 안(중심 거리 · `EachMissileInCircle`)의 날아가는 것 중 서브클래스 `MISSILE_COUNTERSPELL` 인 것(`cspellRemoveSpell_52BC90` `:13~35`) —
 //      반주문 폭발 FX(0x87)를 그 자리에 내고, `Magic` 은 그냥 지우고, 나머지는 **대상 없이 닿음 함수를 부른 뒤** 지운다
 //      (불덩이 = 그 자리에서 터짐 · 픽시 = 대상도 벽도 없으면 지워짐 `GAME3_3.c:4390~4392`).
-//      ⚠ 죽음의 공(DeathBall → 조각 뿌리기) 갈래는 우리에게 그 오브젝트가 없어 없다
+//      ⚠ 죽음의 공(DeathBall → 조각 뿌리기) 갈래는 아직 없다(★ 11-20 C2 로 공은 생겼다 · 조각 DeathBallFragment 는 안 옮김)
 //   ② 지속 주문 중 `CAN_COUNTER`(0x40000)이고 (+88 & 2 가 없거나 연쇄 번개(43)면) 자리(+28)가 둘레 안인 것을 끊는다
 //   ③ 둘레 안 오브젝트(시전자 빼고 · 안 죽은 것)의 버프 0~31 중 **지속이 0 이 아니고**(0 = 영구) 그 버프의 주문이 `CAN_COUNTER` 면 끈다.
 //      한 오브젝트에서 하나라도 끄면 그 자리에 FX(0x87) 한 번

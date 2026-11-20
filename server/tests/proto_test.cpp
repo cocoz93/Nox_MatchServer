@@ -24846,6 +24846,201 @@ void TestSummonGolems1120() {
     }
     std::printf("  11-20 C1 — 센 소환수: 표 · 소환 89·101·111(큰 것 375틱 · 한도 4 · 큰 악마는 퀘스트만 · 자동 주문) · 골렘 근접(앞쪽 전부 · 뒤·사거리 밖 그대로 · 흔들기 28 · 기계만 밀기 · 빈 앞 = 빗나감) · 죽음 소리·그림·시체/치움\n");
 }
+// ── 11-20 트레일러 컨저러 C2 — 자연의 힘(31) ─────
+//   ① 시작 — 모으기 그림(1224) · 시전 자세 10 · 그림은 공 6틱 전에 지움 · 끝 하루 전 공(706) — 시전자 앞 14(몸 10 + 4) · 속도 150/32×2 · 소리 38
+//   ② 시전 막이 — 제 공이 날면 3 으로 거절 / 없으면 통과
+//   ③ 닿음 — 길 위의 유닛은 깎이고 공은 안 사라진다
+//   ④ 둘레 피해 — 비켜 선 유닛도 깎임(닿음 0) · 만든 지 10틱까지는 둘레 피해 없음(곁에 선 유닛 그대로)
+//   ⑤ 수명 — 놓은 뒤 121틱째에 사라짐(4초 넘음)
+//   ⑥ 벽 — 튕기고(속도 바뀜) 안 사라짐 · 소리 37
+//   ⑦ 공끼리 — 마주 보고 쏜 두 공은 150 안에서 둘 다 지워짐 · 초록 번개 하나
+//   ⑧ 달리기(8) — 모으는 중에 걸리면 공 없이 끝 · 그림 지움
+void TestForceOfNature1120() {
+    const std::string a = "10.11.21.1:9611", b = "10.11.21.2:9612", c = "10.11.21.3:9613", d = "10.11.21.4:9614";
+    using FS = nox::Server::FonStat;
+    char msg[400];
+    auto mk = [&](nox::CSyncHost& srv) {
+        nox::Gamedata g;
+        g.Parse("DeathBallCollideDamage = 255;\n" "DeathBallNearbyDamage = 100;\n" "DeathBallInRadius = 0.0f;\n"
+                "DeathBallOutRadius = 50.0f;\n" "DeathBallCancelRange = 150.0f;\n" "SummonDuration = 60, 210, 375;\n");   // gamedata.bin ARENA 실측
+        srv->SetGamedata(g);
+        srv->SetProjType("DeathBall", 706, 150, /*AIRBORNE+FLICKER*/ 0x20004000u, 0);   // thing.bin 실측(SPEED 200·150 두 줄 — 뒤 값)
+        srv->SetNamedType("ForceOfNatureCharge", 1224);
+        srv->SetSpellDef(31, 0, 0x4434003au, { 0, 8, 2, 6, 5, 4 });      // 깃발 thing.bin 실측 · 음소는 시험용
+        std::vector<nox::Server::SoundDefIn> sd;
+        for (const uint16_t id : { uint16_t(37), uint16_t(38) }) { nox::Server::SoundDefIn sdi; sdi.id = id; sdi.samples = 1; sdi.maxDist = 600; sd.push_back(sdi); }
+        srv->SetSoundDefs(sd);
+        srv.DebugEnterGame(a, 880, false, nox::CharClass::Conjurer);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+    };
+    auto start = [&](nox::CSyncHost& srv, uint32_t& ms, std::vector<nox::OutPacket>& out) {
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv->DebugSetFacing(Sid(srv, a), 0);                                 // +x
+    };
+    auto heard = [](const std::vector<nox::OutPacket>& out, const std::string& who, uint16_t id) {
+        int n = 0;
+        for (const auto& x : FlattenTo(out, who))
+            if (x.size() == 4 && (x[0] == static_cast<uint8_t>(nox::Op::AUDIO_EVENT) || x[0] == static_cast<uint8_t>(nox::Op::AUDIO_PLAYER_EVENT)) &&
+                (static_cast<uint16_t>(x[2] | (x[3] << 8)) & 0x3ff) == id) ++n;   // 임자 본인은 0xA7 · 남은 0xA6
+        return n;
+    };
+    // 쏘고 공이 나올 때까지(최대 30틱) — 나온 틱 수를 돌려준다
+    auto launch = [&](nox::CSyncHost& srv, const std::string& who, uint32_t& ms, std::vector<nox::OutPacket>& out, int* chargeOffAt = nullptr) {
+        srv->DebugSpellAccept(Sid(srv, who), 31, 3); srv.TakeOut(out);
+        const size_t m0 = srv->missiles();
+        int t = 0;
+        for (; t < 30 && srv->missiles() == m0; ) {
+            ms += 34; srv.Tick(ms, out); ++t;
+            if (chargeOffAt && *chargeOffAt < 0 && srv->PlacedCount() == 0) *chargeOffAt = t;
+        }
+        return t;
+    };
+
+    // ① 시작·모으기·놓기
+    {
+        nox::CSyncHost srv; mk(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        srv->DebugSpellAccept(Sid(srv, a), 31, 3); srv.TakeOut(out);
+        Check(srv->DurCount() == 1 && srv->PlacedCount() == 1 && srv->DebugPlacedType(0) == 1224 && srv->missiles() == 0 &&
+              srv->fonStat(FS::Start) == 1 && srv->DebugDurActive(31, Sid(srv, a)), "C2 ① 자연의 힘이 모으기(지속 · 그림 1224)로 안 걸렸다");
+        int t = 0, chargeOff = -1, state10 = 0;
+        for (; t < 30 && srv->missiles() == 0; ) {
+            ms += 34; srv.Tick(ms, out); ++t;
+            if (chargeOff < 0 && srv->PlacedCount() == 0) chargeOff = t;
+            if (srv->missiles() == 0 && srv->DebugStateOf(Sid(srv, a)) == 10) ++state10;
+        }
+        const auto& ml = srv->missileList();
+        const float wantX = static_cast<float>(srv->DebugPosX(Sid(srv, a)) + 14.0), wantY = static_cast<float>(srv->DebugPosY(Sid(srv, a)));
+        std::snprintf(msg, sizeof(msg), "C2 ① 공 — %d틱째 · 그림 지움 %d틱째 · 자세 10 %d틱 · 공 %zu · 종류 %u · 갈래 %u · 주인 %d · 자리 %.2f,%.2f(기대 %.2f,%.2f) · 속도 %.3f,%.3f · 소리 38 %d · 지속 %zu · 놓음 %llu",
+                      t, chargeOff, state10, ml.size(), ml.empty() ? 0u : unsigned(ml[0].type), ml.empty() ? 0u : unsigned(ml[0].collideKind),
+                      int(!ml.empty() && ml[0].owner == Sid(srv, a)), ml.empty() ? 0.0 : ml[0].posX, ml.empty() ? 0.0 : ml[0].posY, wantX, wantY,
+                      ml.empty() ? 0.0 : ml[0].velX, ml.empty() ? 0.0 : ml[0].velY, heard(out, a, 38), size_t(srv->DurCount()), srv->fonStat(FS::Launch));
+        Check(ml.size() == 1 && ml[0].type == 706 && ml[0].collideKind == 10 && ml[0].owner == Sid(srv, a) &&
+              std::fabs(ml[0].posX - wantX) < 0.01f && std::fabs(ml[0].posY - wantY) < 0.01f &&
+              std::fabs(ml[0].velX - 9.375f) < 0.001f && std::fabs(ml[0].velY) < 0.001f &&
+              t >= 18 && t <= 20 && chargeOff == t - 6 && state10 >= t - 2 && heard(out, a, 38) == 1 &&
+              srv->fonStat(FS::Launch) == 1 && srv->fonStat(FS::ChargeOff) == 1 && srv->fonStat(FS::LaunchBlocked) == 0, msg);
+        ms += 34; srv.Tick(ms, out);                                       // 끝난 지속 주문은 다음 틱 머리에 걷힌다(`flags88 & 1`)
+        Check(srv->DurCount() == 0 && srv->fonStat(FS::Launch) == 1, "C2 ① 공을 놓은 뒤 자연의 힘 지속이 안 걷혔다(또는 공을 또 놓았다)");
+    }
+    // ② 시전 막이 — 제 공이 날면 3 · 없으면 통과(두 방향)
+    for (const bool ballUp : { true, false }) {
+        nox::CSyncHost srv; mk(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        if (ballUp) launch(srv, a, ms, out);
+        srv->DebugFillMana(Sid(srv, a));
+        const unsigned long long rej0 = srv->castRejCant(), st0 = srv->fonStat(FS::Start);
+        CastAndWait(srv, a, 31, false, ms, out);
+        std::snprintf(msg, sizeof(msg), "C2 ② 공 %d — 거절 %llu → %llu · 시작 %llu → %llu", int(ballUp), rej0, srv->castRejCant(), st0, srv->fonStat(FS::Start));
+        if (ballUp) Check(srv->castRejCant() == rej0 + 1 && srv->fonStat(FS::Start) == st0, msg);
+        else        Check(srv->castRejCant() == rej0 && srv->fonStat(FS::Start) == st0 + 1, msg);
+    }
+    // ③ 닿음 — 길 위(1080,1000 — 둘레 피해가 열리는 10틱 전에 닿는 자리)의 위저드(방패 없음)가 깎이고 공은 계속 난다
+    {
+        nox::CSyncHost srv; mk(srv);
+        srv.DebugEnterGame(b, 881, false, nox::CharClass::Wizard);
+        srv->DebugMoveTo(Sid(srv, b), 1080, 1000);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        const int hb0 = srv->HealthOf(Sid(srv, b));
+        launch(srv, a, ms, out);
+        int t = 0;
+        for (; t < 40 && srv->fonStat(FS::BallHit) == 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        // 공은 유닛을 **지나간다** — 닿음 함수가 맡지 않으면 주문 투사체 기본 갈래가 그 유닛에서 되튀긴다(속도가 바뀐다)
+        const auto& ml = srv->missileList();
+        std::snprintf(msg, sizeof(msg), "C2 ③ 닿음 %llu · 장애물 %llu · b 체력 %d → %d · 남은 공 %zu · 속도 %.3f,%.3f · %d틱", srv->fonStat(FS::BallHit), srv->fonStat(FS::BallObstacle),
+                      hb0, int(srv->HealthOf(Sid(srv, b))), srv->missiles(), ml.empty() ? 0.0 : ml[0].velX, ml.empty() ? 0.0 : ml[0].velY, t);
+        Check(srv->fonStat(FS::BallHit) >= 1 && srv->HealthOf(Sid(srv, b)) < hb0 && srv->missiles() == 1 &&
+              std::fabs(ml[0].velX - 9.375f) < 0.001f && std::fabs(ml[0].velY) < 0.001f, msg);
+    }
+    // ④ 둘레 피해 — c 는 공 시작 자리 곁(1014,1040 — 40)이라 10틱 관문 안에서만 닿는다(그대로여야) ·
+    //   d 는 길에서 35 비켜 선(1214,1035) — 몸(10)에 안 닿고 둘레(50)에만 든다(깎여야 · 닿음 0)
+    {
+        nox::CSyncHost srv; mk(srv);
+        srv.DebugEnterGame(c, 882, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(d, 883, false, nox::CharClass::Wizard);
+        srv->DebugMoveTo(Sid(srv, c), 1014, 1040);
+        srv->DebugMoveTo(Sid(srv, d), 1214, 1035);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        const int hc0 = srv->HealthOf(Sid(srv, c)), hd0 = srv->HealthOf(Sid(srv, d));
+        launch(srv, a, ms, out);
+        for (int t = 0; t < 40; ++t) { ms += 34; srv.Tick(ms, out); }
+        std::snprintf(msg, sizeof(msg), "C2 ④ 둘레 %llu · 닿음 %llu · c 체력 %d → %d · d 체력 %d → %d", srv->fonStat(FS::BallNearby), srv->fonStat(FS::BallHit),
+                      hc0, int(srv->HealthOf(Sid(srv, c))), hd0, int(srv->HealthOf(Sid(srv, d))));
+        Check(srv->fonStat(FS::BallNearby) >= 1 && srv->fonStat(FS::BallHit) == 0 && srv->HealthOf(Sid(srv, c)) == hc0 && srv->HealthOf(Sid(srv, d)) < hd0, msg);
+    }
+    // ⑤ 수명 — 놓은 뒤 121 프레임째에 사라진다(한 번에 한 틱만 돌게 33ms 씩 — 34 면 33번에 한 번 두 틱이 겹친다)
+    {
+        nox::CSyncHost srv; mk(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        launch(srv, a, ms, out);
+        const uint32_t f0 = srv->DebugFrame();
+        int t = 0;
+        for (; t < 200 && srv->missiles() > 0; ) { ms += 33; srv.Tick(ms, out); ++t; }
+        std::snprintf(msg, sizeof(msg), "C2 ⑤ 공이 %d틱 · %u 프레임째 사라짐(121 이어야) · 수명 %llu", t, srv->DebugFrame() - f0, srv->fonStat(FS::BallAge));
+        Check(srv->DebugFrame() - f0 == 121 && srv->fonStat(FS::BallAge) == 1, msg);
+    }
+    // ⑤b 한 번에 두 틱 — 끝 프레임 하루 전이 두 틱 걸음의 앞 걸음에 걸려도 공이 나간다(`durFrame_` — frame_ 로 견주면 안 나간다)
+    for (int skew = 0; skew < 2; ++skew) {
+        nox::CSyncHost srv; mk(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        srv->DebugSpellAccept(Sid(srv, a), 31, 3); srv.TakeOut(out);
+        for (int t = 0; t < 17 + skew; ++t) { ms += 33; srv.Tick(ms, out); }   // 끝 = 시전 + 20 → 18·19 프레임 뒤에서 두 틱 걸음
+        ms += 66; srv.Tick(ms, out);
+        for (int t = 0; t < 3; ++t) { ms += 33; srv.Tick(ms, out); }
+        std::snprintf(msg, sizeof(msg), "C2 ⑤b 두 틱 걸음(%d) — 놓음 %llu · 공 %zu", skew, srv->fonStat(FS::Launch), srv->missiles());
+        Check(srv->fonStat(FS::Launch) == 1 && srv->missiles() == 1, msg);
+    }
+    // ⑥ 벽 — 앞 칸(47,43 → x 1081~1103)에서 튕긴다 · 안 사라짐 · 소리 37
+    {
+        nox::CSyncHost srv; mk(srv);
+        srv->SetWalls({ { 47, 43 } });
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        launch(srv, a, ms, out);
+        int t = 0;
+        for (; t < 40 && srv->fonStat(FS::BallWall) == 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        const auto& ml = srv->missileList();
+        std::snprintf(msg, sizeof(msg), "C2 ⑥ 벽 %llu · 남은 공 %zu · 속도 %.3f,%.3f · 소리 37 %d · %d틱", srv->fonStat(FS::BallWall), ml.size(),
+                      ml.empty() ? 0.0 : ml[0].velX, ml.empty() ? 0.0 : ml[0].velY, heard(out, a, 37), t);
+        Check(srv->fonStat(FS::BallWall) >= 1 && ml.size() == 1 && std::fabs(ml[0].velX - 9.375f) > 0.01f && heard(out, a, 37) >= 1, msg);
+    }
+    // ⑦ 공끼리 — a(1000 · +x)와 b(1400 · −x)가 같은 틱에 쏘면 다가오다 150 안에서 둘 다 지워진다 · 초록 번개 하나
+    {
+        nox::CSyncHost srv; mk(srv);
+        srv.DebugEnterGame(b, 881, false, nox::CharClass::Conjurer);
+        srv->DebugMoveTo(Sid(srv, b), 1400, 1000);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        srv->DebugSetFacing(Sid(srv, b), 128);
+        srv->DebugSpellAccept(Sid(srv, a), 31, 3);
+        srv->DebugSpellAccept(Sid(srv, b), 31, 3); srv.TakeOut(out);
+        int t = 0;
+        for (; t < 30 && srv->missiles() < 2; ++t) { ms += 34; srv.Tick(ms, out); }
+        const bool both = srv->missiles() == 2;
+        out.clear();
+        for (t = 0; t < 40 && srv->missiles() > 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        int bolt = 0;
+        for (const auto& x : FlattenTo(out, a)) if (x.size() == 11 && x[0] == static_cast<uint8_t>(nox::Op::FX_GREEN_BOLT) && x[9] == 10) ++bolt;
+        // 둘레 피해 부름 수는 **홀수**여야 — 두 공이 같은 틱에 나서 지우는 틱 전까지는 틱마다 둘(짝수) · 지우는 틱(만든 지 13틱 — 10 넘음)엔
+        //   먼저 찾은 공만 부르고, 지운 표시가 선 공은 그 틱에 안 돈다(원본 `FlagNoUpdateMask = FlagNoUpdate | FlagDestroyed` · `server_update.go:73`)
+        std::snprintf(msg, sizeof(msg), "C2 ⑦ 둘 다 놓음 %d · 남은 공 %zu · 지움 %llu · 수명 %llu · 번개 %d · 둘레 부름 %llu · %d틱 · a 체력 %d · b 체력 %d", int(both), srv->missiles(),
+                      srv->fonStat(FS::BallCancel), srv->fonStat(FS::BallAge), bolt, srv->fonStat(FS::BallNearby), t, int(srv->HealthOf(Sid(srv, a))), int(srv->HealthOf(Sid(srv, b))));
+        Check(both && srv->missiles() == 0 && srv->fonStat(FS::BallCancel) == 1 && srv->fonStat(FS::BallAge) == 0 && bolt == 1 && t < 20 &&
+              srv->fonStat(FS::BallNearby) % 2 == 1, msg);
+    }
+    // ⑧ 달리기(8) — 모으는 중에 걸리면 공 없이 끝나고 그림을 지운다
+    {
+        nox::CSyncHost srv; mk(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        srv->DebugSpellAccept(Sid(srv, a), 31, 3); srv.TakeOut(out);
+        for (int t = 0; t < 5; ++t) { ms += 34; srv.Tick(ms, out); }
+        srv->DebugApplyEnchant(Sid(srv, a), 8, 90, 1);
+        for (int t = 0; t < 30; ++t) { ms += 34; srv.Tick(ms, out); }
+        std::snprintf(msg, sizeof(msg), "C2 ⑧ 달리기 끊김 %llu · 공 %zu · 놓음 %llu · 그림 %zu · 지속 %zu", srv->fonStat(FS::RunEnd), srv->missiles(), srv->fonStat(FS::Launch),
+                      srv->PlacedCount(), size_t(srv->DurCount()));
+        Check(srv->fonStat(FS::RunEnd) == 1 && srv->missiles() == 0 && srv->fonStat(FS::Launch) == 0 && srv->PlacedCount() == 0 && srv->DurCount() == 0, msg);
+    }
+    std::printf("  11-20 C2 — 자연의 힘: 모으기 그림·자세·공(앞 14 · 9.375 · 소리 38) · 시전 막이 · 닿음(안 사라짐) · 둘레(10틱 관문) · 수명 121 · 벽 튕김 · 공끼리 지움 · 달리기 끊김\n");
+}
 
 // ── 11-20 트레일러 전사 1-b — 수식 효과(modifier.bin `Server::ParseModEffects`) · 휘두를 때 위력 배수 · 맞힐 때 불·번개 ─────
 //   ① 진짜 복호본을 읽어 번호 차례·값(빠진 `;` 칸 Speed4 포함)을 본다
@@ -38078,6 +38273,7 @@ int main() {
     TestMonsterCastB7();
     TestMapMobs1119();
     TestSummonGolems1120();
+    TestForceOfNature1120();
     TestModEffects1120();
     TestPickupAutoEquip();
     TestArmorEquip();
