@@ -1186,6 +1186,9 @@ uint16_t Server::SummonType(uint8_t spell) {
         case 110: return 1361; // SUMMON_VILE_ZOMBIE        → VileZombie
         // ★ 11-21 C5 — 이름표 19 OgreWarlord(도끼 근접 + 표창)
         case 93:  return 1389; // SUMMON_OGRE_WARLORD       → OgreWarlord
+        // ★ 11-21 C7 — 이름표 22 Skeleton · 23 SkeletonLord(근접만 · BLADE)
+        case 96:  return 1314; // SUMMON_SKELETON           → Skeleton
+        case 97:  return 1315; // SUMMON_SKELETON_LORD      → SkeletonLord
         default: return 0;
     }
 }
@@ -7415,6 +7418,7 @@ bool Server::SpellAccept(uint8_t spell, Session& s, int64_t obj3, const SpellArg
             case 84: case 85: case 86: case 87:
             case 89: case 101: case 111:                                                       // ★ 11-20 C1 센 소환수 셋
             case 93:                                                                           // ★ 11-21 C5 오우거 군주(표창)
+            case 96: case 97:                                                                  // ★ 11-21 C7 해골 · 해골 군주
             case 90: case 92: case 109: case 110: {                                            // Summon — 지속(크기별 시전 시간) · ★ 11-21 C4 근접 넷
                 DurFns f;
                 f.create = &Server::DurSummonCreate;

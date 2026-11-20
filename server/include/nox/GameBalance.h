@@ -617,6 +617,10 @@ constexpr MonsterStats kMonsters[] = {
     // ★ 11-21 C5 — 오우거 군주 ⭕ monster.bin 복호 · 체력·빠르기·간격 모드 구분 없음 · 근접 ARENA 45(SOLO 32) · 표창 OgreShuriken(15 · 갈래 5)
     //   죽음 OgreWarlordDie(`sub_54A950` — FanChakram 떨구기)는 협동(2048)에서만 물건을 만든다(`sub_54A390` `GAME5.c:3121`) → 아레나는 아무 일 없음
     { "OgreWarlord",        1389,   130,   45,   40.0,    60,  20, 30,  "OgreShuriken", 200.0, 20, 30, 1.38, 90000 },  // 오우거 군주 · IMPACT · 밀기 50
+    // ★ 11-21 C7 — 해골 둘 ⭕ monster.bin 복호(`_out/qa_1120/monster_dec.txt` Skeleton · SkeletonLord) ARENA 값 · 둘 다 중간(크기 2) · MonsterStrike · BLADE
+    //   (11-20 전사 시험 패치에 있던 줄을 커밋으로 올림 — 체력은 해골 200 > 군주 100 이 원본 그대로 · 죽음 SkeletonDead·SkeletonLordDead 의 뼈 흩기는 아직 안 옮김)
+    { "Skeleton",           1314,   200,   30,   30.0,    55,  15, 30,  nullptr,         0.0,  0,  0, 1.3,  25000 },   // 해골 · 간격 15~30(모드 구분 없음)
+    { "SkeletonLord",       1315,   100,   20,   30.0,    65,  10, 15,  nullptr,         0.0,  0,  0, 1.3,  50000 },   // 해골 군주 · ARENA 간격 10~15 · 밀어내기 3.0
 };
 
 // ★ 09-23 nine-defects 2-a4 — monster.bin `STATUS` 에 **`CAN_CAST_SPELLS`** 가 있는 몬스터(정답지 `MonStatusCanCastSpells` 0x20 ·
@@ -688,6 +692,8 @@ inline MonsterBrainInfo MonsterBrainOf(uint16_t wire) {
         case 1372: return { 0x00, 0.0f, 0.20f, 0.0f };   // Mimic ★ 11-21 C4 — ARENA 후퇴 0 · 회복 0.20
         case 1390: return { 0x00, 0.0f, 0.35f, 0.0f };   // OgreBrute — ARENA 후퇴 0 · 회복 0.35
         case 1389: return { 0x00, 0.0f, 0.30f, 0.0f };   // OgreWarlord ★ 11-21 C5 — ARENA 후퇴 0 · 회복 0.30
+        case 1314: return { 0x05, 0.0f, 1.0f,  0.0f };   // Skeleton ★ 11-21 C7 — CAN_BLOCK+DESTROY_WHEN_DEAD(막기 0x4 는 아직 안 읽는다)
+        case 1315: return { 0x05, 0.0f, 1.0f,  0.0f };   // SkeletonLord — 같음
         default:   return {};
     }
 }
@@ -720,6 +726,8 @@ inline MonsterMoveSound MonsterMoveSoundOf(uint16_t wire) {
         case 1372: return { 1, 5 };   // Mimic ★ 11-21 C4
         case 1390: return { 2, 10 };  // OgreBrute
         case 1389: return { 2, 10 };  // OgreWarlord ★ 11-21 C5
+        case 1314: return { 1, 5 };   // Skeleton ★ 11-21 C7
+        case 1315: return { 0, 4 };   // SkeletonLord
         default:   return {};
     }
 }
@@ -765,6 +773,8 @@ inline int MonsterMeleeFrameOf(uint16_t wire) {
         case 1372: return 5;   // Mimic ★ 11-21 C4
         case 1390: return 7;   // OgreBrute
         case 1389: return 7;   // OgreWarlord ★ 11-21 C5
+        case 1314: return 4;   // Skeleton ★ 11-21 C7
+        case 1315: return 4;   // SkeletonLord
         default:   return 0;
     }
 }
@@ -797,6 +807,8 @@ inline MeleeStrikeInfo MeleeStrikeOf(uint16_t wire) {
         case 1372: return { StrikeFn::Monster, 10, 0.0f, 0, 0, 0 };   // Mimic CLAW ★ 11-21 C4
         case 1390: return { StrikeFn::Monster, 11, 20.0f, 0, 0, 0 };  // OgreBrute IMPACT · 밀어내기 20
         case 1389: return { StrikeFn::Monster, 11, 50.0f, 0, 0, 0 };  // OgreWarlord IMPACT · 밀어내기 50 ★ 11-21 C5
+        case 1314: return { StrikeFn::Monster, 0,  0.0f, 0, 0, 0 };   // Skeleton BLADE ★ 11-21 C7
+        case 1315: return { StrikeFn::Monster, 0,  3.0f, 0, 0, 0 };   // SkeletonLord BLADE · 밀어내기 3.0(MELEE_ATTACK_IMPACT)
         default:   return {};                                          // Imp·EvilCherub·Beholder·Demon — NULL
     }
 }
