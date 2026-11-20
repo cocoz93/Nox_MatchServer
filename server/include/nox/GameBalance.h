@@ -630,6 +630,9 @@ constexpr MonsterStats kMonsters[] = {
     { "Wolf",               1369,    40,   15,   15.0,    65,  20, 30,  nullptr,         0.0,  0,  0, 1.47, 18000 },   // 늑대 · 체력 모드 구분 없음
     { "BlackWolf",          1368,    75,   30,   15.0,    55,  20, 30,  nullptr,         0.0,  0,  0, 1.47, 100000 },  // 검은 늑대 · 빠르기 모드 구분 없음
     { "WhiteWolf",          1367,    60,   20,   15.0,    62,  20, 30,  nullptr,         0.0,  0,  0, 1.47, 32000 },   // 흰 늑대 · 체력 모드 구분 없음
+    // ★ 11-21 C10 — 원거리 둘 ⭕ monster.bin 복호(Urchin 872 · FlyingGolem 986 줄) ARENA 값 · 둘 다 작은 크기 · 근접 없음(사거리 0 · 함수 NULL)
+    { "Urchin",             1339,    40,    0,    0.0,    75,   0,  0,  "ThrowingStone", 200.0, 20, 30, 1.3,  11000 },   // 성게 · 돌(ProjectileCollide 1 · 갈래 3) · 도망 거리 65
+    { "FlyingGolem",        1316,    40,    0,    0.0,   100,   0,  0,  "GolemArrow",    150.0, 25, 25, 1.3,  50000 },   // 기계 비행체 · 화살(MonsterArrowCollide 3 · 갈래 5) · 빠르기 모드 구분 없음
 };
 
 // ★ 09-23 nine-defects 2-a4 — monster.bin `STATUS` 에 **`CAN_CAST_SPELLS`** 가 있는 몬스터(정답지 `MonStatusCanCastSpells` 0x20 ·
@@ -710,6 +713,8 @@ inline MonsterBrainInfo MonsterBrainOf(uint16_t wire) {
         case 1369: return { 0x00, 0.0f, 0.5f,  0.0f };   // Wolf — ARENA 후퇴 0 · 회복 0.5
         case 1368: return { 0x00, 0.0f, 0.3f,  0.0f };   // BlackWolf — 회복 0.3
         case 1367: return { 0x00, 0.0f, 0.5f,  0.0f };   // WhiteWolf — 회복 0.5
+        case 1339: return { 0x08, 0.0f, 0.5f, 65.0f };   // Urchin ★ 11-21 C10 — CAN_DODGE · ARENA 후퇴 0 · 회복 0.5 · 도망 거리 65
+        case 1316: return { 0x09, 0.0f, 1.0f,  0.0f };   // FlyingGolem — DESTROY_WHEN_DEAD+CAN_DODGE
         default:   return {};
     }
 }
@@ -751,6 +756,8 @@ inline MonsterMoveSound MonsterMoveSoundOf(uint16_t wire) {
         case 1369: return { 1, 5 };   // Wolf
         case 1368: return { 1, 5 };   // BlackWolf
         case 1367: return { 1, 5 };   // WhiteWolf
+        case 1339: return { 0, 4 };   // Urchin ★ 11-21 C10
+        case 1316: return { 0, 4 };   // FlyingGolem
         default:   return {};
     }
 }
@@ -765,6 +772,8 @@ inline int MonsterMissileFrameOf(uint16_t wire) {
         case 1382: return 4;   // Beholder
         case 1347: return 4;   // Demon ★ 11-19 — 시전(`mobActionCast_5413B0`)이 이 칸에서 주문을 낸다
         case 1389: return 4;   // OgreWarlord ★ 11-21 C5 — 표창
+        case 1339: return 4;   // Urchin ★ 11-21 C10 — 돌
+        case 1316: return 4;   // FlyingGolem — 화살
         default:   return 0;   // 나머지는 파일 값 0
     }
 }

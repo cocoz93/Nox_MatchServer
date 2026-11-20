@@ -179,7 +179,9 @@ std::shared_ptr<const nox::Server::GameTables> BuildGameTables(const GameFiles& 
                                 // ★ 11-21 트레일러 위저드 W6 — 언데드 쫓기 빛 조각(SPEED 200 · ALLOW_OVERLAP · LIGHT+CLIENT_PREDICT · UndeadKillerCollide — 인자 없음)
                                 "UndeadKiller",
                                 // ★ 11-21 트레일러 컨저러 C5 — 오우거 군주 표창(SPEED 400 · SHURIKEN · MonsterArrowCollide 15 20 — 양은 첫째 수 15)
-                                "OgreShuriken" }) {
+                                "OgreShuriken",
+                                // ★ 11-21 트레일러 컨저러 C10 — 성게 돌(ProjectileCollide 1 · 갈래 3) · 기계 비행체 화살(MonsterArrowCollide 3 10 · 갈래 5)
+                                "ThrowingStone", "GolemArrow" }) {
             const uint16_t w = tdb.WireByName(nm);
             const nox::ThingInfo* t2 = w ? tdb.ByWire(w) : nullptr;
             int amount = 0;

@@ -1197,6 +1197,9 @@ uint16_t Server::SummonType(uint8_t spell) {
         case 106: return 1369; // SUMMON_WOLF               → Wolf
         case 107: return 1368; // SUMMON_BLACK_WOLF         → BlackWolf
         case 108: return 1367; // SUMMON_WHITE_WOLF         → WhiteWolf
+        // ★ 11-21 C10 — 원거리 둘(이름표 29 Urchin · 14 FlyingGolem)
+        case 103: return 1339; // SUMMON_URCHIN             → Urchin
+        case 88:  return 1316; // SUMMON_FLYING_GOLEM       → FlyingGolem
         default: return 0;
     }
 }
@@ -7707,6 +7710,7 @@ bool Server::SpellAccept(uint8_t spell, Session& s, int64_t obj3, const SpellArg
             case 93:                                                                           // ★ 11-21 C5 오우거 군주(표창)
             case 96: case 97:                                                                  // ★ 11-21 C7 해골 · 해골 군주
             case 95: case 98: case 99: case 102: case 106: case 107: case 108:                 // ★ 11-21 C8 근접 일곱
+            case 103: case 88:                                                                 // ★ 11-21 C10 원거리 둘
             case 90: case 92: case 109: case 110: {                                            // Summon — 지속(크기별 시전 시간) · ★ 11-21 C4 근접 넷
                 DurFns f;
                 f.create = &Server::DurSummonCreate;

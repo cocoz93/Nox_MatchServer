@@ -24730,8 +24730,9 @@ void TestSummonGolems1120() {
               "C1 ① 골렘 근접 함수 표(Golem · CRUSH · 밀기 0/100)가 다르다");
         Check(nox::MonsterBrainOf(1324).status == 0x00 && nox::MonsterBrainOf(1318).status == 0x01 &&
               nox::MonsterMeleeFrameOf(1324) == 5 && nox::MonsterMeleeFrameOf(1318) == 5, "C1 ① 골렘 두뇌·때림칸 표가 다르다");
+        // ✖ 11-21 C10 — 대조군이 88 이었으나 C10 에서 88 = 기계 비행체가 됐다 → 소환이 아닌 115(자리 바꾸기)로
         Check(nox::Server::SummonType(89) == 1318 && nox::Server::SummonType(101) == 1324 && nox::Server::SummonType(111) == 1347 &&
-              nox::Server::SummonType(88) == 0, "C1 ① 소환 짝(89·101·111)이 다르다");
+              nox::Server::SummonType(115) == 0, "C1 ① 소환 짝(89·101·111)이 다르다");
     }
     auto body = [](float r) {
         nox::Server::PhysBody bb; bb.shape = 2; bb.r = r; bb.cls = 0x2;
@@ -26306,6 +26307,119 @@ void TestMeleeSevenSummon1121() {
         Check(pushed == 7 && srv->DebugPetRunning(0) == (ty == 1369) && srv->neverRunHeld() == (ty == 1369 ? 0u : 1u), msg);
     }
     std::printf("  11-21 C8 근접 일곱 — 표 · thing.bin 이름·크기 대조 · 크기별 시간 뒤 하나 · 트롤 안 뛰기\n");
+}
+
+// ── 11-21 C10 원거리 둘 — 성게(103) · 기계 비행체(88) ─────
+//   ① 표 — monster.bin 복호 ARENA 값 · 쏘는 것 이름·사거리·간격 · 두뇌(성게 CAN_DODGE·도망 거리 65 / 비행체 DESTROY_WHEN_DEAD+CAN_DODGE) ·
+//      쏘기 칸 4 · 근접 없음 · 소환 짝 둘 · 진짜 thing.bin 이름·번호·크기 · 돌(ProjectileCollide 1)·화살(MonsterArrowCollide 3)
+//   ② 주문마다 작은 크기 시간(60) 뒤 그 종류 하나 · 주인 · 체력 40 · `7e`·`6c` 한 번
+//   ③ 쏜 것이 사람에게 — 돌은 갈래 3(종류 11 · 양 1) · 화살은 갈래 5(종류 3 · 양 ≤ 3)
+void TestRangedTwoSummon1121() {
+    const std::string a = "10.11.21.20:9530";   // 부른 사람
+    const std::string b = "10.11.21.21:9531";   // 맞는 쪽
+    char msg[360];
+    struct SC { uint8_t spell; uint16_t type; const char* name; const char* shot; };
+    const SC cases[] = { { 103, 1339, "Urchin", "ThrowingStone" }, { 88, 1316, "FlyingGolem", "GolemArrow" } };
+    {   // ① 표
+        const nox::MonsterStats* u = nox::FindMonster(1339);
+        const nox::MonsterStats* f = nox::FindMonster(1316);
+        Check(u && u->health == 40 && u->meleeDamage == 0 && u->meleeRange == 0.0 && u->speed == 75 && u->minDelay == 0 && u->maxDelay == 0 &&
+              u->missileName && std::string(u->missileName) == "ThrowingStone" && u->missileRange == 200.0 && u->missileMin == 20 &&
+              u->missileMax == 30 && u->runMul == 1.3 && u->experience == 11000 &&
+              f && f->health == 40 && f->meleeDamage == 0 && f->meleeRange == 0.0 && f->speed == 100 && f->minDelay == 0 && f->maxDelay == 0 &&
+              f->missileName && std::string(f->missileName) == "GolemArrow" && f->missileRange == 150.0 && f->missileMin == 25 &&
+              f->missileMax == 25 && f->runMul == 1.3 && f->experience == 50000,
+              "C10 ① 성게·비행체 표가 monster.bin(ARENA)과 다르다");
+        const nox::MonsterBrainInfo ub = nox::MonsterBrainOf(1339), fb = nox::MonsterBrainOf(1316);
+        const nox::MonsterMoveSound um = nox::MonsterMoveSoundOf(1339), fm = nox::MonsterMoveSoundOf(1316);
+        Check(ub.status == 0x08 && ub.retreat == 0.0f && ub.resume == 0.5f && ub.fleeRange == 65.0f &&
+              fb.status == 0x09 && fb.retreat == 0.0f && fb.resume == 1.0f && fb.fleeRange == 0.0f &&
+              um.a == 0 && um.b == 4 && fm.a == 0 && fm.b == 4 &&
+              nox::MonsterMissileFrameOf(1339) == 4 && nox::MonsterMissileFrameOf(1316) == 4 &&
+              nox::MonsterMeleeFrameOf(1339) == 0 && nox::MonsterMeleeFrameOf(1316) == 0 &&
+              nox::MeleeStrikeOf(1339).fn == nox::StrikeFn::None && nox::MeleeStrikeOf(1316).fn == nox::StrikeFn::None,
+              "C10 ① 두뇌·걸음 소리·쏘기 칸·근접 표가 다르다");
+        Check(nox::Server::SummonType(103) == 1339 && nox::Server::SummonType(88) == 1316, "C10 ① 소환 짝(103·88)이 다르다");
+        nox::ThingDb tdb;
+        if (tdb.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\thing.bin")) {
+            std::string got;
+            bool ok = true;
+            for (const SC& c : cases) {
+                const uint16_t w = tdb.WireByName(c.name);
+                const nox::ThingInfo* t = tdb.ByWire(w);
+                const uint32_t sub = t ? nox::Server::MonsterClassBitsOf(t->subclassRaw) : 0;
+                const int size = (sub & 0x4) ? 4 : ((sub & 0x2) ? 2 : 1);
+                const uint16_t sw = tdb.WireByName(c.shot);
+                const nox::ThingInfo* s = sw ? tdb.ByWire(sw) : nullptr;
+                got += " " + std::string(c.name) + "=" + std::to_string(w) + "/크기" + std::to_string(size) + " " + c.shot + "=" +
+                       std::to_string(sw) + "/" + (s ? s->collideFn + " " + s->collideArgs : std::string("?"));
+                ok = ok && w == c.type && size == 1 && s;
+            }
+            const nox::ThingInfo* st = tdb.ByWire(tdb.WireByName("ThrowingStone"));
+            const nox::ThingInfo* ga = tdb.ByWire(tdb.WireByName("GolemArrow"));
+            ok = ok && st && st->collideFn == "ProjectileCollide" && std::atoi(st->collideArgs.c_str()) == 1 &&
+                 ga && ga->collideFn == "MonsterArrowCollide" && std::atoi(ga->collideArgs.c_str()) == 3;
+            std::snprintf(msg, sizeof(msg), "C10 ① thing.bin 대조 —%s", got.c_str());
+            Check(ok, msg);
+        } else {
+            std::printf("  (C10 ① thing.bin 대조 건너뜀)\n");
+        }
+    }
+    for (const SC& c : cases) {   // ② 주문마다
+        nox::CSyncHost srv;
+        nox::Gamedata g; g.Parse("SummonDuration = 60, 210, 375;\n"); srv->SetGamedata(g);
+        uint8_t ph = 4;
+        for (const SC& c2 : cases) {
+            srv->SetSpellDef(c2.spell, 0, 0x44542438u, { 0, 8, 2, 6, 5, ph++ });
+            nox::Server::PhysBody bb; bb.shape = 2; bb.r = 10.0f; bb.cls = 0x2;
+            bb.subclass = nox::Server::MonsterClassBitsOf("SMALL_MONSTER");
+            srv->SetTypeBody(c2.type, bb);
+        }
+        srv.DebugEnterGame(a, 883, false, nox::CharClass::Conjurer);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv->DebugFillMana(Sid(srv, a));
+        CastAndWait(srv, a, c.spell, false, ms, out);
+        const size_t durAfter = srv->DurCount();
+        for (int t = 0; t < 40; ++t) { ms += 34; srv.Tick(ms, out); }
+        const size_t early = srv->pets();
+        for (int t = 0; t < 60 && srv->pets() == 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        std::snprintf(msg, sizeof(msg), "C10 ② 주문 %u — 지속 %zu · 40틱 앞 몬스터 %zu · 뒤 %zu · 종류 %u(%u 이어야) · 주인 %d · 체력 %d(40) · 7e %llu · 6c %llu",
+                      unsigned(c.spell), durAfter, early, srv->pets(), srv->pets() ? unsigned(srv->DebugPetType(0)) : 0u, unsigned(c.type),
+                      srv->pets() ? int(srv->DebugPetOwner(0) == Sid(srv, a)) : -1, srv->pets() ? srv->DebugPetHealth(0) : -1,
+                      srv->summonFxSent(0), srv->summonOwnSent(0));
+        Check(durAfter == 1 && early == 0 && srv->pets() == 1 && srv->DebugPetType(0) == c.type && srv->DebugPetOwner(0) == Sid(srv, a) &&
+              srv->DebugPetHealth(0) == 40 && srv->summonFxSent(0) == 1 && srv->summonOwnSent(0) == 1, msg);
+    }
+    for (int k = 0; k < 2; ++k) {   // ③ 쏜 것이 사람에게
+        const SC& c = cases[k];
+        nox::CSyncHost srv;
+        if (k == 0) srv->SetProjType("ThrowingStone", 525, 400, 0, 1, /*monsterArrow=*/false);
+        else        srv->SetProjType("GolemArrow", 529, 800, 0, 3, /*monsterArrow=*/true);
+        nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
+        srv->SetTypeBody(c.type, body);
+        srv.DebugEnterGame(a, 884, false, nox::CharClass::Conjurer);
+        srv.DebugEnterGame(b, 885, false, nox::CharClass::Warrior);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1200);
+        srv->DebugMoveTo(Sid(srv, b), 1100, 1000);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv->DebugSpawnPet(c.type, 1000.0f, 1000.0f, Sid(srv, a));
+        const uint16_t bHp = srv->HealthOf(Sid(srv, b));
+        srv->DebugCreatureShoot(0, c.shot, 1100.0f, 1000.0f);
+        srv.TakeOut(out);
+        const size_t made = srv->missiles();
+        int t = 0;
+        for (; t < 30 && srv->missiles() > 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        const uint16_t hp = srv->HealthOf(Sid(srv, b));
+        const unsigned dt = unsigned(srv->DebugLastDamageType(Sid(srv, b)));
+        std::snprintf(msg, sizeof(msg), "C10 ③ %s — 만듦 %zu · %d틱 · 체력 %u→%u · 피해 종류 %u(%u 이어야) · 남은 것 %zu",
+                      c.shot, made, t, bHp, hp, dt, k == 0 ? 11u : 3u, srv->missiles());
+        Check(made == 1 && srv->missiles() == 0 && hp < bHp && bHp - hp <= (k == 0 ? 1 : 3) && dt == (k == 0 ? 11u : 3u), msg);
+    }
+    std::printf("  11-21 C10 원거리 둘 — 표 · thing.bin 이름·크기·쏘는 것 대조 · 작은 시간 뒤 하나 · 돌 갈래 3 · 화살 갈래 5\n");
 }
 
 // ── 11-21 W10 벽(132) — `spell_magic_wall.go`(Create 297 · setWall 467 · Destroy 503 · 알림 106·170 · 부서짐 `wall.go:424`) ─────
@@ -39797,6 +39911,7 @@ int main() {
     TestCharm1121();
     TestSkeletonSummon1121();
     TestMeleeSevenSummon1121();
+    TestRangedTwoSummon1121();
     TestMagicWall1121();
     TestModEffects1120();
     TestPickupAutoEquip();
