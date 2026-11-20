@@ -19,4 +19,19 @@ extern const int kSpellCount;
 // 범위를 벗어나면 "" 를 돌려준다.
 const char* SpellName(int id);
 
+// ★ 11-20 트레일러 위저드 — 이름 → 주문 번호(이 표의 색인). 없으면 0.
+//   정답지 `nox_xxx_spellNameToN_4243F0`(지팡이 주문 읽기 `GAME4_3.c:3065`)와 같은 일.
+//   ✖ thing.bin `SPEL` 칸의 순번은 이 번호가 아니다 — 실측 `SPELL_CHAIN_LIGHTNING` 이 SPEL 순번 32(= 우리 표 `SPELL_FREEZE`)였다.
+//   표(SpellNames.cpp)는 기계로 뽑으므로 함수는 이 머리 파일에 둔다.
+inline int SpellIdByName(const char* name) {
+    if (!name || !*name) return 0;
+    for (int i = 1; i < kSpellCount; ++i) {
+        const char* a = kSpellNames[i];
+        const char* b = name;
+        while (*a && *a == *b) { ++a; ++b; }
+        if (*a == 0 && *b == 0) return i;
+    }
+    return 0;
+}
+
 }  // namespace nox

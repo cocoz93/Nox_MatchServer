@@ -1576,6 +1576,8 @@ bool BuildMapOriginal(const GameFiles& files, std::shared_ptr<const nox::Server:
                 //   ⭕ 실측 — `250 1.0 SPELL_PLASMA` · `5 1.0 SPELL_DEATH_RAY` ·
                 //     `60 1.0 SPELL_CHAIN_LIGHTNING` · `3 0.2 SPELL_FORCE_OF_NATURE`.
                 //   주문 번호는 **SPEL 섹션의 순번**이다(우리 주문 번호와 같은 셈).
+                // ✖ 11-20 정정 — 위 줄이 틀렸다. SPEL 순번은 주문 번호가 아니다(실측 `SPELL_CHAIN_LIGHTNING` 이 SPEL 순번 32 = 우리 `SPELL_FREEZE`).
+                //   ForceWand 가 사슬 번개 대신 얼리기를 걸었다. 정답지처럼 이름표 번호로 바꾼다(`nox_xxx_spellNameToN_4243F0` · `GAME4_3.c:3065`)
                 // ✖ 11-20 W4 정정 — 둘째 값은 「초」가 아니라 **초당 쓰는 수**다: 대기 = `(long long)(FPS / atof(값))`(sub_5361B0 `GAME4_3.c:3062`).
                 //   예전 `초 × 30` 은 1.0 에서만 같았다 — 0.2(InfinitePainWand)가 6 프레임이 됐다(원본 150). double 로 읽는다(float 0.2 면 149 로 잘린다)
                 if (w2.useFn == nox::UseFn::WandCast) {
@@ -1584,8 +1586,7 @@ bool BuildMapOriginal(const GameFiles& files, std::shared_ptr<const nox::Server:
                         w2.chargesMax = static_cast<uint8_t>(ch < 0 ? 0 : (ch > 255 ? 255 : ch));
                         w2.charges = w2.chargesMax;
                         w2.wandCooldown = nox::WandCooldownFrames(nox::kServerTickRate, rate);
-                        for (size_t si = 0; si < tdb.Spells().size(); ++si)
-                            if (tdb.Spells()[si].name == nm) { w2.wandSpell = static_cast<uint8_t>(si); break; }
+                        w2.wandSpell = static_cast<uint8_t>(nox::SpellIdByName(nm));
                         if (w2.wandSpell == 0)
                             srv.Log("[완드] ⚠ %s 의 주문 %s 을 못 찾음\n", objs[i].type.c_str(), nm);
                     }

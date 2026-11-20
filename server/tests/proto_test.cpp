@@ -264,6 +264,23 @@ void TestSpellNames() {
     Check(std::strcmp(nox::SpellName(0), "") == 0, "0번은 빈 이름이어야 한다");
     Check(std::strcmp(nox::SpellName(-1), "") == 0, "음수는 빈 이름이어야 한다");
     Check(std::strcmp(nox::SpellName(nox::kSpellCount), "") == 0, "범위 밖은 빈 이름이어야 한다");
+    // ★ 11-20 트레일러 위저드 — 이름 → 번호(지팡이 주문). 주문을 거는 지팡이 넷(thing.bin `WandCastUse`)이 거는 주문이다.
+    //   thing.bin SPEL 순번(32 · 11 · 17 · ?)을 쓰면 여기서 걸린다 — ForceWand 가 얼리기(32)를 걸던 결함.
+    struct { const char* name; int id; const char* wand; } kWand[] = {
+        { "SPELL_CHAIN_LIGHTNING",  43, "ForceWand"        },
+        { "SPELL_DEATH_RAY",        16, "DeathRayWand"     },
+        { "SPELL_FORCE_OF_NATURE",  31, "InfinitePainWand" },
+        { "SPELL_PLASMA",           59, "OblivionOrb"      },
+    };
+    for (const auto& k : kWand) {
+        const int got = nox::SpellIdByName(k.name);
+        if (got != k.id) std::printf("      %s 의 %s: 번호 %d, 기대 %d\n", k.wand, k.name, got, k.id);
+        Check(got == k.id, "지팡이 주문 이름 → 번호가 정답지와 다름");
+    }
+    Check(nox::SpellIdByName("SPELL_NOT_THERE") == 0, "없는 주문 이름은 0 이어야 한다");
+    Check(nox::SpellIdByName("") == 0 && nox::SpellIdByName(nullptr) == 0, "빈 이름은 0 이어야 한다");
+    Check(nox::SpellIdByName("SPELL_CHAIN_LIGHTNIN") == 0, "표 이름의 앞부분만 주면 0 이어야 한다(7 SPELL_CHAIN_LIGHTNING_BOLT 로 새면 안 됨)");
+    Check(nox::SpellIdByName("SPELL_DEATH_RAYX") == 0, "표 이름 뒤에 글자가 더 붙으면 0 이어야 한다(16 으로 새면 안 됨)");
 }
 
 // ── 게임 중 메시지 — **캡처한 진짜 바이트로 뜯는다** ────────────────
