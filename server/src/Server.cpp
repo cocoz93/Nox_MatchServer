@@ -8277,11 +8277,12 @@ int Server::DurManaBombTick(DurSpell& d) {
     auto c = sessions_.find(d.caster);
     Session* cs = ((d.caster != kNoSession) && c != sessions_.end()) ? &c->second : nullptr;
     if (!cs && !d.flag20) return 1;
-    bool boom = (d.frame68 - 1 == frame_);
+    // ★ 11-20 — 「지금」 = 이 걸음의 프레임(`durFrame_`) — 한 번에 두 틱을 돌면 frame_ 는 이미 뒤라 끝 하루 전을 건너뛰고 다음 걸음 끝 검사가 먼저 끊는다(C2 와 같은 꼴) · 이 두 줄은 글리프·사람 아닌 시전자 몫이라 지금은 닿는 길이 없다(시험 없음)
+    bool boom = (d.frame68 - 1 == durFrame_);
     bool byMana = false;
     if (cs && cs->mana == 0) { boom = true; byMana = true; }
     if (d.obj76Net != 0) {
-        const bool keep = (!d.flag20 && cs) ? (cs->mana >= 15u) : (static_cast<uint32_t>(d.frame68 - frame_) >= 10u);
+        const bool keep = (!d.flag20 && cs) ? (cs->mana >= 15u) : (static_cast<uint32_t>(d.frame68 - durFrame_) >= 10u);
         if (!keep) ManaBombChargeOff(d);
     }
     const int power = d.pool;
@@ -8601,7 +8602,8 @@ int Server::DurBlinkCreate(DurSpell& d) {
 int Server::DurBlinkTick(DurSpell& d) {
     if (d.target.none()) return 1;
     if (TargetHealth(d.target) <= 0) return 1;
-    if (d.frame68 - 1 != frame_) return 0;                   // 아직 때가 아니다
+    // ★ 11-20 — 「지금」 = 이 걸음의 프레임(`durFrame_`) — 한 번에 두 틱을 돌면 frame_ 는 이미 뒤라 끝 하루 전을 건너뛰고 다음 걸음 끝 검사가 먼저 끊는다(C2 와 같은 꼴)
+    if (d.frame68 - 1 != durFrame_) return 0;                // 아직 때가 아니다
     if (const Buffs* b = BuffsOf(d.target)) {
         if (b->Has(14)) return 1;                            // 닻 — 소리 231(10)
     }
@@ -8677,7 +8679,8 @@ int Server::DurTeleMarkTick(DurSpell& d) {
     auto c = sessions_.find(d.caster);
     if (c == sessions_.end() || !c->second.inGame) return 1;
     if (d.target.none() || TargetHealth(d.target) <= 0) return 1;
-    if (d.frame68 - 1 != frame_) return 0;
+    // ★ 11-20 — 「지금」 = 이 걸음의 프레임(`durFrame_`) — 한 번에 두 틱을 돌면 frame_ 는 이미 뒤라 끝 하루 전을 건너뛰고 다음 걸음 끝 검사가 먼저 끊는다(C2 와 같은 꼴)
+    if (d.frame68 - 1 != durFrame_) return 0;
     if (const Buffs* b = BuffsOf(d.target)) { if (b->Has(14)) return 1; }   // 닻
     const int slot = static_cast<int>(d.spell) - 122;
     if (slot < 0 || slot > 3 || !c->second.markSet[slot]) return 1;
@@ -8702,7 +8705,8 @@ int Server::DurTelePopTick(DurSpell& d) {
     auto c = sessions_.find(d.caster);
     if (c == sessions_.end() || !c->second.inGame) return 1;
     if (d.target.none() || TargetHealth(d.target) <= 0) return 1;
-    if (d.frame68 - 1 != frame_) return 0;
+    // ★ 11-20 — 「지금」 = 이 걸음의 프레임(`durFrame_`) — 한 번에 두 틱을 돌면 frame_ 는 이미 뒤라 끝 하루 전을 건너뛰고 다음 걸음 끝 검사가 먼저 끊는다(C2 와 같은 꼴)
+    if (d.frame68 - 1 != durFrame_) return 0;
     if (const Buffs* b = BuffsOf(d.target)) { if (b->Has(14)) return 1; }
     int have = 0;
     for (int i = 0; i < 4; ++i) if (c->second.markSet[i]) ++have;
@@ -14887,7 +14891,8 @@ int Server::DurSummonTick(DurSpell& d) {
     auto c = sessions_.find(d.caster);
     if (c == sessions_.end() || !c->second.inGame) return 1;
     if (c->second.respawnAtFrame != 0) return 1;
-    if (d.frame68 - 1 != frame_) return 0;                   // 아직 부르는 중
+    // ★ 11-20 — 「지금」 = 이 걸음의 프레임(`durFrame_`) — 한 번에 두 틱을 돌면 frame_ 는 이미 뒤라 끝 하루 전을 건너뛰고 다음 걸음 끝 검사가 먼저 끊는다(C2 와 같은 꼴)
+    if (d.frame68 - 1 != durFrame_) return 0;                // 아직 부르는 중
     const uint16_t type = SummonType(d.spell);
     if (type == 0) return 1;
     const int size = SummonSizeOf(type);

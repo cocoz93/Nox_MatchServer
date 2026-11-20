@@ -3801,6 +3801,7 @@ public:
     bool DebugDurNew(int64_t caster, uint8_t spell, uint32_t dt, int createRet, int updateStopAt, bool withDestroy,
                      const Target& target);
     size_t DurCount() const { return durSpells_.size(); }
+    uint32_t DebugDurEndFrame() const { return durSpells_.empty() ? 0u : durSpells_.front().frame68; }   // ★ 11-20 시험용 — 맨 앞(가장 최근에 건) 지속 주문의 끝 프레임(+68)
     bool DebugDurActive(uint8_t spell, int64_t caster) const { return DurActive(spell, caster); }
     bool DebugDurCanceled(size_t i) const {
         size_t k = 0;

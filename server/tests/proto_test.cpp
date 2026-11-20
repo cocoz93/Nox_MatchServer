@@ -25042,6 +25042,96 @@ void TestForceOfNature1120() {
     std::printf("  11-20 C2 — 자연의 힘: 모으기 그림·자세·공(앞 14 · 9.375 · 소리 38) · 시전 막이 · 닿음(안 사라짐) · 둘레(10틱 관문) · 수명 121 · 벽 튕김 · 공끼리 지움 · 달리기 끊김\n");
 }
 
+// ── 11-20 지속 주문 두 틱 걸음 — 「끝 하루 전」 견주기를 걸음 프레임(`durFrame_`)으로 ─────────────────────
+//   서버가 밀려 한 번에 두 틱을 돌면(`RunTick(ticks)` 의 시전 걸음 · `frame_ - (ticks-1-step)`) 앞 걸음에서도 frame_ 는 이미 뒤 프레임이다.
+//   지속 함수가 frame_ 와 「끝 하루 전(+68 − 1)」을 견주면 그 프레임을 건너뛰고, 뒤 걸음은 끝 검사(`frame68 <= frame`)가 먼저 끊어
+//   **소환수가 안 나오고 · 순간이동이 안 된다.** C2(자연의 힘)에서 찾아 그것만 고쳤던 것을 나머지 넷에 같은 식으로.
+//   · 소환(아레나) · 점멸 · 표식으로 · 무작위 표식(셋 다 퀘스트 — 아레나는 「다음 틱」이라 만든 걸음 안에서 끝나 이 꼴이 안 생긴다)
+//   · 갈래마다 두 판 — 끝 둘 앞(E−2)까지 한 틱씩 간 뒤 ⓐ 한 틱(E−1)이면 그 프레임에 됨 ⓑ 두 틱 걸음(E−1 · E)이어도 됨
+//     ⓐ 는 「하루 전」 자리가 그대로인지(일찍·늦게 되면 걸림) · ⓑ 는 걸음 프레임으로 보는지(frame_ 로 보면 걸림)
+//   ⚠ 과부하(56) 끝 견주기 두 줄도 같이 바꿨지만 시험이 없다 — 그 갈래는 글리프·사람 아닌 시전자 몫인데 우리 서버엔 둘 다 없다
+void TestDurTwoTick1120() {
+    const std::string a = "10.11.20.9:9590";
+    char msg[320];
+    auto upTo = [&](nox::CSyncHost& srv, uint32_t f, uint32_t& ms, std::vector<nox::OutPacket>& out) {
+        for (int t = 0; t < 1000 && srv->DebugFrame() < f; ++t) { ms += 33; srv.Tick(ms, out); }   // 33ms = 한 번에 한 틱
+    };
+    auto run = [&](const char* name, bool twoTick, auto&& setupCast, auto&& fired) {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        setupCast(srv, ms, out);
+        const uint32_t e = srv->DebugDurEndFrame(), f0 = srv->DebugFrame();
+        const size_t durs = srv->DurCount();
+        const bool armed = durs == 1 && e >= f0 + 3;
+        upTo(srv, e - 2, ms, out);
+        const uint32_t fb = srv->DebugFrame();
+        const bool before = fired(srv);
+        ms += twoTick ? 66u : 33u; srv.Tick(ms, out);
+        const uint32_t fa = srv->DebugFrame();
+        const bool after = fired(srv);
+        std::snprintf(msg, sizeof(msg), "두 틱 걸음 %s %s — 지속 %zu · 걸 때 %u · 끝 %u · 앞 %u(됨 %d) · 뒤 %u(됨 %d)", name, twoTick ? "ⓑ 두 틱" : "ⓐ 한 틱",
+                      durs, f0, e, fb, int(before), fa, int(after));
+        Check(armed && fb == e - 2 && !before && fa == (twoTick ? e : e - 1) && after, msg);
+    };
+    auto body = [](float r) {
+        nox::Server::PhysBody bb; bb.shape = 2; bb.r = r; bb.cls = 0x2;
+        bb.subclass = nox::Server::MonsterClassBitsOf("LARGE_MONSTER");
+        return bb;
+    };
+    // 소환 — 돌 골렘(101 · 큰 것 375 프레임) · 아레나
+    auto summon = [&](nox::CSyncHost& srv, uint32_t& ms, std::vector<nox::OutPacket>& out) {
+        nox::Gamedata g; g.Parse("SummonDuration = 60, 210, 375;\n"); srv->SetGamedata(g);
+        srv->SetSpellDef(101, 0, 0x44542438u, { 0, 8, 2, 6, 5, 2 });
+        srv->SetTypeBody(1324, body(25.0f));
+        srv.DebugEnterGame(a, 895, false, nox::CharClass::Conjurer);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv.Tick(ms, out);
+        srv->DebugFillMana(Sid(srv, a));
+        CastAndWait(srv, a, 101, false, ms, out);
+    };
+    auto summoned = [](nox::CSyncHost& srv) { return srv->pets() == 1; };
+    // 순간이동 셋 — 퀘스트(웨이브는 멀리 2500,500) · 협동 지연 `TeleportDelay`
+    auto tele = [&](nox::CSyncHost& srv, uint32_t& ms, std::vector<nox::OutPacket>& out) {
+        nox::Gamedata g; g.Parse("TeleportDelay = 25, 20, 15, 10, 5;\n" "SummonDuration = 60, 210, 375;\n"); srv->SetGamedata(g);
+        srv->SetSpellDef(4, 0, 0x1000000, { 1, 2 });
+        for (uint8_t sp : { (uint8_t)46, (uint8_t)121, (uint8_t)122 })
+            srv->SetSpellDef(sp, 0, 0x1000000, { static_cast<uint8_t>(sp % 8), static_cast<uint8_t>((sp / 8) % 8), 2 });
+        srv.DebugEnterGame(a, 896, false, nox::CharClass::Wizard);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv->StartQuest(0, 2500, 500);
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+    };
+    auto blink = [&](nox::CSyncHost& srv, uint32_t& ms, std::vector<nox::OutPacket>& out) {
+        tele(srv, ms, out);
+        srv->SetWaypoints({ { 3000.0f, 2400.0f } });
+        CastAndWait(srv, a, 4, true, ms, out);
+    };
+    auto blinked = [&](nox::CSyncHost& srv) {
+        const auto x = srv->XOf(Sid(srv, a)), y = srv->YOf(Sid(srv, a));
+        return x > 2900 && x < 3100 && y > 2300 && y < 2500;
+    };
+    auto toMark = [&](uint8_t spell) {
+        return [&, spell](nox::CSyncHost& srv, uint32_t& ms, std::vector<nox::OutPacket>& out) {
+            tele(srv, ms, out);
+            CastAndWait(srv, a, 46, true, ms, out);              // 칸 0 에 (1000,1000)
+            srv->DebugMoveTo(Sid(srv, a), 3000, 3000);
+            ms += 34; srv.Tick(ms, out);
+            CastAndWait(srv, a, spell, true, ms, out);
+        };
+    };
+    auto atMark = [&](nox::CSyncHost& srv) {
+        const auto x = srv->XOf(Sid(srv, a)), y = srv->YOf(Sid(srv, a));
+        return x > 950 && x < 1050 && y > 950 && y < 1050;
+    };
+    for (const bool two : { false, true }) {
+        run("소환(101)", two, summon, summoned);
+        run("점멸(4 · 퀘스트)", two, blink, blinked);
+        run("표식으로(122 · 퀘스트)", two, toMark(122), atMark);
+        run("무작위 표식(121 · 퀘스트)", two, toMark(121), atMark);
+    }
+    std::printf("  11-20 지속 주문 두 틱 걸음 — 소환 · 점멸 · 표식으로 · 무작위 표식: 끝 하루 전에 됨 · 두 틱 걸음 앞에 걸려도 됨\n");
+}
+
 // ── 11-20 트레일러 전사 1-b — 수식 효과(modifier.bin `Server::ParseModEffects`) · 휘두를 때 위력 배수 · 맞힐 때 불·번개 ─────
 //   ① 진짜 복호본을 읽어 번호 차례·값(빠진 `;` 칸 Speed4 포함)을 본다
 //   ② 워리어 롱소드로 곰을 한 대 — 수식 없음 / 위력6(×1.2) / 불1(+3 폭발) / 번개4(+12 전기) / 불1인데 곰이 무적(관문)
@@ -38274,6 +38364,7 @@ int main() {
     TestMapMobs1119();
     TestSummonGolems1120();
     TestForceOfNature1120();
+    TestDurTwoTick1120();
     TestModEffects1120();
     TestPickupAutoEquip();
     TestArmorEquip();
