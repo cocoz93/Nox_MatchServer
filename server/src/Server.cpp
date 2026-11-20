@@ -7969,7 +7969,7 @@ int Server::DurEnergyBoltTick(DurSpell& d) {
     auto c = sessions_.find(d.caster);
     if ((d.caster == kNoSession) || c == sessions_.end() || !c->second.inGame) return 1;
     Session& caster = c->second;
-    if (caster.buffs.Has(8)) return 1;                       // 달리기 마법(70 · 버프 8)에 걸리면 끊긴다 — 제 발로 걷거나 뛰는 것은 아님
+    if (caster.buffs.Has(8)) return 1;                       // 달리기 마법(70 · 버프 8)에 걸리면 끊긴다 · 제 발로 걷기·뛰기·점프는 이동 입력이 끊는다(`CancelChannelSpells`)
     const float range = static_cast<float>(BalanceFloat("LightningRange"));
     if (frame_ - d.frame60 > 2 && TargetJustDamaged(Target{ d.caster, -1 })) return 1;
     // 지금 대상을 지킬 수 있나
@@ -8084,7 +8084,7 @@ int Server::DurChainLightningTick(DurSpell& d) {
     auto c = sessions_.find(d.caster);
     if ((d.caster == kNoSession) || c == sessions_.end() || !c->second.inGame) return 1;
     Session& caster = c->second;
-    if (caster.buffs.Has(8)) return 1;                        // 달리기 마법(70 · 버프 8)에 걸리면 끊긴다 — 제 발로 걷거나 뛰는 것은 아님
+    if (caster.buffs.Has(8)) return 1;                        // 달리기 마법(70 · 버프 8)에 걸리면 끊긴다 · 제 발로 걷기·뛰기·점프는 이동 입력이 끊는다(`CancelChannelSpells`)
     if (caster.manaPrev == 0) return 1;                       // unitGetOldMana — 이미 0 이면 시작도 못 한다
     if (frame_ - d.frame60 > 2 && TargetJustDamaged(Target{ d.caster, -1 })) return 1;
     const float range = static_cast<float>(BalanceFloat("LightningRange"));
