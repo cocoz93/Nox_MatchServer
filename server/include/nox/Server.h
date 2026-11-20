@@ -1285,6 +1285,8 @@ struct Session {
     std::set<uint16_t> friendsSent;
     // 이 사람에게 마지막으로 `36 RESET_FRIENDS` 를 보냈을 때의 팀. 팀이 이것과 다르면 다시 보낸다.
     uint8_t friendResetTeam = 0;
+    // ★ 11-21 W10 — 이 사람에게 `3d` 로 알린 마법 벽 번호(`MagicWall::uid`). 원본은 벽 쪽 +16 사람 비트(`spell_magic_wall.go:187`)
+    std::set<uint32_t> magicWallSent;
 };
 
 // 접속할 때 주는 최대 체력 — **이제 직업·레벨이 정한다**(`GameBalance.h`).
@@ -1666,8 +1668,14 @@ public:
     }
     void SetWallDefFlags(std::vector<uint32_t> f) { GtMut().wallDefFlags = std::move(f); }
     // ★ 09-29 Z1-A — 벽 정의별 부수기 칸(`WallDefRaw` 주석) · 부서지는 벽·창문 칸(맵 두 구역 · `MapFile::ReadGridList`)
-    struct WallDefExtra { uint16_t hitMat = 0; uint8_t health = 0; uint16_t breakSound = 0; };
+    struct WallDefExtra { uint16_t hitMat = 0; uint8_t health = 0; uint16_t breakSound = 0;
+                          uint8_t field749 = 0; };   // ★ 11-21 W10 field749 — 벽 주문 새 벽 +2 = x % 이 값(`spell_magic_wall.go:488`)
     void SetWallDefExtras(std::vector<WallDefExtra> e) { GtMut().wallDefExtra = std::move(e); }
+    // ★ 11-21 W10 — 벽 정의 이름 순번 셋(`server/wall.go:134~144` — 못 찾으면 −1). 벽 주문이 새 벽 재질로 쓰고(MagicWallSystemUseOnly),
+    //   그 재질·투명 벽 둘(InvisibleWallSet · InvisibleBlockingWallSet) 위에는 안 세운다
+    void SetMagicWallTiles(int16_t magic, int16_t invis, int16_t invisBlock) {
+        GtMut().magicWallTile = magic; GtMut().invisWallTile = invis; GtMut().invisBlockWallTile = invisBlock;
+    }
     // 정답지 `nox_server_mapRWDestructableWalls_429530`(`GAME1_2.c:1006~1014`) — 벽이 있는 칸마다 깃발 8 · 번호 = 그때까지 센 수(0 부터) ·
     //   `nox_server_mapRWWindowWalls_4292C0`(`:916~919`) — 깃발 0x40 · 체력은 모든 벽이 정의의 Health41(`:1322`)
     void SetWallSpecials(const std::vector<std::pair<uint32_t, uint32_t>>& destructible,
@@ -4193,6 +4201,16 @@ public:
     enum class TeleStat : uint8_t { SwapCancel = 0, SwapStart, SwapGone, SwapAnchor, SwapNoSight, SwapOffScreen, SwapDone,
                                     TttNoTele, TttBlocked, TttStart, TttGone, TttAnchor, TttDone, Count };
     unsigned long long teleStat(TeleStat k) const { return teleStat_[static_cast<size_t>(k)]; }
+    // ★ 11-21 W10 벽(132) 갈래 — 켬(시전자 없음 · 선 막힘 · 정의 없음 · 켬) / 칸(새 벽 · 있던 벽 합침 · 판 밖 · 마법·투명 벽 · 문·비밀·부서지는 벽 ·
+    //   문 자리) / 알림(`3d` 더함 · `3e` 지움 · `3d` 되돌림) / 지움 · 부서짐. 세는 자리마다 하나(시험은 개수를 본다)
+    enum class WallMagicStat : uint8_t { NoCaster = 0, Blocked, NoDef, Start, NewCell, MergeCell, StopOut, StopMagic, StopSpecial, StopDoorSlot,
+                                         SentAdd, SentRemove, SentRestore, Removed, Broken, Count };
+    unsigned long long wallMagicStat(WallMagicStat k) const { return wallMagicStat_[static_cast<size_t>(k)]; }
+    size_t DebugMagicWallCount() const { return magicWalls_.size(); }
+    int DebugWallTileAt(int gx, int gy) const {
+        return (gx >= 0 && gx < 256 && gy >= 0 && gy < 256 && !wallTiles_.empty() && wallTiles_[gy * 256 + gx].present) ? wallTiles_[gy * 256 + gx].tile : -1;
+    }
+    bool DebugWallGrid(int gx, int gy) const { return gx >= 0 && gx < 256 && gy >= 0 && gy < 256 && !walls_.empty() && walls_[gy * 256 + gx] != 0; }
     // ★ 11-21 W9 — 순간이동 금지 바닥(thing.bin 바닥 정의 번호 · 이름 다섯 `mapTileAllowTeleport_411A90` · 없으면 -1). WorldBuild 가 넣는다
     void SetNoTeleportFloors(const std::vector<int>& idx) { GtMut().noTeleFloors = idx; }
     bool TileNoTeleport(float x, float y) const;
@@ -5768,6 +5786,7 @@ private:
     unsigned long long turnUndeadStat_[static_cast<size_t>(TurnUndeadStat::Count)] = {};   // ★ 11-21 W6 언데드 쫓기 갈래
     unsigned long long ovalStat_[static_cast<size_t>(OvalStat::Count)] = {};               // ★ 11-21 W7 타원 방패 갈래
     unsigned long long teleStat_[static_cast<size_t>(TeleStat::Count)] = {};               // ★ 11-21 W9 자리 바꾸기·대상에게 순간이동 갈래
+    unsigned long long wallMagicStat_[static_cast<size_t>(WallMagicStat::Count)] = {};     // ★ 11-21 W10 벽(132) 갈래
     unsigned long long charmStat_[static_cast<size_t>(CharmStat::Count)] = {};             // ★ 11-21 C6 매혹 갈래
     uint32_t durFrame_ = 0;   // ★ 11-20 C2 — `SpellCastByPlayer` 가 지금 도는 걸음의 프레임(한 번에 여러 틱이면 frame_ 보다 작다 — 끝 프레임 견주기는 이 값으로)
     unsigned long long missilesGone_ = 0;     // 날아가는 것이 사라진 누계
@@ -6068,6 +6087,20 @@ private:
     struct WallTile { uint8_t dir = 0; uint8_t tile = 0; bool flag80 = false; bool present = false; int16_t secret = -1; int16_t door = -1;
                       bool breakable = false; bool broken = false; bool window = false; uint8_t hp = 0; uint16_t breakId = 0; };
     std::vector<WallTile> wallTiles_;        // 256×256 벽 모양 (묶음 2-b)
+    // ★ 11-21 W10 벽(132) 목록 — 원본 `server.MagicWall`(`spell_magic_wall.go:62~82` newWall · 머리에 넣는다 — 우리는 뒤에 넣고 거꾸로 돈다)
+    //   existing = +0(1 = 있던 벽의 방향만 바꿈) · dir4 = +4 · prev* = +12~+14(지울 때 되돌릴 값) · spellId = +20 주문(지속 주문 번호)
+    //   saved·savedGrid = 우리 몫 — 새 벽이 덮은 칸의 옛 모양(부서진 벽 자리를 덮었다가 지울 때 되돌린다 · 원본은 칸에 벽을 하나 더 만든다)
+    struct MagicWall { uint32_t uid = 0; uint8_t gx = 0, gy = 0; bool existing = false; uint8_t dir4 = 0, prevTile = 0, prevDir = 0, prevField = 0;
+                       uint8_t field2 = 0; uint16_t spellId = 0; WallTile saved; uint8_t savedGrid = 0; };
+    std::vector<MagicWall> magicWalls_;
+    uint32_t magicWallUid_ = 0;
+    bool IsMagicWallTile(uint8_t tile) const;                       // IsSysUse(`server/wall.go:146`)
+    int DurWallCreate(DurSpell& d);                                 // spellWall.Create(`spell_magic_wall.go:297`)
+    void DurWallEnd(DurSpell& d);                                   // spellWall.Destroy(503)
+    int MagicWallSet(const DurSpell& d, int x, int y, uint8_t dir); // setWall(467)
+    void MagicWallDestroy(size_t i);                                // destroyWall(84)
+    void MagicWallDestroyAt(int gx, int gy);                        // destroySysuse(153)
+    void MagicWallSync(Session& s);                                 // changeOrAddRemoteWalls(170)
     unsigned long long wallGate_[5] = {};    // ★ 09-29 Z1-A 벽 피해 갈래(wallGate 주석)
     // ★ 09-29 Z1-A 문 잠김(DoorTouch 주석)
     void DoorCollide(size_t di, Session& s);   // nox_xxx_collideDoor_4E8AC0(문, 사람)
@@ -6140,6 +6173,9 @@ public:   // ★ 10-12 작업 7e-2 — 표 묶음과 같이 쓰기 입구는 바
         std::map<uint32_t, uint16_t> weaponWire;      // 묶음 3-d 무기 클래스 비트 → 종류 번호
         std::vector<uint32_t> wallDefFlags;     // thing.bin WALL 순번 → 깃발
         std::vector<WallDefExtra> wallDefExtra; // ★ 09-29 Z1-A thing.bin WALL 순번 → 맞는 소리 재질·체력·부서지는 소리
+        int16_t magicWallTile = -1;             // ★ 11-21 W10 MagicWallSystemUseOnly 순번(`SetMagicWallTiles`)
+        int16_t invisWallTile = -1;             //   InvisibleWallSet
+        int16_t invisBlockWallTile = -1;        //   InvisibleBlockingWallSet
         uint16_t keyWire[5] = {};
         std::map<uint16_t, std::array<MonsterAnimRow, 16>> monsterAnims;   // ★ 09-29 B5 — 갱신자료 +476 표(종류별)
         std::map<uint16_t, uint32_t> monsterSubclass;                // ★ 09-29 B6 — 종류 → 몬스터 아종 비트

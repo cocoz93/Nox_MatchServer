@@ -144,7 +144,8 @@ void SkipWALL(Cur& c, std::vector<WallDefRaw>* out) {
     c.SkipBytes8();                                   // SoundClose619
     const std::string brk = c.Str8();                 // Sound683 — 부서질 때 소리(`WallDef.BreakSound`)
     if (out && at < out->size()) (*out)[at].breakSound = brk;
-    c.Skip(1);
+    const uint8_t f749 = c.U8();                      // ★ 11-21 W10 Field749(`server/wall.go:89`) — 전에는 건너뛰었다(걸음은 같다: 1)
+    if (out && at < out->size()) (*out)[at].field749 = f749;
     for (int i = 0; i < 15 && !c.bad; ++i) {
         const uint64_t v2 = c.U64Align();
         for (int j = 0; j < static_cast<int>(static_cast<uint8_t>(v2)) && !c.bad; ++j) {

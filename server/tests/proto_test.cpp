@@ -26167,6 +26167,252 @@ void TestSkeletonSummon1121() {
     std::printf("  11-21 C7 해골 둘 — 표 · thing.bin 이름·크기 대조 · 중간 시간 뒤 하나 · 체력 200·100\n");
 }
 
+// ── 11-21 W10 벽(132) — `spell_magic_wall.go`(Create 297 · setWall 467 · Destroy 503 · 알림 106·170 · 부서짐 `wall.go:424`) ─────
+//   ⓪ 진짜 thing.bin — 이름 셋의 순번 · MagicWallSystemUseOnly 체력·+749(값은 찍기만 — 시험 몸통은 지어낸 정의 1번 · 체력 50 · +749 4)
+//   ① 동쪽 커서 · 세기 1 — 가운데 (47,43) 방향 10 + 양쪽 3칸(8·10 엇갈림) = 7칸 · 재질·방향·충돌 칸 · 체력 · 끝 = 시전 + 60×6초 ·
+//      늦게 온 b 까지 `3d` 7개씩 · 끝나면 `3e` 7개씩 · 칸·목록이 비고 충돌 칸도 빈다
+//   ② 북동 커서 · 세기 3 · 짝 안 맞는 커서 칸(x+1) — 가운데 (48,40) 방향 1 · 양쪽 5칸 · +2 = x % 4
+//   ③ 길에 벽 — 보통 벽(방향 0 + 8 → 합침 5 · 그쪽 멈춤) · 부서지는 벽(멈춤) · 끝나면 합친 벽에 옛 값 `3d`(Go 그대로 합친 값 — 모양이 남는다)
+//   ③-2 비밀 벽에서 멈춤 · ④ 판 가장자리(x 256)에서 멈춤 · ⑤ 마법 벽·투명 벽 위에는 안 세움 · ⑥ 정의 없음 · ⑦ 선 막힘(알림 0·2)
+//   ⑧ 부수기 — 깎임(체력 정의 값) · 부서지면 `3e` · `3a` 없음 · 퀘스트 한 방은 마법 벽만 빠짐(보통 부서지는 벽이 대조군)
+void TestMagicWall1121() {
+    const std::string a = "10.11.21.17:9527";   // 시전자(위저드)
+    const std::string b = "10.11.21.18:9528";   // 늦게 온 사람
+    char msg[400];
+    using WS = nox::Server::WallMagicStat;
+    {   // ⓪
+        nox::ThingDb tdb;
+        if (tdb.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\thing.bin")) {
+            int magic = -1, invis = -1, invisBlock = -1, hp = -1, f749 = -1;
+            for (size_t i = 0; i < tdb.Walls().size(); ++i) {
+                const auto& w = tdb.Walls()[i];
+                if (w.name == "MagicWallSystemUseOnly") { magic = static_cast<int>(i); hp = w.health; f749 = w.field749; }
+                if (w.name == "InvisibleWallSet") invis = static_cast<int>(i);
+                if (w.name == "InvisibleBlockingWallSet") invisBlock = static_cast<int>(i);
+            }
+            std::printf("  (W10 ⓪ thing.bin — MagicWallSystemUseOnly %d · 체력 %d · +749 %d · InvisibleWallSet %d · InvisibleBlockingWallSet %d · 벽 정의 %zu)\n",
+                        magic, hp, f749, invis, invisBlock, tdb.Walls().size());
+            Check(magic >= 0 && invis >= 0 && invisBlock >= 0 && f749 > 0, "W10 ⓪ thing.bin 에 벽 주문 정의 셋(또는 +749)이 없다");
+        } else {
+            std::printf("  (W10 ⓪ thing.bin 대조 건너뜀)\n");
+        }
+    }
+    auto cnt = [](const std::vector<nox::OutPacket>& out, const std::string& to, const std::vector<uint8_t>& want) {
+        int n = 0;
+        for (const auto& m : FlattenTo(out, to)) if (m == want) ++n;
+        return n;
+    };
+    auto countOp = [](const std::vector<nox::OutPacket>& out, const std::string& to, uint8_t op) {
+        int n = 0;
+        for (const auto& m : FlattenTo(out, to)) if (!m.empty() && m[0] == op) ++n;
+        return n;
+    };
+    auto hasInform = [](const std::vector<nox::OutPacket>& out, const std::string& to, uint8_t code, uint8_t val) {
+        for (const auto& m : FlattenTo(out, to))
+            if (m.size() == 6 && m[0] == static_cast<uint8_t>(nox::Op::INFORM) && m[1] == code && m[2] == val) return true;
+        return false;
+    };
+    const uint8_t k3d = static_cast<uint8_t>(nox::Op::CHANGE_OR_ADD_WALL_MAGIC), k3e = static_cast<uint8_t>(nox::Op::REMOVE_WALL_MAGIC);
+    // 정의 0 = 보통 벽 · 1 = 마법 벽(체력 50 · +749 4) · 2·3 = 투명 벽 둘. 맵 벽 칸은 cells(먼 칸 하나는 늘 — 벽이 켜져야 충돌을 본다)
+    auto setup = [&](nox::CSyncHost& srv, std::vector<nox::OutPacket>& out, uint32_t& ms, std::vector<nox::Server::WallTileIn> cells, bool defs,
+                     double ax, double ay) {
+        srv->SetSpellDef(132, 30, 0x02300000u, { 0, 1, 2 });   // thing.bin SPELL_WALL(마나 30 · 깃발 02300000)
+        std::vector<nox::Server::WallDefExtra> ex(4);
+        ex[0].health = 30; ex[1].health = 50; ex[1].field749 = 4;
+        srv->SetWallDefExtras(ex);
+        if (defs) srv->SetMagicWallTiles(1, 2, 3);
+        cells.push_back(nox::Server::WallTileIn{ 200, 200, 0, 0, false });
+        srv->SetWallTiles(cells);
+        srv.DebugEnterGame(a, 902, false, nox::CharClass::Wizard);
+        srv->DebugSetScreenHalf(Sid(srv, a), 320, 240);
+        srv->DebugMoveTo(Sid(srv, a), ax, ay);
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.TakeOut(out);
+    };
+    auto run = [&](nox::CSyncHost& srv, std::vector<nox::OutPacket>& out, uint32_t& ms, int ticks) {
+        for (int t = 0; t < ticks; ++t) { ms += 34; srv.Tick(ms, out); }
+    };
+    struct Cell { int x, y, dir, f2; };
+    auto cellsOk = [&](nox::CSyncHost& srv, const std::vector<Cell>& cs, int tile) {
+        for (const Cell& c : cs)
+            if (srv->DebugWallTileAt(c.x, c.y) != tile || srv->DebugWallDirAt(c.x, c.y) != c.dir || !srv->DebugWallGrid(c.x, c.y)) return false;
+        return true;
+    };
+    auto sent3d = [&](const std::vector<nox::OutPacket>& out, const std::string& to, const std::vector<Cell>& cs, int tile) {
+        int n = 0;
+        for (const Cell& c : cs) n += cnt(out, to, { k3d, static_cast<uint8_t>(tile), static_cast<uint8_t>(c.dir), static_cast<uint8_t>(c.f2),
+                                                       static_cast<uint8_t>(c.x), static_cast<uint8_t>(c.y) });
+        return n;
+    };
+    auto sent3e = [&](const std::vector<nox::OutPacket>& out, const std::string& to, const std::vector<Cell>& cs) {
+        int n = 0;
+        for (const Cell& c : cs) n += cnt(out, to, { k3e, static_cast<uint8_t>(c.x), static_cast<uint8_t>(c.y) });
+        return n;
+    };
+    const std::vector<Cell> east1 = { { 47, 43, 10, 0 }, { 46, 44, 8, 0 }, { 47, 45, 10, 0 }, { 46, 46, 8, 0 },
+                                      { 46, 42, 8, 0 }, { 47, 41, 10, 0 }, { 46, 40, 8, 0 } };
+    {   // ① 동쪽 · 세기 1 · 늦게 온 b
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        setup(srv, out, ms, {}, true, 1000, 1000);
+        const uint32_t f0 = srv->DebugFrame();
+        const bool ok = srv->DebugSpellAcceptOn(Sid(srv, a), 132, 1, nox::Target{}, 1100.0f, 1000.0f);
+        const uint32_t endF = srv->DebugDurEndFrame();
+        const bool shape = cellsOk(srv, east1, 1) && srv->DebugWallHp(47, 43) == 50 && srv->DebugWallHp(46, 40) == 50;
+        run(srv, out, ms, 2);
+        srv.DebugEnterGame(b, 903, false, nox::CharClass::Warrior);
+        run(srv, out, ms, 3);
+        srv.TakeOut(out);
+        const int addA = sent3d(out, a, east1, 1), addB = sent3d(out, b, east1, 1), all3dA = countOp(out, a, k3d);
+        out.clear();
+        srv->DebugDurFireNextTick();
+        run(srv, out, ms, 3);
+        srv.TakeOut(out);
+        const int remA = sent3e(out, a, east1), remB = sent3e(out, b, east1);
+        bool gone = srv->DebugMagicWallCount() == 0 && srv->DurCount() == 0;
+        for (const Cell& c : east1) gone = gone && srv->DebugWallTileAt(c.x, c.y) == -1 && !srv->DebugWallGrid(c.x, c.y);
+        std::snprintf(msg, sizeof(msg), "W10 ① 동쪽 세기 1 — 받음 %d · 모양 %d · 끝 %u(%u 이어야) · 새 칸 %llu · 3d a %d(모두 %d) b %d · 3e a %d b %d · 빔 %d · 켬 %llu",
+                      ok ? 1 : 0, shape ? 1 : 0, endF, f0 + 60u * 6u * 30u, srv->wallMagicStat(WS::NewCell), addA, all3dA, addB, remA, remB,
+                      gone ? 1 : 0, srv->wallMagicStat(WS::Start));
+        Check(ok && shape && endF == f0 + 60u * 6u * 30u && srv->wallMagicStat(WS::NewCell) == 7 && srv->wallMagicStat(WS::Start) == 1 &&
+              addA == 7 && all3dA == 7 && addB == 7 && remA == 7 && remB == 7 && gone && srv->wallMagicStat(WS::SentAdd) == 14 &&
+              srv->wallMagicStat(WS::SentRemove) == 14 && srv->wallMagicStat(WS::Removed) == 7, msg);
+    }
+    {   // ② 북동 · 세기 3 · 커서 칸 (47,40) 짝 안 맞음 → (48,40)
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        setup(srv, out, ms, {}, true, 1000, 1000);
+        const bool ok = srv->DebugSpellAcceptOn(Sid(srv, a), 132, 3, nox::Target{}, 1100.0f, 923.0f);
+        std::vector<Cell> ne;
+        for (int k = -5; k <= 5; ++k) ne.push_back({ 48 + k, 40 + k, 1, (48 + k) % 4 });
+        run(srv, out, ms, 3);
+        srv.TakeOut(out);
+        const int addA = sent3d(out, a, ne, 1);
+        std::snprintf(msg, sizeof(msg), "W10 ② 북동 세기 3 — 받음 %d · 모양 %d · 새 칸 %llu · 3d %d · (47,40) 재질 %d",
+                      ok ? 1 : 0, cellsOk(srv, ne, 1) ? 1 : 0, srv->wallMagicStat(WS::NewCell), addA, srv->DebugWallTileAt(47, 40));
+        Check(ok && cellsOk(srv, ne, 1) && srv->wallMagicStat(WS::NewCell) == 11 && addA == 11 && srv->DebugWallTileAt(47, 40) == -1, msg);
+    }
+    {   // ③ 보통 벽(46,44 방향 0) 합침 · 부서지는 벽(47,41) 멈춤
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        setup(srv, out, ms, { nox::Server::WallTileIn{ 46, 44, 0, 0, false }, nox::Server::WallTileIn{ 47, 41, 0, 0, false } }, true, 1000, 1000);
+        srv->SetWallSpecials({ { 47, 41 } }, {});
+        const bool ok = srv->DebugSpellAcceptOn(Sid(srv, a), 132, 1, nox::Target{}, 1100.0f, 1000.0f);
+        const std::vector<Cell> made = { { 47, 43, 10, 0 }, { 46, 42, 8, 0 } };
+        const bool shape = cellsOk(srv, made, 1) && srv->DebugWallDirAt(46, 44) == 5 && srv->DebugWallTileAt(46, 44) == 0 &&
+                           srv->DebugWallTileAt(47, 45) == -1 && srv->DebugWallTileAt(47, 41) == 0 && srv->DebugWallDirAt(47, 41) == 0;
+        run(srv, out, ms, 3);
+        srv.TakeOut(out);
+        const std::vector<uint8_t> merged = { k3d, 0, 5, 0, 46, 44 };
+        const int add = sent3d(out, a, made, 1), addMerged = cnt(out, a, merged);
+        out.clear();
+        srv->DebugDurFireNextTick();
+        run(srv, out, ms, 3);
+        srv.TakeOut(out);
+        const int rem = sent3e(out, a, made), restore = cnt(out, a, merged);
+        std::snprintf(msg, sizeof(msg), "W10 ③ 길에 벽 — 받음 %d · 모양 %d · 새 %llu · 합침 %llu · 특수 %llu · 3d %d+%d · 3e %d · 되돌림 %d · 끝난 뒤 (46,44) 방향 %d · (47,43) %d",
+                      ok ? 1 : 0, shape ? 1 : 0, srv->wallMagicStat(WS::NewCell), srv->wallMagicStat(WS::MergeCell), srv->wallMagicStat(WS::StopSpecial),
+                      add, addMerged, rem, restore, srv->DebugWallDirAt(46, 44), srv->DebugWallTileAt(47, 43));
+        Check(ok && shape && srv->wallMagicStat(WS::NewCell) == 2 && srv->wallMagicStat(WS::MergeCell) == 1 && srv->wallMagicStat(WS::StopSpecial) == 1 &&
+              add == 2 && addMerged == 1 && rem == 2 && restore == 1 && srv->wallMagicStat(WS::SentRestore) == 1 &&
+              srv->DebugWallDirAt(46, 44) == 5 && srv->DebugWallTileAt(46, 44) == 0 && srv->DebugWallTileAt(47, 43) == -1, msg);
+    }
+    {   // ③-2 비밀 벽(46,42)에서 멈춤
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        setup(srv, out, ms, { nox::Server::WallTileIn{ 46, 42, 0, 0, false } }, true, 1000, 1000);
+        nox::Server::SecretWallIn sw; sw.gx = 46; sw.gy = 42; sw.state = 1;
+        srv->SetSecretWalls({ sw });
+        srv->DebugSpellAcceptOn(Sid(srv, a), 132, 1, nox::Target{}, 1100.0f, 1000.0f);
+        std::snprintf(msg, sizeof(msg), "W10 ③-2 비밀 벽 — 새 %llu · 특수 %llu · (46,42) 재질 %d · (47,41) %d",
+                      srv->wallMagicStat(WS::NewCell), srv->wallMagicStat(WS::StopSpecial), srv->DebugWallTileAt(46, 42), srv->DebugWallTileAt(47, 41));
+        Check(srv->wallMagicStat(WS::NewCell) == 4 && srv->wallMagicStat(WS::StopSpecial) == 1 && srv->DebugWallTileAt(46, 42) == 0 &&
+              srv->DebugWallTileAt(47, 41) == -1, msg);
+    }
+    {   // ④ 판 가장자리 — 북쪽 커서 (5870,1000) → 가운데 (255,43) 방향 7 · x 256 쪽은 판 밖
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        setup(srv, out, ms, {}, true, 5870, 1100);
+        srv->DebugSpellAcceptOn(Sid(srv, a), 132, 1, nox::Target{}, 5870.0f, 1000.0f);
+        const std::vector<Cell> edge = { { 255, 43, 7, 0 }, { 254, 42, 9, 0 }, { 253, 43, 7, 0 }, { 252, 42, 9, 0 } };
+        std::snprintf(msg, sizeof(msg), "W10 ④ 가장자리 — 새 %llu · 판 밖 %llu · 모양 %d", srv->wallMagicStat(WS::NewCell),
+                      srv->wallMagicStat(WS::StopOut), cellsOk(srv, edge, 1) ? 1 : 0);
+        Check(srv->wallMagicStat(WS::NewCell) == 4 && srv->wallMagicStat(WS::StopOut) == 1 && cellsOk(srv, edge, 1), msg);
+    }
+    // ⑤ 마법 벽·투명 벽(정의 2) 위에는 안 세움 — b 의 북쪽 시전(1138,1100 → 1138,1000)이 가운데 (49,43) 방향 7 · 동쪽 3칸 · 서쪽 첫 칸 (48,42) 다음이 (47,43)
+    //   (커서 칸 자체에 벽을 두면 시전자 → 커서 선이 그 벽에 먼저 막힐 수 있어 연장 칸으로 닿게 함 ·
+    //    같은 시전자가 다시 걸면 원본 `CancelFor`(`spells_dur.go:98`)가 앞 벽을 먼저 지우므로 둘째 시전은 b 가 한다)
+    //   ⑤-2 a 가 다시 걸면 — 앞 7칸이 지워지고(지움 7) 새로 7칸 · b 의 벽은 그대로
+    for (int kind : { 0, 1 }) {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        std::vector<nox::Server::WallTileIn> cells;
+        if (kind == 1) cells.push_back(nox::Server::WallTileIn{ 47, 43, 3, 2, false });   // 투명 벽
+        setup(srv, out, ms, cells, true, 1000, 1000);
+        srv.DebugEnterGame(b, 904, false, nox::CharClass::Wizard);
+        srv->DebugSetPos(Sid(srv, b), 1138, 1100);
+        if (kind == 0) srv->DebugSpellAcceptOn(Sid(srv, a), 132, 1, nox::Target{}, 1100.0f, 1000.0f);   // 먼저 a 가 동쪽 7칸 — (47,43) 이 마법 벽
+        const unsigned long long before = srv->wallMagicStat(WS::NewCell);
+        const bool ok = srv->DebugSpellAcceptOn(Sid(srv, b), 132, 1, nox::Target{}, 1138.0f, 1000.0f);
+        const std::vector<Cell> north = { { 49, 43, 7, 0 }, { 50, 42, 9, 0 }, { 51, 43, 7, 0 }, { 52, 42, 9, 0 }, { 48, 42, 9, 0 } };
+        std::snprintf(msg, sizeof(msg), "W10 ⑤ %s — 받음 %d · 앞 %llu · 새 %llu · 멈춤 %llu · 모양 %d · (47,43) 재질 %d 방향 %d · (46,42) %d",
+                      kind ? "투명" : "마법", ok ? 1 : 0, before, srv->wallMagicStat(WS::NewCell), srv->wallMagicStat(WS::StopMagic),
+                      cellsOk(srv, north, 1) ? 1 : 0, srv->DebugWallTileAt(47, 43), srv->DebugWallDirAt(47, 43), srv->DebugWallTileAt(46, 42));
+        Check(ok && srv->wallMagicStat(WS::NewCell) == before + 5 && srv->wallMagicStat(WS::StopMagic) == 1 && cellsOk(srv, north, 1) &&
+              srv->DebugWallTileAt(47, 43) == (kind ? 2 : 1) && srv->DebugWallDirAt(47, 43) == (kind ? 3 : 10) &&
+              srv->DebugWallTileAt(46, 42) == (kind ? -1 : 1), msg);
+        if (kind == 0) {
+            const bool re = srv->DebugSpellAcceptOn(Sid(srv, a), 132, 1, nox::Target{}, 1100.0f, 1000.0f);
+            std::snprintf(msg, sizeof(msg), "W10 ⑤-2 a 다시 — 받음 %d · 새 %llu · 지움 %llu · 지속 %zu · 목록 %zu · a 모양 %d · b 모양 %d",
+                          re ? 1 : 0, srv->wallMagicStat(WS::NewCell), srv->wallMagicStat(WS::Removed), srv->DurCount(), srv->DebugMagicWallCount(),
+                          cellsOk(srv, east1, 1) ? 1 : 0, cellsOk(srv, north, 1) ? 1 : 0);
+            Check(re && srv->wallMagicStat(WS::NewCell) == before + 5 + 7 && srv->wallMagicStat(WS::Removed) == 7 && srv->DurCount() == 2 &&
+                  srv->DebugMagicWallCount() == 12 && cellsOk(srv, east1, 1) && cellsOk(srv, north, 1), msg);
+        }
+    }
+    {   // ⑥ 정의 없음
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        setup(srv, out, ms, {}, false, 1000, 1000);
+        const bool ok = srv->DebugSpellAcceptOn(Sid(srv, a), 132, 1, nox::Target{}, 1100.0f, 1000.0f);
+        std::snprintf(msg, sizeof(msg), "W10 ⑥ 정의 없음 — 받음 %d · 없음 %llu · 새 %llu", ok ? 1 : 0, srv->wallMagicStat(WS::NoDef), srv->wallMagicStat(WS::NewCell));
+        Check(!ok && srv->wallMagicStat(WS::NoDef) == 1 && srv->wallMagicStat(WS::NewCell) == 0 && srv->DebugWallTileAt(47, 43) == -1, msg);
+    }
+    {   // ⑦ 선 막힘 — 시전자(1000,1000) → 커서(1100,1000) 사이 (45,43) X 자 벽
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        setup(srv, out, ms, { nox::Server::WallTileIn{ 45, 43, 2, 0, false } }, true, 1000, 1000);
+        const bool ok = srv->DebugSpellAcceptOn(Sid(srv, a), 132, 1, nox::Target{}, 1100.0f, 1000.0f);
+        run(srv, out, ms, 3);
+        srv.TakeOut(out);
+        std::snprintf(msg, sizeof(msg), "W10 ⑦ 선 막힘 — 받음 %d · 막힘 %llu · 켬 %llu · 알림 0·2 %d", ok ? 1 : 0, srv->wallMagicStat(WS::Blocked),
+                      srv->wallMagicStat(WS::Start), hasInform(out, a, 0, 2) ? 1 : 0);
+        Check(!ok && srv->wallMagicStat(WS::Blocked) == 1 && srv->wallMagicStat(WS::Start) == 0 && hasInform(out, a, 0, 2) &&
+              srv->DebugWallTileAt(47, 43) == -1, msg);
+    }
+    {   // ⑧ 부수기 — 깎임 · 부서짐 `3e`(`3a` 없음) · 퀘스트 한 방은 보통 부서지는 벽(30,30)만
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        setup(srv, out, ms, { nox::Server::WallTileIn{ 30, 30, 0, 0, false } }, true, 1000, 1000);
+        srv->SetWallSpecials({ { 30, 30 } }, {});
+        srv->DebugSpellAcceptOn(Sid(srv, a), 132, 1, nox::Target{}, 1100.0f, 1000.0f);
+        run(srv, out, ms, 3);
+        srv.TakeOut(out);
+        out.clear();
+        const nox::Server::WallHitter none{};
+        srv->DamageToMap(47, 43, 10, 0, none);
+        const int hp1 = srv->DebugWallHp(47, 43);
+        srv->DamageToMap(47, 43, 999, 0, none);
+        run(srv, out, ms, 2);
+        srv.TakeOut(out);
+        const int rem = cnt(out, a, { k3e, 47, 43 }), d3a = countOp(out, a, static_cast<uint8_t>(nox::Op::DESTROY_WALL));
+        const bool cellGone = srv->DebugWallTileAt(47, 43) == -1 && !srv->DebugWallGrid(47, 43) && !srv->DebugWallBroken(47, 43);
+        // 퀘스트 — 사람이 1 만 쳐도 보통 부서지는 벽은 한 방 · 마법 벽은 1 만 깎임
+        srv->StartQuest(1, 4000, 4000);
+        const nox::Server::WallHitter who = srv->WallHitterOfSession(Sid(srv, a));
+        srv->DamageToMap(46, 44, 1, 0, who);
+        srv->DamageToMap(30, 30, 1, 0, who);
+        std::snprintf(msg, sizeof(msg), "W10 ⑧ 부수기 — 깎인 체력 %d · 3e %d · 3a %d · 칸 빔 %d · 부서짐 %llu · 목록 %zu · 퀘스트 마법 벽 체력 %d · 보통 벽 부서짐 %d",
+                      hp1, rem, d3a, cellGone ? 1 : 0, srv->wallMagicStat(WS::Broken), srv->DebugMagicWallCount(), srv->DebugWallHp(46, 44),
+                      srv->DebugWallBroken(30, 30) ? 1 : 0);
+        Check(hp1 == 40 && rem == 1 && d3a == 0 && cellGone && srv->wallMagicStat(WS::Broken) == 1 && srv->DebugMagicWallCount() == 6 &&
+              srv->DebugWallHp(46, 44) == 49 && srv->DebugWallBroken(30, 30), msg);
+    }
+    std::printf("  11-21 W10 벽 — 7·11칸 모양 · 늦게 온 사람 3d · 끝 3e · 합침·멈춤 다섯 갈래 · 선 막힘 · 부수기 · 퀘스트 한 방 빠짐\n");
+}
+
 // ── 11-20 트레일러 전사 1-b — 수식 효과(modifier.bin `Server::ParseModEffects`) · 휘두를 때 위력 배수 · 맞힐 때 불·번개 ─────
 //   ① 진짜 복호본을 읽어 번호 차례·값(빠진 `;` 칸 Speed4 포함)을 본다
 //   ② 워리어 롱소드로 곰을 한 대 — 수식 없음 / 위력6(×1.2) / 불1(+3 폭발) / 번개4(+12 전기) / 불1인데 곰이 무적(관문)
@@ -39409,6 +39655,7 @@ int main() {
     TestSwapTele1121();
     TestCharm1121();
     TestSkeletonSummon1121();
+    TestMagicWall1121();
     TestModEffects1120();
     TestPickupAutoEquip();
     TestArmorEquip();

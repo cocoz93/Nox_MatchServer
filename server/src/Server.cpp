@@ -2014,6 +2014,8 @@ void Server::ResetWorldFromMap() {
     missiles_.clear();
     placed_.clear();
     durSpells_.clear();
+    magicWalls_.clear();                                       // ★ 11-21 W10 — 벽 칸은 위 `wallTiles_` 되돌림이 이미 맵 처음으로 · 클라는 맵을 다시 읽는다
+    for (auto& kv : sessions_) kv.second.magicWallSent.clear();
     castList_.clear();
     listens_.clear();
     pendingDeltaZ_.clear();
@@ -5229,7 +5231,7 @@ void Server::SetWallSpecials(const std::vector<std::pair<uint32_t, uint32_t>>& d
 //   · 부서지는 벽이 아니면 맞는 소리만(`Sub_532FE0` = 표 `Sub_532930`(정의 Field36 × 때린 것 재질) · who 자리) → 0
 //   · 퀘스트에서 사람이 친 것이면 한 방에(99999999) · 아니면 받은 피해
 //   · 체력 − 피해 ≤ 0 → `WallPreDestroy` · 아니면 체력을 깎고 부서지는 재질 소리(`Sub_533010` = `Sub_532EC0`(Field36) · who 자리)
-//   ⚠ 안 옮긴 것 — 깎일 때 튀는 벽돌 오브젝트(정의 BrickType42 · 힘 10~20) · 마법 벽(sysuse)
+//   ⚠ 안 옮긴 것 — 깎일 때 튀는 벽돌 오브젝트(정의 BrickType42 · 힘 10~20) · (마법 벽(sysuse) 갈래는 11-21 W10 에 넣음)
 int Server::DamageToMap(int gx, int gy, int dmg, uint8_t dtype, const WallHitter& who) {
     (void)dtype;
     if (gx < 0 || gx >= 256 || gy < 0 || gy >= 256 || wallTiles_.empty() || ((gx + gy) & 1)) { ++wallGate_[0]; return 0; }
@@ -5245,7 +5247,8 @@ int Server::DamageToMap(int gx, int gy, int dmg, uint8_t dtype, const WallHitter
         return 0;
     }
     const bool quest = questTotal_ > 0 || questStage_ > 0;
-    const int d = (quest && who.present && who.player) ? 99999999 : dmg;
+    // ★ 11-21 W10 — 마법 벽(sysuse)은 퀘스트 한 방에서 빠진다(`wall.go:323` `IsSysUse(wl)`)
+    const int d = (quest && who.present && who.player && !IsMagicWallTile(w.tile)) ? 99999999 : dmg;
     if (static_cast<int>(w.hp) - d <= 0) return WallPreDestroy(gx, gy);
     w.hp = static_cast<uint8_t>(static_cast<int>(w.hp) - d);
     if (who.present) {
@@ -5274,6 +5277,12 @@ int Server::WallPreDestroy(int gx, int gy) {
         const uint8_t fx[5] = { static_cast<uint8_t>(Op::FX_SMOKE_BLAST), static_cast<uint8_t>(ix), static_cast<uint8_t>(ix >> 8),
                                 static_cast<uint8_t>(iy), static_cast<uint8_t>(iy >> 8) };
         SendFxAllCli(px, py, fx, sizeof(fx));
+    }
+    if (IsMagicWallTile(w.tile)) {                           // ★ 11-21 W10 — 마법 벽이면 `destroySysuse`(`wall.go:424~425`) — `3a` 대신 그 칸 목록을 지운다(`3e`)
+        ++wallMagicStat_[static_cast<size_t>(WallMagicStat::Broken)];
+        MagicWallDestroyAt(gx, gy);
+        ++wallGate_[3];
+        return 1;
     }
     w.broken = true;
     w.present = false;                                       // 모양·추적·충돌 모두 이 칸을 빈 칸으로 본다(`GetWallAtGrid2` 가 부서진 것을 뺀다)
@@ -5309,6 +5318,269 @@ void Server::SendBrokenWalls(Session& s) {
         const uint8_t msg[3] = { static_cast<uint8_t>(Op::DESTROY_WALL), static_cast<uint8_t>(w.breakId), static_cast<uint8_t>(w.breakId >> 8) };
         EmitImportantRaw(s, msg, sizeof(msg));
         ++wallGate_[4];
+    }
+}
+
+// ── 11-21 W10 벽(132) ─────────────────────────────────────────────────────
+//
+// 정답지는 Go 뿐이다(`spell_magic_wall.go` — 켬 `nox_xxx_spellWallCreate_4FFA90` 의 C 원본이 legacy 에 없고, 받은 이식본은 얕은 복제라 이력도 없다).
+//   켬 Create(297~344) · 방향 넷(346~465) · 한 칸 setWall(467~497) · 틱 0(499 — 없음과 같아 nullptr) · 끝 Destroy(503~511) ·
+//   지우기 destroyWall(84~104) · 알림 netChangeOrRemoveWall(106~129) · 사람마다 맞추기 changeOrAddRemoteWalls(170~191 — 사람 갱신 `server.go:575`) ·
+//   부서지면 destroySysuse(153~168 — `wall.go:424~425` wallPreDestroy 의 sysuse 갈래)
+// 와이어(클라 `client__network__cdecode.c:683~707`) — `3d <재질> <방향> <+2> <x> <y>` 칸이 없으면 만들고 셋을 덮는다 · `3e <x> <y>` 그 칸 벽을 지운다.
+//   둘 다 `NetSendPacketXxx0(…, 0, 1)` — 순번 없는 중요(`EmitImportantRaw`)
+// ⚠ 우리 벽 칸은 한 자리에 하나다 — 원본은 문 벽·부서진 벽 자리에 벽을 하나 **더** 만든다(`CreateAtGrid` 가 `GetWallAtGrid` 로 못 찾으면 새로).
+//   부서진 벽 자리는 옛 칸을 들고 있다가 지울 때 되돌리고(클라는 이미 `3a` 로 그 벽을 지웠다), 문 자리는 문이 같은 칸을 써 세우지 않는다(`StopDoorSlot`)
+// ⚠ 길 찾기 격자(`AIPathBakeWalls`)는 우리 것이다 — 원본은 벽을 그때그때 읽는다. 칸이 바뀐 시전·지우기마다 한 번 다시 굽는다
+namespace {
+// magicWallDirSwap(369~384)
+uint8_t MagicWallDirSwap(int a1) {
+    switch (a1) {
+        case 1: return 7;
+        case 2: case 6: return 1;
+        case 3: return 8;
+        case 5: return 10;
+        case 7: return 9;
+        default: return 0;
+    }
+}
+// magicWallCalcDir(346~367)
+uint8_t MagicWallCalcDir(int a1, int a2, int a3, int a4, int a5) {
+    uint8_t dir = MagicWallDirSwap(a1);
+    switch (a1) {
+        case 1: if (a5 != a3) dir = MagicWallDirSwap(7); break;
+        case 7: if (a5 != a3) dir = MagicWallDirSwap(1); break;
+        case 3: if (a4 != a2) dir = MagicWallDirSwap(5); break;
+        default: if (a1 == 5 && a4 != a2) dir = MagicWallDirSwap(3); break;
+    }
+    return dir;
+}
+// magicWallCalcX(386~425) — mode false = 한쪽 · true = 반대쪽(3·5 는 두 쪽이 같다 — 원본 그대로)
+int MagicWallCalcX(int dir, int sx, int x, bool mode) {
+    switch (dir) {
+        case 0: case 1: case 2: return mode ? x - 1 : x + 1;
+        case 6: case 7: case 8: return mode ? x + 1 : x - 1;
+        case 3: return (x != sx) ? x - 1 : x + 1;
+        case 5: return (x == sx) ? x - 1 : x + 1;
+        default: return x;
+    }
+}
+// magicWallCalcY(426~465) — 1·7 은 두 쪽이 같다(원본 그대로)
+int MagicWallCalcY(int dir, int sy, int y, bool mode) {
+    switch (dir) {
+        case 0: case 3: case 6: return mode ? y + 1 : y - 1;
+        case 2: case 5: case 8: return mode ? y - 1 : y + 1;
+        case 1: return (y != sy) ? y + 1 : y - 1;
+        case 7: return (y != sy) ? y - 1 : y + 1;
+        default: return y;
+    }
+}
+// 세기별 한쪽 칸 수(`spellWall.Init` 40~47 — 0 칸은 「def?」 7)
+constexpr int kMagicWallLen[6] = { 7, 3, 4, 5, 6, 7 };
+// nox_xxx_wall_42A6C0(`GAME1_2.c:1659`) — 있던 벽 방향 × 새 방향 → 합친 방향. blob_587000 71276 의 13×13
+constexpr uint8_t kWallDirMerge[13][13] = {
+    {  0, 2, 2, 3, 2, 5, 2, 3, 5, 5, 3, 11, 2 },
+    {  2, 1, 2, 2, 4, 2, 6, 4, 4, 6, 6, 2, 12 },
+    {  2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2 },
+    {  3, 2, 2, 3, 2, 2, 2, 3, 2, 2, 3, 3, 2 },
+    {  2, 4, 2, 2, 4, 2, 2, 4, 4, 2, 2, 2, 4 },
+    {  5, 2, 2, 2, 2, 5, 2, 2, 5, 5, 2, 5, 2 },
+    {  2, 6, 2, 2, 2, 2, 6, 2, 2, 6, 6, 2, 6 },
+    {  3, 4, 2, 3, 4, 2, 2, 7, 4, 2, 3, 3, 4 },
+    {  5, 4, 2, 2, 4, 5, 2, 4, 8, 5, 2, 5, 4 },
+    {  5, 6, 2, 2, 2, 5, 6, 2, 5, 9, 6, 5, 6 },
+    {  3, 6, 2, 3, 2, 2, 6, 3, 2, 6, 10, 3, 6 },
+    { 11, 2, 2, 3, 2, 5, 2, 3, 5, 5, 3, 11, 2 },
+    {  2, 12, 2, 2, 4, 2, 6, 4, 4, 6, 6, 2, 12 },
+};
+}  // namespace
+
+bool Server::IsMagicWallTile(uint8_t tile) const {
+    return gt_->magicWallTile >= 0 && tile == static_cast<uint8_t>(gt_->magicWallTile);
+}
+
+// Create(297~344) — 시전자 → 커서 선(MapTraceRay9 = Flag1|Flag4)이 막히면 사람에게 알림 0·2 · 끝.
+//   방향 = 그 선의 방향(`math_509ED0`)을 9칸 행(`math_509EA0` = x + 3y + 4)으로 · 가운데 칸 = 커서 칸(짝이 아니면 x + 1)
+//   가운데를 세우면 양쪽으로 세기별 칸 수만큼(한 칸이라도 못 세우면 그쪽은 멈춤) · 끝 = 지금 + 60 × (세기 + 5)초
+//   ⚠ 가운데를 못 세워도 주문은 산다(원본 그대로 — 끝 프레임까지 빈 채로)
+int Server::DurWallCreate(DurSpell& d) {
+    // 시전자 없음·죽음(ObjFlags & 0x8020) → 끝. 사람이면 세션 · 몬스터면 번호로 찾는다
+    Session* cs = nullptr;
+    if (d.casterPet != 0) {
+        const int ki = PetIndexByNet(d.casterPet);
+        if (ki < 0 || TargetHealth(Target{ kNoSession, ki }) <= 0) {
+            ++wallMagicStat_[static_cast<size_t>(WallMagicStat::NoCaster)];
+            return 1;
+        }
+    } else {
+        auto c = sessions_.find(d.caster);
+        if (c == sessions_.end() || !c->second.inGame || TargetHealth(Target{ d.caster, -1 }) <= 0) {
+            ++wallMagicStat_[static_cast<size_t>(WallMagicStat::NoCaster)];
+            return 1;
+        }
+        cs = &c->second;
+    }
+    if (!MapTraceRay(d.posX, d.posY, d.pos2X, d.pos2Y, 9)) {
+        if (cs) InformSpell(*cs, 0, 2);                           // netInformTextMsg(사람, 0, 2) — 몬스터 시전자면 말없이
+        ++wallMagicStat_[static_cast<size_t>(WallMagicStat::Blocked)];
+        return 1;
+    }
+    if (gt_->magicWallTile < 0 || wallTiles_.empty()) {          // ⚠ 원본엔 없는 갈래 — 정의가 없으면 재질 255 로 세운다. 우리는 안 켠다
+        ++wallMagicStat_[static_cast<size_t>(WallMagicStat::NoDef)];
+        return 1;
+    }
+    const int dir = kDirRow[DirFromVec(d.pos2X - d.posX, d.pos2Y - d.posY)];
+    int x1 = static_cast<int>(d.pos2X) / 23;
+    int y1 = static_cast<int>(d.pos2Y) / 23;
+    if (((x1 + y1) & 1) == 1) ++x1;
+    const int xs = x1, ys = y1;
+    const int len = (d.level >= 0 && d.level <= 5) ? kMagicWallLen[d.level] : kMagicWallLen[0];
+    const size_t before = magicWalls_.size();
+    ++wallMagicStat_[static_cast<size_t>(WallMagicStat::Start)];
+    if (MagicWallSet(d, x1, y1, MagicWallDirSwap(dir)) != 0) {
+        for (int i = 0; i < len; ++i) {
+            x1 = MagicWallCalcX(dir, xs, x1, false);
+            y1 = MagicWallCalcY(dir, ys, y1, false);
+            if (MagicWallSet(d, x1, y1, MagicWallCalcDir(dir, xs, ys, x1, y1)) == 0) break;
+        }
+        int x2 = xs, y2 = ys;
+        for (int j = 0; j < len; ++j) {
+            x2 = MagicWallCalcX(dir, xs, x2, true);
+            y2 = MagicWallCalcY(dir, ys, y2, true);
+            if (MagicWallSet(d, x2, y2, MagicWallCalcDir(dir, xs, ys, x2, y2)) == 0) break;
+        }
+    }
+    if (magicWalls_.size() != before) AIPathBakeWalls();
+    d.frame68 = frame_ + static_cast<uint32_t>(60 * (d.level + 5)) * 30u;   // SecToFrames(60 × (세기 + 5)) — 1초 = 30 프레임
+    return 0;
+}
+
+// setWall(467~497) — 한 칸. 1 = 새 벽을 세웠다(다음 칸으로) · 0 = 멈춤
+//   있던 벽(`GetWallAtGrid` — 짝 칸 · 문·부서진 것 아님): 마법·투명 벽이면 멈춤 · 문·비밀·부서지는 벽이면 멈춤 ·
+//     아니면 방향을 합치고(`42A6C0`) +2 = 0 · 목록에 「있던 벽」(+0 = 1)으로 넣고 멈춤
+//   없으면 새 벽 — 재질 MagicWallSystemUseOnly · 방향 0·1 이면 +2 = x % 정의 +749 · 부서지는 벽 · 체력 = 정의 Health41
+//   ⚠ 「있던 벽」의 옛 값(+12~+14)을 원본은 **바꾼 뒤** 값으로 적는다(`newWall(spl, wl, 1, wl.Tile1, wl.Dir0, wl.Field2)`) —
+//     그래서 끝나도 합친 모양이 남는다. C 원본이 없어 Go 그대로 둔다
+int Server::MagicWallSet(const DurSpell& d, int x, int y, uint8_t dir) {
+    if (x < 0 || x >= 256 || y < 0 || y >= 256) {
+        ++wallMagicStat_[static_cast<size_t>(WallMagicStat::StopOut)];
+        return 0;
+    }
+    const size_t idx = static_cast<size_t>(y) * 256 + static_cast<size_t>(x);
+    WallTile& w = wallTiles_[idx];
+    MagicWall m;
+    m.uid = ++magicWallUid_;
+    m.gx = static_cast<uint8_t>(x);
+    m.gy = static_cast<uint8_t>(y);
+    m.spellId = d.id;
+    if (((x + y) & 1) == 0 && w.present && w.door < 0 && !w.broken) {
+        if (IsMagicWallTile(w.tile) || (gt_->invisWallTile >= 0 && w.tile == static_cast<uint8_t>(gt_->invisWallTile)) ||
+            (gt_->invisBlockWallTile >= 0 && w.tile == static_cast<uint8_t>(gt_->invisBlockWallTile))) {
+            ++wallMagicStat_[static_cast<size_t>(WallMagicStat::StopMagic)];
+            return 0;
+        }
+        if (w.secret >= 0 || w.breakable) {                      // 문(FlagDoor)은 위 GetWallAtGrid 에서 이미 빠졌다
+            ++wallMagicStat_[static_cast<size_t>(WallMagicStat::StopSpecial)];
+            return 0;
+        }
+        if (w.dir < 13 && dir < 13) w.dir = kWallDirMerge[w.dir][dir];   // ⚠ 13 넘는 방향은 원본이 표 밖을 읽는다 — 우리는 그대로 둔다
+        m.existing = true;
+        m.dir4 = w.dir;
+        m.prevTile = w.tile;
+        m.prevDir = w.dir;
+        m.prevField = 0;
+        m.field2 = 0;
+        magicWalls_.push_back(m);
+        ++wallMagicStat_[static_cast<size_t>(WallMagicStat::MergeCell)];
+        return 0;
+    }
+    if (w.door >= 0) {
+        ++wallMagicStat_[static_cast<size_t>(WallMagicStat::StopDoorSlot)];
+        return 0;
+    }
+    const uint8_t tile = static_cast<uint8_t>(gt_->magicWallTile);
+    const WallDefExtra* def = (tile < gt_->wallDefExtra.size()) ? &gt_->wallDefExtra[tile] : nullptr;
+    m.saved = w;
+    m.savedGrid = walls_[idx];
+    w = WallTile{};
+    w.present = true;
+    w.tile = tile;
+    w.dir = dir;
+    w.breakable = true;                                          // Flags4 |= FlagBreakable
+    w.hp = def ? def->health : 0;                                // Health7 = 정의 Health41
+    // +2 = x % 정의 +749(방향 0·1 만). ⚠ +749 가 0 이면 원본은 0 으로 나눈다 — 우리는 0
+    m.field2 = ((dir == 0 || dir == 1) && def && def->field749 != 0) ? static_cast<uint8_t>(x % def->field749) : 0;
+    walls_[idx] = 1;
+    m.existing = false;
+    m.dir4 = dir;
+    magicWalls_.push_back(m);
+    ++wallMagicStat_[static_cast<size_t>(WallMagicStat::NewCell)];
+    return 1;
+}
+
+// destroyWall(84~104) — 그 벽을 아는 사람마다 알림(있던 벽이면 옛 값 `3d` · 새 벽이면 `3e`) → 칸 되돌리기 → 목록에서 뺌.
+//   길 찾기 다시 굽기는 부르는 쪽이 한 번
+void Server::MagicWallDestroy(size_t i) {
+    const MagicWall m = magicWalls_[i];
+    for (auto& kv : sessions_) {
+        Session& s = kv.second;
+        if (s.magicWallSent.erase(m.uid) == 0) continue;
+        if (m.existing) {
+            const uint8_t msg[6] = { static_cast<uint8_t>(Op::CHANGE_OR_ADD_WALL_MAGIC), m.prevTile, m.prevDir, m.prevField, m.gx, m.gy };
+            EmitImportantRaw(s, msg, sizeof(msg));
+            ++wallMagicStat_[static_cast<size_t>(WallMagicStat::SentRestore)];
+        } else {
+            const uint8_t msg[3] = { static_cast<uint8_t>(Op::REMOVE_WALL_MAGIC), m.gx, m.gy };
+            EmitImportantRaw(s, msg, sizeof(msg));
+            ++wallMagicStat_[static_cast<size_t>(WallMagicStat::SentRemove)];
+        }
+    }
+    const size_t idx = static_cast<size_t>(m.gy) * 256 + m.gx;
+    if (m.existing) {
+        wallTiles_[idx].tile = m.prevTile;                       // +2(Field2)는 우리 칸에 없다
+        wallTiles_[idx].dir = m.prevDir;
+    } else {
+        wallTiles_[idx] = m.saved;                               // DeleteAtGrid — 우리는 덮었던 옛 칸으로
+        walls_[idx] = m.savedGrid;
+    }
+    magicWalls_.erase(magicWalls_.begin() + static_cast<long>(i));
+    ++wallMagicStat_[static_cast<size_t>(WallMagicStat::Removed)];
+}
+
+// Destroy(503~511) — 이 주문이 세운 것 전부(목록 머리 = 가장 나중에 넣은 것부터)
+void Server::DurWallEnd(DurSpell& d) {
+    bool any = false;
+    for (size_t i = magicWalls_.size(); i-- > 0;) {
+        if (magicWalls_[i].spellId != d.id) continue;
+        MagicWallDestroy(i);
+        any = true;
+    }
+    if (any) AIPathBakeWalls();
+}
+
+// destroySysuse(153~168) — 부서진 마법 벽(`wallPreDestroy` sysuse 갈래). 원본은 그 벽 오브젝트를 가리키는 것 — 우리는 그 칸의 것
+void Server::MagicWallDestroyAt(int gx, int gy) {
+    bool any = false;
+    for (size_t i = magicWalls_.size(); i-- > 0;) {
+        if (magicWalls_[i].gx != gx || magicWalls_[i].gy != gy) continue;
+        MagicWallDestroy(i);
+        any = true;
+    }
+    if (any) AIPathBakeWalls();
+}
+
+// changeOrAddRemoteWalls(170~191) — 이 사람이 아직 모르는 것마다 `3d <지금 재질> <지금 방향> <+2> <x> <y>`(목록 머리부터)
+//   늦게 들어온 사람도 여기서 받는다. 원본 조건 +3680 & 0x10(맵을 다 받은 사람 — `server.go:441` 시간 초과 90초 갈래)은 우리 게임 안 사람 고리가 갈음한다
+//   ⚠ 원본은 이 부름을 보내기 빈도 문(`server.go:574` — `rateGet` 프레임마다)에 묶는다. 우리 서버엔 그 빈도가 없어 갱신마다 부른다
+void Server::MagicWallSync(Session& s) {
+    for (size_t i = magicWalls_.size(); i-- > 0;) {
+        const MagicWall& m = magicWalls_[i];
+        if (s.magicWallSent.count(m.uid) != 0) continue;
+        const WallTile& w = wallTiles_[static_cast<size_t>(m.gy) * 256 + m.gx];
+        const uint8_t msg[6] = { static_cast<uint8_t>(Op::CHANGE_OR_ADD_WALL_MAGIC), w.tile, w.dir, m.field2, m.gx, m.gy };
+        EmitImportantRaw(s, msg, sizeof(msg));
+        s.magicWallSent.insert(m.uid);
+        ++wallMagicStat_[static_cast<size_t>(WallMagicStat::SentAdd)];
     }
 }
 
@@ -7403,6 +7675,13 @@ bool Server::SpellAccept(uint8_t spell, Session& s, int64_t obj3, const SpellArg
                 DurFns f;
                 f.create = &Server::DurTeleTargetCreate;
                 f.update = &Server::DurTeleTargetTick;
+                fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 0) ? 1 : 0;
+                break;
+            }
+            case 132: {                                                                        // ★ 11-21 W10 Wall — 벽(`spells.go:407~408` · 틱 `500070` 은 0 만 돌려준다 — 없는 것과 같다)
+                DurFns f;
+                f.create = &Server::DurWallCreate;
+                f.destroy = &Server::DurWallEnd;
                 fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 0) ? 1 : 0;
                 break;
             }
@@ -21804,6 +22083,7 @@ void Server::RunTick(int ticks) {
         //   정답지(`GAME4_1.c:4488`)가 보내므로 남긴다. 효과가 드러나는 조건(정적 오브젝트? 즉시 대 지연?)은 관측대기.
         // 9-a — 비밀벽 여닫힘을 이 사람에게 맞춘다(`sub_519660` 이 분배자에서 도는 자리)
         SecretWallSync(s);
+        MagicWallSync(s);   // ★ 11-21 W10 — 벽 주문 칸을 이 사람에게(`server.go:575` changeOrAddRemoteWalls)
 
         std::vector<uint16_t> outOfSight(creatureExits);
         if (aoiOn_) {

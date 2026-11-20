@@ -107,9 +107,22 @@ std::shared_ptr<const nox::Server::GameTables> BuildGameTables(const GameFiles& 
                 e.hitMat = d.hitMat;
                 e.health = d.health;
                 e.breakSound = d.breakSound.empty() ? 0 : nox::SoundByName(d.breakSound.c_str());
+                e.field749 = d.field749;                                     // ★ 11-21 W10
                 ex.push_back(e);
             }
+            // ★ 11-21 W10 — 벽 주문이 이름으로 찾는 정의 셋(`server/wall.go:114~144` DefIndByName · 못 찾으면 −1)
+            int16_t magic = -1, invis = -1, invisBlock = -1;
+            for (size_t i = 0; i < wdb.Walls().size(); ++i) {
+                const std::string& nm = wdb.Walls()[i].name;
+                if (nm == "MagicWallSystemUseOnly" && magic < 0) magic = static_cast<int16_t>(i);
+                if (nm == "InvisibleWallSet" && invis < 0) invis = static_cast<int16_t>(i);
+                if (nm == "InvisibleBlockingWallSet" && invisBlock < 0) invisBlock = static_cast<int16_t>(i);
+            }
+            srv.Log("[벽 주문 표] MagicWallSystemUseOnly %d(체력 %d · +749 %d) · InvisibleWallSet %d · InvisibleBlockingWallSet %d\n", magic,
+                    magic >= 0 ? int(ex[static_cast<size_t>(magic)].health) : -1, magic >= 0 ? int(ex[static_cast<size_t>(magic)].field749) : -1,
+                    invis, invisBlock);
             srv.SetWallDefExtras(std::move(ex));
+            srv.SetMagicWallTiles(magic, invis, invisBlock);
         }
         // ★ 4-c3 — 주문이 **이름으로** 놓는 오브젝트의 와이어 종류를 넘겨준다
         //   (정답지도 `getNameId("ToxicCloud")` 처럼 이름으로 찾는다). 못 찾으면 0 이라 안 놓인다

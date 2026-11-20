@@ -78,6 +78,8 @@ struct WallDefRaw {
     uint16_t hitMat = 0;
     uint8_t health = 0;
     std::string breakSound;
+    // ★ 11-21 W10 — Field749(Sound683 바로 뒤 u8 · `server/wall.go:89`) — 벽 주문이 새 벽의 +2 를 `x % 이 값` 으로 정한다(방향 0·1 만 · `spell_magic_wall.go:487~488`)
+    uint8_t field749 = 0;
 };
 // ★ 09-23 nine-defects 4-d1 — 바닥 정의(thing.bin FLOR · `nox_thing_read_FLOR_411540` `GAME1.c:1060~1108`). 순번 = 바닥 번호(최대 176).
 //   `material` = `field_36` — 발소리가 이 값으로 갈린다(`object_update.go:164~220` — 2·0x4000 소리 없음 · 8 나무 · 64 흙 · 128 물 · 0x400 눈 · 0x800 진흙 · 그 밖 돌)

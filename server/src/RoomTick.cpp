@@ -216,6 +216,16 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                     srv.charmStat(CS::NoGuide), srv.charmStat(CS::Start), srv.charmStat(CS::Gone), srv.charmStat(CS::Distance),
                     srv.charmStat(CS::Impossible), srv.charmStat(CS::Limit), srv.charmStat(CS::AlreadyOwned), srv.charmStat(CS::Done));
         }
+        {   // ★ 11-21 W10 — 벽(132) 갈래 · 시험이 같은 칸을 센다(`TestMagicWall1121`)
+            using WS = nox::Server::WallMagicStat;
+            srv.Log("[마법 벽] 시전자 없음 %llu · 선 막힘 %llu · 정의 없음 %llu · 켬 %llu / 새 칸 %llu · 합침 %llu · 판 밖 %llu · 마법·투명 %llu · 특수 벽 %llu · 문 자리 %llu"
+                    " / 3d 더함 %llu · 3e 지움 %llu · 3d 되돌림 %llu · 지움 %llu · 부서짐 %llu · 지금 %zu칸\n",
+                    srv.wallMagicStat(WS::NoCaster), srv.wallMagicStat(WS::Blocked), srv.wallMagicStat(WS::NoDef), srv.wallMagicStat(WS::Start),
+                    srv.wallMagicStat(WS::NewCell), srv.wallMagicStat(WS::MergeCell), srv.wallMagicStat(WS::StopOut), srv.wallMagicStat(WS::StopMagic),
+                    srv.wallMagicStat(WS::StopSpecial), srv.wallMagicStat(WS::StopDoorSlot), srv.wallMagicStat(WS::SentAdd),
+                    srv.wallMagicStat(WS::SentRemove), srv.wallMagicStat(WS::SentRestore), srv.wallMagicStat(WS::Removed),
+                    srv.wallMagicStat(WS::Broken), srv.DebugMagicWallCount());
+        }
         // ★ 10-01 — 클라 대체 무기 알림 `e0`(비움 · 가방에 없음 · 맞음 · 직업·힘 안 맞아 `e0 0 01` 되돌림)
         srv.Log("[대체무기] 비움 %llu · 없음 %llu · 맞음 %llu · 되돌림 %llu\n", srv.secondaryWeaponStat(0),
                     srv.secondaryWeaponStat(1), srv.secondaryWeaponStat(2), srv.secondaryWeaponStat(3));
