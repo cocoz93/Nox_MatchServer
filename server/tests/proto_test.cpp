@@ -10754,7 +10754,20 @@ void TestWandShot() {
         Check(srv->missiles() == 0 && srv->wandStat(WS::StarCounter) == 1, "W4 ⑦d 반주문에 노란 별이 안 사라졌다");
         Check(FindMsg(FlattenTo(out, a), static_cast<uint8_t>(nox::Op::FX_THIN_EXPLOSION)) != nullptr, "W4 ⑦d 반주문에 그림 0x88 이 없다");
     }
-    std::printf("  W4 — 지팡이 쏘기: 공격 입력이 쓰기 함수 · 빠르기 배수 없음 · 충전 −1 · 여러 발 ±8 · 대기 경계 · 빈 지팡이 휘두르기 29 · 번개·오브 안 깎음 · 노란 별 맞힘·같은 편 지나감·수명·벽·반주문\n");
+    // ⑧ 우리가 못 만드는 종류(12종 밖 MissileWand `WandUse 20 MagicMissile …` — 닿음 BoomCollide)면 쏘지도 깎지도 않는다(우리 몫 막이)
+    {
+        nox::CSyncHost srv; mk(srv);
+        srv->SetProjType("MagicMissile", 704, 64, 0x20004400u, 0);
+        srv->SetCollideFn(704, "BoomCollide");
+        srv->DebugHoldItem(Sid(srv, a), wand(809, 704, 20, 0, false, 0));
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        const std::vector<uint8_t> u = CodePacket(nox::Op::TRY_USE, 809);
+        srv.OnPacket(a, u.data(), u.size(), out);
+        int now = -1, max = -1;
+        Check(srv->missiles() == 0 && srv->wandStat(WS::NoType) == 1, "W4 ⑧ 못 만드는 종류인데 날렸거나 안 셌다");
+        Check(srv->DebugHeld(Sid(srv, a))->charges == 20 && !charges(out, 809, now, max), "W4 ⑧ 못 쏘는 지팡이가 충전을 깎았다");
+    }
+    std::printf("  W4 — 지팡이 쏘기: 공격 입력이 쓰기 함수 · 빠르기 배수 없음 · 충전 −1 · 여러 발 ±8 · 대기 경계 · 빈 지팡이 휘두르기 29 · 번개·오브 안 깎음 · 노란 별 맞힘·같은 편 지나감·수명·벽·반주문 · 못 만드는 종류는 안 깎음\n");
 }
 
 // ── 묶음 5-f — 플라스마(59) ────────────────────────────────────────────

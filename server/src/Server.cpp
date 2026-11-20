@@ -14290,6 +14290,9 @@ bool Server::UseWandShot(Session& s, Session::Carried& c) {
     }
     const uint32_t need = c.wandCooldown - static_cast<uint32_t>(ReadinessOf(&c));   // `:7861~7862`
     if (frame_ - c.wandLastFrame < need) { ++wandStat_[static_cast<size_t>(WandStat::Cooldown)]; return false; }
+    // ★ 우리 몫 막이(원본에 없음) — 못 만드는 종류(12종 밖 MissileWand 의 MagicMissile 등)면 충전·소리 전에 멈춘다.
+    //   원본은 늘 만든다 · 우리는 그 닿음 갈래가 없어 만들면 엉뚱하게 사라진다 — 쏘지도 못하고 충전만 깎이는 일을 막는다
+    if (WandShotKindOf(c.wandShotType) == 0) { ++wandStat_[static_cast<size_t>(WandStat::NoType)]; return false; }
     const int dir = s.facingPrev;                            // +124 Direction1
     const double reach = static_cast<double>(kBodyRadius) + 4.0;   // +176 + 4.0
     const float px = static_cast<float>(s.posX), py = static_cast<float>(s.posY);
@@ -14315,18 +14318,20 @@ bool Server::UseWandShot(Session& s, Session::Carried& c) {
 // wandShot_53F480(`GAME4_3.c:7914~7931`) — 그 종류 하나를 그 자리에 만든다(주인 = 쏜 이 · createAt).
 //   방향 둘(+124·+126) = dir · 속도 = 방향 × **제 빠르기**(+544 — 불덩이 주문의 세기 배수가 없다) + 쏜 이 속도
 //   닿음 갈래는 종류의 COLLIDE 이름으로 — SparkExplosionCollide(Fireball·TitanFireball) → 1 · YellowStarShotCollide → 9.
-//   그 밖은 thing.bin 지팡이가 쏘지 않아 만들지 않고 센다(NoType) — 이름 모를 것을 Magic 갈래(0)로 날리면 15틱 만에 엉뚱하게 사라진다
+//   그 밖(12종 밖 MissileWand 의 MagicMissile 등)은 지팡이 쏘기 갈래를 안 옮겨 만들지 않고 센다(NoType) — Magic 갈래(0)로 날리면 15틱 만에 엉뚱하게 사라진다
+uint8_t Server::WandShotKindOf(uint16_t type) const {
+    if (!ProjTypeByWire(type)) return 0;
+    const auto cf = gt_->collideFn.find(type);
+    if (cf == gt_->collideFn.end()) return 0;
+    if (cf->second == "SparkExplosionCollide") return 1;
+    if (cf->second == "YellowStarShotCollide") return 9;
+    return 0;
+}
+
 void Server::WandShot(const Session& s, uint16_t type, float x, float y, int dir) {
     const ProjTypeInfo* pt = ProjTypeByWire(type);
-    uint8_t kind = 0;
-    if (pt) {
-        const auto cf = gt_->collideFn.find(type);
-        if (cf != gt_->collideFn.end()) {
-            if (cf->second == "SparkExplosionCollide") kind = 1;
-            else if (cf->second == "YellowStarShotCollide") kind = 9;
-        }
-    }
-    if (kind == 0) { ++wandStat_[static_cast<size_t>(WandStat::NoType)]; return; }
+    const uint8_t kind = WandShotKindOf(type);
+    if (!pt || kind == 0) { ++wandStat_[static_cast<size_t>(WandStat::NoType)]; return; }
     MissileObj m;
     m.netCode = nextShotNetCode_++;
     if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;

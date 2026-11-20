@@ -4965,6 +4965,7 @@ private:
     // ★ 11-20 W4 — 쏘는 지팡이(`useLesserFireballStaff_53F290`) · 한 발(`wandShot_53F480`)
     bool UseWandShot(Session& s, Session::Carried& c);
     void WandShot(const Session& s, uint16_t type, float x, float y, int dir);
+    uint8_t WandShotKindOf(uint16_t type) const;                            // 닿음 갈래(1 불덩이 · 9 노란 별 · 0 못 만듦)
     void SendCharges(Session& s, const Session::Carried& c);   // netReportCharges_4D82B0
     // 묶음 5-h — `4a REPORT_GOLD` = `<금 u32>` 5바이트(중요). sub_4D8870(`GAME3_2.c:4150`)
     // ── 묶음 6-a AI 행동 쌓기 ──
