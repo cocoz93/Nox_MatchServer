@@ -24694,6 +24694,8 @@ void TestArmorEquip() {
 //   ① 좀비 — 죽으면 시체로 남아(치움 없음 · SHORT 0x10 만) 알아보기를 돌고 · 누운 몸을 때리면 때린 이만 적음 · 300~600 프레임 뒤 지금 상대가 있으면
 //      일어남(61·35 · 체력 가득 · 0x8000·0x40·0x10 끔) · 일어나기 애니가 끝나면 35 빠짐
 //   ② 독 좀비 — 죽은 뒤 상대가 멀어지면 알아보기가 놓아 안 일어남 · 곰(좀비 아님) 대조 — 첫 죽음 갱신에 치울 표시 · 시체를 때리면 바로 1
+//   ③ 불로 죽은 좀비 — 죽어가기(30) 끝에 사라짐(눕지 않음 · 불똥 없음) · ④ 칼로 죽어 누운 좀비에 불 — 다음 갱신에 불똥 100 · 사라짐
+//   ⑤ 산 좀비 — 칼은 불 표시 없음 · 용암(12)은 켬
 static void ZombieSetup(nox::CSyncHost& srv, const std::string& a, uint16_t type) {
     srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
     srv->DebugTeleport(Sid(srv, a), 1100.0f, 1000.0f);
@@ -24771,7 +24773,52 @@ void TestZombie1120() {
         Check(srv->DebugPetDeadDone(0) && srv->zombieEv(ZE::Down) == 0 && srv->zombieEv(ZE::CorpseIgnored) == 1 && srv->zombieEv(ZE::CorpseHit) == 0 &&
               (srv->DebugPetObjFlags(0) & 0x18u) == 0x18u, msg);
     }
-    std::printf("  11-20 — 좀비: 시체로 남음(SHORT 만) · 누워서 알아보기 · 누운 몸 맞음 기록 · 300~600 프레임 뒤 일어남(61·35 · 체력 가득) · 상대 없으면 그대로 · 곰 대조\n");
+    auto sparksTo = [&](const std::vector<nox::OutPacket>& all, int amount) {
+        int n = 0;
+        for (const auto& m : FlattenTo(all, a))
+            if (m.size() == 6 && m[0] == static_cast<uint8_t>(nox::Op::FX_SPARK_EXPLOSION) && (amount < 0 || m[5] == amount)) ++n;
+        return n;
+    };
+    // ③ 불로 죽임 — 죽어가기 끝에 사라짐
+    {
+        nox::CSyncHost srv; ZombieSetup(srv, a, 1360);
+        srv->SetMonsterAnim(1360, 15, 10, 1, false);        // 불타기(9 + 불 → 15) 10칸
+        std::vector<nox::OutPacket> o, all;
+        srv->DebugHurt(none, 0, 9999, Sid(srv, a), 1); srv.TakeOut(o);   // 불로 죽임
+        uint32_t ms = srv->DebugNowMs();
+        for (int t = 0; t < 40; ++t) { ms += 34; srv.Tick(ms, all); }
+        const int sp = sparksTo(all, -1);
+        std::snprintf(msg, sizeof(msg), "③ 불로 죽은 좀비가 죽어가기 끝에 안 사라졌다 — 몬스터 %zu · 죽어가기 끝 %llu · 누운 채 %llu · 불똥 %d · 쓰러짐 %llu",
+                      srv->pets(), srv->zombieEv(ZE::BurnDying), srv->zombieEv(ZE::BurnDead), sp, srv->zombieEv(ZE::Down));
+        Check(srv->pets() == 0 && srv->zombieEv(ZE::BurnDying) == 1 && srv->zombieEv(ZE::BurnDead) == 0 && sp == 0 && srv->zombieEv(ZE::Down) == 0, msg);
+    }
+    // ④ 칼로 죽어 누운 좀비에 불
+    {
+        nox::CSyncHost srv; ZombieSetup(srv, a, 1360);
+        std::vector<nox::OutPacket> o, all;
+        srv->DebugHurt(none, 0, 9999, Sid(srv, a), 0); srv.TakeOut(o);   // 칼로 죽임 — 누운 뒤 불
+        uint32_t ms = srv->DebugNowMs();
+        for (int t = 0; t < 40; ++t) { ms += 34; srv.Tick(ms, o); }
+        const bool lying = srv->pets() == 1 && srv->DebugAIAction(0, srv->DebugAIStackInd(0)) == 31;
+        srv->DebugHurt(none, 0, 10, Sid(srv, a), 1); srv.TakeOut(all);   // 누운 몸에 불
+        for (int t = 0; t < 5; ++t) { ms += 34; srv.Tick(ms, all); }
+        const int sp = sparksTo(all, 100);
+        std::snprintf(msg, sizeof(msg), "④ 누운 좀비가 불에 맞고 안 탔다 — 누움 %d · 몬스터 %zu · 누운 채 %llu · 죽어가기 끝 %llu · 불똥100 %d",
+                      int(lying), srv->pets(), srv->zombieEv(ZE::BurnDead), srv->zombieEv(ZE::BurnDying), sp);
+        Check(lying && srv->pets() == 0 && srv->zombieEv(ZE::BurnDead) == 1 && srv->zombieEv(ZE::BurnDying) == 0 && sp == 1, msg);
+    }
+    // ⑤ 산 좀비의 불 표시
+    {
+        nox::CSyncHost srv; ZombieSetup(srv, a, 1360);
+        srv->DebugHurt(none, 0, 1, Sid(srv, a), 0);
+        const bool b0 = srv->DebugPetBurned(0);
+        srv->DebugHurt(none, 0, 1, Sid(srv, a), 12);        // 용암
+        const bool b1 = srv->DebugPetBurned(0);
+        std::snprintf(msg, sizeof(msg), "⑤ 불 표시가 틀렸다 — 칼 뒤 %d(기대 0) · 용암 뒤 %d(기대 1) · 죽음 %d", int(b0), int(b1), int(srv->DebugPetDead(0)));
+        Check(!b0 && b1 && !srv->DebugPetDead(0), msg);
+    }
+    std::printf("  11-20 — 좀비: 시체로 남음(SHORT 만) · 누워서 알아보기 · 누운 몸 맞음 기록 · 300~600 프레임 뒤 일어남(61·35 · 체력 가득) · 상대 없으면 그대로 · 곰 대조 · "
+                "불로 죽으면 죽어가기 끝에 사라짐 · 누운 채 불이면 불똥 100 · 불 표시\n");
 }
 
 // ★ 11-20 트레일러 전사 2 — 수리검·차크람(던지기 `GAME4_3.c:4327~4419` · 날기 `updateChakramInMotion_53DCC0` · 맞기 `collideChakram_4EAF00`)

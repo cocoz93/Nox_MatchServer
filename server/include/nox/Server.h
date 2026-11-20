@@ -473,6 +473,7 @@ enum class ChakramEv : uint8_t { ShurikenThrown = 0, ShurikenLast, ChakramThrown
 constexpr size_t kChakramEvCount = static_cast<size_t>(ChakramEv::Count);
 // ★ 11-20 트레일러 전사 3 — 좀비 되살아나기·불타 사라지기(`mobActionDead1/2_544D80/544EC0` · `mobRaiseZombie_534AB0` · `zombieBurnDelete_544CE0`)가 어디로 갔나
 enum class ZombieEv : uint8_t { Down = 0, Raise, CorpseHit, CorpseIgnored, SpotMuted,   // 3-a — 쓰러짐 · 일어남 · 누운 좀비가 맞음(때린 이 적음) · 좀비 아닌 시체가 맞음(바로 1) · 누운 좀비의 알아봄 소리 끔
+                                BurnDying, BurnDead,                                  // 3-b — 죽어가기 끝에 탐(`zombieBurnDeleteCheck_544CA0`) · 누운 채 탐(불똥 100)
                                 Count };
 constexpr size_t kZombieEvCount = static_cast<size_t>(ZombieEv::Count);
 // ★ 09-29 — 무기·화살통 줍기(`sub_53A720` `GAME4_3.c:5033~5128` · `pickupAmmo_4F3B00` `GAME3_3.c:10831~10903`)에서 난 일 —
@@ -702,6 +703,7 @@ struct Creature {
     bool removeMe = false;      // 지금 지울 것(원본 `delayedDeleteObject_4E5CC0` — AI 돌기 뒤 한꺼번에)
     bool deadFnPending = false; // ★ 11-19 죽음 시작(31)이 켬 — 죽은 뒤 함수(악마 터짐)를 AI 돌기 뒤에 부른다(`MonsterDeadFn` 주석)
     uint32_t zombieDeadDur = 0; // ★ 11-20 트레일러 전사 3-a — 좀비 +492 쓰러져 있을 프레임 수(죽음 시작이 ZombieDeadDuration 으로 뽑음) · 죽음(31)을 시작한 프레임(aiActionFrame)부터 잰다
+    bool burned = false;        // ★ 11-20 트레일러 전사 3-b — +1440 0x80000 — 불(1)·용암(12)·폭발(7)·플라스마(14)·언데드 쫓기(6)에 맞음(`GAME3_2.c:7072~7077` · 몬스터 전부 · 안 꺼짐) — 읽는 쪽은 좀비뿐
     // 몸 깃발(+16) 덧칠 — thing.bin FLAGS 위에 죽음이 켜고 끄는 것(`PetObjFlags`) ·
     //   죽음 = 0x8000 켬 · 0x80 MISSILE_HIT 끔(`GAME4_1.c:476~478`) · 31 시작 = 0x18 ALLOW_OVERLAP·SHORT 켬(`GAME4_3.c:9893~9894`)
     uint32_t flagsSet = 0, flagsClear = 0;
@@ -4415,6 +4417,7 @@ public:
     unsigned long long corpseStat(int i) const { return i >= 0 && i < 4 ? corpseStat_[i] : 0; }   // ★ 10-01 — 0 죽음 · 1 썩어 지움 · 2 즉시 지움 · 3 동시 시체 최대
     unsigned long long deadFnStat(int i) const { return i >= 0 && i < 3 ? deadFnStat_[i] : 0; }   // ★ 11-19 — 0 EmberDemonDead · 1 DemonDead · 2 죽은 뒤 함수 없음(NULL)
     bool DebugPetDead(size_t i) const { return i < pets_.size() && pets_[i].dead; }
+    bool DebugPetBurned(size_t i) const { return i < pets_.size() && pets_[i].burned; }   // ★ 11-20 트레일러 전사 3-b
     uint32_t DebugPetObjFlags(size_t i) const { return i < pets_.size() ? PetObjFlags(pets_[i]) : 0; }
     // ★ 10-01 묶음 시험용 — 비신뢰 메시지 하나를 진짜 길(`Emit` → 묶음)로 싣는다(혼자 한도를 넘는 덩어리 만들기)
     void DebugEmit(int64_t sessionId, const std::vector<uint8_t>& msg) {
@@ -4914,6 +4917,7 @@ private:
     void ThrowChakram(Session& s);                          // ★ 11-20 트레일러 전사 2-a — 차크람(0x40 · `GAME4_3.c:4388~4419`)
     void ReportLoseCreature(const Creature& k);             // ★ 11-20 트레일러 전사 3-a — 주인(사람)에게 `6d` — 죽음 · 좀비 불타 사라지기 둘이 부른다
     void RaiseZombie(Creature& k);                          // ★ 11-20 트레일러 전사 3-a — `mobRaiseZombie_534AB0`
+    void ZombieBurnDelete(Creature& k);                     // ★ 11-20 트레일러 전사 3-b — `zombieBurnDelete_544CE0`
     bool ChakramUpdate(MissileObj& m, uint32_t frame);      // ★ 11-20 2-b — `updateChakramInMotion_53DCC0` · 거짓 = 지운다
     bool ChakramCollideWall(MissileObj& m, float wnx, float wny, int gx, int gy);   // ★ 11-20 2-c — `collideChakram_4EAF00` 벽 갈래 · 거짓 = 지운다
     bool ChakramCollide(MissileObj& m, const Target& tgt, bool obstacle, float hx, float hy, uint32_t mat);   // ★ 2-c — 맞은 것 갈래 · 거짓 = 지운다

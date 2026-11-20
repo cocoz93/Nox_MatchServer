@@ -1309,6 +1309,14 @@ void Server::RaiseZombie(Creature& k) {
     ++zombieEv_[static_cast<size_t>(ZombieEv::Raise)];
 }
 
+// ★ 11-20 트레일러 전사 3-b — 좀비 불타 사라지기(`zombieBurnDelete_544CE0` `GAME4_3.c:9826~9843`) — 주인이 사람이면 `6d`(죽을 때 건너뛴 것) · 지울 표시
+//   ⚠ 안 옮김 — 솔로 처치 보상(`soloMonsterKillReward_4EE500` — 우리에게 없음) · 그을음(`sMakeScorch_537AF0` — 불덩이 쪽도 아직) · 미니맵 장부
+void Server::ZombieBurnDelete(Creature& k) {
+    if (k.removeMe) return;                                  // 지울 표시가 이미 섰으면 `6d` 를 또 안 보낸다
+    ReportLoseCreature(k);
+    k.removeMe = true;                                       // `delayedDeleteObject_4E5CC0` — AI 돌기 뒤 `FlushDeadPets`
+}
+
 // ★ 10-01 — 실제 지우기(전에 `KillPet` 끝에 있던 것). 부르는 곳은 `FlushDeadPets` 하나.
 // ★ `0x31 DESTROY_OBJECT` 는 실측이다 — `31 d6 02`(번호 2바이트, 모두 3바이트).
 //   09-06 덤프에 54건 있었다. **이걸 안 보내면 화면에 시체가 영원히 남는다.**
@@ -1769,7 +1777,10 @@ bool Server::HurtTarget(const Target& t, int dmg,
     }
     // ── nox_xxx_damageDefaultProc_4E0B30 ──
     if (k.buffs.Has(23)) { ++invulnBlocked_; ++damageStops_["무적(소환수)"]; return true; }   // 무적(소리 71 → 10 · `:7064~7069` 1)
-    // ⚠ 몬스터 +2188·불 종류 +1440 깃발은 안 옮겼다
+    // ⚠ 몬스터 +2188 은 안 옮겼다
+    // ★ 11-20 트레일러 전사 3-b — 몬스터가 불(1)·용암(12)·폭발(7)·플라스마(14)·언데드 쫓기(6)에 맞으면 +1440 0x80000(`GAME3_2.c:7072~7077`) —
+    //   산 것·죽은 것 가리지 않고 켜고 안 끈다 · 면역 관문보다 앞 · 읽는 쪽은 좀비뿐(죽어가기 끝 · 죽음 갱신 · 애니 15)
+    if (dtype == 1 || dtype == 12 || dtype == 7 || dtype == 14 || dtype == 6) k.burned = true;
     // ★ 11-20 트레일러 전사 3-a — 시체(0x8000)는 여기서 1(`GAME3_2.c:7079~7092`) — 좀비만 때린 이(+520)·종류(+524)·프레임(+536)을 적는다
     //   (+520 은 산 갈래와 같은 `DamageAttacker`) · ✖ 전에는 시체도 끝까지 내려가 맞는 소리·흡혈·감전 되갚기·INJURED 를 탔다(`KillPet` 관문이 두 번 죽음만 막았다)
     if (k.dead) {
@@ -12406,6 +12417,15 @@ void Server::AIUpdate(Creature& k, uint8_t act) {
             //   죽음을 시작한 지 +492(쓰러져 있을 시간)가 넘었고 지금 상대(+1196)가 있으면 일어난다(`mobRaiseZombie_534AB0`)
             //   · 「누워 있어라」(+1440 0x100000)는 맵 스크립트 `ZombieStayDown` 만 켠다 — 우리에게 맵 스크립트가 없어 늘 꺼짐으로 둔다
             if (IsZombieType(k.type)) {
+                if (k.burned) {                              // ★ 11-20 3-b — 누운 채 불에 맞았다(`:9932~9935`) — 불똥 100(`netSparkExplosionFx_5231B0`) · 불타 사라짐
+                    const int16_t ex = static_cast<int16_t>(k.x), ey = static_cast<int16_t>(k.y);
+                    const uint8_t fx[6] = { static_cast<uint8_t>(Op::FX_SPARK_EXPLOSION), static_cast<uint8_t>(ex), static_cast<uint8_t>(ex >> 8),
+                                            static_cast<uint8_t>(ey), static_cast<uint8_t>(ey >> 8), 100 };
+                    SendFxAllCli(static_cast<float>(k.x), static_cast<float>(k.y), fx, sizeof(fx));
+                    ZombieBurnDelete(k);
+                    ++zombieEv_[static_cast<size_t>(ZombieEv::BurnDead)];
+                    break;
+                }
                 const bool hasEnemy = (k.enemySessionId != kNoSession) || k.enemyNet != 0;
                 if (frame_ - k.aiActionFrame > k.zombieDeadDur && hasEnemy) RaiseZombie(k);
                 break;
@@ -12727,6 +12747,8 @@ void Server::AIEnd(Creature& k, uint8_t act) {
         k.running = false;
         ++b2Stat_[static_cast<size_t>(B2Stat::FightEnd)];
     }
+    // ★ 11-20 트레일러 전사 3-b — 죽어가기(30) 끝 `zombieBurnDeleteCheck_544CA0`(`GAME4_3.c:9814~9823`) — 불에 맞은 좀비는 눕지 않고 사라진다
+    if (act == 30 && IsZombieType(k.type) && k.burned) { ZombieBurnDelete(k); ++zombieEv_[static_cast<size_t>(ZombieEv::BurnDying)]; }
     if (act == 24) k.running = false;   // ★ 09-29 B4 — 도망 끝 `sub_544750` = 달리기 끄기(`534780`)
     // ★ 09-29 B7 — 지속 시전 끝 = 그 주문을 끈다(`AIActionCastDuration.End` → `Dur.CancelFor(주문, 나)`)
     if (act == 20) { DurCancelForPet(static_cast<uint8_t>(k.aiStack[k.aiStackInd].argU32), k.netCode); }
