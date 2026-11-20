@@ -27033,20 +27033,25 @@ void TestMonsterSelfSpells1121() {
                       srv->DebugPetEnchantDur(0, 22), srv->DebugPetEnchantPower(0, 22));
         Check(ok && srv->DebugPetHasEnchant(0, 22) && srv->DebugPetEnchantDur(0, 22) == 315 && srv->DebugPetEnchantPower(0, 22) == 3, msg);
     }
-    {   // ③ 성게 주술사 밀기(66) — 그 몬스터 자리에서 둘레 600 · 안쪽 10 · 힘 = PushPowerCoeff × 세기 2 × 10 → a(오른쪽 100)는 +x 로 · 제 자리는 그대로
+    // ③ 성게 주술사 밀기(66) — 그 몬스터 자리에서 둘레 600 · 안쪽 10 · 힘 = PushPowerCoeff × 세기 × 10 → a(오른쪽 100)는 +x 로 · 제 자리는 그대로
+    //   세기 = `spellGetPower_4FE7B0` — 아레나(멀티 모드 1392)면 3 · 퀘스트면 몬스터 세기(+2040 = 2)
+    for (const bool quest : { false, true }) {
         nox::CSyncHost srv; mk(srv, 1340);
+        if (quest) srv->StartQuest(2, 5000, 5000, 100.0);
+        const int pw = quest ? 2 : 3;
         double px = 0, py = 0; srv->DebugPetXY(0, px, py);
         const double f0 = srv->DebugForceX(Sid(srv, a));
         const bool ok = srv->DebugPetCastNow(0, 66, self0);
         const double d = (1100.0 - px) + 0.1;
-        const double want = (1.0 - (d - 10.0) / 590.0) * (1.0 * 2 * 10.0) / srv->DebugMassOf(Sid(srv, a)) * ((1100.0 - px) / d);
+        const double want = (1.0 - (d - 10.0) / 590.0) * (1.0 * pw * 10.0) / srv->DebugMassOf(Sid(srv, a)) * ((1100.0 - px) / d);
         const double got = srv->DebugForceX(Sid(srv, a)) - f0;
         double qx = 0, qy = 0; srv->DebugPetXY(0, qx, qy);
-        std::snprintf(msg, sizeof(msg), "C11-b ③ 성게 주술사 밀기 — 받음 %d · a 힘 %.4f(%.4f 여야) · 시전자 %.1f,%.1f → %.1f,%.1f", int(ok), got, want, px, py, qx, qy);
+        std::snprintf(msg, sizeof(msg), "C11-b ③ 성게 주술사 밀기(%s · 세기 %d) — 받음 %d · a 힘 %.4f(%.4f 여야) · 시전자 %.1f,%.1f → %.1f,%.1f",
+                      quest ? "퀘스트" : "아레나", pw, int(ok), got, want, px, py, qx, qy);
         Check(ok && want > 0.0 && std::fabs(got - want) < 1e-3 * want && qx == px && qy == py, msg);
     }
     auto meteors = [](nox::CSyncHost& srv) { int n = 0; for (size_t i = 0; i < srv->PlacedCount(); ++i) if (srv->DebugPlacedKind(i) == 3) ++n; return n; };
-    {   // ④ 성게 주술사 운석(52) — a 자리에 하나 · 그 몬스터 것 · 떠 있으면 거절 · 터지면 a 가 MeteorDamage[1](65 − 방어) ·
+    {   // ④ 성게 주술사 운석(52) — a 자리에 하나 · 그 몬스터 것 · 떠 있으면 거절 · 터지면 a 가 MeteorDamage[2](85 − 방어 · 아레나 세기 3 — ③) ·
         //   맵 몬스터 운석이라 who = 그 몬스터(뿌리 몬스터) → 터진 자리 옆 40 의 구경꾼 맵 몬스터는 그대로 · 터진 뒤엔 다시 받음
         //   (옆 10 이면 몸이 a 와 겹쳐 a 를 밀어내 피해가 준다 — 40 은 터짐 둘레 80 안)
         nox::CSyncHost srv; uint32_t ms = 0; mk(srv, 1340);
@@ -27064,7 +27069,7 @@ void TestMonsterSelfSpells1121() {
         for (int t = 0; t < 30 && meteors(srv) > 0; ++t) run(srv, ms, 1);
         run(srv, ms, 1);
         const int lost = int(ha0) - int(srv->HealthOf(Sid(srv, a)));
-        const int want = nox::ApplyArmor(65, nox::ArmorValueFloat(nox::CharClass::Wizard), nox::DamageKind::Physical);
+        const int want = nox::ApplyArmor(85, nox::ArmorValueFloat(nox::CharClass::Wizard), nox::DamageKind::Physical);
         const bool ok3 = srv->DebugPetCastNow(0, 52, nox::Target{ Sid(srv, a), -1 });
         std::snprintf(msg, sizeof(msg), "C11-b ④ 운석 — 받음 %d · 자리 %.0f,%.0f · 갈래 %d · 주인 번호 %u(%u) · 다시 %d(운석 %d) · a 잃음 %d(%d 여야) · 구경꾼 %u→%u · 터진 뒤 %d",
                       int(ok1), mx, my, kind, unsigned(onet), unsigned(un), int(ok2), n2, lost, want, unsigned(hk0), unsigned(srv->DebugPetHealth(1)), int(ok3));

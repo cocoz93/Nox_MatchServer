@@ -7220,6 +7220,13 @@ int Server::SpellPower(const Session& s, uint8_t spell) const {
     return spell < 137 ? s.spellLvl[spell] : 0;
 }
 
+// ★ 11-21 같은 함수의 몬스터 갈래(`GAME4.c:3334~3347`) — 멀티 모드(1392)면 3 · 아니면 몬스터 세기(+2040 = `spellLevel`).
+//   몬스터 시전은 `mobCast_541300` → `castSpellByUser_4FDD20(lvl −1)` 이라 늘 이것을 탄다(`spells.go:453~458`) — 아레나의 성게 주술사(+2040 = 2)도 3
+int Server::MonsterSpellPower(const Creature& k) const {
+    const bool quest = (questTotal_ > 0 || questStage_ > 0);
+    return quest ? k.spellLevel : 3;
+}
+
 // sub_4FD0E0(`GAME4.c:2686`) — 꺼진 주문 10 · 사람이면 playerCheckSpellClass_57AEA0(`GAME5_2.c:1435`):
 //   위저드 0x2000000 · 컨저러 0x4000000 · 누구나 0x1000000 가 없으면 9 (워리어는 늘 9)
 int Server::SpellCheckClass(const Session& s, uint8_t spell) const {
@@ -15247,7 +15254,7 @@ bool Server::MonsterCastSpellNow(Creature& k, uint8_t spell, const Target& targe
     if (spell == 27) {
         const auto tb = gt_->typeBodies.find(k.type);
         const float bodyR = tb != gt_->typeBodies.end() ? tb->second.r : static_cast<float>(kBodyRadius);
-        if (MissileObj* m = LaunchFireball(k.spellLevel, static_cast<float>(k.x), static_cast<float>(k.y), k.velX, k.velY, k.facing, bodyR, k.owner)) {
+        if (MissileObj* m = LaunchFireball(MonsterSpellPower(k), static_cast<float>(k.x), static_cast<float>(k.y), k.velX, k.velY, k.facing, bodyR, k.owner)) {
             m->ownerPet = static_cast<int>(&k - pets_.data());
             m->fromPet = m->ownerPet;
         }
@@ -15260,7 +15267,8 @@ bool Server::MonsterCastSpellNow(Creature& k, uint8_t spell, const Target& targe
     //   · 운석 52 · 픽시 떼 58 · 마법 화살 50 = 몬스터 시전자 판(주인 = 그 몬스터 — 사람 판은 시전자가 세션이다)
     //   ⚠ 사람 판과 같이 안 옮긴 것 — 밀기·운석의 시전 소리(`spellGetAud44` · 10)
     {
-        const int fl5 = k.spellLevel > 5 ? 5 : k.spellLevel;
+        const int lvl = MonsterSpellPower(k);                    // ★ 11-21 아레나 3 · 퀘스트면 몬스터 세기
+        const int fl5 = lvl > 5 ? 5 : lvl;
         int fnc = -1;
         switch (spell) {
             case 39: {                                                // castInvisibility — 공격 지속 주문 끄기 · 연기 점 효과(`spells.go` 39 갈래 = 사람과 같은 BuffConf)
@@ -15317,7 +15325,7 @@ bool Server::MonsterDurNew(Creature& k, uint8_t spell, const Target& target, con
     DurSpell d;
     d.id = ++durLastId_;
     d.spell = spell;
-    d.level = k.spellLevel;
+    d.level = MonsterSpellPower(k);                          // ★ 11-21 `castSpellByUser_4FDD20` 세기(아레나 3)
     d.casterPet = net;
     d.posX = kx; d.posY = ky;
     d.target = target;

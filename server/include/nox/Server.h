@@ -4779,6 +4779,7 @@ private:
     int SpellManaTake(Session& s, uint8_t spell, int costKind);   // sub_4FCF90
     void SpellManaGive(Session& s, int mana);             // sub_4FD030
     int SpellPower(const Session& s, uint8_t spell) const;                             // spellGetPower_4FE7B0
+    int MonsterSpellPower(const Creature& k) const;                                    // ★ 11-21 spellGetPower_4FE7B0 몬스터 갈래
     void InformSpell(Session& s, uint8_t code, uint32_t val);   // netInformTextMsg 0/1
     void ReportSpellStat(Session& s, uint32_t spell, uint8_t stat);   // netReportSpellStat_4D9630
     void SendPriMsg(Session& s, const char* key);          // netPriMsgToPlayer_4DA2C0 `a9 0f`
