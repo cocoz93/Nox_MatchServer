@@ -7392,6 +7392,14 @@ bool Server::SpellAccept(uint8_t spell, Session& s, int64_t obj3, const SpellArg
                 fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 0) ? 1 : 0;
                 break;
             }
+            case 67: {                                                                         // ★ 11-21 W7 OvalShield(타원 방패) — 지속 · dt 0(끝은 켤 때 · `spells.go:332~333`)
+                DurFns f;
+                f.create = &Server::DurOvalShieldCreate;
+                f.update = &Server::DurOvalShieldTick;
+                f.destroy = &Server::DurOvalShieldEnd;
+                fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 0) ? 1 : 0;
+                break;
+            }
             case 51: {                                                                         // Shield — 지속(마법 방패 26)
                 DurFns f;
                 f.create = &Server::DurShieldCreate;
@@ -8251,6 +8259,41 @@ int Server::DurShieldTick(DurSpell& d) {
 // sub_52F670(`:11553`) — 끝날 때 버프 26 을 끈다
 void Server::DurShieldDestroy(DurSpell& d) {
     if (!d.target.none()) BuffOff(d.target, 26);
+}
+
+// ★ 11-21 트레일러 위저드 W7 — 타원 방패(67). `spells.go:332~333` 지속 · 대상 = `sa.Obj`(겨눔 0x4 가 없어 날리지 않고 바로 받는다 —
+//   thing.bin 깃발 02500480) · dt 0(끝 프레임은 켤 때 적는다).
+//   켬 `sub_531490`(`GAME4_3.c:1298~1316`) — 대상(+48)이 없거나 사람(+8 & 4)이 아니면 취소 · 대상의 공격 지속 주문을 끊고(`sub_4FF310`)
+//     버프 27(되받아치기)을 20 × 세기 × 초당 프레임(30) 동안 · +68 끝 = 그 길이 + 지금
+//   되받아치기 자체(앞에서 온 투사체 주인 바꿈 · 맨손 마법 막기)는 이미 있다 — 피해 길(`DamagePlayer` 버프 27) · 날아가는 것 닿음(버프 27 갈래)
+//   걷기·뛰기 입력과 공격 주문 시전이 67 을 끊는 것도 이미 있다(`CancelChannelSpells` · `CastSpellByUser`)
+int Server::DurOvalShieldCreate(DurSpell& d) {
+    if (d.target.none() || d.target.sessionId == kNoSession || sessions_.find(d.target.sessionId) == sessions_.end()) {
+        ++ovalStat_[static_cast<size_t>(OvalStat::NotPlayer)];
+        return 1;
+    }
+    const int dur = 20 * d.level * 30;
+    DurCancelOffensiveFor(d.target.sessionId);
+    ApplyEnchant(d.target, 27, dur, d.level);
+    d.frame68 = frame_ + static_cast<uint32_t>(dur);
+    ++ovalStat_[static_cast<size_t>(OvalStat::Start)];
+    return 0;
+}
+
+// `sub_5314F0`(`:1319~1338`) — 대상 없음 · 달리기 버프(8) · 죽음·지워짐(+16 & 0x8020)이면 끝
+//   ⚠ 안 옮김 — 대상이 몬스터(+8 & 2)면 켤 때 자리(+28)에서 5 넘게 움직였을 때 끝(`sub_4FEA70` `GAME4.c:3352~3367`) — 켬이 사람만 받아 닿지 않는 갈래
+int Server::DurOvalShieldTick(DurSpell& d) {
+    auto it = d.target.none() ? sessions_.end() : sessions_.find(d.target.sessionId);
+    if (it == sessions_.end() || !it->second.inGame) { ++ovalStat_[static_cast<size_t>(OvalStat::EndGone)]; return 1; }
+    if (it->second.buffs.Has(8)) { ++ovalStat_[static_cast<size_t>(OvalStat::EndRun)]; return 1; }
+    if (it->second.respawnAtFrame != 0) { ++ovalStat_[static_cast<size_t>(OvalStat::EndDead)]; return 1; }
+    return 0;
+}
+
+// `sub_531560`(`:1341~1349`) — 버프 27 끔
+void Server::DurOvalShieldEnd(DurSpell& d) {
+    ++ovalStat_[static_cast<size_t>(OvalStat::Off)];
+    if (!d.target.none()) BuffOff(d.target, 27);
 }
 
 // ★ 11-20 트레일러 위저드 W3 — 과부하(SPELL_MANA_BOMB 56 · gamedata 주석의 이름은 Obliteration). 원본 `GAME4_3.c:1088~1230` 셋.

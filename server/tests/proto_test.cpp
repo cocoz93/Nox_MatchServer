@@ -25392,7 +25392,7 @@ void TestTurnUndead1121() {
                       ml.empty() ? 0.0 : ml[0].posY, srv->turnUndeadStat(TS::WallStop), ml.size());
         Check(ml.size() == 43 && ml[0].posX == x30 && ml[0].posX > 1080.0f && ml[0].posX < 1103.0f && srv->turnUndeadStat(TS::WallStop) >= 10, msg);
     }
-    std::printf("  11-21 언데드 쫓기 — 조각 43 · 4 걸음 · 71 프레임 · 언데드만 · 양 나눠깎기 · 누운 좀비 불탐 · 벽에서 멈춤\n");
+    std::printf("  11-21 언데드 쫓기 — 조각 43 · 4 걸음 · 71 프레임 · 언데드만 · 양 나눠 깎기 · 누운 좀비 불탐 · 벽에서 멈춤\n");
 }
 
 // ── 11-21 트레일러 컨저러 C4 — 근접만 하는 소환수 넷(미믹 90 · 오우거 브루트 92 · 좀비 109 · 독 좀비 110) ─────
@@ -25502,6 +25502,93 @@ void TestSummonMore1121() {
         else               Check(afterTwo == 2 && !refusedSecond && srv->pets() == 2 && refused, msg);
     }
     std::printf("  11-21 C4 소환수 넷 — 표 · thing.bin 이름·크기 대조 · 크기별 시간 뒤 하나 · 한도 4\n");
+}
+
+// ── 11-21 트레일러 위저드 W7 — 타원 방패(67) `sub_531490`·`sub_5314F0`·`sub_531560`(`GAME4_3.c:1298~1349`) ─────
+//   ① 자기에게 걸면 버프 27 · 길이 = 20 × 세기 × 30 · 끝 프레임 같음 · 제 공격 지속 주문(번개 24 꼴)을 끊음
+//   ② 달리기 버프(8)가 붙으면 다음 틱에 끝 — 버프 27 꺼짐
+//   ③ 죽으면 끝 · ④ 시간이 다 되면 끝(세기 1 — 600 프레임)
+//   ⑤ 대상이 없거나(커서 밑 아무것도) 몬스터면 안 켜짐
+void TestOvalShield1121() {
+    using OS = nox::Server::OvalStat;
+    const std::string a = "10.11.21.7:9517";
+    char msg[320];
+    auto mk = [&](nox::CSyncHost& srv) {
+        srv->SetSpellDef(67, 0, 0x02500480u, { 1, 7, 7, 6, 8 });                 // thing.bin SPELL_OVAL_SHIELD(깃발 02500480 — 겨눔 0x4 없음)
+        srv->SetSpellDef(24, 0, 0x00000020u, { 2, 2, 2 });                        // 공격 주문 꼴 하나(끊김 보기용)
+        srv.DebugEnterGame(a, 880, false, nox::CharClass::Wizard);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+    };
+    // ① ~ ④ (③ 은 남 b 에게 걸고 b 가 죽는다 — 제 죽음은 `PlayerCancelSpells` 가 먼저 끊어 틱 갈래에 안 닿는다)
+    const std::string b = "10.11.21.8:9518";
+    for (int kase = 1; kase <= 4; ++kase) {
+        nox::CSyncHost srv; mk(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.Tick(ms, out);
+        if (kase == 3) {
+            srv.DebugEnterGame(b, 881, false, nox::CharClass::Warrior);
+            srv->DebugMoveTo(Sid(srv, b), 1100, 1000);
+            srv->DebugAimAt(Sid(srv, a), 1100, 1000);
+            srv.Tick(ms, out);
+            srv->DebugFillMana(Sid(srv, a));
+            CastAndWait(srv, a, 67, false, ms, out);
+            const bool onB = srv->DebugHasEnchant(Sid(srv, b), 27) && !srv->DebugHasEnchant(Sid(srv, a), 27);
+            srv->Damage(Sid(srv, b), 1000);
+            for (int t = 0; t < 3; ++t) { ms += 34; srv.Tick(ms, out); }
+            std::snprintf(msg, sizeof(msg), "W7 ③ 남에게 · 그가 죽음 — b 에게만 켜짐 %d · 지속 67 %d · 죽음 끝 %llu · 끔 %llu",
+                          int(onB), int(srv->DebugDurActive(67, Sid(srv, a))), srv->ovalStat(OS::EndDead), srv->ovalStat(OS::Off));
+            Check(onB && !srv->DebugDurActive(67, Sid(srv, a)) && srv->ovalStat(OS::EndDead) == 1 && srv->ovalStat(OS::Off) == 1, msg);
+            continue;
+        }
+        srv->DebugDurNew(Sid(srv, a), 24, 3000, 0, -1, false, nox::Target{});     // 먼저 걸린 공격 지속 주문
+        srv->DebugFillMana(Sid(srv, a));
+        CastAndWait(srv, a, 67, true, ms, out);
+        const int pw = srv->DebugEnchantPower(Sid(srv, a), 27);
+        const int left = srv->DebugEnchantDur(Sid(srv, a), 27);
+        const bool on = srv->DebugHasEnchant(Sid(srv, a), 27);
+        const bool boltGone = !srv->DebugDurActive(24, Sid(srv, a));
+        const uint32_t endF = srv->DebugDurEndFrame();
+        const uint32_t now = srv->frame();
+        if (kase == 1) {
+            std::snprintf(msg, sizeof(msg), "W7 ① 켬 — 버프 27 %d · 세기 %d · 남은 %d(%d 언저리) · 끝 프레임 %u − 지금 %u · 번개 끊김 %d · 켬 %llu",
+                          int(on), pw, left, 600 * pw, endF, now, int(boltGone), srv->ovalStat(OS::Start));
+            Check(on && pw >= 1 && left <= 600 * pw && left >= 600 * pw - 40 && endF >= now && endF - now <= static_cast<uint32_t>(600 * pw) &&
+                  endF - now + 40 >= static_cast<uint32_t>(600 * pw) && boltGone && srv->ovalStat(OS::Start) == 1, msg);
+        } else if (kase == 2) {
+            srv->DebugApplyEnchant(Sid(srv, a), 8, 300, 1);
+            for (int t = 0; t < 3; ++t) { ms += 34; srv.Tick(ms, out); }
+            std::snprintf(msg, sizeof(msg), "W7 ② 달리기 버프 — 버프 27 %d · 지속 67 %d · 달리기 끝 %llu · 끔 %llu",
+                          int(srv->DebugHasEnchant(Sid(srv, a), 27)), int(srv->DebugDurActive(67, Sid(srv, a))), srv->ovalStat(OS::EndRun), srv->ovalStat(OS::Off));
+            Check(on && !srv->DebugHasEnchant(Sid(srv, a), 27) && !srv->DebugDurActive(67, Sid(srv, a)) && srv->ovalStat(OS::EndRun) == 1 && srv->ovalStat(OS::Off) == 1, msg);
+        } else {
+            for (int t = 0; t < 600 * pw - 60; ++t) { ms += 34; srv.Tick(ms, out); }
+            const bool still = srv->DebugHasEnchant(Sid(srv, a), 27) && srv->DebugDurActive(67, Sid(srv, a));
+            for (int t = 0; t < 100; ++t) { ms += 34; srv.Tick(ms, out); }
+            std::snprintf(msg, sizeof(msg), "W7 ④ 시간 — 60 앞 켜짐 %d · 뒤 버프 27 %d · 지속 67 %d · 끔 %llu · 그 밖 끝 %llu",
+                          int(still), int(srv->DebugHasEnchant(Sid(srv, a), 27)), int(srv->DebugDurActive(67, Sid(srv, a))), srv->ovalStat(OS::Off),
+                          srv->ovalStat(OS::EndRun) + srv->ovalStat(OS::EndDead) + srv->ovalStat(OS::EndGone));
+            Check(still && !srv->DebugHasEnchant(Sid(srv, a), 27) && !srv->DebugDurActive(67, Sid(srv, a)) && srv->ovalStat(OS::Off) == 1 &&
+                  srv->ovalStat(OS::EndRun) + srv->ovalStat(OS::EndDead) + srv->ovalStat(OS::EndGone) == 0, msg);
+        }
+    }
+    // ⑤ 대상 없음 · 몬스터
+    for (const bool pet : { false, true }) {
+        nox::CSyncHost srv; mk(srv);
+        srv->SetTypeBody(1357, [] { nox::Server::PhysBody bb; bb.shape = 2; bb.r = 10.0f; bb.cls = 0x2; return bb; }());
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.Tick(ms, out);
+        if (pet) { srv->DebugSpawnPet(1357, 1100, 1000, Sid(srv, std::string())); srv->DebugAimAt(Sid(srv, a), 1100, 1000); }
+        else     srv->DebugAimAt(Sid(srv, a), 1300, 1300);
+        srv.Tick(ms, out);
+        srv->DebugFillMana(Sid(srv, a));
+        CastAndWait(srv, a, 67, false, ms, out);
+        std::snprintf(msg, sizeof(msg), "W7 ⑤ 몬스터 %d — 버프 27 사람 %d · 몬스터 %d · 지속 67 %zu · 사람 아님 %llu · 켬 %llu",
+                      int(pet), int(srv->DebugHasEnchant(Sid(srv, a), 27)), pet ? int(srv->DebugPetHasEnchant(0, 27)) : 0, srv->DurCount(),
+                      srv->ovalStat(OS::NotPlayer), srv->ovalStat(OS::Start));
+        Check(!srv->DebugHasEnchant(Sid(srv, a), 27) && !(pet && srv->DebugPetHasEnchant(0, 27)) && srv->DurCount() == 0 &&
+              srv->ovalStat(OS::NotPlayer) == 1 && srv->ovalStat(OS::Start) == 0, msg);
+    }
+    std::printf("  11-21 W7 타원 방패 — 버프 27 · 20×세기×30 · 공격 지속 끊기 · 달리기·죽음·시간 끝 · 사람만\n");
 }
 
 // ── 11-20 트레일러 전사 1-b — 수식 효과(modifier.bin `Server::ParseModEffects`) · 휘두를 때 위력 배수 · 맞힐 때 불·번개 ─────
@@ -38740,6 +38827,7 @@ int main() {
     TestLightningHold1121();
     TestTurnUndead1121();
     TestSummonMore1121();
+    TestOvalShield1121();
     TestModEffects1120();
     TestPickupAutoEquip();
     TestArmorEquip();

@@ -4165,6 +4165,9 @@ public:
                                           GoneCancel, GoneAge, GoneEnd, WallStop, Count };
     unsigned long long turnUndeadStat(TurnUndeadStat k) const { return turnUndeadStat_[static_cast<size_t>(k)]; }
     int DebugTurnUndeadPoints() const { for (const auto& d : durSpells_) if (d.spell == 21) return d.killPoints; return -1; }
+    // ★ 11-21 W7 타원 방패(67) 갈래 — 켬 · 사람 아님(대상 없음 포함) · 틱 끝 셋(대상 사라짐 · 달리기 버프 · 죽음) · 끝 함수(버프 27 끔 — 시간·끊김 포함 모든 끝)
+    enum class OvalStat : uint8_t { Start = 0, NotPlayer, EndGone, EndRun, EndDead, Off, Count };
+    unsigned long long ovalStat(OvalStat k) const { return ovalStat_[static_cast<size_t>(k)]; }
     unsigned long long mbStat(MbStat k) const { return mbStat_[static_cast<size_t>(k)]; }
     int mbLastPower() const { return mbLastPower_; }                     // 마지막으로 터진 힘(+72)
     float DebugMassOf(int64_t sid) const { auto i = sessions_.find(sid); return i == sessions_.end() ? 0.0f : static_cast<float>(PlayerMassOf(i->second)); }
@@ -4879,6 +4882,9 @@ private:
     void DurTurnUndeadEnd(DurSpell& d);                                    // ★ 11-21 W6 spellTurnUndeadDelete_531420 — 빛 조각 지우기
     bool UndeadKillerUpdate(const MissileObj& m, uint32_t frame);          // ★ 11-21 W6 updateUndeadKiller_53E190 — 거짓이면 지운다
     bool UndeadKillerCollide(size_t i);                                    // ★ 11-21 W6 collideUndeadKiller_4EBD40 — 거짓이면 지운다
+    int DurOvalShieldCreate(DurSpell& d);                                  // ★ 11-21 W7 sub_531490 — 버프 27 · 끝 프레임
+    int DurOvalShieldTick(DurSpell& d);                                    // ★ 11-21 W7 sub_5314F0 — 달리기·죽음이면 끝
+    void DurOvalShieldEnd(DurSpell& d);                                    // ★ 11-21 W7 sub_531560 — 버프 27 끔
     void FonChargeOff(DurSpell& d);                                        // ★ 11-20 C2 +76 그림 지우기
     void FonLaunch(DurSpell& d, Session* cs);                              // ★ 11-20 C2 죽음의 공 만들기(`GAME4_2.c:11232~11290`)
     bool DeathBallUpdate(size_t i, uint32_t frame);                        // ★ 11-20 C2 updateDeathBall_53D080 — false 면 지운다
@@ -5696,6 +5702,7 @@ private:
     unsigned long long wandStat_[static_cast<size_t>(WandStat::Count)] = {}; // ★ 11-20 W4 지팡이 갈래
     unsigned long long fonStat_[static_cast<size_t>(FonStat::Count)] = {};   // ★ 11-20 C2 자연의 힘 갈래
     unsigned long long turnUndeadStat_[static_cast<size_t>(TurnUndeadStat::Count)] = {};   // ★ 11-21 W6 언데드 쫓기 갈래
+    unsigned long long ovalStat_[static_cast<size_t>(OvalStat::Count)] = {};               // ★ 11-21 W7 타원 방패 갈래
     uint32_t durFrame_ = 0;   // ★ 11-20 C2 — `SpellCastByPlayer` 가 지금 도는 걸음의 프레임(한 번에 여러 틱이면 frame_ 보다 작다 — 끝 프레임 견주기는 이 값으로)
     unsigned long long missilesGone_ = 0;     // 날아가는 것이 사라진 누계
     unsigned long long missileEntriesSent_ = 0;   // 갱신에 실린 누계

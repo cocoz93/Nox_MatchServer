@@ -190,6 +190,12 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                     srv.summonOwnSent(0), srv.summonOwnSent(1), srv.summonOwnSent(2));
         // ★ 10-01 — 소환 효과(부르기 시작 = 7e · 세우기 전에 끊김 = 7f) · 소환 한 번에 하나씩(보는 사람 수와 무관)
         srv.Log("[소환효과] 7e 시작 %llu · 7f 끊김 %llu\n", srv.summonFxSent(0), srv.summonFxSent(1));
+        {   // ★ 11-21 W7 — 타원 방패(67) 갈래 · 시험이 같은 칸을 센다(`TestOvalShield1121`)
+            using OS = nox::Server::OvalStat;
+            srv.Log("[타원 방패] 켬 %llu · 사람 아님 %llu · 끝 사라짐 %llu · 달리기 %llu · 죽음 %llu · 끔 %llu\n",
+                    srv.ovalStat(OS::Start), srv.ovalStat(OS::NotPlayer), srv.ovalStat(OS::EndGone),
+                    srv.ovalStat(OS::EndRun), srv.ovalStat(OS::EndDead), srv.ovalStat(OS::Off));
+        }
         // ★ 10-01 — 클라 대체 무기 알림 `e0`(비움 · 가방에 없음 · 맞음 · 직업·힘 안 맞아 `e0 0 01` 되돌림)
         srv.Log("[대체무기] 비움 %llu · 없음 %llu · 맞음 %llu · 되돌림 %llu\n", srv.secondaryWeaponStat(0),
                     srv.secondaryWeaponStat(1), srv.secondaryWeaponStat(2), srv.secondaryWeaponStat(3));
