@@ -953,6 +953,9 @@ struct Session {
     //     ⇒ 지금은 시험이 손으로 넣어 쓴다. 채우는 것은 **따로** 할 일이다
     std::string name;
     std::vector<uint8_t> info97;
+    // ★ 11-21 W9 — 클라 화면 반 크기(playerInfo +10/+12 · 접속 본문 [97:101]·[101:105] u32 ÷ 2 · `player.go:350~351`).
+    //   자리 바꾸기(115)가 「대상이 시전자 화면 안인가」를 이 사각형으로 본다(`sub_530D30`). 0 이면 못 읽음 — 사각형이 점이 된다
+    uint16_t screenHalfW = 0, screenHalfH = 0;
     uint16_t  maxMana   = 0;
     // ★ **지금 마나.** 이 칸이 없어서 주문이 무한이었다 — `maxMana` 는 쓰기만 하고
     //   읽는 데가 없었다. 시전할 때 깎고 `0x45` 로 알린다.
@@ -3824,6 +3827,20 @@ public:
         arg.y = static_cast<float>(it->second.aimY);
         return SpellAccept(spell, it->second, sessionId, arg, lvl);
     }
+    // ★ 11-21 W9 시험용 — 대상(arg.obj)과 자리를 정해 받기(겨눈 Magic 이 닿았을 때와 같은 부름 — 벽 너머·화면 밖 대상을 날리지 않고 건다)
+    bool DebugSpellAcceptOn(int64_t sessionId, uint8_t spell, int lvl, const Target& obj, float x, float y) {
+        auto it = sessions_.find(sessionId);
+        if (it == sessions_.end()) return false;
+        SpellArg arg;
+        arg.obj = obj;
+        arg.x = x;
+        arg.y = y;
+        return SpellAccept(spell, it->second, sessionId, arg, lvl);
+    }
+    // ★ 11-21 W9 시험용 — 틱 밖에서 받기를 부르면 「한 번 터지는」 순간이동(frame68 = frame_ + 1 · 터짐 = frame68 - 1 == durFrame_)이
+    //   이미 지난 프레임을 가리켜 안 터진다(진짜 받기는 늘 틱 안 — 그 틱의 지속 걸음이 durFrame_ == frame_ 로 바로 본다).
+    //   맨 앞(방금 만든) 지속 주문의 끝을 한 칸 밀어 다음 틱에 터지게 한다
+    void DebugDurFireNextTick() { if (!durSpells_.empty()) durSpells_.front().frame68 = frame_ + 2; }
     // 시험용 — 게임에서 빠진 것으로(오브젝트 지워짐 · inGame 끔)
     void DebugKickPlayer(int64_t sessionId) { KickPlayer(sessionId); }
     void DebugSetMana(int64_t sessionId, uint16_t v) {
@@ -4171,6 +4188,19 @@ public:
     // ★ 11-21 W7 타원 방패(67) 갈래 — 켬 · 사람 아님(대상 없음 포함) · 틱 끝 셋(대상 사라짐 · 달리기 버프 · 죽음) · 끝 함수(버프 27 끔 — 시간·끊김 포함 모든 끝)
     enum class OvalStat : uint8_t { Start = 0, NotPlayer, EndGone, EndRun, EndDead, Off, Count };
     unsigned long long ovalStat(OvalStat k) const { return ovalStat_[static_cast<size_t>(k)]; }
+    // ★ 11-21 W9 자리 바꾸기(115)·대상에게 순간이동(126) 갈래 — 켤 때 취소 · 켬 · 터질 때 사라짐·죽음 · 닻 · (115) 안 보임·화면 밖 · 바꿈 /
+    //   (126) 금지 바닥 · 선 막힘 · 옮김. 세는 자리마다 하나(시험은 개수를 본다)
+    enum class TeleStat : uint8_t { SwapCancel = 0, SwapStart, SwapGone, SwapAnchor, SwapNoSight, SwapOffScreen, SwapDone,
+                                    TttNoTele, TttBlocked, TttStart, TttGone, TttAnchor, TttDone, Count };
+    unsigned long long teleStat(TeleStat k) const { return teleStat_[static_cast<size_t>(k)]; }
+    // ★ 11-21 W9 — 순간이동 금지 바닥(thing.bin 바닥 정의 번호 · 이름 다섯 `mapTileAllowTeleport_411A90` · 없으면 -1). WorldBuild 가 넣는다
+    void SetNoTeleportFloors(const std::vector<int>& idx) { GtMut().noTeleFloors = idx; }
+    bool TileNoTeleport(float x, float y) const;
+    // 시험용 — 클라 화면 반 크기(접속 본문 [97:105] ÷ 2 · playerInfo +10/+12)
+    void DebugSetScreenHalf(int64_t sid, uint16_t w, uint16_t h) {
+        auto it = sessions_.find(sid);
+        if (it != sessions_.end()) { it->second.screenHalfW = w; it->second.screenHalfH = h; }
+    }
     unsigned long long mbStat(MbStat k) const { return mbStat_[static_cast<size_t>(k)]; }
     int mbLastPower() const { return mbLastPower_; }                     // 마지막으로 터진 힘(+72)
     float DebugMassOf(int64_t sid) const { auto i = sessions_.find(sid); return i == sessions_.end() ? 0.0f : static_cast<float>(PlayerMassOf(i->second)); }
@@ -4934,6 +4964,10 @@ private:
     int DurTeleMarkTick(DurSpell& d);                                     // sub_530650
     int DurTelePopCreate(DurSpell& d);                                    // castTele_530820
     int DurTelePopTick(DurSpell& d);                                      // sub_530880
+    int DurSwapCreate(DurSpell& d);                                       // ★ 11-21 W9 sub_530CA0
+    int DurSwapTick(DurSpell& d);                                         // ★ 11-21 W9 sub_530D30
+    int DurTeleTargetCreate(DurSpell& d);                                 // ★ 11-21 W9 sub_530A30_spell_execdur
+    int DurTeleTargetTick(DurSpell& d);                                   // ★ 11-21 W9 castTTT_530B70
     void SendTeleportFx(float ox, float oy, float nx, float ny);          // netSendPointFx 137 두 번
     int DurBlinkCreate(DurSpell& d);                                      // spellBlink2_530310
     int DurBlinkTick(DurSpell& d);                                        // spellBlink1_530380
@@ -5706,6 +5740,7 @@ private:
     unsigned long long fonStat_[static_cast<size_t>(FonStat::Count)] = {};   // ★ 11-20 C2 자연의 힘 갈래
     unsigned long long turnUndeadStat_[static_cast<size_t>(TurnUndeadStat::Count)] = {};   // ★ 11-21 W6 언데드 쫓기 갈래
     unsigned long long ovalStat_[static_cast<size_t>(OvalStat::Count)] = {};               // ★ 11-21 W7 타원 방패 갈래
+    unsigned long long teleStat_[static_cast<size_t>(TeleStat::Count)] = {};               // ★ 11-21 W9 자리 바꾸기·대상에게 순간이동 갈래
     uint32_t durFrame_ = 0;   // ★ 11-20 C2 — `SpellCastByPlayer` 가 지금 도는 걸음의 프레임(한 번에 여러 틱이면 frame_ 보다 작다 — 끝 프레임 견주기는 이 값으로)
     unsigned long long missilesGone_ = 0;     // 날아가는 것이 사라진 누계
     unsigned long long missileEntriesSent_ = 0;   // 갱신에 실린 누계
@@ -6066,6 +6101,7 @@ public:   // ★ 10-12 작업 7e-2 — 표 묶음과 같이 쓰기 입구는 바
         SpellDef spellDefs[137];                      // 묶음 4-a 주문 정의
         std::vector<PhonemeNode> phonemeTree = std::vector<PhonemeNode>(1);   // [0] = 뿌리
         std::map<std::string, uint16_t> namedTypes;   // 이름 → 와이어 종류(thing.bin 에서 받는다)
+        std::vector<int> noTeleFloors;                // ★ 11-21 W9 순간이동 금지 바닥 번호 다섯(없는 이름은 -1) · 비면 「안 읽음」 — 금지 없음
         std::set<uint16_t> arrowTypes;                // 화살·쇠뇌살 — 이 종류만 갱신에 프레임이 붙는다(AddArrowType 주석)
         Gamedata gamedata;                            // 묶음 4-a4 gamedata.bin
         bool hasGamedata = false;

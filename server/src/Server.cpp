@@ -4491,6 +4491,19 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
                     s.info97.assign(it.body(), it.body() + kJoinPlayerInfoLen);
                     PutInfoName(s.info97, s.name);   // ★ 11-05 — 수락이 다시 와도 여기를 지난다
                 }
+                // ★ 11-21 W9 — 클라 화면 크기(본문 [97:101]·[101:105] u32 · `PlayerOpts.UnmarshalBinary` `player.go:280~283`) ÷ 2 →
+                //   playerInfo +10/+12(`player.go:350~351`). 자리 바꾸기가 「시전자 화면 안」을 이 반 크기로 본다.
+                //   ⚠ 원본의 `ServerLimitMaxRes` 갈래(서버 창보다 크면 서버 창 크기로 줄임 `:352~358`)는 옮기지 않음 — 우리 서버는 창이 없다
+                if (it.bodyLen() >= kJoinPlayerInfoLen + 8) {
+                    const uint8_t* sb = it.body() + kJoinPlayerInfoLen;
+                    const uint32_t sw = static_cast<uint32_t>(sb[0]) | (static_cast<uint32_t>(sb[1]) << 8) |
+                                        (static_cast<uint32_t>(sb[2]) << 16) | (static_cast<uint32_t>(sb[3]) << 24);
+                    const uint32_t sh = static_cast<uint32_t>(sb[4]) | (static_cast<uint32_t>(sb[5]) << 8) |
+                                        (static_cast<uint32_t>(sb[6]) << 16) | (static_cast<uint32_t>(sb[7]) << 24);
+                    s.screenHalfW = static_cast<uint16_t>(sw / 2);
+                    s.screenHalfH = static_cast<uint16_t>(sh / 2);
+                    Log("[화면] 클라 화면 %ux%u → 반 크기 %u·%u\n", sw, sh, unsigned(s.screenHalfW), unsigned(s.screenHalfH));
+                }
                 if (it.bodyLen() > kInfoClassAt) {
                     const uint8_t c = it.body()[kInfoClassAt];
                     s.charClass = (c <= 2) ? static_cast<CharClass>(c) : CharClass::Warrior;
@@ -7376,6 +7389,20 @@ bool Server::SpellAccept(uint8_t spell, Session& s, int64_t obj3, const SpellArg
                 fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 0) ? 1 : 0;
                 break;
             }
+            case 115: {                                                                        // ★ 11-21 W9 Swap — 자리 바꾸기(`spells.go:386~387`)
+                DurFns f;
+                f.create = &Server::DurSwapCreate;
+                f.update = &Server::DurSwapTick;
+                fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 0) ? 1 : 0;
+                break;
+            }
+            case 126: {                                                                        // ★ 11-21 W9 TeleportToTarget — 커서로(`spells.go:395~396`)
+                DurFns f;
+                f.create = &Server::DurTeleTargetCreate;
+                f.update = &Server::DurTeleTargetTick;
+                fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 0) ? 1 : 0;
+                break;
+            }
             case 75: case 76: case 77: case 78: case 79: case 80: case 81: case 82: case 83:
             case 84: case 85: case 86: case 87:
             case 89: case 101: case 111:                                                       // ★ 11-20 C1 센 소환수 셋
@@ -8935,6 +8962,171 @@ int Server::DurTelePopTick(DurSpell& d) {
     TargetXY(d.target, ox, oy);
     TeleportTarget(d.target, c->second.markX[slot], c->second.markY[slot], /*forgetDrawables=*/true);
     SendTeleportFx(ox, oy, c->second.markX[slot], c->second.markY[slot]);
+    return 1;
+}
+
+// ── 11-21 W9 자리 바꾸기(115) · 대상에게 순간이동(126) ─────────────────────────
+//
+// 순간이동 금지 바닥 — `nox_xxx_mapTileAllowTeleport_411A90`(`GAME1.c:1228~1248` · 이름과 반대로 **금지면 참**).
+//   발밑 바닥 번호(`tileNFromPoint_411160` = 우리 `FloorGrid::TileAt`)가 물 바닥 다섯 이름 가운데 하나의 정의 번호면 참.
+//   ⚠ 원본은 다섯 칸을 -1 로 두고 이름을 찾은 칸만 채운다 — 이름이 없으면 그 칸이 -1 로 남아 범위 밖(-1) 자리도 금지가 된다(그대로 옮김)
+//   ⚠ 표가 비었으면(thing.bin 을 안 읽은 시험·서버) 금지 없음
+bool Server::TileNoTeleport(float x, float y) const {
+    if (gt_->noTeleFloors.empty()) return false;
+    const int tile = mt_->floorGrid.TileAt(x, y, mt_->floorEdges).tile;
+    for (int f : gt_->noTeleFloors) if (tile == f) return true;
+    return false;
+}
+
+// sub_530CA0(`GAME4_3.c:973~1012`) — 자리 바꾸기 켤 때. 대상 = 겨눠 날린 Magic 이 닿은 것(겨눔 0x4 · `castSpell` `spells.go:438~442`).
+//   취소 = 시전자 없음 · +88 & 0x20(원본 어디서도 켜지 않는 비트 — 그대로 둠) · 대상 없음 · 대상 죽음·지워짐(+16 & 0x8020) ·
+//          대상 = 시전자 · 몬스터(+8 & 2)이면서 하위 분류 NO_TARGET(+12 & 0x4000)
+//   때 = 협동(2048)이면 TeleportDelay[세기-1] · 아니면 다음 틱(블링크·표식과 같다)
+int Server::DurSwapCreate(DurSpell& d) {
+    auto cancel = [&]() { ++teleStat_[static_cast<size_t>(TeleStat::SwapCancel)]; return 1; };
+    auto c = sessions_.find(d.caster);
+    if (c == sessions_.end() || !c->second.inGame) return cancel();
+    if (d.flags88 & 0x20) return cancel();
+    if (d.target.none() || TargetHealth(d.target) <= 0) return cancel();
+    if (d.target.sessionId != kNoSession && d.target.sessionId == d.caster) return cancel();
+    if (d.target.sessionId == kNoSession && d.target.pet >= 0 && static_cast<size_t>(d.target.pet) < pets_.size()) {
+        const auto tb = gt_->typeBodies.find(pets_[static_cast<size_t>(d.target.pet)].type);
+        if (tb != gt_->typeBodies.end() && (tb->second.cls & 0x2) && (tb->second.subclass & 0x4000)) return cancel();
+    }
+    const bool quest = (questTotal_ > 0 || questStage_ > 0);
+    d.frame68 = quest ? (frame_ + static_cast<uint32_t>(BalanceFloatInd("TeleportDelay", d.level - 1)))
+                      : (frame_ + 1);
+    ++teleStat_[static_cast<size_t>(TeleStat::SwapStart)];
+    return 0;
+}
+
+// sub_530D30(`GAME4_3.c:1015~1082`) — 그 프레임에 **한 번** 바꾸고 끝난다
+//   ① 대상·시전자가 없거나 죽었으면 끝 ② 아직이면 이어 간다 ③ 어느 쪽이든 닻(14) → 소리 231 을 대상·시전자에 · 끝
+//   ④ 글리프가 건 것(+20)이 아니면 — `unitCanInteractWith_5370E0`(벽 시야·투명) 실패, 또는 대상이 시전자 **화면 사각형 밖**
+//      (시전자 자리 ± 클라 화면 반 크기 playerInfo +10/+12 · 경계 포함 `sub_428220` `GAME1_2.c:247~250`) → 글 `ExecDur.c:NeedClearLOSForSwap` · 끝
+//   ⑤ 대상 → 시전자 자리, 시전자 → 대상의 옛 자리 ⑥ 둘 다 투명(0)이 아니면 점 효과 137 을 시전자 새 자리 · 대상 새 자리 차례로
+//   ⑦ 시전 소리를 대상 · 시전자 차례로 ⑧ 도운 사람(`sub_4E7540`)
+int Server::DurSwapTick(DurSpell& d) {
+    auto c = sessions_.find(d.caster);
+    const Target ct{ d.caster, -1 };
+    if (d.target.none() || c == sessions_.end() || !c->second.inGame || TargetHealth(ct) <= 0 || TargetHealth(d.target) <= 0) {
+        ++teleStat_[static_cast<size_t>(TeleStat::SwapGone)];
+        return 1;
+    }
+    // ★ 11-20 — 「지금」 = 이 걸음의 프레임(`durFrame_`) — 표식 순간이동과 같은 까닭
+    if (d.frame68 - 1 != durFrame_) return 0;
+    Session& cs = c->second;
+    float tx = 0, ty = 0;
+    TargetXY(d.target, tx, ty);
+    const float cx = static_cast<float>(cs.posX), cy = static_cast<float>(cs.posY);
+    const Buffs* tbuf = BuffsOf(d.target);
+    const Buffs* cbuf = BuffsOf(ct);
+    if ((tbuf && tbuf->Has(14)) || (cbuf && cbuf->Has(14))) {
+        PlaySoundAt(231, tx, ty, 0, 0, d.target.sessionId, d.target);
+        PlaySoundAt(231, cx, cy, 0, 0, cs.sessionId, ct);
+        ++teleStat_[static_cast<size_t>(TeleStat::SwapAnchor)];
+        return 1;
+    }
+    if (!d.flag20) {
+        if (!CanInteract(cs, d.target)) {
+            SendPriMsg(cs, "ExecDur.c:NeedClearLOSForSwap");
+            ++teleStat_[static_cast<size_t>(TeleStat::SwapNoSight)];
+            return 1;
+        }
+        // 사각형은 원본처럼 double 로 셈해 float 칸에 담는다(float4)
+        const float l = static_cast<float>(static_cast<double>(cx) - static_cast<double>(cs.screenHalfW));
+        const float t = static_cast<float>(static_cast<double>(cy) - static_cast<double>(cs.screenHalfH));
+        const float r = static_cast<float>(static_cast<double>(cs.screenHalfW) + static_cast<double>(cx));
+        const float b = static_cast<float>(static_cast<double>(cs.screenHalfH) + static_cast<double>(cy));
+        if (!(tx >= l && tx <= r && ty >= t && ty <= b)) {
+            SendPriMsg(cs, "ExecDur.c:NeedClearLOSForSwap");
+            ++teleStat_[static_cast<size_t>(TeleStat::SwapOffScreen)];
+            return 1;
+        }
+    }
+    TeleportTarget(d.target, cx, cy, /*forgetDrawables=*/true);
+    TeleportTarget(ct, tx, ty, /*forgetDrawables=*/true);
+    const bool tInvis = tbuf && tbuf->Has(0);
+    const bool cInvis = cbuf && cbuf->Has(0);
+    if (!tInvis && !cInvis) SendTeleportFx(tx, ty, cx, cy);   // 시전자 새 자리(= 대상 옛 자리) · 대상 새 자리(= 시전자 옛 자리)
+    const uint16_t snd = gt_->spellDefs[d.spell].valid ? gt_->spellDefs[d.spell].castSound : 0;   // spellGetAud44(spell, 0)
+    PlaySoundAt(snd, cx, cy, 0, 0, d.target.sessionId, d.target);
+    PlaySoundAt(snd, tx, ty, 0, 0, cs.sessionId, ct);
+    MarkAssist(cs.sessionId, d.target);
+    ++teleStat_[static_cast<size_t>(TeleStat::SwapDone)];
+    return 1;
+}
+
+// sub_530A30_spell_execdur(`server__magic__spell__execdur.c:9~65`) — 대상에게 순간이동 켤 때.
+//   대상(+48)이 비었으면 시전자 · 겨눔(0x4)이 아니라 날리지 않고 바로 받는다 — 대상은 커서 밑 오브젝트(대개 없음 → 시전자)
+//   ① 커서 자리(+52) 바닥이 순간이동 금지면 — 줄 글 `UnseenTarget`(⚠ 안 옮김 · 서버가 글표를 찾아 싣는 `netSendLineMessage_4D9EB0` 이 없다) +
+//      소리 231 을 대상에 · 취소
+//   ② 대상 자리 → 커서 선(`traceRay_5374B0` = 벽 추적 깃발 9)이 트였으면 때를 잡는다(협동 TeleportDelay · 아니면 다음 틱)
+//   ③ 막혔으면 시전자(사람)에게 알림 갈래 0 · 2 · 취소
+int Server::DurTeleTargetCreate(DurSpell& d) {
+    auto c = sessions_.find(d.caster);
+    if (d.target.none()) d.target = Target{ d.caster, -1 };
+    float tx = 0, ty = 0;
+    TargetXY(d.target, tx, ty);
+    if (TileNoTeleport(d.pos2X, d.pos2Y)) {
+        PlaySoundAt(231, tx, ty, 0, 0, d.target.sessionId, d.target);
+        ++teleStat_[static_cast<size_t>(TeleStat::TttNoTele)];
+        return 1;
+    }
+    if (c == sessions_.end() || MapTraceRay(tx, ty, d.pos2X, d.pos2Y, 9)) {
+        const bool quest = (questTotal_ > 0 || questStage_ > 0);
+        d.frame68 = quest ? (frame_ + static_cast<uint32_t>(BalanceFloatInd("TeleportDelay", d.level - 1)))
+                          : (frame_ + 1);
+        ++teleStat_[static_cast<size_t>(TeleStat::TttStart)];
+        return 0;
+    }
+    InformSpell(c->second, 0, 2);                                // netInformTextMsg_4DA0F0(사람, 0, 2)
+    ++teleStat_[static_cast<size_t>(TeleStat::TttBlocked)];
+    return 1;
+}
+
+// nox_xxx_castTTT_530B70(`GAME4_3.c:918~970`) — 그 프레임에 **한 번** 옮기고 끝난다
+//   ① 대상·시전자가 없거나 죽었으면 끝 ② 아직이면 이어 간다 ③ 대상이 닻(14)이면 소리 231 · 끝
+//   ④ 옛 자리에 점 효과 137 · 시전 소리 · 꼬리(`spellTeleportCreateWake_530560` — ⚠ 안 옮김 · 다른 순간이동도 없다) · 커서 자리로 옮김
+//   ⑤ 투명(0)이면 — 사람이면 시전 소리를 **그 사람에게만**(갈래 2 · 번호) · 사람 아니면 소리 없이 도운 사람만 · 끝
+//      투명 아니면 새 자리에 점 효과 137 · 시전 소리 ⑥ 도운 사람(`sub_4E7540`)
+int Server::DurTeleTargetTick(DurSpell& d) {
+    auto c = sessions_.find(d.caster);
+    if (d.target.none() || c == sessions_.end() || !c->second.inGame ||
+        TargetHealth(Target{ d.caster, -1 }) <= 0 || TargetHealth(d.target) <= 0) {
+        ++teleStat_[static_cast<size_t>(TeleStat::TttGone)];
+        return 1;
+    }
+    if (d.frame68 - 1 != durFrame_) return 0;
+    float ox = 0, oy = 0;
+    TargetXY(d.target, ox, oy);
+    const Buffs* tbuf = BuffsOf(d.target);
+    if (tbuf && tbuf->Has(14)) {
+        PlaySoundAt(231, ox, oy, 0, 0, d.target.sessionId, d.target);
+        ++teleStat_[static_cast<size_t>(TeleStat::TttAnchor)];
+        return 1;
+    }
+    auto pointFx = [&](float px, float py) {                 // netSendPointFx_522FF0(137)
+        const uint16_t ix = static_cast<uint16_t>(static_cast<int>(px)), iy = static_cast<uint16_t>(static_cast<int>(py));
+        const uint8_t msg[5] = { static_cast<uint8_t>(Op::FX_TELEPORT),
+                                 static_cast<uint8_t>(ix), static_cast<uint8_t>(ix >> 8),
+                                 static_cast<uint8_t>(iy), static_cast<uint8_t>(iy >> 8) };
+        SendFxAllCli(px, py, msg, sizeof(msg));
+    };
+    const uint16_t snd = gt_->spellDefs[d.spell].valid ? gt_->spellDefs[d.spell].castSound : 0;   // spellGetAud44(spell, 0)
+    pointFx(ox, oy);
+    PlaySoundAt(snd, ox, oy, 0, 0, d.target.sessionId, d.target);
+    TeleportTarget(d.target, d.pos2X, d.pos2Y, /*forgetDrawables=*/true);
+    ++teleStat_[static_cast<size_t>(TeleStat::TttDone)];
+    if (tbuf && tbuf->Has(0)) {
+        if (d.target.sessionId == kNoSession) { MarkAssist(c->second.sessionId, d.target); return 1; }
+        auto ts = sessions_.find(d.target.sessionId);
+        PlaySoundAt(snd, d.pos2X, d.pos2Y, 2, ts != sessions_.end() ? ts->second.netCode : 0, d.target.sessionId, d.target);
+    } else {
+        pointFx(d.pos2X, d.pos2Y);
+        PlaySoundAt(snd, d.pos2X, d.pos2Y, 0, 0, d.target.sessionId, d.target);
+    }
+    MarkAssist(c->second.sessionId, d.target);
     return 1;
 }
 

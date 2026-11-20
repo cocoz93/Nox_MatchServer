@@ -132,6 +132,20 @@ std::shared_ptr<const nox::Server::GameTables> BuildGameTables(const GameFiles& 
             for (const auto& kv : byMat) srv.Log(" 0x%x×%d", static_cast<unsigned>(kv.first), kv.second);
             srv.Log("\n");
         }
+        // ★ 11-21 W9 — 순간이동 금지 바닥 다섯(`mapTileAllowTeleport_411A90` `GAME1.c:1228~1248` — 이름 → 바닥 정의 번호 · 못 찾으면 -1)
+        {
+            std::vector<int> idx;
+            srv.Log("[순간이동 금지 바닥]");
+            for (const char* nm : { "WaterNoTeleport", "WaterDeepNoTeleport", "WaterShallowNoTeleport",
+                                    "WaterSwampDeepNoTeleport", "WaterSwampShallowNoTeleport" }) {
+                int found = -1;
+                for (size_t i = 0; i < tdb.Floors().size(); ++i) if (tdb.Floors()[i].name == nm) { found = static_cast<int>(i); break; }
+                idx.push_back(found);
+                srv.Log(" %s=%d", nm, found);
+            }
+            srv.Log("\n");
+            srv.SetNoTeleportFloors(idx);
+        }
         // ★ 4-c3 — 주문이 **날리는** 것(불덩이 셋). 빠르기·깃발·닿음 인자를 전부 thing.bin 에서 읽는다.
         //   `COLLIDE = SparkExplosionCollide 192` 의 숫자가 터짐 크기를 다 정하므로 **짐작하지 않는다**.
         //   ★ 묶음 6-g(3b) — **크리처가 쏘는 것**도 같은 자리에서 읽는다.

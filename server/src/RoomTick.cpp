@@ -199,6 +199,15 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
         // ★ 11-21 W8 — 주문 깨기(13 시전 · 함성 둘 다 같은 함수) — 부름 · 지운 날아가는 것 · 끊은 지속 주문 · 끈 버프
         srv.Log("[주문 깨기] 부름 %llu · 날아가는 것 %llu · 지속 %llu · 버프 %llu\n", srv.counterCasts(), srv.counterMissiles(),
                 srv.counterDurs(), srv.counterEnchants());
+        {   // ★ 11-21 W9 — 자리 바꾸기(115) · 대상에게 순간이동(126) 갈래 · 시험이 같은 칸을 센다(`TestSwapTele1121`)
+            using TS = nox::Server::TeleStat;
+            srv.Log("[순간이동 W9] 바꾸기 취소 %llu · 켬 %llu · 사라짐 %llu · 닻 %llu · 안 보임 %llu · 화면 밖 %llu · 바꿈 %llu"
+                    " / 대상에게 금지 바닥 %llu · 선 막힘 %llu · 켬 %llu · 사라짐 %llu · 닻 %llu · 옮김 %llu\n",
+                    srv.teleStat(TS::SwapCancel), srv.teleStat(TS::SwapStart), srv.teleStat(TS::SwapGone), srv.teleStat(TS::SwapAnchor),
+                    srv.teleStat(TS::SwapNoSight), srv.teleStat(TS::SwapOffScreen), srv.teleStat(TS::SwapDone),
+                    srv.teleStat(TS::TttNoTele), srv.teleStat(TS::TttBlocked), srv.teleStat(TS::TttStart), srv.teleStat(TS::TttGone),
+                    srv.teleStat(TS::TttAnchor), srv.teleStat(TS::TttDone));
+        }
         // ★ 10-01 — 클라 대체 무기 알림 `e0`(비움 · 가방에 없음 · 맞음 · 직업·힘 안 맞아 `e0 0 01` 되돌림)
         srv.Log("[대체무기] 비움 %llu · 없음 %llu · 맞음 %llu · 되돌림 %llu\n", srv.secondaryWeaponStat(0),
                     srv.secondaryWeaponStat(1), srv.secondaryWeaponStat(2), srv.secondaryWeaponStat(3));

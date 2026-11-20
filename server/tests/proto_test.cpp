@@ -25702,6 +25702,200 @@ void TestOgreWarlord1121() {
     std::printf("  11-21 C5 오우거 군주 — 표 · thing.bin 대조 · 표창 = 화살 닿음(종류 3 · 15) · 점수는 주인 · 벽에서 사라짐\n");
 }
 
+// ── 11-21 트레일러 위저드 W9 — 자리 바꾸기(115) · 대상에게 순간이동(126) ─────
+//   115 ① 겨눠 날린 Magic 이 b 에 닿으면 다음 틱에 두 자리가 맞바뀜 · 점 효과 137 둘 ② 어느 쪽이 닻(14)이면 안 바뀜 · 소리 231 둘
+//       ③ 벽 너머면 안 바뀜 · 글 NeedClearLOSForSwap ④ 화면 사각형 — 반 크기 320 경계는 안(바뀜) · 1 넘으면 밖(안 바뀜) · 세로 240 도
+//       ⑤ 자기 자신이면 안 켜짐
+//   126 ⑥ 패킷 시전 — 커서 자리로 옮김 · 점 효과 둘 ⑦ 선이 벽에 막히면 안 켜짐 · 알림 0·2 ⑧ 커서 바닥이 금지 번호면 안 켜짐 · 소리 231 — 다른 번호면 옮김
+//       ⑨ 닻이면 안 옮김 ⑩ 투명이면 새 자리 점 효과 없음(옛 자리 하나)
+void TestSwapTele1121() {
+    const std::string a = "10.11.21.13:9523";   // 시전자(위저드)
+    const std::string b = "10.11.21.14:9524";   // 맞바꿀 상대
+    const uint16_t kMagic = 1237;
+    char msg[400];
+    using TS = nox::Server::TeleStat;
+    auto countOp = [](const std::vector<nox::OutPacket>& out, const std::string& to, uint8_t op) {
+        int n = 0;
+        for (const auto& m : FlattenTo(out, to)) if (!m.empty() && m[0] == op) ++n;
+        return n;
+    };
+    auto hasPri = [](const std::vector<nox::OutPacket>& out, const std::string& to, const std::string& key) {
+        for (const auto& m : FlattenTo(out, to))
+            if (m.size() == 3 + key.size() + 1 && m[0] == static_cast<uint8_t>(nox::Op::INFORM) && m[1] == 15 &&
+                std::string(m.begin() + 3, m.begin() + 3 + static_cast<long>(key.size())) == key) return true;
+        return false;
+    };
+    auto hasInform = [](const std::vector<nox::OutPacket>& out, const std::string& to, uint8_t code, uint8_t val) {
+        for (const auto& m : FlattenTo(out, to))
+            if (m.size() == 6 && m[0] == static_cast<uint8_t>(nox::Op::INFORM) && m[1] == code && m[2] == val) return true;
+        return false;
+    };
+    auto setup = [&](nox::CSyncHost& srv, std::vector<nox::OutPacket>& out, uint32_t& ms, int bx, int by, bool wall) {
+        srv->SetSpellDef(115, 10, 0x423c0005u, { 1, 1, 7, 7 });   // thing.bin SPELL_SWAP(겨눔 0x4 · 위저드 0x2000000)
+        srv->SetSpellDef(126, 20, 0x021c0409u, { 7, 1, 3, 5 });   // thing.bin SPELL_TELEPORT_TO_TARGET(겨눔 없음 · 위저드)
+        srv->SetMagicType(kMagic, 50, 10.0f, 0x4000);
+        srv->SetSoundDefs({ nox::Server::SoundDefIn{ 231, 600, 0, 1, 0 } });   // 소리는 231 하나만 — soundsQueued 가 231 만 센다
+        if (wall) srv->SetWalls({ { 47, 43 } });                                 // a(1000)와 x 1150·1200 사이 x 1081 언저리(y 989)
+        srv.DebugEnterGame(a, 900, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 901, false, nox::CharClass::Warrior);
+        srv->DebugSetScreenHalf(Sid(srv, a), 320, 240);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv->DebugMoveTo(Sid(srv, b), bx, by);
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.TakeOut(out);
+    };
+    auto run = [&](nox::CSyncHost& srv, std::vector<nox::OutPacket>& out, uint32_t& ms, int ticks) {
+        for (int t = 0; t < ticks; ++t) { ms += 34; srv.Tick(ms, out); }
+    };
+    auto at = [&](nox::CSyncHost& srv, const std::string& who, double x, double y) {
+        return std::fabs(srv->DebugPosX(Sid(srv, who)) - x) < 0.01 && std::fabs(srv->DebugPosY(Sid(srv, who)) - y) < 0.01;
+    };
+
+    {   // ① 패킷 시전 — Magic 이 b 에 닿음 → 맞바꿈
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        setup(srv, out, ms, 1150, 1000, false);
+        srv->DebugAimAt(Sid(srv, a), 1150, 1000);
+        srv->DebugFillMana(Sid(srv, a));
+        CastAndWait(srv, a, 115, false, ms, out);
+        const size_t made = srv->MissileCount();
+        srv.TakeOut(out);
+        int t = 0;
+        for (; t < 40 && srv->teleStat(TS::SwapDone) == 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        const int fx = countOp(out, a, static_cast<uint8_t>(nox::Op::FX_TELEPORT));
+        std::snprintf(msg, sizeof(msg), "W9 ① 자리 바꾸기 — Magic %zu · %d틱 · 켬 %llu · 바꿈 %llu · a (%.1f,%.1f) · b (%.1f,%.1f) · 점 효과 %d",
+                      made, t, srv->teleStat(TS::SwapStart), srv->teleStat(TS::SwapDone), srv->DebugPosX(Sid(srv, a)),
+                      srv->DebugPosY(Sid(srv, a)), srv->DebugPosX(Sid(srv, b)), srv->DebugPosY(Sid(srv, b)), fx);
+        Check(made == 1 && srv->teleStat(TS::SwapStart) == 1 && srv->teleStat(TS::SwapDone) == 1 &&
+              at(srv, a, 1150, 1000) && at(srv, b, 1000, 1000) && fx == 2, msg);
+    }
+    {   // ② b 에 닻(14) — 안 바뀜 · 소리 231 이 대상·시전자에 둘
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        setup(srv, out, ms, 1150, 1000, false);
+        srv->DebugApplyEnchant(Sid(srv, b), 14, 3000, 1);
+        srv->DebugAimAt(Sid(srv, a), 1150, 1000);
+        srv->DebugFillMana(Sid(srv, a));
+        const unsigned long long q0 = srv->soundsQueued();
+        CastAndWait(srv, a, 115, false, ms, out);
+        for (int t = 0; t < 40 && srv->teleStat(TS::SwapAnchor) == 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        std::snprintf(msg, sizeof(msg), "W9 ② 닻 — 켬 %llu · 닻 %llu · 바꿈 %llu · 소리 231 %llu · a x %.1f · b x %.1f",
+                      srv->teleStat(TS::SwapStart), srv->teleStat(TS::SwapAnchor), srv->teleStat(TS::SwapDone),
+                      srv->soundsQueued() - q0, srv->DebugPosX(Sid(srv, a)), srv->DebugPosX(Sid(srv, b)));
+        Check(srv->teleStat(TS::SwapStart) == 1 && srv->teleStat(TS::SwapAnchor) == 1 && srv->teleStat(TS::SwapDone) == 0 &&
+              srv->soundsQueued() - q0 == 2 && at(srv, a, 1000, 1000) && at(srv, b, 1150, 1000), msg);
+    }
+    {   // ③ 벽 너머 — 켜지기는 하나 터질 때 안 보여 안 바뀜 · 글 NeedClearLOSForSwap
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        setup(srv, out, ms, 1150, 1000, true);
+        const bool ok = srv->DebugSpellAcceptOn(Sid(srv, a), 115, 3, nox::Target{ Sid(srv, b), -1 }, 1150.0f, 1000.0f);
+        if (ok) srv->DebugDurFireNextTick();             // 틱 밖 받기 — 다음 틱에 터지게
+        run(srv, out, ms, 5);
+        std::snprintf(msg, sizeof(msg), "W9 ③ 벽 너머 — 받음 %d · 켬 %llu · 안 보임 %llu · 바꿈 %llu · 글 %d · a x %.1f",
+                      ok ? 1 : 0, srv->teleStat(TS::SwapStart), srv->teleStat(TS::SwapNoSight), srv->teleStat(TS::SwapDone),
+                      hasPri(out, a, "ExecDur.c:NeedClearLOSForSwap") ? 1 : 0, srv->DebugPosX(Sid(srv, a)));
+        Check(ok && srv->teleStat(TS::SwapNoSight) == 1 && srv->teleStat(TS::SwapDone) == 0 &&
+              hasPri(out, a, "ExecDur.c:NeedClearLOSForSwap") && at(srv, a, 1000, 1000) && at(srv, b, 1150, 1000), msg);
+    }
+    // ④ 화면 사각형(시전자 ± 320·240 · 경계 포함) — 가로 1320 안 · 1321 밖 · 세로 1240 안 · 1241 밖
+    const int kEdge[4][3] = { { 1320, 1000, 1 }, { 1321, 1000, 0 }, { 1000, 1240, 1 }, { 1000, 1241, 0 } };
+    for (const auto& e : kEdge) {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        setup(srv, out, ms, e[0], e[1], false);
+        srv->DebugSpellAcceptOn(Sid(srv, a), 115, 3, nox::Target{ Sid(srv, b), -1 }, static_cast<float>(e[0]), static_cast<float>(e[1]));
+        srv->DebugDurFireNextTick();                     // 틱 밖 받기 — 다음 틱에 터지게
+        run(srv, out, ms, 5);
+        std::snprintf(msg, sizeof(msg), "W9 ④ 화면 (%d,%d) — 안 보임 %llu · 화면 밖 %llu · 바꿈 %llu · 기대 %s", e[0], e[1],
+                      srv->teleStat(TS::SwapNoSight), srv->teleStat(TS::SwapOffScreen), srv->teleStat(TS::SwapDone), e[2] ? "바꿈" : "화면 밖");
+        if (e[2]) Check(srv->teleStat(TS::SwapDone) == 1 && at(srv, a, e[0], e[1]) && at(srv, b, 1000, 1000), msg);
+        else      Check(srv->teleStat(TS::SwapOffScreen) == 1 && srv->teleStat(TS::SwapDone) == 0 && hasPri(out, a, "ExecDur.c:NeedClearLOSForSwap") &&
+                        at(srv, a, 1000, 1000), msg);
+    }
+    {   // ⑤ 자기 자신 — 켤 때 취소
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        setup(srv, out, ms, 1150, 1000, false);
+        const bool ok = srv->DebugSpellAcceptOn(Sid(srv, a), 115, 3, nox::Target{ Sid(srv, a), -1 }, 1000.0f, 1000.0f);
+        run(srv, out, ms, 3);
+        std::snprintf(msg, sizeof(msg), "W9 ⑤ 자기 자신 — 받음 %d · 취소 %llu · 켬 %llu", ok ? 1 : 0, srv->teleStat(TS::SwapCancel),
+                      srv->teleStat(TS::SwapStart));
+        Check(!ok && srv->teleStat(TS::SwapCancel) == 1 && srv->teleStat(TS::SwapStart) == 0, msg);
+    }
+    {   // ⑥ 대상에게 순간이동 — 패킷 시전 · 커서(1200,1000)로 · 점 효과 둘
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        setup(srv, out, ms, 2000, 2000, false);
+        srv->DebugAimAt(Sid(srv, a), 1200, 1000);
+        srv->DebugFillMana(Sid(srv, a));
+        CastAndWait(srv, a, 126, false, ms, out);
+        for (int t = 0; t < 10 && srv->teleStat(TS::TttDone) == 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        const int fx = countOp(out, a, static_cast<uint8_t>(nox::Op::FX_TELEPORT));
+        std::snprintf(msg, sizeof(msg), "W9 ⑥ 커서로 — 켬 %llu · 사라짐 %llu · 옮김 %llu · a (%.1f,%.1f) · 점 효과 %d",
+                      srv->teleStat(TS::TttStart), srv->teleStat(TS::TttGone), srv->teleStat(TS::TttDone),
+                      srv->DebugPosX(Sid(srv, a)), srv->DebugPosY(Sid(srv, a)), fx);
+        Check(srv->teleStat(TS::TttStart) == 1 && srv->teleStat(TS::TttDone) == 1 && at(srv, a, 1200, 1000) && fx == 2, msg);
+    }
+    {   // ⑦ 대상 → 커서 선이 벽에 막힘 — 안 켜짐 · 알림 갈래 0 · 값 2
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        setup(srv, out, ms, 2000, 2000, true);
+        const bool ok = srv->DebugSpellAcceptOn(Sid(srv, a), 126, 3, nox::Target{}, 1200.0f, 1000.0f);
+        if (ok) srv->DebugDurFireNextTick();             // 틱 밖 받기 — 다음 틱에 터지게
+        run(srv, out, ms, 3);
+        std::snprintf(msg, sizeof(msg), "W9 ⑦ 선 막힘 — 받음 %d · 막힘 %llu · 켬 %llu · 알림 0·2 %d · a x %.1f", ok ? 1 : 0,
+                      srv->teleStat(TS::TttBlocked), srv->teleStat(TS::TttStart), hasInform(out, a, 0, 2) ? 1 : 0, srv->DebugPosX(Sid(srv, a)));
+        Check(!ok && srv->teleStat(TS::TttBlocked) == 1 && srv->teleStat(TS::TttStart) == 0 && hasInform(out, a, 0, 2) &&
+              at(srv, a, 1000, 1000), msg);
+    }
+    // ⑧ 커서 바닥 — 금지 번호(3)면 안 켜짐 · 소리 231 / 다른 번호(4)만 금지면 옮김
+    for (int banned : { 3, 4 }) {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        std::vector<nox::MapFile::FloorCell> cells;
+        for (int x = 0; x < 128; ++x)
+            for (int y = 0; y < 128; ++y) {
+                nox::MapFile::FloorCell c; c.x = static_cast<uint8_t>(x); c.y = static_cast<uint8_t>(y);
+                c.first.present = c.second.present = true;
+                c.first.image = c.second.image = 3;                            // 온 바닥이 정의 번호 3
+                cells.push_back(c);
+            }
+        nox::FloorGrid g;
+        g.Build(cells);
+        srv->SetFloor(g, {}, std::vector<int32_t>(8, 0x80));
+        srv->SetNoTeleportFloors({ banned, -1, -1, -1, -1 });
+        setup(srv, out, ms, 2000, 2000, false);
+        const unsigned long long q0 = srv->soundsQueued();
+        const bool ok = srv->DebugSpellAcceptOn(Sid(srv, a), 126, 3, nox::Target{}, 1200.0f, 1000.0f);
+        if (ok) srv->DebugDurFireNextTick();             // 틱 밖 받기 — 다음 틱에 터지게
+        run(srv, out, ms, 3);
+        std::snprintf(msg, sizeof(msg), "W9 ⑧ 금지 번호 %d — 받음 %d · 금지 바닥 %llu · 옮김 %llu · 소리 231 %llu · a x %.1f", banned, ok ? 1 : 0,
+                      srv->teleStat(TS::TttNoTele), srv->teleStat(TS::TttDone), srv->soundsQueued() - q0, srv->DebugPosX(Sid(srv, a)));
+        if (banned == 3) Check(!ok && srv->teleStat(TS::TttNoTele) == 1 && srv->teleStat(TS::TttDone) == 0 && srv->soundsQueued() - q0 == 1 &&
+                               at(srv, a, 1000, 1000), msg);
+        else             Check(ok && srv->teleStat(TS::TttNoTele) == 0 && srv->teleStat(TS::TttDone) == 1 && at(srv, a, 1200, 1000), msg);
+    }
+    {   // ⑨ 시전자(= 대상)에 닻 — 켜지나 터질 때 안 옮김
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        setup(srv, out, ms, 2000, 2000, false);
+        srv->DebugApplyEnchant(Sid(srv, a), 14, 3000, 1);
+        srv->DebugSpellAcceptOn(Sid(srv, a), 126, 3, nox::Target{}, 1200.0f, 1000.0f);
+        srv->DebugDurFireNextTick();                     // 틱 밖 받기 — 다음 틱에 터지게
+        run(srv, out, ms, 3);
+        std::snprintf(msg, sizeof(msg), "W9 ⑨ 닻 — 켬 %llu · 닻 %llu · 옮김 %llu · a x %.1f", srv->teleStat(TS::TttStart),
+                      srv->teleStat(TS::TttAnchor), srv->teleStat(TS::TttDone), srv->DebugPosX(Sid(srv, a)));
+        Check(srv->teleStat(TS::TttStart) == 1 && srv->teleStat(TS::TttAnchor) == 1 && srv->teleStat(TS::TttDone) == 0 &&
+              at(srv, a, 1000, 1000), msg);
+    }
+    {   // ⑩ 투명(0) — 옮기되 새 자리 점 효과 없음(옛 자리 하나)
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        setup(srv, out, ms, 2000, 2000, false);
+        srv->DebugApplyEnchant(Sid(srv, a), 0, 3000, 1);
+        srv.TakeOut(out);
+        srv->DebugSpellAcceptOn(Sid(srv, a), 126, 3, nox::Target{}, 1200.0f, 1000.0f);
+        srv->DebugDurFireNextTick();                     // 틱 밖 받기 — 다음 틱에 터지게
+        run(srv, out, ms, 3);
+        const int fx = countOp(out, a, static_cast<uint8_t>(nox::Op::FX_TELEPORT));
+        std::snprintf(msg, sizeof(msg), "W9 ⑩ 투명 — 옮김 %llu · 점 효과 %d · a x %.1f", srv->teleStat(TS::TttDone), fx, srv->DebugPosX(Sid(srv, a)));
+        Check(srv->teleStat(TS::TttDone) == 1 && fx == 1 && at(srv, a, 1200, 1000), msg);
+    }
+    std::printf("  11-21 W9 자리 바꾸기·대상에게 순간이동 — 맞바꿈 · 닻 · 벽 · 화면 경계 · 자기 자신 / 커서로 · 선 막힘 · 금지 바닥 · 닻 · 투명\n");
+}
+
 // ── 11-20 트레일러 전사 1-b — 수식 효과(modifier.bin `Server::ParseModEffects`) · 휘두를 때 위력 배수 · 맞힐 때 불·번개 ─────
 //   ① 진짜 복호본을 읽어 번호 차례·값(빠진 `;` 칸 Speed4 포함)을 본다
 //   ② 워리어 롱소드로 곰을 한 대 — 수식 없음 / 위력6(×1.2) / 불1(+3 폭발) / 번개4(+12 전기) / 불1인데 곰이 무적(관문)
@@ -38941,6 +39135,7 @@ int main() {
     TestOvalShield1121();
     TestCounterSpellCast1121();
     TestOgreWarlord1121();
+    TestSwapTele1121();
     TestModEffects1120();
     TestPickupAutoEquip();
     TestArmorEquip();
