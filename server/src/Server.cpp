@@ -7257,7 +7257,9 @@ bool Server::SpellAccept(uint8_t spell, Session& s, int64_t obj3, const SpellArg
             // useShock_52C5A0(`GAME4_2.c:9653`) — 대상이 없으면 0.
             //   ⚠ **글리프에 걸면** 피해 갈래다(`ShockTrapDamage[세기-1]` 종류 9 전기) — 글리프가 아직 없다(묶음 4-e).
             //   그 밖에는 **충격 마법부여(22)** 를 `ShockEnchantDuration` 만큼. 도운 사람 기록은 **안 한다**.
-            case 20:  c.durOpt = "ShockEnchantDuration"; fnc = CastBuffSpell(spell, 22, fl5, targ, c); break;
+            // ★ 11-20 트레일러 위저드 W1 — 번호 바로잡기: 충격은 **71**(`SpellNames.cpp:85` SPELL_SHOCK · `spells.go:340` `case spell.SPELL_SHOCK`).
+            //   ✖ 전에는 20(SPELL_DISENCHANT_ALL — thing.bin 에 없는 번호)에 달려 이 갈래는 영영 안 돌고 진짜 71 은 「안 옮김」으로 빠졌다
+            case 71:  c.durOpt = "ShockEnchantDuration"; fnc = CastBuffSpell(spell, 22, fl5, targ, c); break;
             case 12: fnc = CastConfuse(obj3, targ, fl5); break;                                   // nox_xxx_castConfuse_52C1E0
             case 74: fnc = CastStun(obj3, targ, fl5); break;                                      // nox_xxx_castStun_52C2C0
             case 33: fnc = CastFumble(targ); break;                                               // nox_xxx_castFumble_52C060

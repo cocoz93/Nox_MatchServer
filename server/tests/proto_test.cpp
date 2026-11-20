@@ -5557,7 +5557,7 @@ void TestBuffSpells() {
         { 61, 20, 309, false, "ProtectElectricity" }, { 62, 17, 310, false, "ProtectFire" }, { 64, 18, 311, false, "ProtectPoison" },
         { 70, 8, 312, false, "Run" }, { 72, 4, 313, false, "Slow" }, { 130, 13, 314, false, "Vampirism" }, { 131, 10, 1080, false, "Villain" },
         // 4-c4 — 충격(useShock_52C5A0). 글리프에 걸면 피해 갈래지만 글리프는 아직 없다(묶음 4-e)
-        { 20, 22, 315, false, "Shock" },
+        { 71, 22, 315, false, "Shock" },   // ★ 11-20 W1 — 충격은 71(SPELL_SHOCK) · 전에는 20 으로 적혀 코드의 잘못 번호를 같이 맞춰 주고 있었다
     };
     const char* kGd =
         "AnchorEnchantDuration = 301;\nFearEnchantDuration = 302;\nHasteEnchantDuration = 303;\nInfravisionEnchantDuration = 304;\n"
@@ -5605,7 +5605,15 @@ void TestBuffSpells() {
         CastAndWait(s2, a, 36, false, m3, o3);
         Check(!s2->DebugHasEnchant(Sid(s2, a), 9) && s2->ManaOf(Sid(s2, a)) == full2, "대상 없는 Haste 가 걸렸거나 마나를 가져갔다(castBuffSpell 대상 없음 0)");
     }
-    std::printf("  4-b2 — 버프 주문 20 함수 길이·세기·연기 · Death 한 번만 · 대상 없음 실패 · 4-c4 충격(22)\n");
+    // ★ 11-20 W1 — 옛 잘못 번호 20(SPELL_DISENCHANT_ALL)으로는 감전(22)이 안 걸린다
+    {
+        nox::CSyncHost srv; mk(srv, 20);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        CastAndWait(srv, a, 20, true, ms, out);
+        Check(!srv->DebugHasEnchant(Sid(srv, a), 22), "W1 — 20(DISENCHANT_ALL)으로 감전(22)이 걸렸다(충격은 71)");
+    }
+    std::printf("  4-b2 — 버프 주문 20 함수 길이·세기·연기 · Death 한 번만 · 대상 없음 실패 · 4-c4 충격 71 → 감전(22) · 20 으로는 안 걸림\n");
 }
 
 // ── 묶음 4-b3 — 움직임 버프 ─────────────────────────────────────────
