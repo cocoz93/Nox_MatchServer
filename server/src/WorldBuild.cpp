@@ -573,6 +573,11 @@ std::shared_ptr<const nox::Server::GameTables> BuildGameTables(const GameFiles& 
             b.flags = nox::ParseObjectFlags(t2->flagsRaw);
             b.cls = nox::ParseObjectClass(t2->classRaw);
             b.mass = (t2->mass > 0.0f) ? t2->mass : 1.0f;   // 정답지 기본 1(`server/object_type.go:197`)
+            // ★ 11-20 — 정답지는 종류를 다 읽은 뒤 **모든 종류의 무게에 ×10**(`server/object_type.go:372` `typ.Mass *= 10.0`).
+            //   ✖ 전에는 thing.bin MASS 그대로라 몬스터가 10배 가벼웠다 — 악마 터짐 밀기(힘 1500 ÷ 무게)가 좀비(2)를
+            //     한 틱에 640 옮겨 화면 밖으로 튀었다(사용자 「데몬 터질 때 주변 몬스터가 애니 없이 사라진다」 · ×10 이면 64).
+            //     같은 값을 몸 충돌 · 기절 갈래(무게 > 15) · 광전사 충돌 · 밀기들이 읽는다. 사람 무게는 힘에서 따로 낸다(`PlayerMassFromStrength`)
+            b.mass *= 10.0f;
             b.subclass = nox::Server::MonsterClassBitsOf(t2->subclassRaw);
             b.damageFn = nox::Server::DamageFnOf(t2->damageFn);
             b.hasCollide = t2->hasCollide;

@@ -31028,6 +31028,14 @@ void TestRoomMatchSwitchRealMaps() {
     GameFiles files;
     LoadGameFiles(dir, files);
     const auto tables = BuildGameTables(files);
+    // ★ 11-20 — 몸 무게는 thing.bin MASS × 10(`server/object_type.go:372`) — 좀비 2.0 → 20 · 큰 악마 6.0 → 60
+    {
+        const auto zb = tables->typeBodies.find(1360), db = tables->typeBodies.find(1347);
+        std::snprintf(m, sizeof(m), "실물 — 몸 무게가 thing.bin × 10 이 아니다(좀비 %.2f · 큰 악마 %.2f)",
+                      zb != tables->typeBodies.end() ? zb->second.mass : -1.0f, db != tables->typeBodies.end() ? db->second.mass : -1.0f);
+        Check(zb != tables->typeBodies.end() && db != tables->typeBodies.end() &&
+              std::fabs(zb->second.mass - 20.0f) < 0.01f && std::fabs(db->second.mass - 60.0f) < 0.01f, m);
+    }
     const MapCatalog cat = BuildMapCatalog(files, tables, { waitPath, battlePath });
     const auto wait = cat.Find("so_lod"), battle = cat.Find("estate");
     Check(wait && battle, "실물 — 맵 원본 둘(so_lod · estate)을 못 차림");
