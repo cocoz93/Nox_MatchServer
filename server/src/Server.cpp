@@ -7257,7 +7257,8 @@ int Server::CheckPlrCantCastSpell(const Session& s, uint8_t spell, bool glyph) c
         const ProjTypeInfo* pt = ProjType("MagicMissile");
         if (pt && pt->type != 0) {
             int have = 0;
-            for (const auto& m : missiles_) if (m.type == pt->type && m.owner == s.sessionId) ++have;
+            // ★ 11-21 C11-b — 부른 몬스터가 쏜 것은 `owner` 가 그 사람이어도 몬스터의 거느린 것이라 안 센다(`ownerNet` · 원본은 +516 제 목록만)
+            for (const auto& m : missiles_) if (m.type == pt->type && m.owner == s.sessionId && m.ownerNet == 0) ++have;
             if (have >= static_cast<int>(BalanceFloatInd("MagicMissileCount", SpellPower(s, spell) - 1))) return 3;
         }
     }
@@ -15228,6 +15229,7 @@ void Server::MonsterActionCast(Creature& k, int a2) {
 //   겨눔이고 남이면 날아가는 주문(`createSpellFly_4FDDA0`) — 우리 몬스터에 없음
 //   받아들임 — 전기 광선(24) = 지속(30) · 점멸(4) = 지속(0, 대상 자기) · ★ 11-19 화염구(27) = 곧장 날림(`castFireball_52C790` — 겨눔 아님) ·
 //   ★ 11-21 C11-a 사슬 번개(43) = 지속(30) · 그 밖은 안 옮김
+//   ★ 11-21 C11-b 투명 39 · 충격 71 · 밀기 66 · 운석 52 · 픽시 떼 58 · 마법 화살 50 = 효과 함수(아래 switch) — 위 「그 밖」은 이 여섯을 뺀 것
 bool Server::MonsterCastSpellNow(Creature& k, uint8_t spell, const Target& target, float x, float y) {
     ++castStat_[static_cast<size_t>(CastStat::Cast)];
     if ((x != 0.0f || y != 0.0f) && (x != static_cast<float>(k.x) || y != static_cast<float>(k.y))) k.facingWant = DirFromVec(x - k.x, y - k.y);   // 제 자리면 안 돌림
@@ -15251,6 +15253,43 @@ bool Server::MonsterCastSpellNow(Creature& k, uint8_t spell, const Target& targe
         }
         ++castStat_[static_cast<size_t>(CastStat::Accepted)];
         return true;
+    }
+    // ★ 11-21 트레일러 컨저러 C11-b — 남을 안 겨누는 여섯. 갈래는 사람과 같은 효과 함수(`spells.go` — 몬스터도 `castSpell(u, u, u)` `:432~443` 라
+    //   a3(시전자) = a4(자리) = 그 몬스터 · a5 자리 = 쏘기 칸이 넘긴 대상 자리) · 함수 갈래라 세기를 5 로 자르고 0 이면 거짓(PermanentFizzle 소리는 10)
+    //   · 투명 39 · 충격 71 = `castBuffSpell` 제 몸(겨눔 0x4 지만 대상이 자기라 위 거르기를 지난다) · 밀기 66 = 그 몬스터 자리에서 둘레 600 · 안쪽 10
+    //   · 운석 52 · 픽시 떼 58 · 마법 화살 50 = 몬스터 시전자 판(주인 = 그 몬스터 — 사람 판은 시전자가 세션이다)
+    //   ⚠ 사람 판과 같이 안 옮긴 것 — 밀기·운석의 시전 소리(`spellGetAud44` · 10)
+    {
+        const int fl5 = k.spellLevel > 5 ? 5 : k.spellLevel;
+        int fnc = -1;
+        switch (spell) {
+            case 39: {                                                // castInvisibility — 공격 지속 주문 끄기 · 연기 점 효과(`spells.go` 39 갈래 = 사람과 같은 BuffConf)
+                BuffConf c;
+                c.durOpt = "InvisibilityEnchantDuration"; c.defensive = true; c.pointFx = static_cast<uint8_t>(Op::FX_SMOKE_BLAST);
+                fnc = CastBuffSpell(spell, 0, fl5, self, c);
+                break;
+            }
+            case 71: {                                                // useShock_52C5A0 — 충격 마법부여(22) · ShockEnchantDuration
+                BuffConf c;
+                c.durOpt = "ShockEnchantDuration";
+                fnc = CastBuffSpell(spell, 22, fl5, self, c);
+                break;
+            }
+            case 66:                                                  // castPush_52C000(`GAME4_2.c:9347~9356`) — a4 + 56(그 몬스터 자리)
+                PushUnitsAround(static_cast<float>(k.x), static_cast<float>(k.y), 600.0f, 10.0f,
+                                static_cast<float>(BalanceFloat("PushPowerCoeff") * fl5));
+                fnc = 1;
+                break;
+            case 52: fnc = MonsterCastMeteor(k, x, y, fl5); break;   // castMeteor_52D9D0
+            case 58: fnc = MonsterCastPixieSwarm(k, spell, fl5); break;   // castPixies_540440
+            case 50: fnc = MonsterCastMagicMissile(k, spell, fl5); break;   // spellMissiles.Cast(`spell_missiles.go:26`)
+            default: break;
+        }
+        if (fnc >= 0) {
+            if (fnc == 0) return false;
+            ++castStat_[static_cast<size_t>(CastStat::Accepted)];
+            return true;
+        }
     }
     DurFns f;
     uint32_t dt = 0;
@@ -16534,7 +16573,7 @@ Server::MissileObj* Server::LaunchFireball(int lvl, float px, float py, double v
 //   ③ 갱신자료 첫 칸 = `MeteorDamage[세기-1]`(45·65·85·105·125) · z 속도 = **−MeteorSpeed(8)**
 int Server::CastMeteor(Session& caster, const SpellArg& arg, int lvl) {
     for (const auto& p : placed_) {
-        if (p.kind == 3 && p.owner == caster.sessionId) {
+        if (p.kind == 3 && p.owner == caster.sessionId && p.ownerNet == 0) {   // ★ 11-21 C11-b — 부른 몬스터의 운석은 그 몬스터 것
             SendPriMsg(caster, "ExecSpel.c:TooManyMeteors");   // netPriMsgToPlayer_4DA2C0
             return 0;
         }
@@ -16601,6 +16640,7 @@ void Server::SpawnCreature(uint16_t type, float x, float y, int64_t owner) {
     //   화염구 27(+1596)·10(+1528) 공격(0x40000000) · 39 달아날 때(+1644 0x80000000) · 세기 3(+2040)
     //   ⚠ 옮긴 것은 화염구뿐 — 나머지는 시전이 「안 옮김」(CastStat::NotPorted)으로 빠진다 ·
     //     +2036 = 1(자동 주문을 걸었다는 표시 — 다시 읽을 때 또 거는 데 씀 `GAME4_2.c:8275`)은 안 옮김(Beholder 와 같음)
+    //   ✖ 11-21 C11-b — 「화염구뿐」은 옛 말 — 39 투명(달아날 때 제 몸)도 옮겼다(`MonsterCastSpellNow` 39 갈래) · 남은 「안 옮김」은 13·74·10
     if (type == 1347) {
         k.spells.push_back({ 13, 0x08000000u });
         k.spells.push_back({ 74, 0x20000000u });
@@ -16677,7 +16717,7 @@ int Server::CastPixieSwarm(uint8_t spell, Session& caster, int lvl) {
     const uint16_t type = NamedType("Pixie");
     if (type == 0) return 1;
     int have = 0;
-    for (const auto& m : missiles_) if (m.type == type && m.owner == caster.sessionId) ++have;
+    for (const auto& m : missiles_) if (m.type == type && m.owner == caster.sessionId && m.ownerNet == 0) ++have;   // ★ 11-21 C11-b 몬스터 것 빼기
     const int want = static_cast<int>(BalanceFloatInd("PixieCount", lvl - 1));
     if (have >= want) return 1;                              // 이미 다 차 있으면 소리만
     const float cx = static_cast<float>(caster.posX), cy = static_cast<float>(caster.posY);
@@ -16724,7 +16764,7 @@ int Server::CastMagicMissile(uint8_t spell, Session& caster, int lvl) {
     const ProjTypeInfo* pt = ProjType("MagicMissile");
     if (!pt || pt->type == 0) return 1;                      // newObjectByTypeID 가 0 — 만들 것이 없다(정답지도 터지지 않고 지나간다)
     int have = 0;
-    for (const auto& m : missiles_) if (m.type == pt->type && m.owner == caster.sessionId) ++have;
+    for (const auto& m : missiles_) if (m.type == pt->type && m.owner == caster.sessionId && m.ownerNet == 0) ++have;   // ★ 11-21 C11-b 몬스터 것 빼기
     const int maxCnt = static_cast<int>(BalanceFloatInd("MagicMissileCount", lvl - 1));
     int cnt = maxCnt;
     if (have + cnt > maxCnt) cnt = maxCnt - have;
@@ -16772,6 +16812,164 @@ int Server::CastMagicMissile(uint8_t spell, Session& caster, int lvl) {
     if (gt_->spellDefs[spell].valid && gt_->spellDefs[spell].castSound != 0)
         PlaySoundAt(gt_->spellDefs[spell].castSound, cx, cy, 0, 0, caster.sessionId, Target{ caster.sessionId, -1 });   // Audio.EventObj(시전 소리, 시전자) — 시전자 본인에게는 0xA7
     return 1;
+}
+
+// ── ★ 11-21 트레일러 컨저러 C11-b — 몬스터 시전자 판 셋 ─────────────────────────────
+//   원본은 사람·몬스터가 같은 효과 함수를 쓴다(몬스터는 `castSpell(u, u, u)` `spells.go:432~443` — a3 시전자 = a4 자리 = 그 몬스터).
+//   우리 사람 판은 시전자가 세션(커서·글·세션 주인)이라 몬스터 몫을 따로 둔다. 셋이 같이 따르는 것:
+//   · 원본의 임자(+508 · `createAt` 의 a3)는 그 몬스터다 — 피해 함수의 `by` 는 몬스터 불덩이와 같이 **그 몬스터의 주인**(부른 사람 · 맵 몬스터면 없음)을 넣고
+//     그 몬스터 자신은 `ownerNet`(번호)으로 들고 간다(「하나만」·「너무 많음」 셈 · 맵 몬스터 운석의 who · 날아가는 것의 주인)
+//   · 글(`netPriMsgToPlayer_4DA2C0` TooManyMeteors·TooManyMissiles · `netInformTextMsg` 막힘)은 사람에게만 가는 함수라 몬스터는 말없이 0
+
+// castMeteor_52D9D0(`GAME4_2.c:10201~10276`) 몬스터 판 — 그 몬스터가 거느린 운석(+516 · `ownerNet`)이 있으면 0 ·
+//   그 몬스터 자리 → 대상 자리(a5) 선 추적(73 · 협동 모드 9 는 사람 판과 같이 안 가름)이 막히면 0 · 대상 자리 하늘(255)에 운석 · z 속도 −MeteorSpeed ·
+//   갱신자료 첫 칸 = MeteorDamage[세기-1]
+int Server::MonsterCastMeteor(Creature& k, float tx, float ty, int lvl) {
+    for (const auto& p : placed_) if (p.kind == 3 && p.ownerNet == k.netCode) return 0;
+    if (!MapTraceRay(static_cast<float>(k.x), static_cast<float>(k.y), tx, ty, 73)) return 0;
+    if (PlacedObj* mo = PlaceObject(NamedType("Meteor"), tx, ty, k.owner, kPlacedNoLife, /*kind=*/3)) {
+        mo->ownerNet = k.netCode;
+        mo->z = 255.0f;                                      // unitRaise_4E46F0(255)
+        mo->zVel = -static_cast<float>(BalanceFloat("MeteorSpeed"));
+        QueueDeltaZStart(mo->netCode, mo->z, mo->zVel, 0.0f);
+        mo->damage = static_cast<int>(BalanceFloatInd("MeteorDamage", lvl - 1));
+    }
+    return 1;
+}
+
+// castPixies_540440(`GAME4_3.c:8299~8359`) 몬스터 판 — 그 몬스터가 거느린 픽시(`unitIsUnitTT_4E7C80(a3)` · `ownerNet`)를 `PixieCount[세기-1]` 까지 채운다 ·
+//   자리 = 몬스터 + (그 종류 몸 반지름(+176) + 4) × 무작위 방향 · 선 추적(5)이 막히면 그 마리는 거른다 · 속도 0 · 수명 30~90초
+//   ⚠ 사람 판과 같이 안 옮긴 것 — 날아다니는 AI(`updatePixie_53CD20`)와 만들 때 대상 찾기(`:8343`) — 픽시는 제자리에서 닿는 적만 때린다
+int Server::MonsterCastPixieSwarm(Creature& k, uint8_t spell, int lvl) {
+    const uint16_t type = NamedType("Pixie");
+    if (type == 0) return 1;
+    int have = 0;
+    for (const auto& m : missiles_) if (m.type == type && m.ownerNet == k.netCode) ++have;
+    const int want = static_cast<int>(BalanceFloatInd("PixieCount", lvl - 1));
+    if (have >= want) return 1;
+    const float cx = static_cast<float>(k.x), cy = static_cast<float>(k.y);
+    const auto tb = gt_->typeBodies.find(k.type);
+    const float dist = (tb != gt_->typeBodies.end() ? tb->second.r : static_cast<float>(kBodyRadius)) + 4.0f;   // +176 반지름 + 4
+    const int self = static_cast<int>(&k - pets_.data());
+    for (int n = have; n < want; ++n) {
+        const int dir = static_cast<int>(NextRandom(256));
+        const float px = cx + dist * DirVecX(dir);
+        const float py = cy + dist * DirVecY(dir);
+        if (!MapTraceRay(cx, cy, px, py, 0x5)) continue;
+        MissileObj m;
+        m.netCode = nextShotNetCode_++;
+        if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;
+        m.type = type;
+        m.flags = 0x4000;                                    // thing FLAGS = AIRBORNE
+        m.posX = m.newX = m.prevX = px;
+        m.posY = m.newY = m.prevY = py;
+        m.dir1 = m.dir2 = static_cast<uint8_t>(dir);
+        m.createdFrame = m.frame136 = frame_;
+        m.owner = k.owner;
+        m.ownerNet = k.netCode;
+        m.ownerPet = m.fromPet = self;
+        m.ud0 = m.ud2 = k.owner;
+        m.spell = spell;
+        m.level = lvl;
+        m.collideKind = 2;                                   // PixieCollide
+        m.collideAmount = 8;                                 // thing.bin `COLLIDE = PixieCollide 8`
+        m.expireFrame = frame_ + static_cast<uint32_t>(kServerTickRate) * (30u + NextRandom(61u));   // randomInt(30,90) 초
+        missiles_.push_back(m); ++missilesMade_;
+    }
+    return 1;
+}
+
+// spellMissiles.Cast · CastCustom(`spell_missiles.go:26~91`) 몬스터 판 — 수·퍼짐·빠르기·자리는 사람 판(`CastMagicMissile` 머리 주석)과 같고 다른 것만:
+//   · 「너무 많음」 셈 = 그 몬스터가 거느린 마법 화살(`CountSubOfType(owner)` · `ownerNet`)
+//   · 방향 = 그 몬스터 몸 방향(+124) · 자리 = 몬스터 + 속도 + 방향 × (그 종류 몸 반지름 + 4)
+//   · 대상 — 시전자가 사람이 아니면 커서 자리가 없다(`:78~83`) → `spellFlySearchTarget(nil, 날아가는 것, 0x20, 600, 0, 그 몬스터)`
+//     = 날아가는 것 둘레 600 에서 그 몬스터의 적 가운데 가장 가까운 것(`SpellFlySearchTargetPet`)
+//   · 시전 소리는 그 몬스터 자리(`Audio.EventObj(aud, caster)`)
+int Server::MonsterCastMagicMissile(Creature& k, uint8_t spell, int lvl) {
+    const ProjTypeInfo* pt = ProjType("MagicMissile");
+    if (!pt || pt->type == 0) return 1;
+    int have = 0;
+    for (const auto& m : missiles_) if (m.type == pt->type && m.ownerNet == k.netCode) ++have;
+    const int maxCnt = static_cast<int>(BalanceFloatInd("MagicMissileCount", lvl - 1));
+    int cnt = maxCnt;
+    if (have + cnt > maxCnt) cnt = maxCnt - have;
+    if (cnt <= 0) {
+        ++mmStat_[static_cast<size_t>(MmStat::TooMany)];
+        return 0;
+    }
+    constexpr uint16_t kSpread = 16;
+    constexpr float kOffset = 4.0f, kVelMult = 0.1f, kSearchDist = 600.0f;
+    constexpr double kSpeedMin = 0.80000001, kSpeedMax = 1.2;
+    const float cx = static_cast<float>(k.x), cy = static_cast<float>(k.y);
+    const float cvx = static_cast<float>(k.velX), cvy = static_cast<float>(k.velY);
+    const auto tb = gt_->typeBodies.find(k.type);
+    const float rdist = (tb != gt_->typeBodies.end() ? tb->second.r : static_cast<float>(kBodyRadius)) + kOffset;
+    const int self = static_cast<int>(&k - pets_.data());
+    for (int i = 0; i < cnt; ++i) {
+        int doff = static_cast<int16_t>(kSpread * static_cast<uint16_t>((i + 1) / 2));
+        if (i % 2 == 1) doff = -doff;
+        const int dir = (static_cast<int>(k.facing) + doff) & 0xFF;
+        const float dvx = DirVecX(dir), dvy = DirVecY(dir);
+        const float px = cx + cvx + dvx * rdist;
+        const float py = cy + cvy + dvy * rdist;
+        if (!MapTraceRay(cx, cy, px, py, 0x1 | 0x4)) continue;
+        MissileObj m;
+        m.netCode = nextShotNetCode_++;
+        if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;
+        m.type = pt->type;
+        m.flags = pt->flags;
+        m.posX = m.newX = m.prevX = px;
+        m.posY = m.newY = m.prevY = py;
+        m.dir1 = m.dir2 = static_cast<uint8_t>(dir);
+        m.createdFrame = m.frame136 = frame_;
+        m.speed = static_cast<float>((kSpeedMin + (kSpeedMax - kSpeedMin) * NextRandomFloat()) * pt->speed);
+        m.velX = cvx + dvx * (m.speed * kVelMult);
+        m.velY = cvy + dvy * (m.speed * kVelMult);
+        m.owner = k.owner;
+        m.ownerNet = k.netCode;
+        m.ownerPet = m.fromPet = self;
+        m.ud0 = m.ud2 = k.owner;
+        m.ud1 = SpellFlySearchTargetPet(k, px, py, &m.buffs, kSearchDist);
+        m.spell = spell;
+        m.level = lvl;
+        m.collideKind = 8;                                   // BoomCollide · MagicMissileUpdate
+        missiles_.push_back(m); ++missilesMade_;
+        ++mmStat_[static_cast<size_t>(MmStat::Made)];
+    }
+    if (gt_->spellDefs[spell].valid && gt_->spellDefs[spell].castSound != 0)
+        PlaySoundAt(gt_->spellDefs[spell].castSound, cx, cy, 0, 0, kNoSession, PetTarget(k));
+    return 1;
+}
+
+// `Nox_xxx_spellFlySearchTarget`(`server/spells.go:378~456`) 의 **pos 없음 · 주인 = 몬스터** 갈래 — 가운데 = 날아가는 것 자리 ·
+//   커서 갈래(`:380~386`)는 주인이 사람일 때만이라 없다 · 거르기는 사람 판(`SpellFlySearchTarget`)과 같고 적 판정만
+//   `IsEnemyTo(날아가는 것, it)`(주인 사슬 = 그 몬스터 — `CreatureEnemyTo`) · CanInteract 를 날아가는 것과 그 몬스터 둘 다(`:443~448`)
+Target Server::SpellFlySearchTargetPet(const Creature& k, float mslX, float mslY, const Buffs* mslBuffs, float dist) const {
+    const float dist2 = dist * dist;
+    const float kx = static_cast<float>(k.x), ky = static_cast<float>(k.y);
+    float minDist = 1e+08f;
+    Target found;
+    auto consider = [&](const Target& t, float ox, float oy, const Buffs* tb, double tvx, double tvy) {
+        if (!CreatureEnemyTo(k, t)) return;
+        const float dx = mslX - ox, dy = mslY - oy;
+        const float odist = dy * dy + dx * dx;
+        if (odist > dist2) return;
+        if (!CanSeeBuffs(mslBuffs, tb, tvx, tvy, 0) || !MapTraceVision(ox, oy, mslX, mslY)) return;   // CanInteract(msl, it)
+        if (!CanSeeBuffs(&k.buffs, tb, tvx, tvy, 0) || !MapTraceVision(ox, oy, kx, ky)) return;       // CanInteract(owner, it)
+        if (odist < minDist) { found = t; minDist = odist; }
+    };
+    for (const auto& kv : sessions_) {
+        const Session& o = kv.second;
+        if (!o.inGame || o.observer || o.respawnAtFrame != 0) continue;         // 관전 · DEAD
+        consider(Target{ o.sessionId, -1 }, static_cast<float>(o.posX), static_cast<float>(o.posY), &o.buffs, o.velX, o.velY);
+    }
+    for (size_t i = 0; i < pets_.size(); ++i) {
+        if (pets_[i].dead) continue;
+        const auto tb = gt_->typeBodies.find(pets_[i].type);
+        if (tb != gt_->typeBodies.end() && (tb->second.subclass & 0xC000)) continue;   // 몬스터 SUBCLASS 0x8000·0x4000
+        consider(Target{ kNoSession, static_cast<int>(i) }, static_cast<float>(pets_[i].x), static_cast<float>(pets_[i].y), &pets_[i].buffs, 0.0, 0.0);
+    }
+    return found;
 }
 
 // 놓인 것의 **닿음 함수** — 몸이 겹친 것에 한 틱마다 한 번.
@@ -16907,6 +17105,21 @@ void Server::MeteorExplode(PlacedObj& o) {
     if (auto oi = sessions_.find(owner); oi != sessions_.end()) {
         ws.x = static_cast<float>(oi->second.prevX); ws.y = static_cast<float>(oi->second.prevY);
         wsp = &ws;
+    } else if (const int pi = o.ownerNet ? PetIndexByNet(o.ownerNet) : -1; pi >= 0) {
+        // ★ 11-21 C11-b — **맵 몬스터**가 놓은 운석 — 주인 사슬에 사람이 없으면 맨 위(`findParentChainPlayer` `server/object.go:1422~1435`) = 그 몬스터가 who
+        //   (부른 몬스터면 `owner` 가 그 사람이라 위 갈래가 같은 답을 낸다). 꼴은 큰 악마 터짐(`DemonDie` 쪽)의 who 와 같다
+        const Creature& k = pets_[static_cast<size_t>(pi)];
+        ws.x = static_cast<float>(k.prevX); ws.y = static_cast<float>(k.prevY);
+        ws.byMonsterType = k.type;
+        ws.byPet = pi;
+        ws.rootIsMonster = (k.owner == kNoSession);
+        WallHitter w;
+        w.present = true; w.unit = true; w.player = false;
+        w.x = static_cast<float>(k.x); w.y = static_cast<float>(k.y); w.dir = k.facing; w.material = MaterialOfWire(k.type);
+        w.src = k.owner;
+        DamageUnitsAround(x, y, 80.0f, 30.0f, dmg, 7, owner, Target{}, HitterMonster(k), &ws, w);
+        PlaceObject(NamedType("MeteorExplode"), x, y, owner, static_cast<uint32_t>(kServerTickRate), /*kind=*/0);
+        return;
     }
     DamageUnitsAround(x, y, 80.0f, 30.0f, dmg, 7, owner, Target{}, HitterBySession(owner), wsp,
                       WallHitterOfSession(owner));   // ★ 4-c3b1 who = 주인 사람(`GAME4_3.c:6839~6840`)
@@ -17078,6 +17291,16 @@ void Server::MonsterDeadFn(size_t idx) {
 //   ⚠ 자리바꾸기(SWAP 115) 주문이면 cspellRemoveSpell_52BC90(4-e)
 void Server::MissileChangeOwner(MissileObj& m, int64_t own, uint32_t frame) {
     if (m.ud1.sessionId == own && (own != kNoSession)) {
+        // ★ 11-21 C11-b — 주인이 몬스터(`ownerNet`)였으면 새 대상은 그 몬스터([0] = 그 몬스터) · 이제 주인은 사람이라 번호를 비운다
+        if (m.ownerNet != 0) {
+            m.ud1 = Target{ kNoSession, m.ownerPet };        // 지워졌으면 −1 = 대상 없음
+            m.ownerPet = m.fromPet = -1;                     // 이제 그 몬스터는 주인이 아니다 — 맞을 수 있다(제 몸 거르기 풀기)
+            m.ud0 = own;
+            m.owner = own;
+            m.ownerNet = 0;
+            m.createdFrame = frame;
+            return;
+        }
         m.ud1 = Target{ m.ud0, -1 };
         m.ud0 = own;
         m.owner = own;
@@ -17462,6 +17685,12 @@ int Server::CastBuffSpell(uint8_t spell, int enc, int lvl, const Target& targ, c
     if (opts.durInSec) dur *= static_cast<int>(kServerTickRate);
     if (opts.durLevelMul) dur *= lvl;
     if (opts.defensive && (targ.sessionId != kNoSession)) DurCancelOffensiveFor(targ.sessionId);
+    // ★ 11-21 C11-b — 원본은 대상이 누구든 그 대상이 시전자인 공격 지속 주문을 끈다(`spells_buffs.go:45~47` → `CancelOffensiveFor` `server/spells_dur.go:156~164`).
+    //   몬스터(소환수)가 대상이면 그 몬스터가 연 것(`casterPet` = 번호) — 리치가 전기 광선을 건 채 투명을 쓰면 광선이 꺼진다
+    else if (opts.defensive && targ.pet >= 0 && static_cast<size_t>(targ.pet) < pets_.size()) {
+        const uint16_t net = pets_[static_cast<size_t>(targ.pet)].netCode;
+        for (auto& d : durSpells_) if (d.casterPet == net && (SpellFlags(d.spell) & 0x20)) DurCancel(d);
+    }
     ApplyEnchant(targ, enc, dur, lvl);
     if ((opts.orig != kNoSession) && opts.offensive) MarkAssist(opts.orig, targ);
     if (opts.pointFx != 0) {                                  // netSendPointFx_522FF0 — `<fx> <x2> <y2>` 화면 안 사람
@@ -17696,6 +17925,9 @@ void Server::UpdateMissiles(uint32_t frame) {
         // ★ 11-20 C2 — 늦은 지우기 표시(+16 & 0x20 — 죽음의 공끼리 지움)가 선 것은 돌지 않고 지운다
         if (missiles_[i].destroyed) { DestroyMissile(i); continue; }
         MissileObj& m = missiles_[i];
+        // ★ 11-21 C11-b — 몬스터가 주인인 것은 자리 번호를 번호로 다시 맞춘다(`RemovePet` 이 자리를 밀어도 주인 사슬·제 몸 거르기가 그 몬스터를 가리키게 ·
+        //   지워졌으면 −1 — 주인 없는 것으로 친다)
+        if (m.ownerNet != 0) m.ownerPet = m.fromPet = PetIndexByNet(m.ownerNet);
         // 만든 틱에는 안 돈다(ObjectsAddPending 뒤) — 우리 틀은 시전 목록(SpellCastByBook)이 이 뒤에 돌아 저절로 그렇다
         // ①-a ProjectileUpdate 53AC10(`object_update.go:938`) — 불덩이 같은 **보통 투사체**의 주기 함수.
         //   하는 일이 하나뿐이다: 만든 뒤 **40틱**이 지나면 제 닿음 함수를 대상 없이(0,0) 부르고 지운다.
@@ -17745,7 +17977,10 @@ void Server::UpdateMissiles(uint32_t frame) {
             //   ③ 대상이 있으면 방향(+126)을 **한 틱에 42씩** 그쪽으로 꺾는다(외적 부호가 0 이상이면 +42 · 아니면 −42 · 0~255 로 감는다)
             //   ④ 힘 = 방향(+126) × 빠르기(+544) · 감쇠(+112) = 0.8(1061997773) — 대상이 없어도 지금 방향으로 민다
             auto ownIt = sessions_.find(m.ud0);
-            const bool ownerGone = (m.ud0 == kNoSession) || ownIt == sessions_.end() || !ownIt->second.inGame;
+            // ★ 11-21 C11-b — 주인(갱신 짐 [0])이 몬스터(`ownerNet`)면 그 몬스터가 **지워졌나**(+16 & 0x20)로 본다 — 죽어도 시체가 지워지기 전까지는 주인이다
+            const int ownPet = m.ownerNet ? m.ownerPet : -1;   // 위 머리에서 번호로 맞춘 자리
+            const bool ownerGone = m.ownerNet ? (ownPet < 0)
+                                              : ((m.ud0 == kNoSession) || ownIt == sessions_.end() || !ownIt->second.inGame);
             if (ownerGone || frame - m.createdFrame > 3u * kServerTickRate) {
                 ++mmStat_[static_cast<size_t>(MmStat::BoomAge)];
                 MagicMissileBoom(m, Target{});
@@ -17759,8 +17994,13 @@ void Server::UpdateMissiles(uint32_t frame) {
                 m.ud1 = Target{};
             }
             if (m.ud1.none() && (frame & 7u) == 0) {
+                if (ownPet >= 0) {                            // ★ 11-21 C11-b — 주인 몬스터의 적(제 주인이면 버림 — 적 판정이 이미 뺀다)
+                    m.ud1 = SpellFlySearchTargetPet(pets_[static_cast<size_t>(ownPet)], m.posX, m.posY, &m.buffs, 600.0f);
+                    if (m.ud1.sessionId == kNoSession && m.ud1.pet == ownPet) m.ud1 = Target{};
+                } else {
                 m.ud1 = SpellFlySearchTarget(false, 0, 0, m.posX, m.posY, m.owner, kNoSession, 0x20, 600.0f, &ownIt->second, &m.buffs);
                 if (m.ud1.sessionId != kNoSession && m.ud1.sessionId == m.owner) m.ud1 = Target{};
+                }
             }
             if (!m.ud1.none()) {
                 float tx = 0, ty = 0;
@@ -18182,7 +18422,11 @@ void Server::UpdateMissiles(uint32_t frame) {
                     if (!handled && m.collideKind == 2) {
                         const Target tgt = HitTargetOf(hk, hSessionId, hIdx);
                         auto ownIt = sessions_.find(m.owner);
-                        const bool enemy = (ownIt != sessions_.end()) && TargetIsEnemy(ownIt->second, tgt);
+                        // ★ 11-21 C11-b — 몬스터가 부른 픽시는 `IsEnemyTo(픽시, 맞은 것)`(`collidePixie_4EA080`)의 주인 사슬이 그 몬스터 — 그 몬스터의 적인가로 본다
+                        //   (맵 몬스터면 `owner` 가 비어 옛 갈래로는 영영 적이 없다) · 그 몬스터가 지워졌으면 옛 갈래
+                        const bool enemy = (m.ownerNet != 0 && m.ownerPet >= 0)
+                                               ? CreatureEnemyTo(pets_[static_cast<size_t>(m.ownerPet)], tgt)
+                                               : ((ownIt != sessions_.end()) && TargetIsEnemy(ownIt->second, tgt));
                         if (enemy) {
                             // ★ 09-26 M1 — a3 = 픽시(클래스 MISSILE) · 전에는 때린 것 없이(nullptr) 넘겨 막기 판정을 아예 안 탔다
                             AttackSrc src;

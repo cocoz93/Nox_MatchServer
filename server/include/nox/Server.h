@@ -2131,6 +2131,8 @@ public:
     size_t DebugPetSpellCount(size_t i) const { return i < pets_.size() ? pets_[i].spells.size() : 0; }
     bool DebugPetHasSpell(size_t i, uint8_t sp) const { return i < pets_.size() && MonsterHasSpell(pets_[i], sp); }
     void DebugSetPetCastNext(size_t i, uint32_t f) { if (i < pets_.size()) { pets_[i].castNextOffense = f; pets_[i].castNextEscape = f; } }
+    // ★ 11-21 C11-b — 고르기 넷(공격·달아남·제 몸·되받기)의 쉬는 때를 한꺼번에(시험이 손으로 건 주문만 보게)
+    void DebugSetPetCastNextAll(size_t i, uint32_t f) { if (i < pets_.size()) { pets_[i].castNextOffense = pets_[i].castNextEscape = pets_[i].castNextBuff = pets_[i].castNextReact = f; } }
     uint32_t DebugPetCastNextOffense(size_t i) const { return i < pets_.size() ? pets_[i].castNextOffense : 0; }
     uint32_t DebugPetCastNextEscape(size_t i) const { return i < pets_.size() ? pets_[i].castNextEscape : 0; }
     // 몬스터가 연 지속 주문(주문 번호 · 시전자 번호)이 있나 · 그 대상
@@ -3826,6 +3828,10 @@ public:
     uint16_t DebugMissileType(size_t i) const { return i < missiles_.size() ? missiles_[i].type : 0; }
     float DebugMissileX(size_t i) const { return i < missiles_.size() ? missiles_[i].posX : 0.0f; }
     uint16_t DebugMissileNetCode(size_t i) const { return i < missiles_.size() ? missiles_[i].netCode : 0; }
+    uint16_t DebugMissileOwnerNet(size_t i) const { return i < missiles_.size() ? missiles_[i].ownerNet : 0; }   // ★ 11-21 C11-b
+    Target DebugMissileTarget(size_t i) const { return i < missiles_.size() ? missiles_[i].ud1 : Target{}; }      // ★ 11-21 C11-b 갱신 짐 [1]
+    void DebugRemovePetNow(size_t i) { RemovePet(i); }                                                            // ★ 11-21 C11-b 주인 몬스터 지우기
+    uint16_t DebugPlacedOwnerNet(size_t i) const { return i < placed_.size() ? placed_[i].ownerNet : 0; }      // ★ 11-21 C11-b
     void SetMagicType(uint16_t type, int speedRaw, float mass, uint32_t flags) {
         GtMut().magicType.type = type;
         GtMut().magicType.flags = flags;                         // thing FLAGS(맞힘 거르기 sub_54E730)
@@ -4801,6 +4807,10 @@ private:
         // ★ 09-20 — **쏜 크리처**의 자리 번호(사람이 쏘면 −1). 주인 사슬의 뿌리를 가리는 데 쓴다 —
         //   덫 화살과 **몬스터가 쏜 화살**은 둘 다 `owner` 가 비어 있어 이것 없이는 못 가른다
         int ownerPet = -1;
+        // ★ 11-21 C11-b — **주인(갱신 짐 [0])이 몬스터**인 날아가는 것(몬스터가 쏜 마법 화살·픽시)의 그 몬스터 번호(netCode · 아니면 0).
+        //   `ownerPet` 은 자리 번호라 `RemovePet` 뒤 밀린다 — 이 번호로 찾고, 투사체 틱마다 `ownerPet`·`fromPet` 을 다시 맞춘다.
+        //   사람에게 되받아쳐져 주인이 바뀌면(`MissileChangeOwner`) 0
+        uint16_t ownerNet = 0;
         // SpellProjectileUpdateData(server/object_spell.go:5)
         int64_t ud0 = 0;                 // [0] 시전자(되받아치면 바뀐다)
         Target ud1;                      // [1] 대상
@@ -4845,6 +4855,7 @@ private:
         uint16_t type = 0;           // 와이어 종류(이름 → SetNamedType 으로 받는다)
         float x = 0, y = 0;
         int64_t owner = 0;           // 놓은 사람 — 피해 임자 사슬(findParentChainPlayer)
+        uint16_t ownerNet = 0;       // ★ 11-21 C11-b — 놓은 **몬스터** 번호(운석 — 「하나만」 셈 · 맵 몬스터면 터질 때 who · 아니면 0)
         uint32_t life = 0;           // 갱신자료 첫 칸 — 매 틱 하나씩 줄고 0 이면 지운다
         uint32_t nextHitFrame = 0;   // +136 다음 판정 프레임
         uint8_t kind = 0;            // 주기 함수 갈래 — 1 = 독구름(ToxicCloudUpdate) · 2 = 닿음 피해(DamageCollide)
@@ -4942,6 +4953,11 @@ private:
     void MonsterCast(Creature& k, uint8_t spell, const Target& target);                                   // `MonsterCast` object_monster.go:569
     void MonsterActionCast(Creature& k, int a2);                             // `mobActionCast_5413B0`
     bool MonsterCastSpellNow(Creature& k, uint8_t spell, const Target& target, float x, float y);   // `mobCast_541300` + `castSpell`
+    // ★ 11-21 C11-b — 몬스터 시전자 판(남을 안 겨누는 넷 — 사람 판은 시전자가 세션이라 따로 둔다 · 머리 주석은 `Server.cpp`)
+    int MonsterCastMeteor(Creature& k, float tx, float ty, int lvl);                         // castMeteor_52D9D0
+    int MonsterCastPixieSwarm(Creature& k, uint8_t spell, int lvl);                          // castPixies_540440
+    int MonsterCastMagicMissile(Creature& k, uint8_t spell, int lvl);                        // spellMissiles.Cast
+    Target SpellFlySearchTargetPet(const Creature& k, float mslX, float mslY, const Buffs* mslBuffs, float dist) const;   // spellFlySearchTarget(pos 없음 · 주인 몬스터)
     Target EnergyBoltSearchPet(const Creature& k, float range) const;
     // ★ 10-02 — 원본 거리 `nox_xxx_calcDistance_4E6C00` — 중심 거리 − 두 몸 크기(머리 주석은 `Server.cpp`)
     double CalcDistanceEdge(const Creature& k, const Target& t, float tx, float ty) const;
