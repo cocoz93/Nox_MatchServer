@@ -1189,6 +1189,14 @@ uint16_t Server::SummonType(uint8_t spell) {
         // ★ 11-21 C7 — 이름표 22 Skeleton · 23 SkeletonLord(근접만 · BLADE)
         case 96:  return 1314; // SUMMON_SKELETON           → Skeleton
         case 97:  return 1315; // SUMMON_SKELETON_LORD      → SkeletonLord
+        // ★ 11-21 C8 — 근접만 하는 일곱(이름표 21 Shade · 24 Spider · 25 SmallSpider · 28 Troll · 32 Wolf · 33 BlackWolf · 34 WhiteWolf)
+        case 95:  return 1362; // SUMMON_SHADE              → Shade
+        case 98:  return 1353; // SUMMON_SPIDER             → Spider
+        case 99:  return 1354; // SUMMON_SMALL_SPIDER       → SmallSpider
+        case 102: return 2273; // SUMMON_TROLL              → Troll
+        case 106: return 1369; // SUMMON_WOLF               → Wolf
+        case 107: return 1368; // SUMMON_BLACK_WOLF         → BlackWolf
+        case 108: return 1367; // SUMMON_WHITE_WOLF         → WhiteWolf
         default: return 0;
     }
 }
@@ -7698,6 +7706,7 @@ bool Server::SpellAccept(uint8_t spell, Session& s, int64_t obj3, const SpellArg
             case 89: case 101: case 111:                                                       // ★ 11-20 C1 센 소환수 셋
             case 93:                                                                           // ★ 11-21 C5 오우거 군주(표창)
             case 96: case 97:                                                                  // ★ 11-21 C7 해골 · 해골 군주
+            case 95: case 98: case 99: case 102: case 106: case 107: case 108:                 // ★ 11-21 C8 근접 일곱
             case 90: case 92: case 109: case 110: {                                            // Summon — 지속(크기별 시전 시간) · ★ 11-21 C4 근접 넷
                 DurFns f;
                 f.create = &Server::DurSummonCreate;
@@ -13183,22 +13192,30 @@ void Server::CreatureApplyVelocity(Creature& k) {
     if (!WallAt(k.x, ny)) k.y = ny;
 }
 
+// ★ 11-21 C8 — 달리기 켜기 `sub_534750`(`GAME4_3.c:2893~2904`) — STATUS NEVER_RUN(0x10000 · 트롤)이면 안 켠다.
+//   원본이 이 함수로 켜는 자리 = 싸움 시작(15) · 도망 시작(24) · 호위 멀어짐 — 지키기(3)의 「쏘는 것이면 뛰기」는 다른 길이라 그대로
+void Server::CreatureStartRun(Creature& k) {
+    if (MonsterBrainOf(k.type).status & 0x10000) { ++neverRunHeld_; return; }
+    k.running = true;
+}
+
 void Server::AIStart(Creature& k, uint8_t act) {
     switch (act) {
         case 15: {   // ★ 09-29 B2 — 싸움 시작 `nox_xxx_mobActionFightStart_531E20`(`GAME4_3.c:1791~1808`)
             //   교전 소리(+20 = 칸 4) · ALERT(0x100 — 전방위 시야) · 이 프레임 모두 다시 훑기(`frameCounterSetCopy_5281E0`) · 곧바로 알아보기 ·
             //   달리기(`sub_534750` — NEVER_RUN 이 아니면 0x4000 · 우리 몬스터 중 NEVER_RUN 없음 — monster.bin 에 Troll 뿐)
+            //   ✖ 11-21 C8 — 트롤을 더해 「없음」이 아니게 됐다 → 아래 `CreatureStartRun` 이 그 비트를 본다
             //   ⚠ 스크립트 사건 13(교전) 안 옮김
             MonsterSound(k, 4);
             k.alert = true;
             sightForceFrame_ = frame_;
             UpdateSight(k);
-            k.running = true;
+            CreatureStartRun(k);
             ++b2Stat_[static_cast<size_t>(B2Stat::FightStart)];
             break;
         }
         case 24:     // ★ 09-29 B4 — 도망 시작 `sub_544740` = 달리기(`534750`)
-            k.running = true;
+            CreatureStartRun(k);
             break;
         case 17: {   // ── 묶음 6-g(3) 쏘기 시작 — `sub_532540`(`legacy/GAME4_3.c:2113~2140`)
             // 근접과 **같은 꼴**이다 — 쉬는 시간(+512)이 끝났으면 휘두르기를 시작하고
@@ -13436,7 +13453,7 @@ void Server::AIUpdate(Creature& k, uint8_t act) {
                 const double far2 = near2 + 30.0;
                 const double gx2 = st.argX - k.x, gy2 = st.argY - k.y;
                 const double d2 = gx2 * gx2 + gy2 * gy2;
-                if (d2 >= near2 * near2) { if (d2 > far2 * far2) k.running = true; }
+                if (d2 >= near2 * near2) { if (d2 > far2 * far2) CreatureStartRun(k); }   // `sub_534750`(`GAME4_3.c:9517`)
                 else k.running = false;
             }
             // ★ 09-29 B5 — 걸음 소리는 이 함수 **끝에서 늘** 부른다(`GAME4_3.c:9548`) — 아직 가는 중이어도 · 닿아 뺀 뒤에도(아래 `break` 셋 앞마다)

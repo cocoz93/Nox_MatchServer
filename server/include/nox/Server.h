@@ -2106,6 +2106,7 @@ public:
     unsigned long long summonOwnSent(int i) const { return i >= 0 && i < 3 ? summonOwnSent_[i] : 0; }                                  // ★ 10-01 — 0 `6c` · 1 `dd` · 2 `6d`
     unsigned long long secondaryWeaponStat(int i) const { return i >= 0 && i < 4 ? secondaryWeaponStat_[i] : 0; }                      // ★ 10-01 — 0 비움 · 1 못 찾음 · 2 맞음 · 3 되돌림(`e0 0 01`)
     uint16_t DebugSecondaryWeapon(int64_t a) const { auto i = sessions_.find(a); return i == sessions_.end() ? 0 : i->second.secondaryWeapon; }
+    unsigned long long neverRunHeld() const { return neverRunHeld_; }   // ★ 11-21 C8
     unsigned long long summonFxSent(int i) const { return i >= 0 && i < 2 ? summonFxSent_[i] : 0; }                                    // ★ 10-01 — 0 `7e` 시작 · 1 `7f` 끊김(보는 사람마다가 아니라 소환 한 번에 1)
     // ★ 09-29 B5 — 종류별 몬스터 애니 표(thing.bin MonsterDraw STAT · 순번 0~15) — main 이 싣는다
     void SetMonsterAnim(uint16_t wire, int idx, int frames, int hold, bool loop) {
@@ -5149,6 +5150,7 @@ private:
     // ★ 09-29 — 새로 온 사람에게 먼저 온 사람의 입은 것 전부(`sub_4DDE10` `GAME3_2.c:5670~5693`)
     void SendWornLooks(Session& to, const Session& who);
     void AIStart(Creature& k, uint8_t act);
+    void CreatureStartRun(Creature& k);   // ★ 11-21 C8 `sub_534750` — NEVER_RUN 이면 안 뜀
     void AIUpdate(Creature& k, uint8_t act);
     void AIEnd(Creature& k, uint8_t act);
     void AICancel(Creature& k, uint8_t act);
@@ -6125,6 +6127,7 @@ private:
     unsigned long long summonOwnSent_[3] = {};                    // ★ 10-01 — 주인에게 보낸 소유 알림 0 `6c` 얻음 · 1 `dd` 총체력 · 2 `6d` 잃음
     unsigned long long secondaryWeaponStat_[4] = {};              // ★ 10-01 — 클라 `e0` 대체 무기 갈래 0 비움(번호 0) · 1 가방에 없음 · 2 맞음 · 3 직업·힘 안 맞아 되돌림
     unsigned long long roundFrozenTicks_ = 0;                     // ★ 10-01 R1 — 판끝이라 세계를 멈춘 틱 수(`Tick` 의 `frozen`)
+    unsigned long long neverRunHeld_ = 0;                         // ★ 11-21 C8 — NEVER_RUN 이라 달리기를 안 켠 수(트롤)
     unsigned long long summonFxSent_[2] = {};                     // ★ 10-01 — 소환 효과 0 `7e` 시작 · 1 `7f` 끊김(소환 한 번에 하나씩)
     uint16_t summonFxNext_ = 0;                                   // ★ 10-01 — 다음 효과 번호(원본 0x5D4594+1570276 · 0xFDE8 에 닿으면 0)
     struct MonsterAnimRow { uint8_t frames = 0, hold = 0; bool loop = false; };

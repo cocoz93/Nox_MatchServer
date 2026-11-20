@@ -621,6 +621,15 @@ constexpr MonsterStats kMonsters[] = {
     //   (11-20 전사 시험 패치에 있던 줄을 커밋으로 올림 — 체력은 해골 200 > 군주 100 이 원본 그대로 · 죽음 SkeletonDead·SkeletonLordDead 의 뼈 흩기는 아직 안 옮김)
     { "Skeleton",           1314,   200,   30,   30.0,    55,  15, 30,  nullptr,         0.0,  0,  0, 1.3,  25000 },   // 해골 · 간격 15~30(모드 구분 없음)
     { "SkeletonLord",       1315,   100,   20,   30.0,    65,  10, 15,  nullptr,         0.0,  0,  0, 1.3,  50000 },   // 해골 군주 · ARENA 간격 10~15 · 밀어내기 3.0
+    // ★ 11-21 C8 — 근접만 하는 일곱 ⭕ monster.bin 복호(`_out/qa_1120/monster_dec.txt`) ARENA 값(모드 구분 없는 키는 그 값) · 작은 거미만 작은 크기
+    //   죽음 함수는 트롤(TrollDead)만 있다 — 아직 안 옮김
+    { "Shade",              1362,    80,   15,   15.0,   120,  10, 20,  nullptr,         0.0,  0,  0, 1.3,  90000 },   // 그림자 · DRAIN · ARENA 간격 10~20
+    { "Spider",             1353,    80,   10,   15.0,    80,  15, 25,  nullptr,         0.0,  0,  0, 1.5,  20000 },   // 거미 · BITE · 독(SpiderStrike)
+    { "SmallSpider",        1354,    25,    6,   15.0,   100,   0,  0,  nullptr,         0.0,  0,  0, 1.5,   7000 },   // 작은 거미 · 간격 키 없음
+    { "Troll",              2273,    80,   40,   25.0,    65,  40, 60,  nullptr,         0.0,  0,  0, 1.0,  20000 },   // 트롤 · IMPACT · 밀기 40 · NEVER_RUN
+    { "Wolf",               1369,    40,   15,   15.0,    65,  20, 30,  nullptr,         0.0,  0,  0, 1.47, 18000 },   // 늑대 · 체력 모드 구분 없음
+    { "BlackWolf",          1368,    75,   30,   15.0,    55,  20, 30,  nullptr,         0.0,  0,  0, 1.47, 100000 },  // 검은 늑대 · 빠르기 모드 구분 없음
+    { "WhiteWolf",          1367,    60,   20,   15.0,    62,  20, 30,  nullptr,         0.0,  0,  0, 1.47, 32000 },   // 흰 늑대 · 체력 모드 구분 없음
 };
 
 // ★ 09-23 nine-defects 2-a4 — monster.bin `STATUS` 에 **`CAN_CAST_SPELLS`** 가 있는 몬스터(정답지 `MonStatusCanCastSpells` 0x20 ·
@@ -694,6 +703,13 @@ inline MonsterBrainInfo MonsterBrainOf(uint16_t wire) {
         case 1389: return { 0x00, 0.0f, 0.30f, 0.0f };   // OgreWarlord ★ 11-21 C5 — ARENA 후퇴 0 · 회복 0.30
         case 1314: return { 0x05, 0.0f, 1.0f,  0.0f };   // Skeleton ★ 11-21 C7 — CAN_BLOCK+DESTROY_WHEN_DEAD(막기 0x4 는 아직 안 읽는다)
         case 1315: return { 0x05, 0.0f, 1.0f,  0.0f };   // SkeletonLord — 같음
+        case 1362: return { 0x08, 0.0f, 0.40f, 0.0f };   // Shade ★ 11-21 C8 — CAN_DODGE(피하기는 협동 전용이라 대전엔 안 쓰임) · 회복 0.40
+        case 1353: return { 0x00, 0.0f, 1.0f,  0.0f };   // Spider
+        case 1354: return { 0x00, 0.0f, 1.0f,  0.0f };   // SmallSpider
+        case 2273: return { 0x10000, 0.0f, 0.50f, 0.0f }; // Troll — NEVER_RUN(0x10000 · `docs/enums.md:150`) · 회복 0.50
+        case 1369: return { 0x00, 0.0f, 0.5f,  0.0f };   // Wolf — ARENA 후퇴 0 · 회복 0.5
+        case 1368: return { 0x00, 0.0f, 0.3f,  0.0f };   // BlackWolf — 회복 0.3
+        case 1367: return { 0x00, 0.0f, 0.5f,  0.0f };   // WhiteWolf — 회복 0.5
         default:   return {};
     }
 }
@@ -728,6 +744,13 @@ inline MonsterMoveSound MonsterMoveSoundOf(uint16_t wire) {
         case 1389: return { 2, 10 };  // OgreWarlord ★ 11-21 C5
         case 1314: return { 1, 5 };   // Skeleton ★ 11-21 C7
         case 1315: return { 0, 4 };   // SkeletonLord
+        case 1362: return { 0, 4 };   // Shade ★ 11-21 C8
+        case 1353: return { 0, 4 };   // Spider
+        case 1354: return { 0, 4 };   // SmallSpider
+        case 2273: return { 1, 7 };   // Troll
+        case 1369: return { 1, 5 };   // Wolf
+        case 1368: return { 1, 5 };   // BlackWolf
+        case 1367: return { 1, 5 };   // WhiteWolf
         default:   return {};
     }
 }
@@ -775,6 +798,13 @@ inline int MonsterMeleeFrameOf(uint16_t wire) {
         case 1389: return 7;   // OgreWarlord ★ 11-21 C5
         case 1314: return 4;   // Skeleton ★ 11-21 C7
         case 1315: return 4;   // SkeletonLord
+        case 1362: return 3;   // Shade ★ 11-21 C8
+        case 1353: return 3;   // Spider
+        case 1354: return 5;   // SmallSpider
+        case 2273: return 4;   // Troll
+        case 1369: return 5;   // Wolf
+        case 1368: return 5;   // BlackWolf
+        case 1367: return 5;   // WhiteWolf
         default:   return 0;
     }
 }
@@ -809,6 +839,13 @@ inline MeleeStrikeInfo MeleeStrikeOf(uint16_t wire) {
         case 1389: return { StrikeFn::Monster, 11, 50.0f, 0, 0, 0 };  // OgreWarlord IMPACT · 밀어내기 50 ★ 11-21 C5
         case 1314: return { StrikeFn::Monster, 0,  0.0f, 0, 0, 0 };   // Skeleton BLADE ★ 11-21 C7
         case 1315: return { StrikeFn::Monster, 0,  3.0f, 0, 0, 0 };   // SkeletonLord BLADE · 밀어내기 3.0(MELEE_ATTACK_IMPACT)
+        case 1362: return { StrikeFn::Monster, 4,  0.0f, 0, 0, 0 };   // Shade DRAIN ★ 11-21 C8
+        case 1353: return { StrikeFn::Spider,  8,  0.0f, 50, 2, 3 };  // Spider BITE · ARENA 독 50% · 세기 2 · 최대 3
+        case 1354: return { StrikeFn::Monster, 8,  0.0f, 0, 0, 0 };   // SmallSpider BITE
+        case 2273: return { StrikeFn::Monster, 11, 40.0f, 0, 0, 0 };  // Troll IMPACT · 밀어내기 40
+        case 1369: return { StrikeFn::Monster, 8,  0.0f, 0, 0, 0 };   // Wolf BITE
+        case 1368: return { StrikeFn::Monster, 8,  0.0f, 0, 0, 0 };   // BlackWolf BITE
+        case 1367: return { StrikeFn::Monster, 8,  0.0f, 0, 0, 0 };   // WhiteWolf BITE
         default:   return {};                                          // Imp·EvilCherub·Beholder·Demon — NULL
     }
 }
