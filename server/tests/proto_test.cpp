@@ -25591,6 +25591,40 @@ void TestOvalShield1121() {
     std::printf("  11-21 W7 타원 방패 — 버프 27 · 20×세기×30 · 공격 지속 끊기 · 달리기·죽음·시간 끝 · 사람만\n");
 }
 
+// ── 11-21 트레일러 위저드 W8 — 주문 깨기(13)를 **시전으로** 부른다(`spells.go:240~241` · 사람 시전은 `(u, u, u)` 라 가운데 = 시전자) ─────
+//   함성(2-a3)이 부르던 `CastCounterSpell` 을 주문 갈래에도 잇는다. 위저드가 패킷으로 시전 →
+//   둘레 안 남의 불덩이가 지워지고 · 부름 한 번 · 시전 소리(13 의 castSound) 한 번(따로 내는 시전 소리가 없어 겹치지 않는다)
+void TestCounterSpellCast1121() {
+    const std::string a = "10.11.21.9:9519";   // 시전자(위저드)
+    const std::string b = "10.11.21.10:9520";  // 불덩이 쏘는 쪽(둘레 안)
+    nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+    nox::Gamedata g;
+    g.Parse("FireballSpeedCoeff = 1.6, 2.0, 2.4, 2.5, 2.6;\n" "SummonDuration = 60, 210, 375;\n" "CounterspellRange = 600;\n");
+    srv->SetGamedata(g);
+    RegSpell(srv, 27, 0);
+    RegFireballTypes(srv);
+    srv->SetCounterMissileType(695);
+    srv->SetSpellDef(13, 20, 0x09400430u, { 7, 8 }, /*castSound=*/42);     // thing.bin SPELL_COUNTERSPELL(누구나 0x1000000 · 겨눔 0x4 없음)
+    srv->SetSoundDefs({ nox::Server::SoundDefIn{ 42, 600, 0, 1, 0 } });      // 소리는 42 하나만 — 다른 소리는 버려져 soundsQueued 가 42 만 센다
+    srv.DebugEnterGame(a, 890, false, nox::CharClass::Wizard);
+    srv.DebugEnterGame(b, 891, false, nox::CharClass::Wizard);
+    srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+    srv->DebugMoveTo(Sid(srv, b), 1100, 1000);
+    srv.Tick(ms, out);
+    ms += 34; srv.Tick(ms, out);
+    srv->DebugAimAt(Sid(srv, b), 1100, 1500);
+    srv->DebugSpellAccept(Sid(srv, b), 27, 1); srv.TakeOut(out);
+    const size_t m0 = srv->missiles();
+    const unsigned long long q0 = srv->soundsQueued();
+    srv->DebugFillMana(Sid(srv, a));
+    CastAndWait(srv, a, 13, false, ms, out);
+    char msg[320];
+    std::snprintf(msg, sizeof(msg), "W8 주문 깨기 시전 — 불덩이 앞 %zu · 뒤 %zu · 지운 것 %llu · 부름 %llu · 소리 42 %llu",
+                  m0, srv->missiles(), srv->counterMissiles(), srv->counterCasts(), srv->soundsQueued() - q0);
+    Check(m0 == 1 && srv->missiles() == 0 && srv->counterMissiles() == 1 && srv->counterCasts() == 1 && srv->soundsQueued() - q0 == 1, msg);
+    std::printf("  11-21 W8 주문 깨기 시전 — 시전자 둘레 · 남의 불덩이 지움 · 부름 한 번 · 소리 한 번\n");
+}
+
 // ── 11-20 트레일러 전사 1-b — 수식 효과(modifier.bin `Server::ParseModEffects`) · 휘두를 때 위력 배수 · 맞힐 때 불·번개 ─────
 //   ① 진짜 복호본을 읽어 번호 차례·값(빠진 `;` 칸 Speed4 포함)을 본다
 //   ② 워리어 롱소드로 곰을 한 대 — 수식 없음 / 위력6(×1.2) / 불1(+3 폭발) / 번개4(+12 전기) / 불1인데 곰이 무적(관문)
@@ -38828,6 +38862,7 @@ int main() {
     TestTurnUndead1121();
     TestSummonMore1121();
     TestOvalShield1121();
+    TestCounterSpellCast1121();
     TestModEffects1120();
     TestPickupAutoEquip();
     TestArmorEquip();

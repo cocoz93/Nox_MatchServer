@@ -196,6 +196,9 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                     srv.ovalStat(OS::Start), srv.ovalStat(OS::NotPlayer), srv.ovalStat(OS::EndGone),
                     srv.ovalStat(OS::EndRun), srv.ovalStat(OS::EndDead), srv.ovalStat(OS::Off));
         }
+        // ★ 11-21 W8 — 주문 깨기(13 시전 · 함성 둘 다 같은 함수) — 부름 · 지운 날아가는 것 · 끊은 지속 주문 · 끈 버프
+        srv.Log("[주문 깨기] 부름 %llu · 날아가는 것 %llu · 지속 %llu · 버프 %llu\n", srv.counterCasts(), srv.counterMissiles(),
+                srv.counterDurs(), srv.counterEnchants());
         // ★ 10-01 — 클라 대체 무기 알림 `e0`(비움 · 가방에 없음 · 맞음 · 직업·힘 안 맞아 `e0 0 01` 되돌림)
         srv.Log("[대체무기] 비움 %llu · 없음 %llu · 맞음 %llu · 되돌림 %llu\n", srv.secondaryWeaponStat(0),
                     srv.secondaryWeaponStat(1), srv.secondaryWeaponStat(2), srv.secondaryWeaponStat(3));

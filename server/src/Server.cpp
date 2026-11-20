@@ -7442,6 +7442,9 @@ bool Server::SpellAccept(uint8_t spell, Session& s, int64_t obj3, const SpellArg
             case 41: fnc = CastLesserHeal(spell, s, targ); break;                            // sub_52DD50 LesserHeal
             case 68: case 133: fnc = CastRestoreHealth(targ); break;                         // castSpellWinkORrestoreHealth_52BF20 RestoreHealth·Wink
             case 69: fnc = CastRestoreMana(targ); break;                                          // sub_52BF50 RestoreMana
+            // ★ 11-21 W8 — 주문 깨기 시전(`spells.go:240~241` castCounterSpell_52BBB0) · 사람 시전은 `(u, u, u)`(`spells.go:439`)라
+            //   가운데·빼는 것(a4) = 시전자 — 함성(2-a3)이 부르던 것과 같은 함수 · 시전 소리도 그 안에서 한 번 낸다
+            case 13: fnc = CastCounterSpell(s); break;
             default: break;
         }
     }
