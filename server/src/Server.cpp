@@ -4116,7 +4116,9 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
                     case UseFn::Mushroom:       spent = UseMushroom(s); break;
                     case UseFn::ConsumeConfuse: spent = UseCiderConfuse(s, c); break;
                     case UseFn::WandCast:       spent = UseWandCast(s, s.inventory[at]); break;   // 5-e — 충전만 깎고 안 없어짐
-                    default: break;             // 아직 안 옮긴 갈래(책·완드·활) — 아무 일도 안 난다
+                    // ★ 11-20 W4 — 쏘는 지팡이. 원본 TRY_USE 도 같은 쓰기 함수를 부른다(`sdecode.c:144~156` → useByNetCode) · 안 없어진다
+                    case UseFn::WandShot:       UseWandShot(s, s.inventory[at]); break;
+                    default: break;             // 아직 안 옮긴 갈래(책·활) — 아무 일도 안 난다
                 }
                 if (spent) {
                     // 쓴 것은 없어진다. 세계에 되돌려 놓지 않는다.
@@ -4194,6 +4196,8 @@ size_t Server::OnGameMessages(Session& s, const uint8_t* body, size_t bodyLen
                     back.useFn = s.inventory[i].useFn;
                     back.charges = s.inventory[i].charges; back.chargesMax = s.inventory[i].chargesMax;
                     back.wandSpell = s.inventory[i].wandSpell; back.wandCooldown = s.inventory[i].wandCooldown;
+                    back.wandShotType = s.inventory[i].wandShotType; back.wandShotSound = s.inventory[i].wandShotSound;   // ★ 11-20 W4
+                    back.wandFlags = s.inventory[i].wandFlags; back.weaponStats = s.inventory[i].weaponStats;
                     back.decayExempt = s.inventory[i].decayExempt;   // ★ 09-28 — 들고 간다(사라짐 시계는 버릴 때만 건다)
                     back.dropFn = s.inventory[i].dropFn;
                     for (int m = 0; m < 4; ++m) back.mods[m] = s.inventory[i].mods[m];
@@ -5741,7 +5745,8 @@ uint8_t Server::PlayerAnimByte(const Session& s) {
             if (s.abilActive[2] && s.abilActiveVal[2]) return 46;
             if (s.abilActive[1]) return 45;                  // ★ 2-b1 — `:1725~1726` 광전사 켜짐이면 BERSERKER_CHARGE
             // `:1720~1737` — 마법 지팡이(0x47F0000)는 29/31 · 무기(0·1 아님)거나 Field8 이 0 이면 sub_4FA280 표 · 맨손은 Field8
-            if (equip & 0x47F0000) return 31;   // ⚠ +96&2(충전 휘두르기) 면 29 — 마법 지팡이는 묶음 4
+            // ★ 11-20 W4 — `(~(+96) & 2) | 0x1D`(`GAME4.c:1730~1732`) — 든 지팡이의 +96 & 2(충전 없이 휘두르는 중)면 29 · 아니면 31
+            if (equip & 0x47F0000) { const Session::Carried* h = HeldWeapon(s); return (h && (h->wandFlags & 2)) ? 29 : 31; }
             if ((equip && equip != 1) || s.attackAnim == 0) {
                 // sub_4FA280 — 비트 2 부터 가장 낮은 켜진 비트 → blob_587000 215824 표
                 static const uint8_t kWeaponAnim[27] = { 0, 0, 33, 34, 0, 0, 44, 44, 27, 28, 37, 26, 35, 39, 39,
@@ -14219,10 +14224,13 @@ void Server::SendCharges(Session& s, const Session::Carried& c) {
 //     **마나를 아예 안 본다** — 주문을 곧장 `spellAccept` 로 넣는다(세기 4 고정).
 //   · **최대 != 0 이고 지금 == 0** 이면 못 쓴다(소리 222 — 묶음 10)
 //   · 재사용 대기 — `지금 프레임 − 마지막 − (대기 − 2×준비효과)`. ⚠ 준비효과(아이템 수식)는 아직 없어 0
+//     ✖ 11-20 W4 정정 — 준비 효과는 1-e 에서 생겼다(ReadinessOf) — 이제 두 배를 뺀다(부호 없는 32비트 — 효과가 대기보다 크면 감겨 못 쓴다)
 //   · 주문이 받아들여져야 **마지막 프레임을 갱신하고 충전을 깎는다**(실패하면 안 깎는다)
 //   · 최대 != 0 일 때만 깎고 `REPORT_CHARGES` 를 보낸다(= 0 은 무한 완드)
 // ⚠ 안 옮긴 갈래 — 정답지는 `a2[2] & 0x1000 && a2[3] & 0x4040000` 이면 **안 깎는다**.
 //   그 두 비트가 무엇인지 못 짚어(오브젝트 깃발·클래스로 보이나 확증 없음) 늘 깎는 쪽으로 두었다.
+//   ✖ 11-20 W4 정정 — 짚었다: a2[2] = CLASS(+8) · 0x1000 = WAND · a2[3] = SUBCLASS(+12) · 0x4040000 = STAFF_LIGHTNING(0x40000 ForceWand) | STAFF_OBLIVION_ORB(0x4000000).
+//     그 둘은 지속 주문(연쇄 번개 · 플라스마)이 **틱마다** 깎는다(DurChainLightning · DurPlasma 의 완드 갈래) — 걸 때 또 깎으면 하나가 더 나갔다
 bool Server::UseWandCast(Session& s, Session::Carried& c) {
     if (c.wandSpell == 0) return false;
     if (c.chargesMax != 0 && c.charges == 0) {                // 다 썼다
@@ -14232,7 +14240,8 @@ bool Server::UseWandCast(Session& s, Session::Carried& c) {
     }
     // ⚠ 「아직 안 썼다」를 따로 안 둔다 — 정답지도 `+104` 가 0 인 채로 `지금 − 0 >= 대기` 를 본다.
     //   즉 **판이 시작하고 대기만큼 지나야 첫 발이 나간다.** 그게 원본 버릇이다.
-    if (frame_ - c.wandLastFrame < c.wandCooldown) return false;
+    const uint32_t need = c.wandCooldown - 2u * static_cast<uint32_t>(ReadinessOf(&c));   // `:7953~7954`
+    if (frame_ - c.wandLastFrame < need) { ++wandStat_[static_cast<size_t>(WandStat::Cooldown)]; return false; }
 
     SpellArg arg;
     // ★ 겨눈 자리는 커서, **대상은 커서가 집은 것**. 집은 것이 없으면 **시전자 자신**이다
@@ -14242,14 +14251,130 @@ bool Server::UseWandCast(Session& s, Session::Carried& c) {
     if (arg.obj.none()) arg.obj = Target{ s.sessionId, -1 };
     arg.x = static_cast<float>(s.aimX);
     arg.y = static_cast<float>(s.aimY);
+    c.wandFlags |= 4;                                        // ★ 11-20 W4 `:7974` — spellAccept 앞에서 켠다(안 받아들여져도 남는다)
     if (!SpellAccept(c.wandSpell, s, s.sessionId, arg, /*lvl=*/4)) return false;
 
     c.wandLastFrame = frame_;
-    if (c.chargesMax != 0) {
+    if (c.wandClass && (c.subclass & 0x4040000u)) {          // ★ 11-20 W4 `:7977~7978` — 번개·오브 지팡이는 걸 때 안 깎는다(위 정정)
+        ++wandStat_[static_cast<size_t>(WandStat::CastKeepCharge)];
+    } else if (c.chargesMax != 0) {
         --c.charges;
         SendCharges(s, c);
     }
     return false;   // ★ 완드는 **안 없어진다** — 충전만 준다
+}
+
+// ★ 11-20 트레일러 위저드 W4 — useByNetCode_53F8E0(`GAME4_3.c:8082~8096`) — 물건의 쓰기 함수(+732)를 부른다(없으면 아무 일 없음).
+//   공격 입력의 마법 지팡이 갈래가 든 지팡이로 부른다. ⚠ 안 옮긴 것 — `sub_419E60(사람)` 이 1 이면 안 부른다(TRY_USE 갈래와 같이 아직 없다)
+void Server::UseHeldItem(Session& s, Session::Carried& c) {
+    switch (c.useFn) {
+        case UseFn::WandShot: UseWandShot(s, c); break;
+        case UseFn::WandCast: UseWandCast(s, c); break;
+        default: break;                                      // 지팡이 아닌 무기는 쓰기 함수가 없다
+    }
+}
+
+// ★ 11-20 트레일러 위저드 W4 — useLesserFireballStaff_53F290(`GAME4_3.c:7839~7911`) — 쏘는 지팡이 다섯(SulphorousFlare · SulphorousShower ·
+//   LesserFireball · DemonsBreath · FireStorm)의 쓰기 함수.
+//   · 최대 != 0 이고 지금 == 0 이면 소리 222(DepletedWand) → 0(`:7860·7906~7908`)
+//   · 대기 — `지금 − 마지막 >= 대기 − 준비 효과`(부호 없는 32비트 · **한 배** — 주문 지팡이는 두 배)가 아니면 0
+//   · 나는 자리 = 내 자리 + (몸 반지름 + 4) × 방향(+124) + 내 속도 — 그 선(5)이 막히면 **제자리**(`:7863~7876`)
+//   · 한 발(wandShot_53F480) → MULTI_SHOT 이면 방향 +8 · −8 로 두 발 더(같은 자리) → 쏘는 소리(+88) → 최대 != 0 이면 충전 −1 · `64` → 마지막 = 지금 → 1
+//   ⚠ 안 옮긴 것 — 충전 백분율(+112 · 우리에게 칸이 없다)
+bool Server::UseWandShot(Session& s, Session::Carried& c) {
+    ++wandStat_[static_cast<size_t>(WandStat::Use)];
+    if (c.chargesMax != 0 && c.charges == 0) {
+        PlaySoundAt(222, static_cast<float>(s.posX), static_cast<float>(s.posY), 0, 0, s.sessionId);
+        ++wandStat_[static_cast<size_t>(WandStat::Depleted)];
+        return false;
+    }
+    const uint32_t need = c.wandCooldown - static_cast<uint32_t>(ReadinessOf(&c));   // `:7861~7862`
+    if (frame_ - c.wandLastFrame < need) { ++wandStat_[static_cast<size_t>(WandStat::Cooldown)]; return false; }
+    const int dir = s.facingPrev;                            // +124 Direction1
+    const double reach = static_cast<double>(kBodyRadius) + 4.0;   // +176 + 4.0
+    const float px = static_cast<float>(s.posX), py = static_cast<float>(s.posY);
+    float ex = static_cast<float>(reach * DirVecX(dir) + px);
+    ex = ex + static_cast<float>(s.velX);
+    const float ey = static_cast<float>(reach * DirVecY(dir) + py + static_cast<float>(s.velY));
+    float sx = ex, sy = ey;
+    if (!MapTraceRay(px, py, ex, ey, 0x5)) { sx = px; sy = py; }   // 막히면 제자리(`:7873~7876`)
+    WandShot(s, c.wandShotType, sx, sy, dir);
+    if (c.wandFlags & 1) {                                   // MULTI_SHOT — +8 · −8(0~255 로 감음 `:7879~7888`)
+        WandShot(s, c.wandShotType, sx, sy, (dir + 8) & 0xFF);
+        WandShot(s, c.wandShotType, sx, sy, (dir - 8 + 256) & 0xFF);
+    }
+    if (c.wandShotSound != 0) PlaySoundAt(c.wandShotSound, px, py, 0, 0, s.sessionId);   // aud_501960(+88, 나)
+    if (c.chargesMax != 0) {
+        --c.charges;
+        SendCharges(s, c);
+    }
+    c.wandLastFrame = frame_;
+    return true;
+}
+
+// wandShot_53F480(`GAME4_3.c:7914~7931`) — 그 종류 하나를 그 자리에 만든다(주인 = 쏜 이 · createAt).
+//   방향 둘(+124·+126) = dir · 속도 = 방향 × **제 빠르기**(+544 — 불덩이 주문의 세기 배수가 없다) + 쏜 이 속도
+//   닿음 갈래는 종류의 COLLIDE 이름으로 — SparkExplosionCollide(Fireball·TitanFireball) → 1 · YellowStarShotCollide → 9.
+//   그 밖은 thing.bin 지팡이가 쏘지 않아 만들지 않고 센다(NoType) — 이름 모를 것을 Magic 갈래(0)로 날리면 15틱 만에 엉뚱하게 사라진다
+void Server::WandShot(const Session& s, uint16_t type, float x, float y, int dir) {
+    const ProjTypeInfo* pt = ProjTypeByWire(type);
+    uint8_t kind = 0;
+    if (pt) {
+        const auto cf = gt_->collideFn.find(type);
+        if (cf != gt_->collideFn.end()) {
+            if (cf->second == "SparkExplosionCollide") kind = 1;
+            else if (cf->second == "YellowStarShotCollide") kind = 9;
+        }
+    }
+    if (kind == 0) { ++wandStat_[static_cast<size_t>(WandStat::NoType)]; return; }
+    MissileObj m;
+    m.netCode = nextShotNetCode_++;
+    if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;
+    m.type = type;
+    m.flags = pt->flags;
+    m.posX = m.newX = m.prevX = x;
+    m.posY = m.newY = m.prevY = y;
+    m.dir1 = m.dir2 = static_cast<uint8_t>(dir);
+    m.createdFrame = m.frame136 = frame_;
+    m.speed = pt->speed;
+    m.owner = s.sessionId;
+    m.ud0 = m.ud2 = s.sessionId;
+    m.collideKind = kind;
+    m.collideAmount = pt->collideAmount;
+    m.velX = static_cast<float>(DirVecX(dir) * m.speed) + static_cast<float>(s.velX);
+    m.velY = static_cast<float>(DirVecY(dir) * m.speed) + static_cast<float>(s.velY);
+    missiles_.push_back(m); ++missilesMade_;
+    ++wandStat_[static_cast<size_t>(WandStat::Shot)];
+}
+
+// ★ 11-20 W4 — collideSulphurShot_4E9E50(`GAME3_3.c:4291~4296`) — 닿음 함수가 불릴 때마다(맞음 · 벽 · 수명 · 반주문) 먼저
+//   `netSendPointFx_522FF0(136)` = `88 <x u16> <y u16>`(FX_THIN_EXPLOSION). ⚠ 게임 깃발 4 면 안 보낸다 — 우리는 그 깃발이 늘 꺼진 것으로 본다
+void Server::YellowStarFx(const MissileObj& m) {
+    const int16_t ex = static_cast<int16_t>(m.posX), ey = static_cast<int16_t>(m.posY);
+    const uint8_t fx[5] = { static_cast<uint8_t>(Op::FX_THIN_EXPLOSION),
+                            static_cast<uint8_t>(ex), static_cast<uint8_t>(ex >> 8), static_cast<uint8_t>(ey), static_cast<uint8_t>(ey >> 8) };
+    SendFxAllCli(m.posX, m.posY, fx, sizeof(fx));
+}
+
+// ★ 11-20 W4 — unitsHaveSameTeam_4EC520(별, 맞은 것)(`GAME3_3.c:5843~5867`) — 두 쪽의 주인 사슬(+508)을 다 맞대 본다:
+//   같은 오브젝트이거나 팀(+48)이 같으면(둘 다 0 이 아니고 같은 번호 — `server/team.go:282~290`) 같은 편.
+//   별의 사슬 = 별 → 쏜 사람 · 맞은 것의 사슬 = 사람이면 그 사람 · 소환수면 그것 → 주인.
+//   ⚠ 별·소환수 자신의 팀 칸은 0 으로 본다(우리에게 칸이 없다) — 소환수는 주인을 거쳐 같은 답이 난다 · 맵 몬스터·장애물은 늘 다른 편
+bool Server::YellowStarSameTeam(const MissileObj& m, const Target& t) const {
+    const auto own = sessions_.find(m.owner);
+    if (own == sessions_.end()) return false;                // 사슬이 별 하나뿐 — 팀 0 이라 아무와도 안 같다
+    const Session& o = own->second;
+    auto sameAsOwner = [&](int64_t sid) {
+        if (sid == o.sessionId) return true;
+        const auto it = sessions_.find(sid);
+        return it != sessions_.end() && o.team != 0 && o.team == it->second.team;
+    };
+    if (t.sessionId != kNoSession) return sameAsOwner(t.sessionId);
+    if (t.pet >= 0 && static_cast<size_t>(t.pet) < pets_.size()) {
+        const Creature& k = pets_[static_cast<size_t>(t.pet)];
+        if (k.owner != kNoSession) return sameAsOwner(k.owner);
+    }
+    return false;
 }
 
 // ── 묶음 5-d 먹을거리·버섯·사이다 ─────────────────────────────────────
@@ -16334,6 +16459,15 @@ void Server::UpdateMissiles(uint32_t frame) {
             m.forceX = DirVecX(m.dir2) * m.speed;
             m.forceY = DirVecY(m.dir2) * m.speed;
             m.damping = 0.8f;                                 // 1061997773 = 0x3F4CCCCD
+        } else if (m.collideKind == 9) {
+            // ★ 11-20 트레일러 위저드 W4 — 노란 별도 `UPDATE = ProjectileUpdate`(40틱) — 때가 되면 닿음 함수를 대상·벽 없이(0,0) 부른다:
+            //   그림 136 만 나고(`collideSulphurShot2_4E9D80` 은 둘 다 없으면 아무 일 없음) 지운다
+            if (frame - m.createdFrame > 40u) {
+                ++wandStat_[static_cast<size_t>(WandStat::StarAge)];
+                YellowStarFx(m);
+                DestroyMissile(i);
+                continue;
+            }
         } else
         // ①-b SpellProjectileUpdate 53B940(`GAME4_3.c:5764`)
         {
@@ -16568,6 +16702,19 @@ void Server::UpdateMissiles(uint32_t frame) {
                     who.src = m.owner;
                     DamageToMap(th.gx, th.gy, static_cast<int>(BalanceFloat("MagicMissileDamage")), 7, who);
                     ++mmStat_[static_cast<size_t>(MmStat::WallBounce)];
+                } else if (m.collideKind == 9) {
+                    // ★ 11-20 트레일러 위저드 W4 — 노란 별 `collideSulphurShot2_4E9D80` a2 == 0 · a3 != 0 갈래(`GAME3_3.c:4279~4286`) —
+                    //   그림 136 → 법선으로 되튐(collideReflect_57B810) → **제 자리**(+64 ÷ 23 — 막은 칸이 아니다 · 막히면 위에서 지금 자리로 되돌려 둔 값)에
+                    //   인자(YellowStarShotCollide 2) · 종류 11 · 때린 것 = 별(MISSILE — 방향 없음) → **안 지운다**
+                    YellowStarFx(m);
+                    if (wny * wnx <= 0.0f) std::swap(m.velX, m.velY);
+                    else { const float v3 = m.velX; m.velX = -m.velY; m.velY = -v3; }
+                    WallHitter who;
+                    who.present = true; who.x = m.posX; who.y = m.posY; who.material = MaterialOfWire(m.type);
+                    who.src = m.owner;
+                    DamageToMap(static_cast<int>(m.newX * 0.043478262f), static_cast<int>(m.newY * 0.043478262f),
+                                static_cast<int>(m.collideAmount), 11, who);
+                    ++wandStat_[static_cast<size_t>(WandStat::StarWall)];
                 } else if (m.collideKind == 7) {
                     // ★ 11-20 트레일러 전사 2-c — 차크람은 제 닿음 함수가 되튐까지 한다(`collideChakram_4EAF00` a2 == 0 갈래 `GAME3_3.c:4989~5024`)
                     if (!ChakramCollideWall(m, wnx, wny, th.gx, th.gy)) { DestroyMissile(i); erased = true; continue; }
@@ -16581,10 +16728,15 @@ void Server::UpdateMissiles(uint32_t frame) {
                 if (hk == HitPlayer) dead = (sessions_.at(hSessionId).respawnAtFrame != 0);
                 if (!dead) {
                     bool handled = false;
+                    // ★ 11-20 트레일러 위저드 W4 — 노란 별은 닿을 때마다 먼저 그림 136(`GAME3_3.c:4292~4294`) · 같은 편(주인 사슬 · 팀)이면
+                    //   피해 함수를 안 부른다(`:4267`) — 되받아치기(방패·대검·27)는 원본에선 피해 함수 안이라 같은 편이면 안 탄다
+                    const bool star = (m.collideKind == 9);
+                    const bool starFriend = star && YellowStarSameTeam(m, HitTargetOf(hk, hSessionId, hIdx));
+                    if (star) YellowStarFx(m);
                     // ★ 11-20 트레일러 전사 2-c — 아래 방패·대검·되받아치기 방패(27)는 원본에선 **피해 함수 안**(`GAME3_3.c:170~330`)이라
                     //   피해를 주기 전에 받는 차크람 주인 갈래(`collideChakram_4EAF00` `:4995~5008`)는 이것을 안 탄다 —
                     //   방패를 든 워리어(기본 나무 방패 · 가만 7틱이면 올림)가 돌아온 제 차크람을 되받아쳐 영영 못 받았다(⑫ 실측 f50)
-                    if (hk == HitPlayer && !(m.collideKind == 7 && hSessionId == m.owner)) {
+                    if (hk == HitPlayer && !(m.collideKind == 7 && hSessionId == m.owner) && !starFriend) {
                         Session& t = sessions_.at(hSessionId);
                         auto changeOwner = [&]() { MissileChangeOwner(m, t.sessionId, frame); };
                         const bool front = (TestTwoPointsAndDirection(static_cast<float>(t.posX), static_cast<float>(t.posY),
@@ -16629,6 +16781,27 @@ void Server::UpdateMissiles(uint32_t frame) {
                         MagicMissileBoom(m, HitTargetOf(hk, hSessionId, hIdx));
                         DestroyMissile(i);
                         erased = true;
+                        handled = true;
+                    }
+                    // ★ 11-20 트레일러 위저드 W4 — 노란 별 `collideSulphurShot2_4E9D80` a2 != 0 갈래(`GAME3_3.c:4266~4278`) —
+                    //   같은 편이 아니면 인자(2 — 퀘스트면 ×3 · 안 옮김) · 종류 11 · 때린 이 = 주인 사슬의 사람 · 때린 것 = 별 → 피해 함수가 참이면 지운다.
+                    //   같은 편이거나 피해가 안 들어가면 **그대로 지나간다**.
+                    //   장애물은 화살(6) 갈래와 같이 — 화약(BlackPowderDamage)은 종류 11 을 안 받아 지나가고 그 밖은 지운다(장애물 체력은 없음)
+                    if (!handled && star) {
+                        bool gone = false;
+                        if (!starFriend) {
+                            if (hk == HitObstacle) gone = (mt_->obstacles[static_cast<size_t>(hIdx)].damageFn != kDmgBlackPowder);
+                            else {
+                                AttackSrc src;
+                                src.x = m.posX; src.y = m.posY;
+                                src.byMonsterType = m.type;
+                                src.rootIsMonster = MissileRootIsMonster(m);
+                                src.missile = true;
+                                gone = HurtTarget(HitTargetOf(hk, hSessionId, hIdx), static_cast<int>(m.collideAmount), m.owner, 11, &src, HitterMissile(m));
+                            }
+                        }
+                        ++wandStat_[static_cast<size_t>(gone ? WandStat::StarHit : WandStat::StarPass)];
+                        if (gone) { DestroyMissile(i); erased = true; }
                         handled = true;
                     }
                     // collidePixie_4EA080 — **적일 때만** 인자만큼 피해(종류 11 충격)를 주고 제가 사라진다
@@ -16875,6 +17048,7 @@ void Server::PlaceCarriedInWorld(const Session::Carried& c, double tx, double ty
     w.wandClass = c.wandClass; w.subclass = c.subclass; w.weight = c.weight;
     w.isFood = c.isFood; w.foodBits = c.foodBits; w.useFn = c.useFn;
     w.charges = c.charges; w.chargesMax = c.chargesMax; w.wandSpell = c.wandSpell; w.wandCooldown = c.wandCooldown;
+    w.wandShotType = c.wandShotType; w.wandShotSound = c.wandShotSound; w.wandFlags = c.wandFlags; w.weaponStats = c.weaponStats;   // ★ 11-20 W4
     w.x = static_cast<int>(std::lround(tx)); w.y = static_cast<int>(std::lround(ty));
     // ★ 09-28 사람 판 「버린 물건이 10초가 지나도 안 사라진다」 — 사라짐 시계(`DropDecayFrame` 주석).
     //   ✖ 09-28 정정 — 처음엔 `dropDefault_4ED290` 의 10초 규칙만 옮겨 「기본 장비만 10초 · 맵 물건은 남음」이라 했다.
@@ -17300,6 +17474,7 @@ Session::Carried Server::CarriedFromStatic(const WorldStatic& w) {
     c.useFn = w.useFn;
     c.charges = w.charges; c.chargesMax = w.chargesMax;
     c.wandSpell = w.wandSpell; c.wandCooldown = w.wandCooldown;
+    c.wandShotType = w.wandShotType; c.wandShotSound = w.wandShotSound; c.wandFlags = w.wandFlags; c.weaponStats = w.weaponStats;   // ★ 11-20 W4
     c.decayExempt = w.decayExempt;         // ★ 09-28 — 주우면 사라짐 시계는 풀린다(`decay_511750` 이 들린 것은 목록에서만 뺀다) · 예외 까닭은 들고 간다
     c.dropFn = w.dropFn;
     for (int m = 0; m < 4; ++m) c.mods[m] = w.mods[m];   // ★ 09-29 — 수식(버린 평상복을 다시 주우면 색이 따라온다)
@@ -18003,6 +18178,8 @@ const WeaponStats* Server::WeaponStatsOf(const Session& s) {
     if (!s.gearInBag) return WeaponOf(s.charClass);
     const Session::Carried* h = HeldWeapon(s);
     if (!h) return nullptr;
+    // ★ 11-20 W4 — 이름으로 찾아 둔 칸을 먼저(0x80000 을 LesserFireballWand · DemonsBreathWand 가 같이 써서 비트로는 못 가른다)
+    if (h->weaponStats >= 0 && static_cast<size_t>(h->weaponStats) < sizeof(kWeapons) / sizeof(kWeapons[0])) return &kWeapons[h->weaponStats];
     for (const auto& w : kWeapons)
         if (h->equipBit == w.classBits) return &w;
     return nullptr;
@@ -18051,7 +18228,28 @@ void Server::PlayerInputAttack(Session& s, uint32_t frame) {
     const uint32_t equip = WeaponEquipOf(s);
     if (equip) {
         // ⚠ 마법 지팡이(0x47F0000 · 충전 쓰기 useByNetCode)는 주문 묶음(4)에서. 기본 장비에 없다.
-        if (s.moveState != kPlayerStateAttack) {
+        // ★ 11-20 트레일러 위저드 W4 — 마법 지팡이 갈래(`GAME4.c:1601~1615`) — 0x47F0000 이고 지금 애니가 29(충전 없이 휘두르는 중)가 아니면
+        //   · 충전이 남았거나 무한(최대 0)이면 — 프레임 · 칸 0 · 상태 1 → **든 지팡이의 쓰기 함수**(useByNetCode)를 부른다.
+        //     기력은 안 깎고 · 이미 공격 중이어도 · 상태가 안 들어가도 쓴다(대기는 쓰기 함수가 본다)
+        //   · 다 썼으면 — 기력 45 를 깎을 수 있을 때만 +96 |= 2(휘두르기) → 프레임 · 칸 0 · 상태 1 — 다음 PlayerAttack 이 애니 29 로 친다
+        //   애니가 29 면(휘두르는 중) 아래 보통 무기 갈래로 간다(`:1616` — 이미 상태 1 이라 아무 일 없음)
+        Session::Carried* hw = (equip & 0x47F0000) ? HeldWeaponMut(s) : nullptr;
+        if (hw && PlayerAnimByte(s) != 29) {
+            if (hw->charges != 0 || hw->chargesMax == 0) {
+                s.stateFrame = frame;
+                s.animFrame = 0;
+                PlayerSetState(s, kPlayerStateAttack, frame, /*cancelShield=*/true);
+                UseHeldItem(s, *hw);
+            } else if (s.stamina >= 45) {                    // playerSubStamina_4F7D30(45) — 모자라면 아무 일 없음
+                s.stamina = static_cast<uint8_t>(s.stamina - 45);
+                ReportStamina(s);
+                hw->wandFlags |= 2;
+                ++wandStat_[static_cast<size_t>(WandStat::BashOn)];
+                s.stateFrame = frame;
+                s.animFrame = 0;
+                PlayerSetState(s, kPlayerStateAttack, frame, /*cancelShield=*/true);
+            }
+        } else if (s.moveState != kPlayerStateAttack) {
             const int cost = WeaponStaminaCost(equip);
             if (s.stamina >= cost) {
                 s.stamina = static_cast<uint8_t>(s.stamina - cost);
@@ -18232,6 +18430,11 @@ int Server::CastCounterSpell(Session& caster) {
         else if (m.type != gt_->magicType.type && m.collideKind == 8) {
             ++mmStat_[static_cast<size_t>(MmStat::BoomCounter)];
             MagicMissileBoom(m, Target{});
+        }
+        // ★ 11-20 W4 — 노란 별(thing.bin `MISSILE_COUNTERSPELL`)은 `YellowStarShotCollide(0,0)` — 그림 136 만 내고 아래에서 지운다
+        else if (m.collideKind == 9) {
+            ++wandStat_[static_cast<size_t>(WandStat::StarCounter)];
+            YellowStarFx(m);
         }
         // 픽시(2)·Magic·그 밖 — 대상 없는 닿음이 아무 일도 안 하거나 지우기뿐이다. 아직 남아 있으면 지운다
         if (i < missiles_.size() && missiles_[i].netCode == nc) DestroyMissile(i);
@@ -18544,6 +18747,7 @@ double Server::ItemProtectSum(const Session* s, ModFn engageFn) const {
 
 // ★ 11-20 1-e — `nox_xxx_itemCheckReadinessEffect_4E0960`(`GAME3_2.c:6933~6949`) — 물건 부여 칸 2·3 중 공격 효과가 Readiness(빈 함수 nullsub_22)인
 //   첫 칸의 i · 없으면 0. 원본의 클래스 관문(0x13001000)은 부르는 곳이 든 활·석궁(무기)뿐이라 늘 통과
+//   ✖ 11-20 W4 — 지팡이 쓰기(UseWandShot 한 배 · UseWandCast 두 배)도 부른다 · 지팡이는 WAND(0x1000)라 그 관문 안 — 「늘 통과」는 그대로
 int Server::ReadinessOf(const Session::Carried* item) const {
     if (!item) return 0;
     for (int k = 2; k < 4; ++k) {
@@ -18872,15 +19076,25 @@ bool Server::PlayerAttack(Session& s, uint32_t frame) {
         }
     } else if (equip & 0x47F8000) {
         // 지팡이 — 막대(0x8000) 면 29 휘두르기. 마법 지팡이는 +96&2 가 아니면 31(주문 4)
-        const int anim = 29;
+        // ★ 11-20 트레일러 위저드 W4 — 31 갈래를 옮겼다(`GAME4_3.c:4067~4118`) — 쏘기·걸기는 공격 입력이 이미 했고 여기서는 애니만 돈다
+        //   · 칸이 다 차면 마법 지팡이는 +96 & 2 를 끈다(`:4082~4086`) · 판정은 29 의 가운데 칸에서만(`:4088`)
+        //   · 몬스터가 31 의 칸 1 에서 쓰기를 부르는 갈래(`:4089~4098` · 깃발 2)는 사람 몫이 아니다
+        Session::Carried* hw = HeldWeaponMut(s);
+        const bool magic = (equip & 0x47F0000) != 0;
+        const int anim = ((equip & 0x8000) || (hw && (hw->wandFlags & 2))) ? 29 : 31;
         range(anim);
-        setReady();                                         // 29 면 길이만큼 · 31 이면 지금(`:4075~4079`)
+        if (anim == 29) setReady();                         // 29 면 길이만큼 · 31 이면 지금(`:4075~4079`)
+        else if (s.attackReadyFrame == 0) s.attackReadyFrame = frame;
         calcIdx();
-        if (idx < frames && midHit()) {
+        if (idx >= frames) {
+            if (magic && hw) hw->wandFlags = static_cast<uint8_t>(hw->wandFlags & ~2u);
+        } else if (anim == 29 && midHit()) {
             // ★ 09-27 B2 — 수치 표에 없는 지팡이(마법 지팡이 — 정답지는 31 로 주문을 건다 · 안 옮김)는 판정 없이 센다.
             //   무기 칸이 생기기 전엔 표에 있는 무기만 들 수 있어 이 막이가 필요 없었다(없으면 w 가 비어 죽는다)
+            //   ✖ 11-20 W4 — 「안 옮김」은 지났다: 31 은 위와 같고 · 마법 지팡이 12종 수치를 표에 넣었다(modifier.bin) — 이 막이는 표에 없는 것만 남는다
             if (!w) { ++weaponNoStats_; }
             else {
+            if (magic) ++wandStat_[static_cast<size_t>(WandStat::BashHit)];
             AttackInfo ai = meleeInfo(0, false);
             judge(ai, anim, 879);                            // `:4114~4117`
             }
@@ -18891,7 +19105,7 @@ bool Server::PlayerAttack(Session& s, uint32_t frame) {
         setReady();
         calcIdx();
         if (anim == 32 && midHit()) {
-            if (!w) { ++weaponNoStats_; }                   // ★ 09-27 B2 — 오블리비언 넷은 수치 표에 없다(위와 같은 막이)
+            if (!w) { ++weaponNoStats_; }                   // ★ 09-27 B2 — 오블리비언 넷은 수치 표에 없다(위와 같은 막이) · ✖ 11-20 W4 — 이제 표에 있다(셋이 이 갈래)
             else {
             AttackInfo ai = meleeInfo(0, false);
             judge(ai, anim, 879);                            // `:4142~4145`

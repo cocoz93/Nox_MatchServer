@@ -51,14 +51,34 @@ namespace nox {
 //   WandCastUse 8 · WarpReadUse 4 · BowUse 4 · AmmoUse 4 · **MushroomUse 2** ·
 //   FireWandUse 2 · FieldGuideUse 2 · **ConsumeConfuseUse 2** · AbilityRewardUse 2.
 //   ⚠ 여기 넣은 넷 말고는 아직 안 옮겼다 — 책(Read)·완드(Wand)·활(Bow)은 뒤 조각이다.
-enum class UseFn : uint8_t { None = 0, Potion, Consume, ConsumeConfuse, Mushroom, WandCast };
+// ★ 11-20 트레일러 위저드 W4 — `WandUse`(쏘는 지팡이 `useLesserFireballStaff_53F290`)를 옮겼다(WandShot)
+enum class UseFn : uint8_t { None = 0, Potion, Consume, ConsumeConfuse, Mushroom, WandCast, WandShot };
 inline UseFn UseFnOf(const std::string& name) {
     if (name == "PotionUse") return UseFn::Potion;
     if (name == "ConsumeUse") return UseFn::Consume;
     if (name == "ConsumeConfuseUse") return UseFn::ConsumeConfuse;
     if (name == "MushroomUse") return UseFn::Mushroom;
     if (name == "WandCastUse") return UseFn::WandCast;
+    if (name == "WandUse") return UseFn::WandShot;
     return UseFn::None;
+}
+
+// ★ 11-20 W4 — 지팡이 `USE` 뒷말 읽기(WorldBuild 와 시험이 같이 쓴다).
+//   재사용 대기(프레임) — 둘째 값은 **초당 쓰는 수**다: `(long long)(FPS ÷ 값)`
+//   (WandCastUse `sub_5361B0` `GAME4_3.c:3061~3062` · WandUse `sub_536260` `:3096~3102` — WandUse 는 값이 0 이면 0).
+//   ⚠ WandCastUse 원본은 0 을 안 거른다(0 으로 나눔) — thing.bin 넷 다 0 이 아니라 같은 0 처리로 묶었다
+inline uint32_t WandCooldownFrames(double fps, double rate) {
+    return rate == 0.0 ? 0u : static_cast<uint32_t>(static_cast<long long>(fps / rate));
+}
+// `WandUse <충전> <날릴 것> <초당 발 수> <SINGLE_SHOT|MULTI_SHOT> <소리>`(sub_536260) — got = 읽은 칸 수.
+//   셋째(초당 발 수)까지 있어야 원본이 1 을 돌려준다(`:3095~3113`) — 부르는 쪽이 got >= 3 을 본다
+struct WandUseArgs { int charges = 0; char proj[64] = { 0 }; double rate = 0.0; bool multi = false; char sound[64] = { 0 }; int got = 0; };
+inline WandUseArgs ParseWandUse(const std::string& raw) {
+    WandUseArgs a;
+    char shot[32] = { 0 };
+    a.got = std::sscanf(raw.c_str(), "%d %63s %lf %31s %63s", &a.charges, a.proj, &a.rate, shot, a.sound);
+    a.multi = (a.got >= 4 && std::string(shot) == "MULTI_SHOT");
+    return a;
 }
 
 // ★ 묶음 5 — **줄을 때 부르는 함수**(`PICKUP = GoldPickup` 의 이름).
@@ -960,8 +980,13 @@ struct Session {
         //   0 이면 **무한**이다(정답지가 `최대 != 0` 일 때만 깎고 알린다).
         uint8_t charges = 0, chargesMax = 0;
         uint8_t wandSpell = 0;         // 걸 주문 번호(0 = 없음)
-        uint32_t wandCooldown = 0;     // 재사용 대기 프레임(초 × 30)
+        uint32_t wandCooldown = 0;     // 재사용 대기 프레임 — ✖ 11-20 W4 정정: 「초 × 30」이 아니라 **FPS ÷ 값**(값은 초당 발 수 · `GAME4_3.c:3062·3101`)
         uint32_t wandLastFrame = 0;    // 마지막으로 쓴 프레임(`+104`)
+        // ★ 11-20 W4 — 쏘는 지팡이 `WandUse <충전> <날릴 것> <초당 발 수> <SINGLE_SHOT|MULTI_SHOT> <소리>`(파싱 sub_536260 `GAME4_3.c:3074`)
+        uint16_t wandShotType = 0;     // 날릴 것의 종류(+84 · 0 = 쏘는 지팡이 아님)
+        uint16_t wandShotSound = 0;    // 쏠 때 소리(+88)
+        uint8_t  wandFlags = 0;        // +96 — 1 MULTI_SHOT(±8 두 발 더) · 2 충전이 없어 휘두르는 중(공격이 켜고 애니 끝에 끈다) · 4 주문을 건 적 있음(WandCastUse `:7974`)
+        int8_t   weaponStats = -1;     // ★ W4 — modifier.bin 무기 칸(kWeapons 자리 · 이름으로 찾음) · −1 = 비트로 찾는다(0x80000 은 두 지팡이가 같이 써서 비트로는 못 가른다)
         DecayExempt decayExempt = DecayExempt::None;   // ★ 09-28 — 버려도 안 사라지는 까닭(세계에 있을 때 값을 들고 온다 · 기본 장비는 None)
         DropFn dropFn = DropFn::Default;               // ★ 09-28 — 버릴 때 부르는 함수 갈래(thing.bin `DROP`) — 사라짐 시계가 이것으로 갈린다
         // ★ 09-29 — 수식(모디파이어) 넷의 번호(없으면 0xff) · 오브젝트 `+692` 넷(`sub_4D82F0` 이 +4 바이트를 싣는다).
@@ -1888,6 +1913,10 @@ public:
         uint8_t charges = 0, chargesMax = 0;
         uint8_t wandSpell = 0;
         uint32_t wandCooldown = 0;
+        // ★ 11-20 W4 — 쏘는 지팡이 · 무기 수치 칸(가방 항목 Carried 의 같은 이름 칸 주석)
+        uint16_t wandShotType = 0, wandShotSound = 0;
+        uint8_t  wandFlags = 0;
+        int8_t   weaponStats = -1;
         // ★ 묶음 5-h — **금 더미**(`PICKUP = GoldPickup`)와 그 안의 금액.
         //   ⚠ 금액은 맵 오브젝트의 **초기자료**(`GoldInitData.Amount`, 오브젝트 `+692`)에서 온다.
         //     우리 맵 파서는 아직 오브젝트별 초기자료를 안 읽는다 → 지금은 0 이고, 시험이 직접 넣는다.
@@ -3479,6 +3508,20 @@ public:
         c.wandCooldown = cooldown;
         i->second.inventory.push_back(c);
     }
+    // ★ 11-20 W4 — 시험용: 가방 항목 하나를 **손에 든다**(가방에 넣고 무기 칸 = 그 번호 · 기본 장비 대신 가방을 읽게 gearInBag)
+    void DebugHoldItem(int64_t x, const Session::Carried& c) {
+        auto i = sessions_.find(x);
+        if (i == sessions_.end()) return;
+        Session::Carried k = c;
+        k.equipped = true;
+        i->second.inventory.push_back(k);
+        i->second.gearInBag = true;
+        i->second.weaponNet = k.netCode;
+    }
+    const Session::Carried* DebugHeld(int64_t x) const {
+        auto i = sessions_.find(x);
+        return i == sessions_.end() ? nullptr : HeldWeapon(i->second);
+    }
     bool DebugUseWand(int64_t x) {
         auto i = sessions_.find(x);
         if (i == sessions_.end()) return false;
@@ -3730,6 +3773,12 @@ public:
     const ProjTypeInfo* ProjType(const std::string& name) const {
         auto it = gt_->projTypes.find(name);
         return it == gt_->projTypes.end() ? nullptr : &it->second;
+    }
+    // ★ 11-20 W4 — 지팡이는 종류 번호(+84)를 들고 있다(`newObjectWithTypeInd_4E3450`) — 표가 작아(열 몇) 훑는다
+    const ProjTypeInfo* ProjTypeByWire(uint16_t wire) const {
+        if (wire == 0) return nullptr;
+        for (const auto& kv : gt_->projTypes) if (kv.second.type == wire) return &kv.second;
+        return nullptr;
     }
     uint16_t DebugMissileType(size_t i) const { return i < missiles_.size() ? missiles_[i].type : 0; }
     float DebugMissileX(size_t i) const { return i < missiles_.size() ? missiles_[i].posX : 0.0f; }
@@ -4095,6 +4144,11 @@ public:
     unsigned long long mmStat(MmStat k) const { return mmStat_[static_cast<size_t>(k)]; }
     // ★ 11-20 W3 과부하 갈래 — 모으기 시작 · 터짐(마나 0) · 터짐(글리프 시간) · 터지기 전 끊김(0xA3) · 모으기 그림 지움(마나 15 아래 · 끝)
     enum class MbStat : uint8_t { Start = 0, BoomMana, BoomTime, Cancel, ChargeOff, Count };
+    // ★ 11-20 W4 지팡이 — 쏨(한 번 쓰기) · 날린 발 · 다 씀(222) · 대기 중 · 종류 없음 · 휘두르기 켬 · 휘두르기 판정 · 충전 안 깎음(번개·오브) ·
+    //   노란 별 맞힘 · 지나감(같은 편·피해 안 들어감) · 벽 튕김 · 수명 · 반주문
+    enum class WandStat : uint8_t { Use = 0, Shot, Depleted, Cooldown, NoType, BashOn, BashHit, CastKeepCharge,
+                                    StarHit, StarPass, StarWall, StarAge, StarCounter, Count };
+    unsigned long long wandStat(WandStat k) const { return wandStat_[static_cast<size_t>(k)]; }
     unsigned long long mbStat(MbStat k) const { return mbStat_[static_cast<size_t>(k)]; }
     int mbLastPower() const { return mbLastPower_; }                     // 마지막으로 터진 힘(+72)
     float DebugMassOf(int64_t sid) const { auto i = sessions_.find(sid); return i == sessions_.end() ? 0.0f : static_cast<float>(PlayerMassOf(i->second)); }
@@ -4889,6 +4943,8 @@ private:
                            const WallHitter& wallWho = WallHitter{});   // ★ 09-29 Z1-A — 끝의 벽 피해가 보는 who
     void FireballExplode(MissileObj& m, const Target& hit);                 // fireballCollide_4E9AC0
     void MagicMissileBoom(MissileObj& m, const Target& hit);                // ★ 11-20 W2 collideBoom_4E9770 의 터지는 몫(벽 튕김 갈래 빼고)
+    void YellowStarFx(const MissileObj& m);                                 // ★ 11-20 W4 collideSulphurShot_4E9E50 의 그림 136
+    bool YellowStarSameTeam(const MissileObj& m, const Target& t) const;    // ★ 11-20 W4 unitsHaveSameTeam_4EC520(별 ↔ 맞은 것)
     void MonsterDeadFn(size_t idx);                                        // ★ 11-19 monster.bin DEAD_FUNCTION(+232) — 악마 둘의 터짐
     // ── 묶음 4-c2a 독 ──
     uint8_t* PoisonOf(const Target& t);                                                                  // +540 자리
@@ -4906,6 +4962,9 @@ private:
     bool UseCiderConfuse(Session& s, const Session::Carried& c);
     // 묶음 5-e — 완드로 주문 걸기(`useWandCastSpell_53F4F0`). 충전을 깎으므로 **가리킴**을 받는다
     bool UseWandCast(Session& s, Session::Carried& c);
+    // ★ 11-20 W4 — 쏘는 지팡이(`useLesserFireballStaff_53F290`) · 한 발(`wandShot_53F480`)
+    bool UseWandShot(Session& s, Session::Carried& c);
+    void WandShot(const Session& s, uint16_t type, float x, float y, int dir);
     void SendCharges(Session& s, const Session::Carried& c);   // netReportCharges_4D82B0
     // 묶음 5-h — `4a REPORT_GOLD` = `<금 u32>` 5바이트(중요). sub_4D8870(`GAME3_2.c:4150`)
     // ── 묶음 6-a AI 행동 쌓기 ──
@@ -5466,6 +5525,8 @@ private:
     void EarthquakeSend(float x, float y, int jiggle);   // earthquakeSend_4D9110 `97 <흔들림>`
     static uint32_t WeaponEquipOf(const Session& s);                          // 플레이어 +4 WeaponEquip (09-27 B2 — 든 무기 칸에서)
     static const Session::Carried* HeldWeapon(const Session& s);             // ★ 09-27 B2 — 무기 칸이 가리키는 가방 항목(없으면 nullptr)
+    static Session::Carried* HeldWeaponMut(Session& s) { return const_cast<Session::Carried*>(HeldWeapon(s)); }   // ★ 11-20 W4 — 지팡이 충전·깃발(+736)을 고친다
+    void UseHeldItem(Session& s, Session::Carried& c);                       // ★ 11-20 W4 useByNetCode_53F8E0 — 쓰기 함수(+732)를 부른다
     static const WeaponStats* WeaponStatsOf(const Session& s);
     bool CursorOnFriend(const Session& s) const;                             // playerAimsAtEnemy_4F9DC0 의 거꾸로
     bool MapTraceVision(float x1, float y1, float x2, float y2) const;       // `server/map.go:522` (장애물 그늘 · 벽 9)
@@ -5599,6 +5660,7 @@ private:
     unsigned long long mbStat_[static_cast<size_t>(MbStat::Count)] = {};   // ★ 11-20 W3 과부하 갈래
     int mbLastPower_ = 0;
     unsigned long long mmStat_[static_cast<size_t>(MmStat::Count)] = {};   // ★ 11-20 W2 마법 화살 갈래
+    unsigned long long wandStat_[static_cast<size_t>(WandStat::Count)] = {}; // ★ 11-20 W4 지팡이 갈래
     unsigned long long missilesGone_ = 0;     // 날아가는 것이 사라진 누계
     unsigned long long missileEntriesSent_ = 0;   // 갱신에 실린 누계
     // ★ 09-19 — 「항목에 담았다」와 「와이어에 나갔다」를 가른다.

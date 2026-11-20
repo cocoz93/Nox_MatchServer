@@ -10316,7 +10316,8 @@ void TestEatAndMushroom() {
               "ConsumeConfuseUse 가 안 옮겨졌다 — 앞 세 글자가 같아 Consume 으로 새기 쉽다");
         Check(nox::UseFnOf("MushroomUse") == nox::UseFn::Mushroom, "MushroomUse 가 안 옮겨졌다");
         Check(nox::UseFnOf("WandCastUse") == nox::UseFn::WandCast, "WandCastUse 가 안 옮겨졌다");
-        Check(nox::UseFnOf("WandUse") == nox::UseFn::None, "WandUse 는 아직 안 옮겼다 — None 이어야 한다");
+        // ✖ 11-20 W4 — 옮겼다(쏘는 지팡이 useLesserFireballStaff_53F290)
+        Check(nox::UseFnOf("WandUse") == nox::UseFn::WandShot, "WandUse 가 쏘는 지팡이(WandShot)로 안 읽힌다");
         Check(nox::UseFnOf("ReadUse") == nox::UseFn::None, "아직 안 옮긴 갈래가 None 이 아니다");
         Check(nox::UseFnOf("") == nox::UseFn::None, "빈 이름이 None 이 아니다");
     }
@@ -10539,6 +10540,221 @@ void TestWandCharges() {
         Check(max == 3, "되돌아온 완드의 최대 충전이 3 이 아니다 — 오다 빠졌나");
     }
     std::printf("  5-e — 완드: 마나 안 씀 · 충전 깎고 `64` 알림 · 다 쓰면 안 걸림 · 최대 0 은 무한 · 대기 경계 · 거절되면 안 깎음 · 세기 4 · 되돌아와도 충전 지님\n");
+}
+
+// ── 11-20 트레일러 위저드 W4 — 지팡이 쏘기 ────────────────────────────────
+//   · 쏘는 지팡이 `useLesserFireballStaff_53F290`(`GAME4_3.c:7839~7911`) · 한 발 `wandShot_53F480`(`:7914~7931`)
+//   · 공격 입력의 마법 지팡이 갈래(`GAME4.c:1601~1615`) · 지팡이 공격 애니(`GAME4_3.c:4067~4118`)
+//   · 노란 별 `collideSulphurShot_4E9E50` · `collideSulphurShot2_4E9D80`(`GAME3_3.c:4262~4296`)
+//   빠르기·인자는 thing.bin 값(YellowStarShot SPEED 350 · COLLIDE 2 · Fireball SPEED 192) · 종류 번호는 시험이 정한 것
+void TestWandShot() {
+    using nox::CharClass;
+    using WS = nox::Server::WandStat;
+    const std::string a = "10.11.20.41:9411", b = "10.11.20.42:9412";
+    const uint16_t kStar = 705, kFire = 706;
+    auto mk = [&](nox::CSyncHost& srv) {
+        srv->SetProjType("YellowStarShot", kStar, 350, 0x20004000, 2);   // AIRBORNE+FLICKER
+        srv->SetProjType("Fireball", kFire, 192, 0x20004000, 128);
+        srv->SetCollideFn(kStar, "YellowStarShotCollide");
+        srv->SetCollideFn(kFire, "SparkExplosionCollide");
+        srv->SetPlayerAnimFrames(29, 8, 0);
+        srv->SetPlayerAnimFrames(31, 8, 0);
+        srv.DebugEnterGame(a, 728, false, CharClass::Wizard);
+        srv.DebugEnterGame(b, 733, false, CharClass::Wizard);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv->DebugMoveTo(Sid(srv, b), 1100, 1000);
+    };
+    auto wand = [](uint16_t nc, uint16_t shot, uint8_t maxCh, uint32_t cool, bool multi, uint32_t bit) {
+        nox::Session::Carried c;
+        c.netCode = nc; c.type = 900; c.isWeapon = true; c.weaponClass = true; c.wandClass = true;
+        c.equipBit = bit; c.subclass = bit;
+        c.useFn = nox::UseFn::WandShot; c.wandShotType = shot;
+        c.chargesMax = maxCh; c.charges = maxCh; c.wandCooldown = cool;
+        if (multi) c.wandFlags = 1;
+        return c;
+    };
+    // 40틱 — 자리 맞추기 · 기력 다 차기 · 마지막으로 쓴 프레임(0)에서 멀어지기
+    auto start = [&](nox::CSyncHost& srv, uint32_t& ms, std::vector<nox::OutPacket>& out) {
+        for (int t = 0; t < 40; ++t) { ms += 34; srv.Tick(ms, out); }
+        srv->DebugSetFacing(Sid(srv, a), 0);                                 // +x — b 쪽
+        out.clear();
+    };
+    auto attack = [&](nox::CSyncHost& srv, uint32_t& ms, std::vector<nox::OutPacket>& out) {
+        const auto pkt = InputPacket(6);
+        srv.OnPacket(a, pkt.data(), pkt.size(), out);
+        ms += 34; srv.Tick(ms, out);
+    };
+    auto charges = [&](const std::vector<nox::OutPacket>& out, uint16_t nc, int& now, int& max) {
+        bool found = false;
+        for (const auto& m : FlattenTo(out, a))
+            if (m.size() == 5 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_CHARGES) && m[1] == (nc & 0xFF) && m[2] == (nc >> 8)) {
+                now = m[3]; max = m[4]; found = true;
+            }
+        return found;
+    };
+
+    // ① 노란 별 한 발(SulphorousFlareWand `200 YellowStarShot 0 SINGLE_SHOT`) — 공격 입력이 쓰기 함수를 부른다 ·
+    //   빠르기 = 종류 빠르기 그대로(불덩이 주문의 세기 배수 없음) · 충전 −1 · `64` · 기력 안 씀 · 애니 31(휘두르지 않는다)
+    {
+        nox::CSyncHost srv; mk(srv);
+        srv->DebugHoldItem(Sid(srv, a), wand(800, kStar, 200, 0, false, 0x10000));
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        const uint8_t st0 = srv->DebugStaminaOf(Sid(srv, a));
+        attack(srv, ms, out);
+        Check(srv->wandStat(WS::Use) == 1 && srv->wandStat(WS::Shot) == 1 && srv->missiles() == 1, "W4 ① 공격 입력에 노란 별 한 발이 안 났다");
+        Check(srv->DebugMissileType(0) == kStar && srv->DebugMissileDir(0) == 0, "W4 ① 날린 것의 종류·방향이 다르다");
+        Check(srv->DebugMissileSpeed(0) == srv->ProjType("YellowStarShot")->speed, "W4 ① 빠르기가 종류 빠르기와 다르다(배수가 끼었다)");
+        int now = -1, max = -1;
+        Check(charges(out, 800, now, max) && now == 199 && max == 200, "W4 ① 충전 알림 `64` 가 199/200 이 아니다");
+        Check(srv->DebugHeld(Sid(srv, a)) && srv->DebugHeld(Sid(srv, a))->charges == 199, "W4 ① 든 지팡이 충전이 안 깎였다");
+        Check(srv->DebugStaminaOf(Sid(srv, a)) == st0, "W4 ① 충전으로 쏘는데 기력이 깎였다");
+        Check(srv->DebugAnimByteOf(Sid(srv, a)) == 31, "W4 ① 쏠 때 자세가 31(STAFF_SPELL) 이 아니다");
+    }
+
+    // ② MULTI_SHOT(SulphorousShowerWand) — 같은 자리에서 방향 d · d+8 · d−8 세 발 · 충전은 하나만
+    {
+        nox::CSyncHost srv; mk(srv);
+        srv->DebugHoldItem(Sid(srv, a), wand(801, kStar, 100, 0, true, 0x20000));
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        srv->DebugSetFacing(Sid(srv, a), 4);                                 // 4 − 8 이 0 아래로 감기는지(252)
+        attack(srv, ms, out);
+        Check(srv->missiles() == 3 && srv->wandStat(WS::Shot) == 3, "W4 ② 여러 발 지팡이가 세 발을 안 냈다");
+        int seen = 0;
+        for (size_t i = 0; i < srv->missiles(); ++i) {
+            const uint8_t d = srv->DebugMissileDir(i);
+            if (d == 4) seen |= 1; else if (d == 12) seen |= 2; else if (d == 252) seen |= 4;
+        }
+        Check(seen == 7, "W4 ② 세 발의 방향이 4 · 12 · 252 가 아니다");
+        Check(srv->DebugHeld(Sid(srv, a))->charges == 99, "W4 ② 세 발에 충전이 하나보다 많이(적게) 깎였다");
+    }
+
+    // ③ 불덩이 지팡이(LesserFireballWand `20 Fireball 3.0` → 대기 10) — 대기 안엔 안 나가고 지나면 나간다 · 불덩이가 b 를 맞힌다
+    {
+        nox::CSyncHost srv; mk(srv);
+        srv->DebugHoldItem(Sid(srv, a), wand(802, kFire, 20, nox::WandCooldownFrames(30, 3.0), false, 0x80000));
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        const uint16_t hp0 = srv->HealthOf(Sid(srv, b));
+        attack(srv, ms, out);
+        Check(srv->wandStat(WS::Shot) == 1 && srv->DebugMissileType(0) == kFire, "W4 ③ 불덩이가 안 났다");
+        for (int t = 0; t < 9; ++t) attack(srv, ms, out);                   // 쏜 뒤 1~9 프레임 — 대기 10 안(공격 한 번 = 한 틱)
+        Check(srv->wandStat(WS::Shot) == 1 && srv->wandStat(WS::Cooldown) == 9, "W4 ③ 대기 10 안에 또 나갔거나 대기를 안 셌다");
+        attack(srv, ms, out);                                                // 10 프레임째 — 경계(`>=`)에서 나간다
+        Check(srv->wandStat(WS::Shot) == 2, "W4 ③ 대기 10 이 지났는데 안 나갔다");
+        Check(srv->DebugHeld(Sid(srv, a))->charges == 18, "W4 ③ 두 발에 충전이 18 이 아니다");
+        for (int t = 0; t < 40 && srv->missiles() > 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv->HealthOf(Sid(srv, b)) < hp0, "W4 ③ 지팡이 불덩이가 앞의 b 를 안 깎았다");
+    }
+
+    // ④ 충전이 다 떨어지면 — 기력 45 를 깎고 +96 & 2 → 애니 29 로 **휘두른다**(가운데 칸 판정) · 애니가 끝나면 깃발을 끈다 ·
+    //   TRY_USE 로 쓰면 소리 222(DepletedWand)만
+    {
+        nox::CSyncHost srv; mk(srv);
+        nox::Session::Carried w = wand(803, kStar, 200, 0, false, 0x10000);
+        w.charges = 0;
+        srv->DebugHoldItem(Sid(srv, a), w);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        const uint8_t st0 = srv->DebugStaminaOf(Sid(srv, a));
+        Check(st0 >= 45, "W4 ④ 기력이 45 가 안 찼다(시험 전제)");
+        attack(srv, ms, out);
+        const int st1 = srv->DebugStaminaOf(Sid(srv, a));
+        Check(srv->missiles() == 0 && srv->wandStat(WS::Use) == 0, "W4 ④ 충전 0 인데 쏘기 함수를 불렀다");
+        Check(srv->wandStat(WS::BashOn) == 1 && (srv->DebugHeld(Sid(srv, a))->wandFlags & 2), "W4 ④ 휘두르기 깃발(+96 & 2)이 안 켜졌다");
+        Check(st1 >= st0 - 45 && st1 <= st0 - 45 + 3, "W4 ④ 휘두를 때 기력 45 를 안 깎았다");
+        Check(srv->DebugAnimByteOf(Sid(srv, a)) == 29, "W4 ④ 휘두를 때 자세가 29(STAFF_STRIKE) 가 아니다");
+        for (int t = 0; t < 12; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv->wandStat(WS::BashHit) == 1, "W4 ④ 휘두르기 가운데 칸에서 판정을 안 했다");
+        Check((srv->DebugHeld(Sid(srv, a))->wandFlags & 2) == 0, "W4 ④ 애니가 끝났는데 휘두르기 깃발이 남았다");
+        out.clear();
+        const std::vector<uint8_t> u = CodePacket(nox::Op::TRY_USE, 803);
+        srv.OnPacket(a, u.data(), u.size(), out);
+        Check(srv->wandStat(WS::Depleted) == 1 && srv->missiles() == 0, "W4 ④ 빈 지팡이를 TRY_USE 했는데 「다 씀」으로 안 셌다");
+    }
+
+    // ⑤ 주문 지팡이 — 번개(ForceWand 0x40000)·오브(0x4000000)는 걸 때 안 깎는다(틱마다 깎는다) · 그 밖(DeathRay 0x400000)은 깎는다 · +96 |= 4
+    {
+        for (const uint32_t bit : { 0x40000u, 0x4000000u, 0x400000u }) {
+            nox::CSyncHost srv;
+            RegSpell(srv, 24, 0);
+            srv.DebugEnterGame(a, 728, false, CharClass::Wizard);
+            srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+            srv->DebugAimAt(Sid(srv, a), 1100, 1000);
+            nox::Session::Carried c = wand(804, 0, 5, 0, false, bit);
+            c.useFn = nox::UseFn::WandCast; c.wandSpell = 24;
+            srv->DebugHoldItem(Sid(srv, a), c);
+            std::vector<nox::OutPacket> out;
+            srv.Tick(0, out); out.clear();
+            const std::vector<uint8_t> u = CodePacket(nox::Op::TRY_USE, 804);
+            srv.OnPacket(a, u.data(), u.size(), out);
+            const bool keep = (bit != 0x400000u);
+            Check(srv->DurCount() == 1, "W4 ⑤ 주문 지팡이가 주문을 안 걸었다(시험 전제)");
+            Check(srv->DebugHeld(Sid(srv, a))->charges == (keep ? 5 : 4), keep ? "W4 ⑤ 번개·오브 지팡이가 걸 때 충전을 깎았다" : "W4 ⑤ 죽음 광선 지팡이가 걸 때 충전을 안 깎았다");
+            Check(srv->wandStat(WS::CastKeepCharge) == (keep ? 1u : 0u), "W4 ⑤ 안 깎음 셈이 다르다");
+            Check((srv->DebugHeld(Sid(srv, a))->wandFlags & 4) != 0, "W4 ⑤ 주문을 건 지팡이에 +96 & 4 가 안 켜졌다");
+        }
+    }
+
+    // ⑥ 대기 = (long long)(FPS ÷ 초당 수) — 0.2 는 150(float 로 읽으면 149) · 0 은 0
+    Check(nox::WandCooldownFrames(30, 0.2) == 150 && nox::WandCooldownFrames(30, 1.0) == 30 &&
+          nox::WandCooldownFrames(30, 3.0) == 10 && nox::WandCooldownFrames(30, 0.0) == 0, "W4 ⑥ 지팡이 대기 계산이 FPS ÷ 값이 아니다");
+    {
+        const nox::WandUseArgs w1 = nox::ParseWandUse("100 YellowStarShot 0 MULTI_SHOT FlareWand 0");
+        const nox::WandUseArgs w2 = nox::ParseWandUse("20 Fireball 3.0 SINGLE_SHOT SmallFireballWand 10");
+        Check(w1.got == 5 && w1.charges == 100 && std::string(w1.proj) == "YellowStarShot" && w1.rate == 0.0 && w1.multi && std::string(w1.sound) == "FlareWand",
+              "W4 ⑥ WandUse 뒷말(Shower)을 잘못 읽었다");
+        Check(w2.got == 5 && w2.charges == 20 && std::string(w2.proj) == "Fireball" && w2.rate == 3.0 && !w2.multi, "W4 ⑥ WandUse 뒷말(LesserFireball)을 잘못 읽었다");
+    }
+
+    // ⑦ 노란 별 — 적은 맞히고(인자 2 · 사라짐 · 그림 0x88) · 같은 편은 지나가고 · 40틱이면 그림 0x88 내고 사라지고 · 벽은 튕기고 · 반주문이면 사라진다
+    {
+        nox::CSyncHost srv; mk(srv);
+        srv->DebugHoldItem(Sid(srv, a), wand(805, kStar, 200, 0, false, 0x10000));
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        const uint16_t hp0 = srv->HealthOf(Sid(srv, b));
+        attack(srv, ms, out);
+        for (int t = 0; t < 20 && srv->missiles() > 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv->wandStat(WS::StarHit) == 1 && srv->missiles() == 0, "W4 ⑦a 노란 별이 앞의 적 b 를 맞히고 사라지지 않았다");
+        Check(srv->HealthOf(Sid(srv, b)) < hp0 && hp0 - srv->HealthOf(Sid(srv, b)) <= 2, "W4 ⑦a 노란 별 피해가 인자(2) 이하로 안 들어갔다");
+        Check(FindMsg(FlattenTo(out, a), static_cast<uint8_t>(nox::Op::FX_THIN_EXPLOSION)) != nullptr, "W4 ⑦a 맞을 때 그림 0x88 이 없다");
+    }
+    {
+        nox::CSyncHost srv; mk(srv);
+        srv->DebugSetTeam(Sid(srv, a), 1);
+        srv->DebugSetTeam(Sid(srv, b), 1);
+        srv->DebugHoldItem(Sid(srv, a), wand(806, kStar, 200, 0, false, 0x10000));
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        const uint16_t hp0 = srv->HealthOf(Sid(srv, b));
+        attack(srv, ms, out);
+        for (int t = 0; t < 60 && srv->missiles() > 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv->wandStat(WS::StarPass) >= 1 && srv->wandStat(WS::StarHit) == 0, "W4 ⑦b 같은 편 b 를 지나가지 않았다");
+        Check(srv->HealthOf(Sid(srv, b)) == hp0, "W4 ⑦b 같은 편이 깎였다");
+        Check(srv->wandStat(WS::StarAge) == 1 && srv->missiles() == 0, "W4 ⑦b 40틱이 지나도 노란 별이 안 사라졌다");
+    }
+    {
+        nox::CSyncHost srv; mk(srv);
+        srv->SetWalls({ { 47, 43 } });                                       // 앞 칸(x 1081~1103)
+        srv->DebugMoveTo(Sid(srv, b), 1000, 1500);                           // 길에서 비킨다
+        srv->DebugHoldItem(Sid(srv, a), wand(807, kStar, 200, 0, false, 0x10000));
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        attack(srv, ms, out);
+        for (int t = 0; t < 20 && srv->wandStat(WS::StarWall) == 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv->wandStat(WS::StarWall) >= 1 && srv->missiles() == 1, "W4 ⑦c 노란 별이 벽에서 튕기지 않고 사라졌다(또는 안 닿았다)");
+    }
+    {
+        nox::CSyncHost srv;
+        { nox::Gamedata g; g.Parse("CounterspellRange = 600;\n" "SummonDuration = 60, 210, 375;\n"); srv->SetGamedata(g); }   // 둘레 = 실 gamedata 600
+        mk(srv);
+        srv->SetCounterMissileType(kStar);
+        srv->DebugMoveTo(Sid(srv, b), 1000, 1500);
+        srv->DebugHoldItem(Sid(srv, a), wand(808, kStar, 200, 0, false, 0x10000));
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        attack(srv, ms, out);
+        Check(srv->missiles() == 1, "W4 ⑦d 한 발이 안 났다(시험 전제)");
+        out.clear();
+        srv->DebugCastCounterSpell(Sid(srv, a)); srv.TakeOut(out);
+        Check(srv->missiles() == 0 && srv->wandStat(WS::StarCounter) == 1, "W4 ⑦d 반주문에 노란 별이 안 사라졌다");
+        Check(FindMsg(FlattenTo(out, a), static_cast<uint8_t>(nox::Op::FX_THIN_EXPLOSION)) != nullptr, "W4 ⑦d 반주문에 그림 0x88 이 없다");
+    }
+    std::printf("  W4 — 지팡이 쏘기: 공격 입력이 쓰기 함수 · 빠르기 배수 없음 · 충전 −1 · 여러 발 ±8 · 대기 경계 · 빈 지팡이 휘두르기 29 · 번개·오브 안 깎음 · 노란 별 맞힘·같은 편 지나감·수명·벽·반주문\n");
 }
 
 // ── 묶음 5-f — 플라스마(59) ────────────────────────────────────────────
@@ -21971,15 +22187,19 @@ void TestWeaponSlot() {
         Check(srv->melees() == 1 && hp0 - srv->HealthOf(Sid(srv, b)) == want, "④ 대검 한 대 피해가 대검 식과 다르다");
     }
     // ⑤ 수치 표에 없는 무기(ForceWand 0x40000 — 지팡이 갈래)로 휘둘러도 서버가 안 죽고 판정 없이 센다
+    //   ✖ 11-20 W4 — 전제가 바뀌었다: 마법 지팡이 12종을 수치 표에 넣었고 공격 입력의 지팡이 갈래(`GAME4.c:1601~1615`)를 옮겼다.
+    //     최대 충전 0(무한)인 지팡이는 **휘두르지 않고** 쓰기 함수만 부른다(이 물건은 쓰기 함수가 없어 아무 일 없음) → 애니 31 · 판정 없음
     {
         nox::CSyncHost srv; make(srv);
         srv->SetPlayerAnimFrames(29, 8, 0);
+        srv->SetPlayerAnimFrames(31, 8, 0);
         pickEquip(srv, 501, 1171, 0x40000);
         Check(srv->DebugWeaponEquip(Sid(srv, a)) == 0x40000, "⑤ 지팡이를 들었는데 비트가 0x40000 이 아니다");
-        uint32_t ms = 0;
+        uint32_t ms = 0; uint8_t anim = 0;
         const uint16_t hp0 = srv->HealthOf(Sid(srv, b));
-        swing(srv, ms, nullptr);
-        Check(srv->weaponNoStats() == 1 && srv->melees() == 0 && srv->HealthOf(Sid(srv, b)) == hp0, "⑤ 표에 없는 무기인데 판정했거나 안 셌다");
+        swing(srv, ms, &anim);
+        Check(anim == 31, "⑤ 무한 충전 지팡이의 공격 자세가 31(STAFF_SPELL) 이 아니다");
+        Check(srv->weaponNoStats() == 0 && srv->melees() == 0 && srv->HealthOf(Sid(srv, b)) == hp0, "⑤ 충전이 있는 지팡이가 휘둘러 판정했다");
     }
     // ⑥ 틀 없는 서버(기본 장비를 못 실음)는 옛 방식 — 직업 표의 롱소드
     {
@@ -21988,7 +22208,7 @@ void TestWeaponSlot() {
         Check(srv->DebugWeaponEquip(Sid(srv, a)) == 0x200 && srv->DebugWeaponWire(Sid(srv, a)) == nox::kItemLongsword && srv->DebugWeaponNet(Sid(srv, a)) == 0,
               "⑥ 틀 없는 서버에서 워리어가 직업 표 롱소드를 안 들었다");
     }
-    std::printf("  09-27 B2 — 무기 칸: 기본 롱소드 · 벗으면 맨손 · 가방에서 빠지면 맨손 · 주운 대검 자세 37·피해 · 표 없는 지팡이는 판정 없이 셈 · 틀 없는 서버는 직업 표\n");
+    std::printf("  09-27 B2 — 무기 칸: 기본 롱소드 · 벗으면 맨손 · 가방에서 빠지면 맨손 · 주운 대검 자세 37·피해 · 무한 충전 지팡이는 31 로 판정 없음 · 틀 없는 서버는 직업 표\n");
 }
 
 // ── 09-27 B3 — 무기 들기 관문(`nox_xxx_playerEquipWeapon_53A420` `GAME4_3.c:4906~4993`) ─────────
@@ -37570,6 +37790,7 @@ int main() {
     TestPickupPotion();
     TestEatAndMushroom();
     TestWandCharges();
+    TestWandShot();
     TestPlasma();
     TestChargedStaffCast();
     TestGold();

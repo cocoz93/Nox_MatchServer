@@ -143,7 +143,9 @@ std::shared_ptr<const nox::Server::GameTables> BuildGameTables(const GameFiles& 
                                 // ★ 11-20 트레일러 전사 2-a — 던지는 것 둘(SPEED 400 · 300 · AIRBORNE — 수리검 · 차크람 `GAME4_3.c:4345·4400`)
                                 "FanChakramInMotion", "RoundChakramInMotion",
                                 // ★ 11-20 트레일러 위저드 W2 — 마법 화살(SPEED 64 · AIRBORNE+FLICKER+NO_COLLIDE_OWNER · BoomCollide — 인자 없음)
-                                "MagicMissile" }) {
+                                "MagicMissile",
+                                // ★ 11-20 트레일러 위저드 W4 — 노란 별 지팡이(SulphorousFlare·Shower)가 쏘는 것(SPEED 350 · YellowStarShotCollide 2)
+                                "YellowStarShot" }) {
             const uint16_t w = tdb.WireByName(nm);
             const nox::ThingInfo* t2 = w ? tdb.ByWire(w) : nullptr;
             int amount = 0;
@@ -611,7 +613,12 @@ std::shared_ptr<const nox::Server::GameTables> BuildGameTables(const GameFiles& 
                 if (!t2 || !t2->hasCollide) continue;
                 srv.SetCollideFn(w, firstWord(t2->collideRaw));
             }
-            for (const auto& wp : nox::kWeapons) srv.SetWeaponWire(wp.classBits, tdb.WireByName(wp.name));
+            // ★ 11-20 W4 — 0x80000 을 두 지팡이가 같이 써서 **먼저 것**만 둔다(시험용 바꿔 들기 `WeaponStatsOf` 도 먼저 것을 고른다)
+            {
+                std::set<uint32_t> seenBits;
+                for (const auto& wp : nox::kWeapons)
+                    if (seenBits.insert(wp.classBits).second) srv.SetWeaponWire(wp.classBits, tdb.WireByName(wp.name));
+            }
             // ★ 4-a2 — 겨눈 주문이 날리는 "Magic"(SPEED · MASS)
             if (const uint16_t mw = tdb.WireByName("Magic")) {
                 const nox::ThingInfo* mt = tdb.ByWire(mw);
@@ -1566,18 +1573,42 @@ bool BuildMapOriginal(const GameFiles& files, std::shared_ptr<const nox::Server:
                 //   ⭕ 실측 — `250 1.0 SPELL_PLASMA` · `5 1.0 SPELL_DEATH_RAY` ·
                 //     `60 1.0 SPELL_CHAIN_LIGHTNING` · `3 0.2 SPELL_FORCE_OF_NATURE`.
                 //   주문 번호는 **SPEL 섹션의 순번**이다(우리 주문 번호와 같은 셈).
+                // ✖ 11-20 W4 정정 — 둘째 값은 「초」가 아니라 **초당 쓰는 수**다: 대기 = `(long long)(FPS / atof(값))`(sub_5361B0 `GAME4_3.c:3062`).
+                //   예전 `초 × 30` 은 1.0 에서만 같았다 — 0.2(InfinitePainWand)가 6 프레임이 됐다(원본 150). double 로 읽는다(float 0.2 면 149 로 잘린다)
                 if (w2.useFn == nox::UseFn::WandCast) {
-                    int ch = 0; float sec = 0.0f; char nm[64] = { 0 };
-                    if (std::sscanf(ti->useArgsRaw.c_str(), "%d %f %63s", &ch, &sec, nm) == 3) {
+                    int ch = 0; double rate = 0.0; char nm[64] = { 0 };
+                    if (std::sscanf(ti->useArgsRaw.c_str(), "%d %lf %63s", &ch, &rate, nm) == 3) {
                         w2.chargesMax = static_cast<uint8_t>(ch < 0 ? 0 : (ch > 255 ? 255 : ch));
                         w2.charges = w2.chargesMax;
-                        w2.wandCooldown = static_cast<uint32_t>(sec * nox::kServerTickRate);
+                        w2.wandCooldown = nox::WandCooldownFrames(nox::kServerTickRate, rate);
                         for (size_t si = 0; si < tdb.Spells().size(); ++si)
                             if (tdb.Spells()[si].name == nm) { w2.wandSpell = static_cast<uint8_t>(si); break; }
                         if (w2.wandSpell == 0)
                             srv.Log("[완드] ⚠ %s 의 주문 %s 을 못 찾음\n", objs[i].type.c_str(), nm);
                     }
                 }
+                // ★ 11-20 트레일러 위저드 W4 — 쏘는 지팡이 `WandUse <충전> <날릴 것> <초당 발 수> <SINGLE_SHOT|MULTI_SHOT> <소리>`(sub_536260 `GAME4_3.c:3074~3117`)
+                //   ⭕ thing.bin 실측 — Flare `200 YellowStarShot 0 SINGLE_SHOT FlareWand` · Shower `100 YellowStarShot 0 MULTI_SHOT FlareWand` ·
+                //     LesserFireball `20 Fireball 3.0 SINGLE_SHOT SmallFireballWand` · DemonsBreath `10 TitanFireball 3.0 SINGLE_SHOT SmallFireballWand` ·
+                //     FireStorm `10 Fireball 1.0 MULTI_SHOT SmallFireballWand` (뒤에 붙은 숫자 하나는 파서가 안 읽는다)
+                //   · 대기 = 값이 0 이면 0 · 아니면 `(long long)(FPS / 값)` · MULTI_SHOT 이면 +96 |= 1 · 소리는 이름으로
+                if (w2.useFn == nox::UseFn::WandShot) {
+                    const nox::WandUseArgs wa = nox::ParseWandUse(ti->useArgsRaw);
+                    if (wa.got >= 3) {
+                        w2.chargesMax = static_cast<uint8_t>(wa.charges < 0 ? 0 : (wa.charges > 255 ? 255 : wa.charges));
+                        w2.charges = w2.chargesMax;
+                        w2.wandShotType = tdb.WireByName(wa.proj);
+                        w2.wandCooldown = nox::WandCooldownFrames(nox::kServerTickRate, wa.rate);
+                        if (wa.multi) w2.wandFlags |= 1;
+                        if (wa.got >= 5) w2.wandShotSound = nox::SoundByName(wa.sound);
+                    }
+                    if (w2.wandShotType == 0) srv.Log("[완드] ⚠ %s 의 날릴 것 %s 을 못 찾음\n", objs[i].type.c_str(), wa.proj);
+                    else srv.Log("[완드] %s 쏘기 — 날릴 것 %s(%u) · 충전 %u · 대기 %u · 여러 발 %d · 소리 %u\n", objs[i].type.c_str(), wa.proj,
+                                 static_cast<unsigned>(w2.wandShotType), static_cast<unsigned>(w2.chargesMax), static_cast<unsigned>(w2.wandCooldown),
+                                 (w2.wandFlags & 1) ? 1 : 0, static_cast<unsigned>(w2.wandShotSound));
+                }
+                // ★ 11-20 W4 — 무기 수치 칸(이름으로) — 0x80000 두 지팡이를 가르려고
+                w2.weaponStats = static_cast<int8_t>(nox::WeaponStatsIndexByName(objs[i].type));
                 w2.equipBit = ebit;
                 w2.isWeapon = isW;
                 // ★ 09-27 B3 — 무기 들기 첫 관문(`obj_class & 0x1001000` = WEAPON|WAND)

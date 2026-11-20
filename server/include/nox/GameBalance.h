@@ -228,7 +228,29 @@ constexpr WeaponStats kWeapons[] = {
     { "GreatSword",  50, 0.54, 70, 50.0, 0x400  },   // GREAT_SWORD
     { "WarHammer",  100, 0.50, 70, 20.0, 0x4000 },   // HAMMER
     { "StaffWooden",  4, 0.40, 20, 45.0, 0x8000 },   // STAFF
+    // ★ 11-20 트레일러 위저드 W4 — 지팡이 12종(⭕ modifier.bin 복호 실측 · 빠진 칸은 0 — 원본 파서 `server/modifiers.go:319~329` 가 그대로 담는다).
+    //   충전이 있는 동안은 쏘거나 걸 뿐이고, 이 수치는 **충전이 다 떨어져 휘두를 때**(애니 29)와 오블리비언 셋의 찌르기(32)에 쓴다.
+    //   ⚠ 0x80000 은 두 지팡이(LesserFireballWand · DemonsBreathWand)가 같이 쓴다 — 든 물건은 이름으로 찾은 칸(Carried::weaponStats)을 본다
+    { "SulphorousFlareWand",  4, 0.40, 20, 45.0, 0x10000   },   // STAFF_SULPHOROUS_FLARE
+    { "SulphorousShowerWand", 4, 0.40, 20, 45.0, 0x20000   },   // STAFF_SULPHOROUS_SHOWER
+    { "ForceWand",            4, 0.40, 20, 45.0, 0x40000   },   // STAFF_LIGHTNING
+    { "LesserFireballWand",   4, 0.40, 20, 45.0, 0x80000   },   // STAFF_FIREBALL
+    { "DemonsBreathWand",     0, 0.00,  0,  0.0, 0x80000   },   // STAFF_FIREBALL — modifier.bin 칸이 DURABILITY 하나뿐
+    { "FireStormWand",        4, 0.40, 20, 45.0, 0x100000  },   // STAFF_TRIPLE_FIREBALL
+    { "InfinitePainWand",     4, 0.40, 20, 45.0, 0x200000  },   // STAFF_FORCE_OF_NATURE
+    { "DeathRayWand",         4, 0.40, 20, 45.0, 0x400000  },   // STAFF_DEATH_RAY
+    { "OblivionHalberd",      5, 0.50, 20, 50.0, 0x800000  },   // STAFF_OBLIVION_HALBERD
+    { "OblivionHeart",        5, 0.50, 20, 50.0, 0x1000000 },   // STAFF_OBLIVION_HEART
+    { "OblivionWierdling",    5, 0.50, 20, 50.0, 0x2000000 },   // STAFF_OBLIVION_WIERDLING
+    { "OblivionOrb",          5, 0.50, 20, 50.0, 0x4000000 },   // STAFF_OBLIVION_ORB
 };
+
+// ★ 11-20 W4 — 이름 → kWeapons 자리(없으면 −1). 든 물건이 제 수치 칸을 찾을 때(비트가 겹치는 0x80000 때문)
+inline int WeaponStatsIndexByName(const std::string& name) {
+    for (size_t i = 0; i < sizeof(kWeapons) / sizeof(kWeapons[0]); ++i)
+        if (name == kWeapons[i].name) return static_cast<int>(i);
+    return -1;
+}
 
 // SUBCLASS 원문('+' 이음) → 무기 클래스 비트. 이름 순서 = 비트 순서(libs WeaponClassNames).
 inline uint32_t WeaponClassBitsOf(const std::string& raw) {
