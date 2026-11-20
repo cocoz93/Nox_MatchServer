@@ -296,6 +296,8 @@ enum class MeleeStrikeWay : uint8_t {
     MissSound,   // 빗나감 소리(칸 8)를 부름
     GolemSwing,  // ★ 11-20 C1 — 골렘 근접 함수(앞쪽 둘레)를 부름
     GolemHurt,   // ★ 11-20 C1 — 그 둘레에서 피해 함수를 부른 유닛 수(한 번 휘둘러 여럿)
+    OgreSwing,   // ★ 11-21 C9 — 오우거 근접 함수(앞쪽 둘레 · 내적 > 0.4)를 부름
+    OgreHurt,    // ★ 11-21 C9 — 그 둘레에서 피해 함수를 부른 유닛 수
     Count
 };
 constexpr size_t kMeleeStrikeWayCount = static_cast<size_t>(MeleeStrikeWay::Count);
@@ -2107,6 +2109,8 @@ public:
     unsigned long long secondaryWeaponStat(int i) const { return i >= 0 && i < 4 ? secondaryWeaponStat_[i] : 0; }                      // ★ 10-01 — 0 비움 · 1 못 찾음 · 2 맞음 · 3 되돌림(`e0 0 01`)
     uint16_t DebugSecondaryWeapon(int64_t a) const { auto i = sessions_.find(a); return i == sessions_.end() ? 0 : i->second.secondaryWeapon; }
     unsigned long long neverRunHeld() const { return neverRunHeld_; }   // ★ 11-21 C8
+    // ★ 11-21 C9 거미 침(갈래 12) — 0 닿음(대상 있음) · 1 느림 걸림 · 2 수명 끝(40틱)
+    unsigned long long webbingStat(int i) const { return (i >= 0 && i < 3) ? webbingStat_[i] : 0; }
     unsigned long long summonFxSent(int i) const { return i >= 0 && i < 2 ? summonFxSent_[i] : 0; }                                    // ★ 10-01 — 0 `7e` 시작 · 1 `7f` 끊김(보는 사람마다가 아니라 소환 한 번에 1)
     // ★ 09-29 B5 — 종류별 몬스터 애니 표(thing.bin MonsterDraw STAT · 순번 0~15) — main 이 싣는다
     void SetMonsterAnim(uint16_t wire, int idx, int frames, int hold, bool loop) {
@@ -3760,7 +3764,8 @@ public:
     }
     // 날아가는 종류 하나 — thing.bin 에서 읽어 main 이 넣는다(이름으로 찾는다).
     // ★ 11-21 C5 — monsterArrow = thing.bin `COLLIDE = MonsterArrowCollide`(크리처가 쏘면 닿음 갈래 5 · 아니면 3 ProjectileCollide)
-    struct ProjTypeInfo { uint16_t type = 0; float speed = 0; uint32_t flags = 0; uint8_t collideAmount = 0; bool monsterArrow = false; };
+    struct ProjTypeInfo { uint16_t type = 0; float speed = 0; uint32_t flags = 0; uint8_t collideAmount = 0; bool monsterArrow = false;
+                          bool webbing = false; };   // ★ 11-21 C9 — thing.bin `COLLIDE = SpiderSpitCollide`(거미 침 → 갈래 12)
     // ★ 09-23 nine-defects 2-a3 — 반주문에 지워지는 날아가는 것(thing.bin 서브클래스 `MISSILE_COUNTERSPELL`)의 종류.
     //   main 이 thing.bin 에서 넣고, 시험은 손으로 넣는다. Estate 기준 `Magic`·불덩이 셋·`Pixie` 다(`--dump-thing` 실측)
     void SetCounterMissileType(uint16_t wire) { GtMut().counterMissileTypes.insert(wire); }
@@ -3780,14 +3785,21 @@ public:
         auto i = sessions_.find(a); return i == sessions_.end() ? 0 : CastCounterSpell(i->second);
     }
     void SetProjType(const std::string& name, uint16_t type, int speedRaw, uint32_t flags, uint8_t collideAmount,
-                     bool monsterArrow = false) {
+                     bool monsterArrow = false, bool webbing = false) {
         ProjTypeInfo p;
         p.type = type;
         p.speed = static_cast<float>(speedRaw) / 32.0f * 2.0f;   // SpeedBase = SPEED/32 · MISSILE 은 ×2
         p.flags = flags;
         p.collideAmount = collideAmount;
         p.monsterArrow = monsterArrow;
+        p.webbing = webbing;
         GtMut().projTypes[name] = p;
+    }
+    // ★ 11-21 C9 — 크리처가 쏜 것의 닿음 갈래 — 5 MonsterArrowCollide · 12 SpiderSpitCollide · 3 그 밖(ProjectileCollide)
+    static uint8_t CreatureMissileKind(const ProjTypeInfo& p) {
+        if (p.monsterArrow) return 5;
+        if (p.webbing) return 12;
+        return 3;
     }
     const ProjTypeInfo* ProjType(const std::string& name) const {
         auto it = gt_->projTypes.find(name);
@@ -4785,6 +4797,7 @@ private:
         int level = 0;                   // [4]
         // ★ 닿음 함수 갈래(묶음 4-c3 날리는 것) — thing.bin `COLLIDE` 가 정한다.
         //   0 = SpellProjectileCollide(Magic — 대상에 닿으면 주문 효과) · 1 = SparkExplosionCollide(불덩이 — 터진다)
+        //   ★ 11-21 C9 — 12 = SpiderSpitCollide(거미 침 — 피해 0 · 느림)
         uint8_t collideKind = 0;
         uint8_t collideAmount = 0;       // SparkExplosionCollide 의 인자(불덩이 192 · 센 불덩이·거인 불덩이 255)
         int fromPet = -1;                // 묶음 6-g(3b) — 이것을 쏜 소환수(제 몸에는 안 맞는다)
@@ -6128,6 +6141,7 @@ private:
     unsigned long long secondaryWeaponStat_[4] = {};              // ★ 10-01 — 클라 `e0` 대체 무기 갈래 0 비움(번호 0) · 1 가방에 없음 · 2 맞음 · 3 직업·힘 안 맞아 되돌림
     unsigned long long roundFrozenTicks_ = 0;                     // ★ 10-01 R1 — 판끝이라 세계를 멈춘 틱 수(`Tick` 의 `frozen`)
     unsigned long long neverRunHeld_ = 0;                         // ★ 11-21 C8 — NEVER_RUN 이라 달리기를 안 켠 수(트롤)
+    unsigned long long webbingStat_[3] = {};                      // ★ 11-21 C9 — 거미 침 닿음 · 느림 · 수명 끝
     unsigned long long summonFxSent_[2] = {};                     // ★ 10-01 — 소환 효과 0 `7e` 시작 · 1 `7f` 끊김(소환 한 번에 하나씩)
     uint16_t summonFxNext_ = 0;                                   // ★ 10-01 — 다음 효과 번호(원본 0x5D4594+1570276 · 0xFDE8 에 닿으면 0)
     struct MonsterAnimRow { uint8_t frames = 0, hold = 0; bool loop = false; };

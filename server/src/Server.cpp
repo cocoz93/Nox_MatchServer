@@ -1200,6 +1200,11 @@ uint16_t Server::SummonType(uint8_t spell) {
         // ★ 11-21 C10 — 원거리 둘(이름표 29 Urchin · 14 FlyingGolem)
         case 103: return 1339; // SUMMON_URCHIN             → Urchin
         case 88:  return 1316; // SUMMON_FLYING_GOLEM       → FlyingGolem
+        // ★ 11-21 C9 — 새 근접 함수 넷(이름표 17 GruntAxe · 20 Scorpion · 26 SpittingSpider · 30 Wasp)
+        case 91:  return 1336; // SUMMON_GRUNT_AXE          → GruntAxe
+        case 94:  return 1373; // SUMMON_SCORPION           → Scorpion
+        case 100: return 1352; // SUMMON_SPITTING_SPIDER    → SpittingSpider
+        case 104: return 1331; // SUMMON_WASP               → Wasp
         default: return 0;
     }
 }
@@ -7711,6 +7716,7 @@ bool Server::SpellAccept(uint8_t spell, Session& s, int64_t obj3, const SpellArg
             case 96: case 97:                                                                  // ★ 11-21 C7 해골 · 해골 군주
             case 95: case 98: case 99: case 102: case 106: case 107: case 108:                 // ★ 11-21 C8 근접 일곱
             case 103: case 88:                                                                 // ★ 11-21 C10 원거리 둘
+            case 91: case 94: case 100: case 104:                                              // ★ 11-21 C9 새 근접 함수 넷
             case 90: case 92: case 109: case 110: {                                            // Summon — 지속(크기별 시전 시간) · ★ 11-21 C4 근접 넷
                 DurFns f;
                 f.create = &Server::DurSummonCreate;
@@ -10441,7 +10447,8 @@ bool Server::SpawnCreatureMissile(Creature& k, const char* name, float tx, float
     m.ud0 = m.ud2 = k.owner;
     // ★ 11-21 C5 — 닿음 함수는 thing.bin `COLLIDE` 이름대로 — `MonsterArrowCollide`(오우거 군주 표창 · 체럽 화살)면 갈래 5
     //   (`collideMonsterArrow_4EB800` — 종류 3 · 벽이면 사라짐), 그 밖(ImpShot 등)은 3 ProjectileCollide(종류 11)
-    m.collideKind = pt->monsterArrow ? 5 : 3;
+    //   ★ 11-21 C9 — `SpiderSpitCollide`(침 뱉는 거미 침)면 갈래 12(`collideWebbing_4EA380` — 피해 0 · 느림)
+    m.collideKind = CreatureMissileKind(*pt);
     m.fromPet = static_cast<int>(&k - pets_.data());         // 제 몸에 안 맞게
     m.collideAmount = pt->collideAmount;
     m.velX = DirVecX(dir) * m.speed;
@@ -14465,15 +14472,18 @@ void Server::ObjectApplyForce(float fromX, float fromY, const Target& t, double 
 //     ⚠ 도망(24)은 B4a 가 옮긴다 — 그때까지는 때(41)가 다할 때 빠진다
 //   · 폭탄병(`strikeBomber_549BB0`) — 늘 1
 //   · ★ 11-19 독 좀비(`strikeVileZombie_549700` `:2654~2692`) — 대상 없으면 1(기본과 같음 · 거미와 다름) · 때린 뒤 같은 독 · 글만 「aifunc.c:PoisonedByZombie」
+//   · ★ 11-21 C9 전갈(`strikeScorpion_5495B0` `:2594~2632`) — 독 좀비 꼴(대상 없으면 1 · 때리고 밀기 · 독) · 글만 「aifunc.c:PoisonedByScorpion」
+//     말벌(`strikeWasp_549980` `:2766~2803`) — 거미 꼴(대상 없으면 0) · 원본은 독 다음 밀기 — 둘이 서로 안 읽어 차례를 안 바꿔도 같다 · 글 「aifunc.c:PoisonedByWasp」
+//     침 뱉는 거미(`:2906~2943`)는 거미와 몸통이 같다 · 오우거(`strikeOgre_549220`)는 GolemStrike 로 · 대상 없음·독 글은 `GameBalance.h` 의 두 함수
 int Server::MonsterStrike(Creature& k, const MeleeStrikeInfo& si, int dmg) {
     if (si.fn == StrikeFn::Bomber) { ++meleeStrike_[static_cast<size_t>(MeleeStrikeWay::Bomber)]; return 1; }
-    if (si.fn == StrikeFn::Golem) return GolemStrike(k, si, dmg);   // ★ 11-20 C1
+    if (si.fn == StrikeFn::Golem || si.fn == StrikeFn::Ogre) return GolemStrike(k, si, dmg);   // ★ 11-20 C1 · ★ 11-21 C9 오우거
     const MonsterStats* m = FindMonster(k.type);
     const double range = (m && m->meleeRange > 0.0) ? m->meleeRange : 0.0;
     const Target v = MonsterPickMeleeTarget(k, range);
     if (v.none()) {
         ++meleeStrike_[static_cast<size_t>(MeleeStrikeWay::NoTarget)];
-        return si.fn == StrikeFn::Spider ? 0 : 1;
+        return StrikeNoTargetResult(si.fn);                      // ★ 11-21 C9 — 전에는 `Spider ? 0 : 1`
     }
     float vx = 0, vy = 0;
     TargetXY(v, vx, vy);
@@ -14496,12 +14506,11 @@ int Server::MonsterStrike(Creature& k, const MeleeStrikeInfo& si, int dmg) {
     // 때린 뒤 상대(앞 자리 크리처)가 죽으면 번호가 당겨진다 — 그 뒤 몫(밀기·독·유령)은 사람 대상이거나 목록이 그대로일 때만
     const bool listSame = pets_.size() == petsBefore;
     if (si.impact > 0.0f && (listSame || (v.sessionId != kNoSession))) ObjectApplyForce(kx, ky, v, si.impact);
-    const bool poisons = si.fn == StrikeFn::Spider || si.fn == StrikeFn::VileZombie;
-    if (poisons && si.poisonChance > 0 && (listSame || (v.sessionId != kNoSession))) {   // `sub_549690` — randomInt(1,100) <= 확률
+    const char* const poisonMsg = StrikePoisonMsg(si.fn);   // ★ 11-21 C9 — 독 거는 함수 = 글이 있는 함수(거미·독 좀비·전갈·말벌)
+    if (poisonMsg && si.poisonChance > 0 && (listSame || (v.sessionId != kNoSession))) {   // `sub_549690` — randomInt(1,100) <= 확률
         if (static_cast<int>(1 + NextRandom(100)) <= si.poisonChance && ActivatePoison(v, si.poisonStrength, si.poisonMax)) {
             ++meleeStrike_[static_cast<size_t>(MeleeStrikeWay::Poisoned)];
-            const char* msg = si.fn == StrikeFn::VileZombie ? "aifunc.c:PoisonedByZombie" : "aifunc.c:Poisoned";
-            if ((v.sessionId != kNoSession)) { auto it = sessions_.find(v.sessionId); if (it != sessions_.end()) SendPriMsg(it->second, msg); }
+            if ((v.sessionId != kNoSession)) { auto it = sessions_.find(v.sessionId); if (it != sessions_.end()) SendPriMsg(it->second, poisonMsg); }
         }
     }
     if (si.fn == StrikeFn::Ghost && listSame && kIdx < pets_.size()) {
@@ -14524,8 +14533,14 @@ int Server::MonsterStrike(Creature& k, const MeleeStrikeInfo& si, int dmg) {
 //   기본 근접과 다른 셋 — 적·편을 안 고른다(가르는 것은 피해 함수 — 같은 편 피해는 원본대로) · 대상 하나가 아니라 앞쪽 전부 · 아무도 안 맞으면 0
 //   ⚠ 둘레는 중심 거리로 잰다(원본은 충돌 칸 겹침 — 뒤의 가장자리 거리 관문이 더 좁아 상대 몸 반지름이 30 이하면 같은 답) ·
 //     유닛 밖 물건(통·상자)과 죽어 있는 사람은 안 본다(둘레 피해 `DamageUnitsAround` 와 같은 거르기)
+//   ★ 11-21 C9 — 오우거(`strikeOgre_549220` + 유닛마다 `sub_549270` `GAME5.c:2441~2500`)도 이 몸통으로. 둘레(사거리 + 제 몸 + 30 —
+//     같은 `blob 287328`)·자기 아님·선(5 · 나 → 그것)·피해 함수(그것, 나, 나, 근접 피해, 종류)·맞힘 1 은 같고 셋이 다르다:
+//     ① 앞쪽 = 제 방향 벡터(방향 표 194136 — `DirVecX/Y`)와 「나 → 그것」 단위 벡터의 내적 > 0.4(골렘은 `testTwoPointsAndDirection`)
+//     ② 거리 = 중심 거리 + 0.01 − (그것 반지름 +176 + 제 반지름 +176) ≤ 사거리 — 몸 모양을 안 가린다(골렘의 `calcDistance` 는 원 몸만 뺀다)
+//     ③ 땅 흔들기 없음 · 밀기는 늘 부른다(힘 0 이면 일 없음 — 우리 「> 0 일 때만」과 같은 결과)
 int Server::GolemStrike(Creature& k, const MeleeStrikeInfo& si, int dmg) {
-    ++meleeStrike_[static_cast<size_t>(MeleeStrikeWay::GolemSwing)];
+    const bool ogre = si.fn == StrikeFn::Ogre;
+    ++meleeStrike_[static_cast<size_t>(ogre ? MeleeStrikeWay::OgreSwing : MeleeStrikeWay::GolemSwing)];
     const MonsterStats* m = FindMonster(k.type);
     const double range = (m && m->meleeRange > 0.0) ? m->meleeRange : 0.0;
     double myR = 0.0;
@@ -14545,15 +14560,27 @@ int Server::GolemStrike(Creature& k, const MeleeStrikeInfo& si, int dmg) {
     src.rootIsMonster = (me.owner == kNoSession);
     const HitterRef hitter = HitterMonster(me);
     int res = 0;
+    // ★ 11-21 C9 — 오우거 거리의 그것 반지름(+176) — 사람은 `kPlayerRadius` · 크리처는 종류 몸(모양 안 가림)
+    auto radiusOf = [&](const Target& t) -> double {
+        if (t.sessionId != kNoSession) return kPlayerRadius;
+        const auto tb = gt_->typeBodies.find(pets_[static_cast<size_t>(t.pet)].type);
+        return tb != gt_->typeBodies.end() ? static_cast<double>(tb->second.r) : 0.0;
+    };
     auto strike = [&](const Target& t, float tx, float ty) {
         const double dx = static_cast<double>(tx) - me.x, dy = static_cast<double>(ty) - me.y;
         if (dx * dx + dy * dy > circle * circle) return;
-        if (!(TestTwoPointsAndDirection(kx, ky, me.facing, tx, ty) & 1)) return;
-        if (CalcDistanceEdge(me, t, tx, ty) > range) return;
+        if (ogre) {
+            const double d = std::sqrt(dx * dx + dy * dy) + 0.0099999998;                     // `:2479`
+            if (d - (radiusOf(t) + myR) > range) return;                                         // `:2480`
+            if (dy / d * DirVecY(me.facing) + dx / d * DirVecX(me.facing) <= 0.40000001) return; // `:2481~2482`
+        } else {
+            if (!(TestTwoPointsAndDirection(kx, ky, me.facing, tx, ty) & 1)) return;
+            if (CalcDistanceEdge(me, t, tx, ty) > range) return;
+        }
         if (!MapTraceRay(kx, ky, tx, ty, 0x5)) return;
         const size_t before = pets_.size();
-        HurtTarget(t, dmg, me.owner, si.dtype, &src, hitter);   // a2 = a3 = 그 골렘(`GAME5.c:2743~2745`)
-        ++meleeStrike_[static_cast<size_t>(MeleeStrikeWay::GolemHurt)];
+        HurtTarget(t, dmg, me.owner, si.dtype, &src, hitter);   // a2 = a3 = 그 골렘(`GAME5.c:2743~2745`) · 오우거(`:2491~2493`)
+        ++meleeStrike_[static_cast<size_t>(ogre ? MeleeStrikeWay::OgreHurt : MeleeStrikeWay::GolemHurt)];
         res = 1;                                                 // 사람·크리처뿐이라 늘 클래스 & 6
         if (si.impact > 0.0f && ((t.sessionId != kNoSession) || pets_.size() == before)) ObjectApplyForce(kx, ky, t, si.impact);
     };
@@ -14568,7 +14595,7 @@ int Server::GolemStrike(Creature& k, const MeleeStrikeInfo& si, int dmg) {
         if (i == self) continue;
         strike(Target{ kNoSession, static_cast<int>(i) }, static_cast<float>(pets_[i].x), static_cast<float>(pets_[i].y));
     }
-    EarthquakeSend(kx, ky, 30);                                  // `:2713`
+    if (!ogre) EarthquakeSend(kx, ky, 30);                       // `:2713` · ★ 11-21 C9 오우거는 없음(`:2441~2454`)
     return res;
 }
 
@@ -17503,6 +17530,10 @@ void Server::UpdateMissiles(uint32_t frame) {
             //   때가 되면 **대상 없이** 제 닿음 함수를 부르는데, 그쪽은 맵에 피해를 주고 사라진다.
             //   ⚠ 맵 피해(`damageToMap_534BC0`)는 아직 안 옮겼다 — 지금은 그냥 지운다
             if (frame - m.createdFrame > 40u) { DestroyMissile(i); continue; }
+        } else if (m.collideKind == 12) {
+            // ★ 11-21 C9 거미 침 — `UPDATE = ProjectileUpdate`(40틱) 뒤 닿음 함수를 대상 없이 부르는데 `collideWebbing_4EA380` 은
+            //   대상이 없으면(a2 == 0) 아무것도 안 한다(`GAME3_3.c:4473`) — 지우기만
+            if (frame - m.createdFrame > 40u) { ++webbingStat_[2]; DestroyMissile(i); continue; }
         } else if (m.collideKind == 4) {
             // ①-e 묶음 7-f 작살 — `UPDATE = HarpoonUpdate`(`updateHarpoon_54F380`).
             //   ★ 아래 ①-b(주문 투사체)로 떨어지면 **15틱 만에 사라지고** 엉뚱한 상대를 찾아 휜다.
@@ -17988,6 +18019,32 @@ void Server::UpdateMissiles(uint32_t frame) {
                         src.rootIsMonster = MissileRootIsMonster(m);
                         src.missile = true;                    // ★ 09-26 M1 — a3 = 발사체(클래스 MISSILE) → 막기·되받아치기가 `*(v9+8) & 1` 로 가른다
                         HurtTarget(tgt, static_cast<int>(m.collideAmount), m.owner, 11, &src, HitterMissile(m));   // ★ 4-c3b2 a3 = 발사체(`GAME3_3.c:3340`)
+                        DestroyMissile(i);
+                        erased = true;
+                        handled = true;
+                    }
+                    // ★ 11-21 C9 — 거미 침 `collideWebbing_4EA380`(`GAME3_3.c:4470~4486`) — 대상이 있으면 소리 351(침 자리 · 임자 없음) · 지움 ·
+                    //   피해 함수(그것, 주인 사슬의 사람, 침, **0**, 2 CRUSH)가 참이면 사람·몬스터(클래스 & 6)에 느림(버프 4) 4초 세기 3 ·
+                    //   사람이면 글 「objcoll.c:WebbingSlow」. 장애물은 빈 대상이라 피해 함수가 거짓 — 지우기만 · 벽(a2 == 0)은 아무것도 안 해 아래 공통 되튐
+                    //   ⚠ 우리 `HurtTarget` 은 0 피해면 막기 판정 앞에서 참을 돌려준다(`:1618`) — 원본은 피해 함수를 끝까지 탄다(막기·무적 등에서 거짓일 수 있다)
+                    //   원본은 지우기(늦은 지움)를 먼저 걸고 피해 함수를 부른다 — 우리는 갈래 3 처럼 피해 뒤 지운다(같은 틱 안이라 같다)
+                    if (!handled && m.collideKind == 12) {
+                        const Target tgt = HitTargetOf(hk, hSessionId, hIdx);
+                        ++webbingStat_[0];
+                        PlaySoundAt(351, m.posX, m.posY);
+                        AttackSrc src;
+                        src.x = m.posX; src.y = m.posY;
+                        src.byMonsterType = m.type;
+                        src.rootIsMonster = MissileRootIsMonster(m);
+                        src.missile = true;
+                        if (HurtTarget(tgt, 0, m.owner, 2, &src, HitterMissile(m))) {
+                            ApplyEnchant(tgt, 4, static_cast<int>(4 * kServerTickRate), 3);
+                            ++webbingStat_[1];
+                            if (tgt.sessionId != kNoSession) {
+                                auto it = sessions_.find(tgt.sessionId);
+                                if (it != sessions_.end()) SendPriMsg(it->second, "objcoll.c:WebbingSlow");
+                            }
+                        }
                         DestroyMissile(i);
                         erased = true;
                         handled = true;

@@ -26422,6 +26422,252 @@ void TestRangedTwoSummon1121() {
     std::printf("  11-21 C10 원거리 둘 — 표 · thing.bin 이름·크기·쏘는 것 대조 · 작은 시간 뒤 하나 · 돌 갈래 3 · 화살 갈래 5\n");
 }
 
+// ── 11-21 C9 새 근접 함수 넷 — 오우거(91) · 전갈(94) · 침 뱉는 거미(100) · 말벌(104) ─────
+//   ① 표 — monster.bin 복호 ARENA 값 · 두뇌·걸음 소리·때림 칸·쏘기 칸 · 근접 함수 표 · 갈래 함수 둘(대상 없음 0 은 둘 · 독 글은 넷) ·
+//      소환 짝 넷 · 진짜 thing.bin 이름·번호·크기(말벌만 작은) · 침 SpiderSpitCollide · 크리처 쏘기 갈래(5·12·3)
+//   ② 주문마다 크기별 시간(60·210) 뒤 그 종류 하나 · 주인 · 체력 · `7e`·`6c` 한 번
+//   ③ 오우거(동쪽을 봄 · 몸 15 · 사거리 30 · 사람 반지름 10) — b(50 앞)·c(내적 0.85) 깎임 · e(내적 0.39 — 골렘 판정이면 앞) ·
+//      a(중심 55 — +0.01 이라 30.01 · 골렘 거리면 30 = 사거리 안) · d(뒤) 그대로 · 땅 흔들기 없음 · b 밀림 / 앞에 아무도 없으면 빗나감 소리
+//   ④ 전갈·말벌·침 뱉는 거미 — 대상 없을 때 빗나감 소리(말벌·거미만) · 피해 종류 · 독 확률 · 독 글 · 전갈만 밀기
+//   ⑤ 침 — 사람에 닿으면 체력 그대로 · 느림(버프 4) · 글 「objcoll.c:WebbingSlow」 / 아무것도 안 맞으면 40틱 뒤 사라짐
+void TestNewStrikeFourSummon1121() {
+    const std::string a = "10.11.21.22:9532", b = "10.11.21.23:9533", c = "10.11.21.24:9534", d = "10.11.21.25:9535", e = "10.11.21.26:9536";
+    using MW = nox::MeleeStrikeWay;
+    char msg[400];
+    struct SC { uint8_t spell; uint16_t type; const char* name; int health; int size; };
+    const SC cases[] = { { 91, 1336, "GruntAxe", 60, 2 }, { 94, 1373, "Scorpion", 110, 2 }, { 100, 1352, "SpittingSpider", 70, 2 },
+                         { 104, 1331, "Wasp", 15, 1 } };
+    {   // ① 표
+        struct Row { uint16_t type; int hp, dmg; double range; int speed, mn, mx; const char* shot; double srange; int smn, smx; double run; int exp; };
+        const Row rows[] = { { 1336, 60, 12, 30.0, 90, 25, 35, nullptr, 0.0, 0, 0, 1.35, 40000 },
+                             { 1373, 110, 30, 30.0, 70, 40, 50, nullptr, 0.0, 0, 0, 1.3, 40000 },
+                             { 1352, 70, 10, 15.0, 60, 20, 30, "SpiderSpit", 200.0, 20, 30, 1.5, 20000 },
+                             { 1331, 15, 5, 15.0, 120, 0, 0, nullptr, 0.0, 0, 0, 1.3, 8000 } };
+        std::string bad;
+        for (const Row& r : rows) {
+            const nox::MonsterStats* m = nox::FindMonster(r.type);
+            const bool shotOk = m && (r.shot ? (m->missileName && std::string(m->missileName) == r.shot) : (m->missileName == nullptr));
+            if (!m || !shotOk || m->health != r.hp || m->meleeDamage != r.dmg || m->meleeRange != r.range || m->speed != r.speed ||
+                m->minDelay != r.mn || m->maxDelay != r.mx || m->missileRange != r.srange || m->missileMin != r.smn || m->missileMax != r.smx ||
+                m->runMul != r.run || m->experience != r.exp)
+                bad += " " + std::to_string(r.type);
+        }
+        std::snprintf(msg, sizeof(msg), "C9 ① 표가 monster.bin(ARENA)과 다르다 —%s", bad.c_str());
+        Check(bad.empty(), msg);
+        struct St { uint16_t type; nox::StrikeFn fn; uint8_t dtype; float impact; int pc, ps, pm; int frame, sa, sb; uint32_t status; float resume; int shotFrame; };
+        const St st[] = { { 1336, nox::StrikeFn::Ogre,     0, 15.0f,  0, 0, 0, 5, 1, 5, 0x00, 0.4f, 0 },
+                          { 1373, nox::StrikeFn::Scorpion, 3, 20.0f, 25, 2, 4, 5, 1, 5, 0x00, 1.0f, 0 },
+                          { 1352, nox::StrikeFn::Spider,   8,  0.0f, 20, 1, 3, 4, 0, 4, 0x08, 1.0f, 4 },
+                          { 1331, nox::StrikeFn::Wasp,     3,  0.0f, 15, 1, 1, 5, 0, 0, 0x01, 1.0f, 0 } };
+        bad.clear();
+        for (const St& s : st) {
+            const nox::MeleeStrikeInfo k = nox::MeleeStrikeOf(s.type);
+            const nox::MonsterMoveSound ms = nox::MonsterMoveSoundOf(s.type);
+            const nox::MonsterBrainInfo bi = nox::MonsterBrainOf(s.type);
+            if (k.fn != s.fn || k.dtype != s.dtype || k.impact != s.impact || k.poisonChance != s.pc || k.poisonStrength != s.ps || k.poisonMax != s.pm ||
+                nox::MonsterMeleeFrameOf(s.type) != s.frame || ms.a != s.sa || ms.b != s.sb || bi.status != s.status || bi.retreat != 0.0f ||
+                bi.resume != s.resume || bi.fleeRange != 0.0f || nox::MonsterMissileFrameOf(s.type) != s.shotFrame)
+                bad += " " + std::to_string(s.type);
+        }
+        std::snprintf(msg, sizeof(msg), "C9 ① 근접 함수·때림 칸·걸음 소리·두뇌·쏘기 칸 표가 다르다 —%s", bad.c_str());
+        Check(bad.empty(), msg);
+        // 갈래 함수 둘 — 근접 함수 갈래를 전부 돌려 개수로 본다
+        int zero = 0, msgs = 0;
+        for (int f = 0; f <= static_cast<int>(nox::StrikeFn::Wasp); ++f) {
+            const nox::StrikeFn fn = static_cast<nox::StrikeFn>(f);
+            if (nox::StrikeNoTargetResult(fn) == 0) ++zero;
+            if (nox::StrikePoisonMsg(fn)) ++msgs;
+        }
+        const char* sm = nox::StrikePoisonMsg(nox::StrikeFn::Scorpion);
+        const char* wm = nox::StrikePoisonMsg(nox::StrikeFn::Wasp);
+        std::snprintf(msg, sizeof(msg), "C9 ① 갈래 함수 — 대상 없음 0 인 갈래 %d(2) · 독 글 있는 갈래 %d(4) · 전갈 %s · 말벌 %s", zero, msgs,
+                      sm ? sm : "(없음)", wm ? wm : "(없음)");
+        Check(zero == 2 && nox::StrikeNoTargetResult(nox::StrikeFn::Spider) == 0 && nox::StrikeNoTargetResult(nox::StrikeFn::Wasp) == 0 &&
+              nox::StrikeNoTargetResult(nox::StrikeFn::Scorpion) == 1 && msgs == 4 && sm && std::string(sm) == "aifunc.c:PoisonedByScorpion" &&
+              wm && std::string(wm) == "aifunc.c:PoisonedByWasp", msg);
+        nox::Server::ProjTypeInfo pa, pw, pn;
+        pa.monsterArrow = true;
+        pw.webbing = true;
+        Check(nox::Server::CreatureMissileKind(pa) == 5 && nox::Server::CreatureMissileKind(pw) == 12 && nox::Server::CreatureMissileKind(pn) == 3,
+              "C9 ① 크리처 쏘기 닿음 갈래(화살 5 · 침 12 · 그 밖 3)가 다르다");
+        bad.clear();
+        for (const SC& sc : cases) if (nox::Server::SummonType(sc.spell) != sc.type) bad += " " + std::to_string(sc.spell);
+        std::snprintf(msg, sizeof(msg), "C9 ① 소환 짝이 다르다 —%s", bad.c_str());
+        Check(bad.empty(), msg);
+        nox::ThingDb tdb;
+        if (tdb.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\thing.bin")) {
+            std::string got;
+            bool ok = true;
+            for (const SC& sc : cases) {
+                const uint16_t w = tdb.WireByName(sc.name);
+                const nox::ThingInfo* t = tdb.ByWire(w);
+                const uint32_t sub = t ? nox::Server::MonsterClassBitsOf(t->subclassRaw) : 0;
+                const int size = (sub & 0x4) ? 4 : ((sub & 0x2) ? 2 : 1);
+                got += " " + std::string(sc.name) + "=" + std::to_string(w) + "/크기" + std::to_string(size);
+                ok = ok && w == sc.type && size == sc.size;
+            }
+            const uint16_t sw = tdb.WireByName("SpiderSpit");
+            const nox::ThingInfo* s = sw ? tdb.ByWire(sw) : nullptr;
+            got += " SpiderSpit=" + std::to_string(sw) + "/" + (s ? s->collideFn : std::string("?"));
+            ok = ok && sw == 524 && s && s->collideFn == "SpiderSpitCollide";
+            std::snprintf(msg, sizeof(msg), "C9 ① thing.bin 대조 —%s", got.c_str());
+            Check(ok, msg);
+        } else {
+            std::printf("  (C9 ① thing.bin 대조 건너뜀)\n");
+        }
+    }
+    auto mkSum = [&](nox::CSyncHost& srv) {
+        nox::Gamedata g; g.Parse("SummonDuration = 60, 210, 375;\n"); srv->SetGamedata(g);
+        uint8_t ph = 4;
+        for (const SC& sc : cases) {
+            srv->SetSpellDef(sc.spell, 0, 0x44542438u, { 0, 8, 2, 6, 5, static_cast<uint8_t>(ph++ % 9) });   // 깃발은 임프 것 · 음소는 주문마다 달리
+            nox::Server::PhysBody bb; bb.shape = 2; bb.r = 15.0f; bb.cls = 0x2;
+            bb.subclass = nox::Server::MonsterClassBitsOf(sc.size == 1 ? "SMALL_MONSTER" : "MEDIUM_MONSTER");
+            srv->SetTypeBody(sc.type, bb);
+        }
+        srv.DebugEnterGame(a, 886, false, nox::CharClass::Conjurer);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+    };
+    for (const SC& sc : cases) {   // ② 주문마다
+        nox::CSyncHost srv; mkSum(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv->DebugFillMana(Sid(srv, a));
+        CastAndWait(srv, a, sc.spell, false, ms, out);
+        const size_t durAfter = srv->DurCount();
+        const int castT = (sc.size == 1) ? 60 : 210;
+        for (int t = 0; t < castT - 20; ++t) { ms += 34; srv.Tick(ms, out); }
+        const size_t early = srv->pets();
+        for (int t = 0; t < 60 && srv->pets() == 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        std::snprintf(msg, sizeof(msg), "C9 ② 주문 %u — 지속 %zu · %d틱 앞 몬스터 %zu · 뒤 %zu · 종류 %u(%u 이어야) · 주인 %d · 체력 %d(%d) · 7e %llu · 6c %llu",
+                      unsigned(sc.spell), durAfter, castT - 20, early, srv->pets(), srv->pets() ? unsigned(srv->DebugPetType(0)) : 0u, unsigned(sc.type),
+                      srv->pets() ? int(srv->DebugPetOwner(0) == Sid(srv, a)) : -1, srv->pets() ? srv->DebugPetHealth(0) : -1, sc.health,
+                      srv->summonFxSent(0), srv->summonOwnSent(0));
+        Check(durAfter == 1 && early == 0 && srv->pets() == 1 && srv->DebugPetType(0) == sc.type && srv->DebugPetOwner(0) == Sid(srv, a) &&
+              srv->DebugPetHealth(0) == sc.health && srv->summonFxSent(0) == 1 && srv->summonOwnSent(0) == 1, msg);
+    }
+    for (int front = 1; front >= 0; --front) {   // ③ 오우거
+        nox::CSyncHost srv;
+        srv.DebugEnterGame(a, 740, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(b, 741, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(c, 742, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(d, 743, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(e, 744, false, nox::CharClass::Warrior);
+        nox::Server::PhysBody bb; bb.shape = 2; bb.r = 15.0f; bb.cls = 0x2;
+        bb.subclass = nox::Server::MonsterClassBitsOf("MEDIUM_MONSTER");
+        srv->SetTypeBody(1336, bb);
+        srv->SetMonsterAnim(1336, 1, 10, 0, false);   // 근접 애니 10칸 — 시험 값(때림 칸 5 보다 크면 된다)
+        srv->DebugTeleport(Sid(srv, a), front ? 1033.0f : 3000.0f, front ? 956.0f : 3000.0f);    // (33, −44) = 중심 55
+        srv->DebugTeleport(Sid(srv, b), front ? 1050.0f : 3100.0f, front ? 1000.0f : 3000.0f);   // 정면 50
+        srv->DebugTeleport(Sid(srv, c), front ? 1040.0f : 3200.0f, front ? 1025.0f : 3000.0f);   // 내적 0.85 · 중심 47.2
+        srv->DebugTeleport(Sid(srv, e), front ? 1019.5f : 3300.0f, front ? 1046.0f : 3000.0f);   // 내적 0.39 · 중심 50 — 골렘 판정 구역 10(앞)
+        srv->DebugTeleport(Sid(srv, d), 950.0f, 1000.0f);                                        // 뒤 50
+        srv->DebugSpawnPet(1336, 1000, 1000, Sid(srv, std::string()));
+        srv->DebugSetAutoFight(false);
+        std::vector<nox::OutPacket> o; srv.Tick(0, o);
+        srv->DebugSetPetPos(0, 1000, 1000);
+        srv->DebugSetPetFacing(0, 0);                                            // 0 = 동쪽(+x)
+        srv->DebugSetFrame(1000);
+        const int ha0 = srv->HealthOf(Sid(srv, a)), hb0 = srv->HealthOf(Sid(srv, b)), hc0 = srv->HealthOf(Sid(srv, c)),
+                  hd0 = srv->HealthOf(Sid(srv, d)), he0 = srv->HealthOf(Sid(srv, e));
+        std::vector<nox::OutPacket> out;
+        srv->DebugSetPetNextHit(0, 0);
+        srv->DebugAIPush(0, 16);
+        RunSwing(srv, 0, out);
+        const int ha = srv->HealthOf(Sid(srv, a)), hb = srv->HealthOf(Sid(srv, b)), hc = srv->HealthOf(Sid(srv, c)),
+                  hd = srv->HealthOf(Sid(srv, d)), he = srv->HealthOf(Sid(srv, e));
+        int jig = 0;
+        for (const auto& x : FlattenTo(out, d))
+            if (x.size() == 2 && x[0] == static_cast<uint8_t>(nox::Op::FX_JIGGLE)) ++jig;
+        std::snprintf(msg, sizeof(msg), "C9 ③ 오우거 앞 %d — 휘두름 %llu · 피해 %llu · 골렘 %llu · 기본 맞힘 %llu · 빗나감 소리 %llu · a %d→%d b %d→%d c %d→%d d %d→%d e %d→%d · 흔들기 %d · b 힘 %.2f",
+                      front, srv->meleeStrike(MW::OgreSwing), srv->meleeStrike(MW::OgreHurt), srv->meleeStrike(MW::GolemSwing), srv->meleeStrike(MW::Hit),
+                      srv->meleeStrike(MW::MissSound), ha0, ha, hb0, hb, hc0, hc, hd0, hd, he0, he, jig, srv->DebugForceX(Sid(srv, b)));
+        const bool common = srv->meleeStrike(MW::OgreSwing) == 1 && srv->meleeStrike(MW::GolemSwing) == 0 && srv->meleeStrike(MW::Hit) == 0 &&
+                            ha == ha0 && hd == hd0 && he == he0 && jig == 0;
+        if (front) Check(common && srv->meleeStrike(MW::OgreHurt) == 2 && srv->meleeStrike(MW::MissSound) == 0 && hb < hb0 && hc < hc0 &&
+                         srv->DebugForceX(Sid(srv, b)) > 0.0, msg);
+        else       Check(common && srv->meleeStrike(MW::OgreHurt) == 0 && srv->meleeStrike(MW::MissSound) == 1 && hb == hb0 && hc == hc0, msg);
+    }
+    // ④ 전갈·말벌·침 뱉는 거미
+    auto mk = [&](nox::CSyncHost& srv, uint16_t type, float ax) {
+        srv.DebugEnterGame(a, 745, false, nox::CharClass::Warrior);
+        srv->DebugTeleport(Sid(srv, a), ax, 1000.0f);
+        srv->DebugSpawnPet(type, 1000, 1000, Sid(srv, std::string()));
+        srv->DebugSetAutoFight(false);
+        srv->SetMonsterAnim(type, 1, 10, 0, false);   // 근접 애니 10칸 — 시험 값
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        srv->DebugSetPetPos(0, 1000, 1000);
+        srv->DebugSetFrame(1000);
+    };
+    auto swing = [](nox::CSyncHost& srv, std::vector<nox::OutPacket>& out) {
+        srv->DebugSetPetNextHit(0, 0);
+        srv->DebugAIPush(0, 16);
+        RunSwing(srv, 0, out);
+    };
+    struct PC { uint16_t type; const char* name; unsigned long long missSound; unsigned dtype; const char* key; unsigned long long lo, hi; bool push; };
+    const PC pcs[] = { { 1373, "전갈", 0, 3, "aifunc.c:PoisonedByScorpion", 10, 42, true },
+                       { 1331, "말벌", 1, 3, "aifunc.c:PoisonedByWasp", 4, 28, false },
+                       { 1352, "침 뱉는 거미", 1, 8, "aifunc.c:Poisoned", 7, 35, false } };
+    for (const PC& p : pcs) {
+        {
+            nox::CSyncHost srv; mk(srv, p.type, 1300.0f);
+            std::vector<nox::OutPacket> out;
+            swing(srv, out);
+            std::snprintf(msg, sizeof(msg), "C9 ④ %s 대상 없음 — 대상없음 %llu · 빗나감 소리 %llu(%llu 이어야)", p.name,
+                          srv->meleeStrike(MW::NoTarget), srv->meleeStrike(MW::MissSound), p.missSound);
+            Check(srv->meleeStrike(MW::NoTarget) == 1 && srv->meleeStrike(MW::MissSound) == p.missSound, msg);
+        }
+        {
+            nox::CSyncHost srv; mk(srv, p.type, 1015.0f);
+            std::vector<nox::OutPacket> out;
+            unsigned dt = 0;
+            for (int i = 0; i < 100; ++i) {
+                swing(srv, out);
+                if (i == 0) dt = unsigned(srv->DebugLastDamageType(Sid(srv, a)));
+                srv->DebugSetHealth(Sid(srv, a), 150); srv->DebugSetPoison(Sid(srv, a), 0);
+            }
+            const double fx = srv->DebugForceX(Sid(srv, a));
+            const bool said = HasPriMsg(out, a, p.key);
+            std::snprintf(msg, sizeof(msg), "C9 ④ %s 물기 100 — 맞힘 %llu · 독 %llu(%llu~%llu) · 피해 종류 %u(%u) · 글 %d · 밀림 %.2f",
+                          p.name, srv->meleeStrike(MW::Hit), srv->meleeStrike(MW::Poisoned), p.lo, p.hi, dt, p.dtype, int(said), fx);
+            Check(srv->meleeStrike(MW::Hit) == 100 && srv->meleeStrike(MW::Poisoned) >= p.lo && srv->meleeStrike(MW::Poisoned) <= p.hi &&
+                  dt == p.dtype && said && (p.push ? fx > 0.0 : fx == 0.0), msg);
+        }
+    }
+    for (int hit = 1; hit >= 0; --hit) {   // ⑤ 침
+        nox::CSyncHost srv;
+        srv->SetProjType("SpiderSpit", 524, hit ? 400 : 64, 0, 0, /*monsterArrow=*/false, /*webbing=*/true);
+        nox::Server::PhysBody bb; bb.shape = 2; bb.r = 15.0f; bb.cls = 0x2;
+        srv->SetTypeBody(1352, bb);
+        srv.DebugEnterGame(a, 746, false, nox::CharClass::Conjurer);
+        srv.DebugEnterGame(b, 747, false, nox::CharClass::Warrior);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1200);
+        srv->DebugMoveTo(Sid(srv, b), hit ? 1100 : 3000, hit ? 1000 : 3000);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv->DebugSpawnPet(1352, 1000.0f, 1000.0f, Sid(srv, a));
+        const uint16_t bHp = srv->HealthOf(Sid(srv, b));
+        srv->DebugCreatureShoot(0, "SpiderSpit", hit ? 1100.0f : 1000.0f, hit ? 1000.0f : 700.0f);
+        srv.TakeOut(out);
+        const size_t made = srv->missiles();
+        int t = 0;
+        for (; t < 60 && srv->missiles() > 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        const uint16_t hp = srv->HealthOf(Sid(srv, b));
+        const bool slow = srv->DebugHasEnchant(Sid(srv, b), 4);
+        const bool said = HasPriMsg(out, b, "objcoll.c:WebbingSlow");
+        std::snprintf(msg, sizeof(msg), "C9 ⑤ 침 맞힘 %d — 만듦 %zu · %d틱 · 남은 것 %zu · 체력 %u→%u · 느림 %d · 글 %d · 셈 닿음 %llu 느림 %llu 수명 %llu",
+                      hit, made, t, srv->missiles(), unsigned(bHp), unsigned(hp), int(slow), int(said),
+                      srv->webbingStat(0), srv->webbingStat(1), srv->webbingStat(2));
+        if (hit) Check(made == 1 && srv->missiles() == 0 && t < 40 && hp == bHp && slow && said &&
+                       srv->webbingStat(0) == 1 && srv->webbingStat(1) == 1 && srv->webbingStat(2) == 0, msg);
+        else     Check(made == 1 && srv->missiles() == 0 && t >= 40 && !slow && !said &&
+                       srv->webbingStat(0) == 0 && srv->webbingStat(1) == 0 && srv->webbingStat(2) == 1, msg);
+    }
+    std::printf("  11-21 C9 새 근접 함수 넷 — 표 · thing.bin 이름·크기 · 크기별 시간 뒤 하나 · 오우거 앞쪽 둘레(내적 0.4 · +0.01) · 전갈·말벌·거미 독 · 침 느림\n");
+}
+
 // ── 11-21 W10 벽(132) — `spell_magic_wall.go`(Create 297 · setWall 467 · Destroy 503 · 알림 106·170 · 부서짐 `wall.go:424`) ─────
 //   ⓪ 진짜 thing.bin — 이름 셋의 순번 · MagicWallSystemUseOnly 체력·+749(값은 찍기만 — 시험 몸통은 지어낸 정의 1번 · 체력 50 · +749 4)
 //   ① 동쪽 커서 · 세기 1 — 가운데 (47,43) 방향 10 + 양쪽 3칸(8·10 엇갈림) = 7칸 · 재질·방향·충돌 칸 · 체력 · 끝 = 시전 + 60×6초 ·
@@ -39912,6 +40158,7 @@ int main() {
     TestSkeletonSummon1121();
     TestMeleeSevenSummon1121();
     TestRangedTwoSummon1121();
+    TestNewStrikeFourSummon1121();
     TestMagicWall1121();
     TestModEffects1120();
     TestPickupAutoEquip();

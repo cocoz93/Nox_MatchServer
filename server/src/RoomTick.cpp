@@ -150,9 +150,13 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                     srv.b2Stat(B2::IdleFight), srv.b2Stat(B2::IdleLookDamager), srv.b2Stat(B2::IdleFaceBack), srv.b2Stat(B2::IdleStay),
                     srv.b2Stat(B2::RetFight), srv.b2Stat(B2::RetNotEnemy), srv.b2Stat(B2::RetRoam), srv.b2Stat(B2::FightStart), srv.b2Stat(B2::FightEnd));
         using MW = nox::MeleeStrikeWay;   // ★ 09-29 B3 — 근접 함수 끝남 갈래
-        srv.Log("[몬스터근접] 맞힘 %llu · 대상없음 %llu · 시야막힘 %llu · 폭탄병 %llu · (독 %llu · 유령도망 %llu) · 빗나감소리 %llu\n",
+        // ★ 11-21 C9 — 둘레 근접(골렘 C1 · 오우거 C9)의 휘두름·피해 수를 같은 줄에(전에는 골렘 셈이 로그에 없었다)
+        srv.Log("[몬스터근접] 맞힘 %llu · 대상없음 %llu · 시야막힘 %llu · 폭탄병 %llu · (독 %llu · 유령도망 %llu) · 빗나감소리 %llu · "
+                    "골렘 휘두름 %llu·피해 %llu · 오우거 휘두름 %llu·피해 %llu\n",
                     srv.meleeStrike(MW::Hit), srv.meleeStrike(MW::NoTarget), srv.meleeStrike(MW::Blocked), srv.meleeStrike(MW::Bomber),
-                    srv.meleeStrike(MW::Poisoned), srv.meleeStrike(MW::GhostFlee), srv.meleeStrike(MW::MissSound));
+                    srv.meleeStrike(MW::Poisoned), srv.meleeStrike(MW::GhostFlee), srv.meleeStrike(MW::MissSound),
+                    srv.meleeStrike(MW::GolemSwing), srv.meleeStrike(MW::GolemHurt), srv.meleeStrike(MW::OgreSwing), srv.meleeStrike(MW::OgreHurt));
+        srv.Log("[거미 침] 닿음 %llu · 느림 %llu · 수명 끝 %llu\n", srv.webbingStat(0), srv.webbingStat(1), srv.webbingStat(2));   // ★ 11-21 C9 — 갈래 12
         using AT = nox::AttackTiming;     // ★ 09-30 — 시작 → 칸 틱 수(기대 칸 × (붙듦+1) − 1 ~ 칸 × (붙듦+1))
         srv.Log("[몬스터시점] 근접 제때 %llu · 어긋남 %llu · 끝칸두번째 %llu (틱 %d~%d) · 쏘기 제때 %llu · 어긋남 %llu · 끝칸두번째 %llu (틱 %d~%d · 겨눌곳없음 %llu)\n",
                     srv.attackTiming(AT::MeleeOnTime), srv.attackTiming(AT::MeleeOff), srv.attackTiming(AT::MeleeLastRepeat),

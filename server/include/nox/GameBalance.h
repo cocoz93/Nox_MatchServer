@@ -633,6 +633,12 @@ constexpr MonsterStats kMonsters[] = {
     // ★ 11-21 C10 — 원거리 둘 ⭕ monster.bin 복호(Urchin 872 · FlyingGolem 986 줄) ARENA 값 · 둘 다 작은 크기 · 근접 없음(사거리 0 · 함수 NULL)
     { "Urchin",             1339,    40,    0,    0.0,    75,   0,  0,  "ThrowingStone", 200.0, 20, 30, 1.3,  11000 },   // 성게 · 돌(ProjectileCollide 1 · 갈래 3) · 도망 거리 65
     { "FlyingGolem",        1316,    40,    0,    0.0,   100,   0,  0,  "GolemArrow",    150.0, 25, 25, 1.3,  50000 },   // 기계 비행체 · 화살(MonsterArrowCollide 3 · 갈래 5) · 빠르기 모드 구분 없음
+    // ★ 11-21 C9 — 새 근접 함수가 필요한 넷 ⭕ monster.bin 복호(GruntAxe 1 · Scorpion 33 · Wasp 455 · SpittingSpider 1343 줄) ARENA 값 ·
+    //   말벌만 작은 크기 · 오우거 죽음(OgreDie — 75% 로 OgreAxe 떨굼 `GAME5.c:3283~3288`)은 안 옮김
+    { "GruntAxe",           1336,    60,   12,   30.0,    90,  25, 35,  nullptr,         0.0,  0,  0, 1.35, 40000 },   // 오우거 · BLADE · 앞쪽 둘레(OgreStrike) · 체력·피해 모드 구분 없음
+    { "Scorpion",           1373,   110,   30,   30.0,    70,  40, 50,  nullptr,         0.0,  0,  0, 1.3,  40000 },   // 전갈 · IMPALE · 독(ScorpionStrike)
+    { "SpittingSpider",     1352,    70,   10,   15.0,    60,  20, 30,  "SpiderSpit",    200.0, 20, 30, 1.5,  20000 },   // 침 뱉는 거미 · BITE · 독 · 침(SpiderSpitCollide · 갈래 12)
+    { "Wasp",               1331,    15,    5,   15.0,   120,   0,  0,  nullptr,         0.0,  0,  0, 1.3,   8000 },   // 말벌 · IMPALE · 독(WaspStrike) · 간격 키 없음
 };
 
 // ★ 09-23 nine-defects 2-a4 — monster.bin `STATUS` 에 **`CAN_CAST_SPELLS`** 가 있는 몬스터(정답지 `MonStatusCanCastSpells` 0x20 ·
@@ -715,6 +721,10 @@ inline MonsterBrainInfo MonsterBrainOf(uint16_t wire) {
         case 1367: return { 0x00, 0.0f, 0.5f,  0.0f };   // WhiteWolf — 회복 0.5
         case 1339: return { 0x08, 0.0f, 0.5f, 65.0f };   // Urchin ★ 11-21 C10 — CAN_DODGE · ARENA 후퇴 0 · 회복 0.5 · 도망 거리 65
         case 1316: return { 0x09, 0.0f, 1.0f,  0.0f };   // FlyingGolem — DESTROY_WHEN_DEAD+CAN_DODGE
+        case 1336: return { 0x00, 0.0f, 0.4f,  0.0f };   // GruntAxe ★ 11-21 C9 — ARENA 후퇴 0(SOLO 0.10) · 회복 0.40
+        case 1373: return { 0x00, 0.0f, 1.0f,  0.0f };   // Scorpion
+        case 1352: return { 0x08, 0.0f, 1.0f,  0.0f };   // SpittingSpider — CAN_DODGE
+        case 1331: return { 0x01, 0.0f, 1.0f,  0.0f };   // Wasp — DESTROY_WHEN_DEAD
         default:   return {};
     }
 }
@@ -758,6 +768,10 @@ inline MonsterMoveSound MonsterMoveSoundOf(uint16_t wire) {
         case 1367: return { 1, 5 };   // WhiteWolf
         case 1339: return { 0, 4 };   // Urchin ★ 11-21 C10
         case 1316: return { 0, 4 };   // FlyingGolem
+        case 1336: return { 1, 5 };   // GruntAxe ★ 11-21 C9
+        case 1373: return { 1, 5 };   // Scorpion
+        case 1352: return { 0, 4 };   // SpittingSpider
+        case 1331: return { 0, 0 };   // Wasp — 둘 다 0(파일 값)
         default:   return {};
     }
 }
@@ -774,6 +788,7 @@ inline int MonsterMissileFrameOf(uint16_t wire) {
         case 1389: return 4;   // OgreWarlord ★ 11-21 C5 — 표창
         case 1339: return 4;   // Urchin ★ 11-21 C10 — 돌
         case 1316: return 4;   // FlyingGolem — 화살
+        case 1352: return 4;   // SpittingSpider ★ 11-21 C9 — 침
         default:   return 0;   // 나머지는 파일 값 0
     }
 }
@@ -814,6 +829,10 @@ inline int MonsterMeleeFrameOf(uint16_t wire) {
         case 1369: return 5;   // Wolf
         case 1368: return 5;   // BlackWolf
         case 1367: return 5;   // WhiteWolf
+        case 1336: return 5;   // GruntAxe ★ 11-21 C9
+        case 1373: return 5;   // Scorpion
+        case 1352: return 4;   // SpittingSpider
+        case 1331: return 5;   // Wasp
         default:   return 0;
     }
 }
@@ -824,7 +843,12 @@ inline int MonsterMeleeFrameOf(uint16_t wire) {
 //   ★ 11-19 — VileZombie(`strikeVileZombie_549700` `GAME5.c:2654`) = 기본처럼 대상이 없으면 1 · 때린 뒤 거미와 같은 독(`sub_549690`) ·
 //     걸리면 글 「aifunc.c:PoisonedByZombie」
 //   ★ 11-20 C1 — Golem = StoneGolemStrike·MechGolemStrike(`GAME5.c:2695~2763` — 한 몸통 `sendEquakeAfterGolem_549800` · 앞쪽 전부 · 땅 흔들기 30)
-enum class StrikeFn : uint8_t { None = 0, Monster, Spider, Ghost, Bomber, VileZombie, Golem };
+//   ★ 11-21 C9 — 이름 → 함수 `blob_init.go:3157~3171` · 몸통 `GAME5.c`
+//     Ogre = OgreStrike(`strikeOgre_549220` `:2441~2500`) — 골렘처럼 둘레 안 앞쪽 전부. 앞쪽은 방향 벡터 내적 > 0.4 · 땅 흔들기 없음
+//     Scorpion = ScorpionStrike(`:2594~2632`) — 독 좀비 꼴(대상 없으면 1) · 글 「aifunc.c:PoisonedByScorpion」
+//     Wasp = WaspStrike(`:2766~2803`) — 거미 꼴(대상 없으면 0) · 독 다음 밀기 · 글 「aifunc.c:PoisonedByWasp」
+//     SpittingSpiderStrike(`:2906~2943`)는 거미(`:2866~2903`)와 몸통이 같아 Spider 를 쓴다
+enum class StrikeFn : uint8_t { None = 0, Monster, Spider, Ghost, Bomber, VileZombie, Golem, Ogre, Scorpion, Wasp };
 struct MeleeStrikeInfo { StrikeFn fn = StrikeFn::None; uint8_t dtype = 0; float impact = 0.0f; int poisonChance = 0, poisonStrength = 0, poisonMax = 0; };
 inline MeleeStrikeInfo MeleeStrikeOf(uint16_t wire) {
     switch (wire) {
@@ -855,7 +879,30 @@ inline MeleeStrikeInfo MeleeStrikeOf(uint16_t wire) {
         case 1369: return { StrikeFn::Monster, 8,  0.0f, 0, 0, 0 };   // Wolf BITE
         case 1368: return { StrikeFn::Monster, 8,  0.0f, 0, 0, 0 };   // BlackWolf BITE
         case 1367: return { StrikeFn::Monster, 8,  0.0f, 0, 0, 0 };   // WhiteWolf BITE
+        case 1336: return { StrikeFn::Ogre,    0, 15.0f, 0, 0, 0 };   // GruntAxe BLADE · 밀기 15 ★ 11-21 C9
+        case 1373: return { StrikeFn::Scorpion, 3, 20.0f, 25, 2, 4 }; // Scorpion IMPALE · 밀기 20 · 독 25% · 세기 2 · 최대 4
+        case 1352: return { StrikeFn::Spider,  8,  0.0f, 20, 1, 3 };  // SpittingSpider BITE · 독 20% · 세기 1 · 최대 3(SpittingSpiderStrike = 거미 몸통)
+        case 1331: return { StrikeFn::Wasp,    3,  0.0f, 15, 1, 1 };  // Wasp IMPALE · 독 15% · 세기 1 · 최대 1
         default:   return {};                                          // Imp·EvilCherub·Beholder·Demon — NULL
+    }
+}
+// ★ 11-21 C9 — 대상이 없을 때 돌려주는 값(1 = 허공 휘두름 · 0 = 부르는 쪽이 빗나감 소리). 거미 꼴(Spider·Wasp)만 0
+//   (거미 `GAME5.c:2879~2881` · 말벌 `:2779~2781` · 기본·독 좀비·전갈은 대상이 없으면 끝의 1 `:2631`)
+inline int StrikeNoTargetResult(StrikeFn fn) {
+    switch (fn) {
+        case StrikeFn::Spider:
+        case StrikeFn::Wasp:   return 0;
+        default:               return 1;
+    }
+}
+// ★ 11-21 C9 — 독(`sub_549690`)이 걸렸을 때 맞은 사람에게 가는 글 · 독을 안 거는 함수면 nullptr
+inline const char* StrikePoisonMsg(StrikeFn fn) {
+    switch (fn) {
+        case StrikeFn::Spider:     return "aifunc.c:Poisoned";              // 거미·침 뱉는 거미 `:2900·2940`
+        case StrikeFn::VileZombie: return "aifunc.c:PoisonedByZombie";
+        case StrikeFn::Scorpion:   return "aifunc.c:PoisonedByScorpion";    // `:2628`
+        case StrikeFn::Wasp:       return "aifunc.c:PoisonedByWasp";        // `:2796`
+        default:                   return nullptr;
     }
 }
 
