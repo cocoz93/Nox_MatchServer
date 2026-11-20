@@ -25236,6 +25236,165 @@ void TestLightningHold1121() {
     std::printf("  11-21 번개 이어 감 — 24·43 맞히는 동안 dt 30 을 넘겨 계속 · 맞힐 것 없으면 마지막 맞힘 뒤 30 에 끝 · 24 는 대상이 죽으면 다음 틱 끝\n");
 }
 
+// ── 11-21 트레일러 위저드 W6 — 언데드 쫓기(21 · `DurTurnUndeadCreate` · `UndeadKillerCollide` 머리 주석)
+//   ① 시작 — 빛 조각 43(방향 0~252 · 6 걸음) · 빠르기 4 · 남은 양 = TurnUndeadKillPoints[2](250) · 그림 160 한 번
+//   ② 걸음 · 수명 — 10 프레임에 40 · 주문 끝(70) 다음 프레임(71)에 전부 「주문 끊김」으로 사라진다
+//   ③ 닿음 — 언데드 A(체력 100)는 죽이고 지나가 B(200)에 남은 150 을 다 쓰고 사라짐 · 언데드 아닌 C 는 그대로
+//   ④ 누운 좀비 — 피해 0 이 불탐을 켠다(전엔 꺼짐 — 두 방향) · 양은 안 줄어든다
+//   ⑤ 양 0 · 경계 — 세기 1(150) · A(100) 를 죽이고 남은 50 = B 체력(50)이면 「다 씀」 · 그 뒤 닿는 조각은 그냥 사라짐
+//   ⑥ 벽 — 앞 칸(47,43)에 막힌 조각은 제자리에 남는다
+void TestTurnUndead1121() {
+    using TS = nox::Server::TurnUndeadStat;
+    const std::string a = "10.11.21.6:1126";
+    char msg[400];
+    constexpr uint16_t kUndead = 1330, kLiving = 1331;
+    auto mk = [&](nox::CSyncHost& srv) {
+        nox::Gamedata g;
+        g.Parse("TurnUndeadKillPoints = 150, 200, 250, 300, 350;\n");                  // gamedata.bin 실측(복호본)
+        srv->SetGamedata(g);
+        srv->SetProjType("UndeadKiller", 698, 200, /*ALLOW_OVERLAP*/ 0x8u, 0);        // thing.bin(SPEED 200 · FLAGS ALLOW_OVERLAP)
+        srv->SetSpellDef(21, 0, 0x02040420u, { 1, 0, 3, 6, 7, 8, 5, 2 });             // 깃발·음소 thing.bin 실측
+        nox::Server::PhysBody undead;
+        undead.shape = 2; undead.r = 10.0f; undead.cls = 0x2;
+        undead.subclass = nox::Server::MonsterClassBitsOf("MEDIUM_MONSTER+UNDEAD");
+        srv->SetTypeBody(kUndead, undead);
+        srv->SetTypeBody(nox::kZombieType, undead);
+        nox::Server::PhysBody living = undead;
+        living.subclass = nox::Server::MonsterClassBitsOf("MEDIUM_MONSTER");
+        srv->SetTypeBody(kLiving, living);
+        srv.DebugEnterGame(a, 1126, false, nox::CharClass::Wizard);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+    };
+    struct Pin { float x, y; uint16_t hp; };
+    // 몬스터를 놓고(체력도) 틱마다 산 것을 제자리에 묶는다(AI 가 시전자에게 걸어오지 않게)
+    auto spawn = [&](nox::CSyncHost& srv, uint16_t type, const Pin& p) {
+        srv->DebugSpawnPet(type, p.x, p.y, Sid(srv, std::string()));
+        srv->DebugSetPetHealth(srv->pets() - 1, p.hp);
+    };
+    auto walk = [&](nox::CSyncHost& srv, uint32_t& ms, std::vector<nox::OutPacket>& out, const std::vector<Pin>& pins, uint32_t n) {
+        const uint32_t f = srv->DebugFrame() + n;
+        for (int t = 0; t < 1000 && srv->DebugFrame() < f; ++t) {
+            for (size_t k = 0; k < pins.size() && k < srv->pets(); ++k)
+                if (!srv->DebugPetDead(k)) srv->DebugSetPetPos(k, pins[k].x, pins[k].y);
+            ms += 33; srv.Tick(ms, out);
+        }
+    };
+    auto start = [&](nox::CSyncHost& srv, uint32_t& ms, std::vector<nox::OutPacket>& out, const std::vector<Pin>& pins) {
+        srv.Tick(ms, out);
+        ms += 33; srv.Tick(ms, out);
+        for (size_t k = 0; k < pins.size() && k < srv->pets(); ++k) { srv->DebugSetPetPos(k, pins[k].x, pins[k].y); srv->DebugSetPetHealth(k, pins[k].hp); }
+    };
+
+    // ① 시작
+    {
+        nox::CSyncHost srv; mk(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out, {});
+        srv.TakeOut(out); out.clear();
+        srv->DebugSpellAccept(Sid(srv, a), 21, 3); srv.TakeOut(out);
+        const auto& ml = srv->missileList();
+        int dirOk = 0, speedOk = 0, kindOk = 0, durOk = 0;
+        for (size_t i = 0; i < ml.size(); ++i) {
+            if (ml[i].dir1 == 6 * i && ml[i].dir2 == 6 * i) ++dirOk;
+            if (std::fabs(std::sqrt(ml[i].velX * ml[i].velX + ml[i].velY * ml[i].velY) - 4.0f) < 0.001f) ++speedOk;
+            if (ml[i].collideKind == 11 && ml[i].type == 698 && ml[i].owner == Sid(srv, a)) ++kindOk;
+            if (ml[i].durId != 0 && ml[i].durId == ml[0].durId) ++durOk;
+        }
+        int fx = 0;
+        for (const auto& x : FlattenTo(out, a)) if (x.size() == 5 && x[0] == static_cast<uint8_t>(nox::Op::FX_TURN_UNDEAD)) ++fx;
+        std::snprintf(msg, sizeof(msg), "W6 ① 조각 %zu · 방향 %d · 빠르기 %d · 갈래 %d · 주문 %d · 0번 속도 %.3f,%.3f · 양 %d · 그림 160 %d · 지속 %zu · 시작 %llu · 만듦 %llu",
+                      ml.size(), dirOk, speedOk, kindOk, durOk, ml.empty() ? 0.0 : ml[0].velX, ml.empty() ? 0.0 : ml[0].velY,
+                      srv->DebugTurnUndeadPoints(), fx, srv->DurCount(), srv->turnUndeadStat(TS::Start), srv->turnUndeadStat(TS::Killer));
+        Check(ml.size() == 43 && dirOk == 43 && speedOk == 43 && kindOk == 43 && durOk == 43 &&
+              std::fabs(ml[0].velX - 4.0f) < 0.001f && std::fabs(ml[0].velY) < 0.001f &&
+              srv->DebugTurnUndeadPoints() == 250 && fx == 1 && srv->DurCount() == 1 &&
+              srv->turnUndeadStat(TS::Start) == 1 && srv->turnUndeadStat(TS::Killer) == 43 && srv->turnUndeadStat(TS::NoType) == 0, msg);
+    }
+    // ② 걸음 · 수명
+    {
+        nox::CSyncHost srv; mk(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out, {});
+        srv->DebugSpellAccept(Sid(srv, a), 21, 3); srv.TakeOut(out);
+        const uint32_t f0 = srv->DebugFrame();
+        walk(srv, ms, out, {}, 10);
+        const float x10 = srv->missileList().empty() ? 0.0f : srv->missileList()[0].posX;
+        for (int t = 0; t < 200 && srv->missiles() > 0; ++t) { ms += 33; srv.Tick(ms, out); }
+        const uint32_t gone = srv->DebugFrame() - f0;
+        ms += 33; srv.Tick(ms, out);
+        std::snprintf(msg, sizeof(msg), "W6 ② 10 프레임 자리 %.2f(1040 이어야) · %u 프레임째 사라짐(71 이어야) · 주문 끊김 %llu · 70 넘음 %llu · 끝 지우기 %llu · 지속 %zu",
+                      x10, gone, srv->turnUndeadStat(TS::GoneCancel), srv->turnUndeadStat(TS::GoneAge), srv->turnUndeadStat(TS::GoneEnd), srv->DurCount());
+        Check(std::fabs(x10 - 1040.0f) < 0.01f && gone == 71 && srv->turnUndeadStat(TS::GoneCancel) == 43 &&
+              srv->turnUndeadStat(TS::GoneAge) == 0 && srv->DurCount() == 0, msg);
+    }
+    // ③ 닿음 — A(1100,1000 · 100) · B(1200,1000 · 200) 는 언데드 · C(1000,1100 · 50) 는 아님
+    //   0번이 A(20 프레임)를 죽이고 B(45)에 150 을 다 쓴다 · 252번(−5.6° — 수직 거리 19.6 < 몸 둘 20)이 50 프레임에 B 에 닿지만 양이 0 이라 그냥 사라진다
+    {
+        nox::CSyncHost srv; mk(srv);
+        const std::vector<Pin> pins = { { 1100, 1000, 100 }, { 1200, 1000, 200 }, { 1000, 1100, 50 } };
+        spawn(srv, kUndead, pins[0]); spawn(srv, kUndead, pins[1]); spawn(srv, kLiving, pins[2]);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out, pins);
+        const int ha0 = srv->HealthOf(Sid(srv, a));
+        srv->DebugSpellAccept(Sid(srv, a), 21, 3); srv.TakeOut(out);
+        walk(srv, ms, out, pins, 60);
+        std::snprintf(msg, sizeof(msg), "W6 ③ A %u(죽음 %d) · B %u · C %u · 양 %d · 죽이고 지나감 %llu · 다 씀 %llu · 양 0 %llu · 시체 %llu · 남은 조각 %zu · 시전자 %d → %d",
+                      unsigned(srv->DebugPetHealth(0)), int(srv->DebugPetDead(0)), unsigned(srv->DebugPetHealth(1)), unsigned(srv->DebugPetHealth(2)),
+                      srv->DebugTurnUndeadPoints(), srv->turnUndeadStat(TS::HitKill), srv->turnUndeadStat(TS::HitSpent), srv->turnUndeadStat(TS::HitEmpty),
+                      srv->turnUndeadStat(TS::HitCorpse), srv->missiles(), ha0, int(srv->HealthOf(Sid(srv, a))));
+        Check(srv->DebugPetHealth(0) == 0 && srv->DebugPetDead(0) && srv->DebugPetHealth(1) == 50 && srv->DebugPetHealth(2) == 50 &&
+              srv->DebugTurnUndeadPoints() == 0 && srv->turnUndeadStat(TS::HitKill) == 1 && srv->turnUndeadStat(TS::HitSpent) == 1 &&
+              srv->turnUndeadStat(TS::HitEmpty) == 1 && srv->turnUndeadStat(TS::HitCorpse) >= 1 && srv->missiles() == 41 &&
+              srv->HealthOf(Sid(srv, a)) == ha0, msg);
+    }
+    // ④ 누운 좀비 — 칼로 죽여 눕힌 뒤(불탐 꺼짐) 언데드 쫓기 → 피해 0 이 불탐을 켠다 · 양 그대로
+    {
+        nox::CSyncHost srv; mk(srv);
+        const std::vector<Pin> pins = { { 1100, 1000, 60 } };
+        spawn(srv, nox::kZombieType, pins[0]);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out, pins);
+        srv->DebugHurt(nox::kNoSession, 0, 9999, Sid(srv, a), 0); srv.TakeOut(out);
+        walk(srv, ms, out, pins, 5);
+        const bool burned0 = srv->DebugPetBurned(0), dead0 = srv->DebugPetDead(0);
+        const unsigned long long ch0 = srv->zombieEv(nox::ZombieEv::CorpseHit);
+        srv->DebugSpellAccept(Sid(srv, a), 21, 3); srv.TakeOut(out);
+        walk(srv, ms, out, pins, 30);
+        std::snprintf(msg, sizeof(msg), "W6 ④ 누운 좀비 — 전 죽음 %d 불탐 %d · 뒤 불탐 %d · 시체 %llu · 누운 좀비 맞음 %llu → %llu · 양 %d",
+                      int(dead0), int(burned0), int(srv->DebugPetBurned(0)), srv->turnUndeadStat(TS::HitCorpse), ch0,
+                      srv->zombieEv(nox::ZombieEv::CorpseHit), srv->DebugTurnUndeadPoints());
+        Check(dead0 && !burned0 && srv->DebugPetBurned(0) && srv->turnUndeadStat(TS::HitCorpse) >= 1 &&
+              srv->zombieEv(nox::ZombieEv::CorpseHit) > ch0 && srv->DebugTurnUndeadPoints() == 250, msg);
+    }
+    // ⑤ 양 0 · 경계 — 세기 1(150) · A(1100,1000 · 100) · B(1000,1100 · 50) — 같은 프레임(20)에 0번(→A · 남은 50)·16번(→B)이 닿는다 ·
+    //   남은 양 = 체력(50)이면 「다 씀」 갈래(`v8 <= v5` — 조각이 사라진다) · 그 뒤 시체에 닿는 조각은 양 0 이라 그냥 사라진다
+    {
+        nox::CSyncHost srv; mk(srv);
+        const std::vector<Pin> pins = { { 1100, 1000, 100 }, { 1000, 1100, 50 } };
+        spawn(srv, kUndead, pins[0]); spawn(srv, kUndead, pins[1]);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out, pins);
+        srv->DebugSpellAccept(Sid(srv, a), 21, 1); srv.TakeOut(out);
+        walk(srv, ms, out, pins, 40);
+        std::snprintf(msg, sizeof(msg), "W6 ⑤ A %u · B %u · 양 %d · 죽이고 지나감 %llu · 다 씀 %llu · 양 0 %llu · 남은 조각 %zu",
+                      unsigned(srv->DebugPetHealth(0)), unsigned(srv->DebugPetHealth(1)), srv->DebugTurnUndeadPoints(),
+                      srv->turnUndeadStat(TS::HitKill), srv->turnUndeadStat(TS::HitSpent), srv->turnUndeadStat(TS::HitEmpty), srv->missiles());
+        Check(srv->DebugPetHealth(0) == 0 && srv->DebugPetHealth(1) == 0 && srv->DebugPetDead(1) && srv->DebugTurnUndeadPoints() == 0 &&
+              srv->turnUndeadStat(TS::HitKill) == 1 && srv->turnUndeadStat(TS::HitSpent) == 1 && srv->turnUndeadStat(TS::HitEmpty) >= 1 &&
+              srv->missiles() == 42 - static_cast<size_t>(srv->turnUndeadStat(TS::HitEmpty)), msg);
+    }
+    // ⑥ 벽 — 앞 칸(47,43 → x 1081~1103)의 벽 선에 막힌 0번은 그 앞에 **멈춰 남는다**(30·40 프레임 자리가 같고 칸을 못 넘는다 · 사라지지 않음)
+    {
+        nox::CSyncHost srv; mk(srv);
+        srv->SetWalls({ { 47, 43 } });
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out, {});
+        srv->DebugSpellAccept(Sid(srv, a), 21, 3); srv.TakeOut(out);
+        walk(srv, ms, out, {}, 30);
+        const float x30 = srv->missileList().empty() ? 0.0f : srv->missileList()[0].posX;
+        walk(srv, ms, out, {}, 10);
+        const auto& ml = srv->missileList();
+        std::snprintf(msg, sizeof(msg), "W6 ⑥ 0번 자리 30 프레임 %.2f · 40 프레임 %.2f,%.2f · 벽 틱 %llu · 조각 %zu", x30, ml.empty() ? 0.0 : ml[0].posX,
+                      ml.empty() ? 0.0 : ml[0].posY, srv->turnUndeadStat(TS::WallStop), ml.size());
+        Check(ml.size() == 43 && ml[0].posX == x30 && ml[0].posX > 1080.0f && ml[0].posX < 1103.0f && srv->turnUndeadStat(TS::WallStop) >= 10, msg);
+    }
+    std::printf("  11-21 언데드 쫓기 — 조각 43 · 4 걸음 · 71 프레임 · 언데드만 · 양 나눠 깎기 · 누운 좀비 불탐 · 벽에서 멈춤\n");
+}
+
 // ── 11-20 트레일러 전사 1-b — 수식 효과(modifier.bin `Server::ParseModEffects`) · 휘두를 때 위력 배수 · 맞힐 때 불·번개 ─────
 //   ① 진짜 복호본을 읽어 번호 차례·값(빠진 `;` 칸 Speed4 포함)을 본다
 //   ② 워리어 롱소드로 곰을 한 대 — 수식 없음 / 위력6(×1.2) / 불1(+3 폭발) / 번개4(+12 전기) / 불1인데 곰이 무적(관문)
@@ -38470,6 +38629,7 @@ int main() {
     TestForceOfNature1120();
     TestDurTwoTick1120();
     TestLightningHold1121();
+    TestTurnUndead1121();
     TestModEffects1120();
     TestPickupAutoEquip();
     TestArmorEquip();

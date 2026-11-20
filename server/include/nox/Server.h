@@ -4159,6 +4159,12 @@ public:
     enum class FonStat : uint8_t { Start = 0, ChargeOff, Launch, LaunchBlocked, RunEnd, NoType,
                                    BallCancel, BallNearby, BallHit, BallObstacle, BallWall, BallAge, Count };
     unsigned long long fonStat(FonStat k) const { return fonStat_[static_cast<size_t>(k)]; }
+    // ★ 11-21 W6 언데드 쫓기(21) 갈래 — 시작 · 빛 조각 만듦 · 종류 없음 · 닿음 셋(양이 남아 죽이고 지나감 · 양을 다 쓰고 사라짐 · 양 0 이라 그냥 사라짐) ·
+    //   누운 몸에 피해 0 · 사라짐 셋(주문 끊김 · 70 프레임 넘음 · 주문 끝의 지우기) · 벽에 막힌 틱
+    enum class TurnUndeadStat : uint8_t { Start = 0, Killer, NoType, HitKill, HitSpent, HitEmpty, HitCorpse,
+                                          GoneCancel, GoneAge, GoneEnd, WallStop, Count };
+    unsigned long long turnUndeadStat(TurnUndeadStat k) const { return turnUndeadStat_[static_cast<size_t>(k)]; }
+    int DebugTurnUndeadPoints() const { for (const auto& d : durSpells_) if (d.spell == 21) return d.killPoints; return -1; }
     unsigned long long mbStat(MbStat k) const { return mbStat_[static_cast<size_t>(k)]; }
     int mbLastPower() const { return mbLastPower_; }                     // 마지막으로 터진 힘(+72)
     float DebugMassOf(int64_t sid) const { auto i = sessions_.find(sid); return i == sessions_.end() ? 0.0f : static_cast<float>(PlayerMassOf(i->second)); }
@@ -4717,6 +4723,8 @@ private:
         Target ckLast;
         float ckHomeX = 0, ckHomeY = 0;
         uint8_t ckState = 0;
+        // ★ 11-21 W6 — 언데드 쫓기 빛 조각(11 · `UndeadKiller`)이 매인 지속 주문 번호(+700 → [0] 지속 주문 · `GAME4_3.c:1259`)
+        uint16_t durId = 0;
     };
 public:
     // ★ 09-19 — ⑬(화살이 진행 방향으로 기울어 보이나)을 **표로** 가르려고 연다.
@@ -4816,6 +4824,8 @@ private:
         uint16_t summonFxId = 0;
         bool summonFxSent = false;       // 우리 몫 — `7e` 를 보냈나(만들기 실패 뒤 파괴에 `7f` 를 짓지 않게 · 플랜 자가검증)
         bool summonDone = false;         // +85
+        // ★ 11-21 W6 언데드 쫓기(21) — +72 남은 죽임 양(`TurnUndeadKillPoints[세기 − 1]` · 빛 조각 43개가 나눠 깎는다 `GAME3_3.c:5565~5578`)
+        int killPoints = 0;
         DurFns fns;
         std::vector<DurSpell> sub108;    // +108 하위(연쇄 번개 조각 · 4-d)
     };
@@ -4865,6 +4875,10 @@ private:
     int DurFonCreate(DurSpell& d);                                         // ★ 11-20 C2 sub_52EF30 — 모으기 그림
     int DurFonTick(DurSpell& d);                                           // ★ 11-20 C2 sub_52EFD0 — 끝 하루 전에 죽음의 공
     void DurFonEnd(DurSpell& d);                                           // ★ 11-20 C2 sub_52F1D0 — 그림 지우기
+    int DurTurnUndeadCreate(DurSpell& d);                                  // ★ 11-21 W6 spellTurnUndeadCreate_531310 — 빛 조각 43
+    void DurTurnUndeadEnd(DurSpell& d);                                    // ★ 11-21 W6 spellTurnUndeadDelete_531420 — 빛 조각 지우기
+    bool UndeadKillerUpdate(const MissileObj& m, uint32_t frame);          // ★ 11-21 W6 updateUndeadKiller_53E190 — 거짓이면 지운다
+    bool UndeadKillerCollide(size_t i);                                    // ★ 11-21 W6 collideUndeadKiller_4EBD40 — 거짓이면 지운다
     void FonChargeOff(DurSpell& d);                                        // ★ 11-20 C2 +76 그림 지우기
     void FonLaunch(DurSpell& d, Session* cs);                              // ★ 11-20 C2 죽음의 공 만들기(`GAME4_2.c:11232~11290`)
     bool DeathBallUpdate(size_t i, uint32_t frame);                        // ★ 11-20 C2 updateDeathBall_53D080 — false 면 지운다
@@ -5420,6 +5434,7 @@ private:
     static bool CanSeeBuffs(const Buffs* obj, const Buffs* targ, double targVelX, double targVelY, int flags);
     void SendFxAllCli(float x, float y, const uint8_t* msg, size_t n);   // netSendFxAllCli_523030
     Target DamageAttacker(int64_t by, const AttackSrc* src) const;                               // 4-b1 a2
+    void ZombieCorpseRecord(Creature& k, int64_t by, const AttackSrc* src, uint8_t dtype);         // ★ 11-21 W6 누운 좀비 맞음 기록(+520·+524·+536)
     void DamageShockBack(const Target& victim, const Buffs& vb, const Target& attacker, const AttackSrc* src);
     int DamageProtect(const Buffs& b, const Session* wearer, uint8_t dtype, int amount) const;              // 4DFE40·4DFF40(★ 1-g 입은 것 몫 — 사람만)
     void DamageVampirism(const Target& attacker, const Target& victim, int amount);
@@ -5680,6 +5695,7 @@ private:
     unsigned long long mmStat_[static_cast<size_t>(MmStat::Count)] = {};   // ★ 11-20 W2 마법 화살 갈래
     unsigned long long wandStat_[static_cast<size_t>(WandStat::Count)] = {}; // ★ 11-20 W4 지팡이 갈래
     unsigned long long fonStat_[static_cast<size_t>(FonStat::Count)] = {};   // ★ 11-20 C2 자연의 힘 갈래
+    unsigned long long turnUndeadStat_[static_cast<size_t>(TurnUndeadStat::Count)] = {};   // ★ 11-21 W6 언데드 쫓기 갈래
     uint32_t durFrame_ = 0;   // ★ 11-20 C2 — `SpellCastByPlayer` 가 지금 도는 걸음의 프레임(한 번에 여러 틱이면 frame_ 보다 작다 — 끝 프레임 견주기는 이 값으로)
     unsigned long long missilesGone_ = 0;     // 날아가는 것이 사라진 누계
     unsigned long long missileEntriesSent_ = 0;   // 갱신에 실린 누계

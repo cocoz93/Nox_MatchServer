@@ -148,7 +148,9 @@ std::shared_ptr<const nox::Server::GameTables> BuildGameTables(const GameFiles& 
                                 // ★ 11-20 트레일러 위저드 W4 — 노란 별 지팡이(SulphorousFlare·Shower)가 쏘는 것(SPEED 350 · YellowStarShotCollide 2)
                                 "YellowStarShot",
                                 // ★ 11-20 트레일러 컨저러 C2 — 자연의 힘이 놓는 죽음의 공(SPEED 두 줄 200·150 — 뒤 값 · AIRBORNE+FLICKER · DeathBallCollide — 인자 없음)
-                                "DeathBall" }) {
+                                "DeathBall",
+                                // ★ 11-21 트레일러 위저드 W6 — 언데드 쫓기 빛 조각(SPEED 200 · ALLOW_OVERLAP · LIGHT+CLIENT_PREDICT · UndeadKillerCollide — 인자 없음)
+                                "UndeadKiller" }) {
             const uint16_t w = tdb.WireByName(nm);
             const nox::ThingInfo* t2 = w ? tdb.ByWire(w) : nullptr;
             int amount = 0;

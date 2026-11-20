@@ -1573,6 +1573,18 @@ void Server::CollideBuffs(const ContactRef& a1, const ContactRef& a2) {
     }
 }
 
+// ★ 11-21 W6 — 누운 좀비가 맞았을 때 적는 셋(`GAME3_2.c:7084~7090` — +520 때린 이 · +524 종류 · +536 프레임).
+//   피해 함수(아래 시체 갈래)와 언데드 쫓기 빛 조각의 피해 0(`UndeadKillerCollide`)이 같이 쓴다
+void Server::ZombieCorpseRecord(Creature& k, int64_t by, const AttackSrc* src, uint8_t dtype) {
+    const Target corpseBy = DamageAttacker(by, src);
+    k.lastAttacker = Creature::SeenRef{};
+    if ((corpseBy.sessionId != kNoSession)) k.lastAttacker.sessionId = corpseBy.sessionId;
+    else if (corpseBy.pet >= 0 && static_cast<size_t>(corpseBy.pet) < pets_.size()) k.lastAttacker.petNet = pets_[static_cast<size_t>(corpseBy.pet)].netCode;
+    k.lastDamageType = dtype;
+    k.lastDamageFrame = frame_;
+    ++zombieEv_[static_cast<size_t>(ZombieEv::CorpseHit)];
+}
+
 // 피해 함수(+716) — 정답지 이식(묶음 3-e, 2026-09-13).
 //   ⚠ 옮기지 않은 갈래(다른 조각): 방패·대검·지팡이 막기(3-e2 — 상태 15/16 · 18~21) · 되받아치기 버프 27 · 불/전기 보호 · 흡혈 ·
 //     전기 방패 22 · 마법 방패 26(주문 4) · 입은 것 닳기·방어 마법 효과(아이템 5) · 스켈레톤 막기(몬스터 행동 21 · AI 6)
@@ -1791,13 +1803,7 @@ bool Server::HurtTarget(const Target& t, int dmg,
     //   (+520 은 산 갈래와 같은 `DamageAttacker`) · ✖ 전에는 시체도 끝까지 내려가 맞는 소리·흡혈·감전 되갚기·INJURED 를 탔다(`KillPet` 관문이 두 번 죽음만 막았다)
     if (k.dead) {
         if (!IsZombieType(k.type)) { ++zombieEv_[static_cast<size_t>(ZombieEv::CorpseIgnored)]; ++damageStops_["시체(소환수)"]; return true; }
-        const Target corpseBy = DamageAttacker(by, src);
-        k.lastAttacker = Creature::SeenRef{};
-        if ((corpseBy.sessionId != kNoSession)) k.lastAttacker.sessionId = corpseBy.sessionId;
-        else if (corpseBy.pet >= 0 && static_cast<size_t>(corpseBy.pet) < pets_.size()) k.lastAttacker.petNet = pets_[static_cast<size_t>(corpseBy.pet)].netCode;
-        k.lastDamageType = dtype;
-        k.lastDamageFrame = frame_;
-        ++zombieEv_[static_cast<size_t>(ZombieEv::CorpseHit)];
+        ZombieCorpseRecord(k, by, src, dtype);
         ++damageStops_["누운 좀비(소환수)"];
         return true;
     }
@@ -6493,6 +6499,7 @@ bool Server::IncomingMissile(const Session& s) const {
         return v14 < 100.0;                                                                  // 가장 가까운 것 < 100
     };
     for (const auto& m : missiles_) {
+        if (m.collideKind == 11) continue;                   // ★ 11-21 W6 — 언데드 쫓기 빛 조각은 MISSILE 이 아니다(원본 투사체 목록에 없다)
         if (test(m.posX, m.posY, m.prevX, m.prevY, m.velX, m.velY, m.owner, &m.buffs)) return true;
     }
     return false;
@@ -7330,6 +7337,13 @@ bool Server::SpellAccept(uint8_t spell, Session& s, int64_t obj3, const SpellArg
                 fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 0) ? 1 : 0;
                 break;
             }
+            case 21: {                                                                         // ★ 11-21 W6 TurnUndead(언데드 쫓기) — 지속 · dt 70(`spells.go:252~253`)
+                DurFns f;                                                                      //   갱신 `531410` 은 0 만 돌려준다 — 없는 것과 같다
+                f.create = &Server::DurTurnUndeadCreate;
+                f.destroy = &Server::DurTurnUndeadEnd;
+                fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 70) ? 1 : 0;
+                break;
+            }
             case 43: {                                                                         // ChainLightning — 지속(사슬 번개) · dt 30
                 DurFns f;
                 f.create = &Server::DurChainLightningCreate;
@@ -7497,6 +7511,7 @@ int Server::CastInversion(const Session& a4, int64_t obj3) {
     const float r = static_cast<float>(BalanceFloat("InversionRange"));
     const float r2 = r * r;
     for (auto& m : missiles_) {                             // getMissilesInCircle — 거리² ≤ r²
+        if (m.collideKind == 11) continue;                   // ★ 11-21 W6 — 언데드 쫓기 빛 조각은 MISSILE 이 아니다(투사체 목록에 없다)
         const float dx = static_cast<float>(a4.posX) - m.posX, dy = static_cast<float>(a4.posY) - m.posY;
         if (dx * dx + dy * dy <= r2) MissileChangeOwner(m, obj3, frame_);
     }
@@ -8451,6 +8466,139 @@ void Server::FonLaunch(DurSpell& d, Session* cs) {
 // sub_52F1D0 — 끝(놓았든 끊겼든). 그림이 남았으면 지운다 · ⚠ 지팡이 +96 의 4 끄기는 안 옮김(시작의 +88 표시와 함께)
 void Server::DurFonEnd(DurSpell& d) {
     FonChargeOff(d);
+}
+
+// ★ 11-21 W6 — 언데드 쫓기(21) 시작 `nox_xxx_spellTurnUndeadCreate_531310`(`GAME4_3.c:1233~1273`)
+//   · +72 = `TurnUndeadKillPoints[세기 − 1]`(nox_float2int = 버림) — 빛 조각 43개가 **함께** 깎는 죽임 양
+//   · 자리 — 글리프면 그 글리프(+24) · 아니면 시전자(+16)의 자리(+56)
+//   · 방향 0, 6, …, 252(43개)마다 빛 조각 `UndeadKiller` 를 그 자리에 놓고 +124·+126 = 방향 · 속도(+80) = 방향 × 4.0 · 감쇠(+112) = 0
+//     — 빛 조각은 MISSILE 이 아니라(LIGHT · CLIENT_PREDICT) 5 × 0.2 걸음 물리(`updateObjectsVelocity_5118A0` `GAME4_1.c:3218~3225`)로 난다:
+//       `속도 += (힘 − 속도 × 감쇠) × 0.2` 라 감쇠 0 이면 속도가 그대로 · 한 프레임 4 · 70 프레임이면 280.
+//       우리 날아가는 것 틀은 `속도 = (힘 + 속도) × 감쇠` 라 감쇠를 **1** 로 두어야 같다
+//   · 점 효과 160(FX_TURN_UNDEAD)을 그 자리에(`netSendPointFx_522FF0`)
+//   ⚠ 소리(TurnUndeadCast)는 주문 틀의 시전 소리 몫
+int Server::DurTurnUndeadCreate(DurSpell& d) {
+    d.killPoints = static_cast<int>(static_cast<float>(BalanceFloatInd("TurnUndeadKillPoints", d.level - 1)));
+    float x = d.posX, y = d.posY;
+    if (!d.flag20) {
+        auto c = sessions_.find(d.caster);
+        if ((d.caster != kNoSession) && c != sessions_.end()) { x = static_cast<float>(c->second.posX); y = static_cast<float>(c->second.posY); }
+    }
+    ++turnUndeadStat_[static_cast<size_t>(TurnUndeadStat::Start)];
+    const ProjTypeInfo* pt = ProjType("UndeadKiller");
+    if (!pt || pt->type == 0) {
+        ++turnUndeadStat_[static_cast<size_t>(TurnUndeadStat::NoType)];   // newObjectWithTypeInd 0 — 정답지는 그 조각만 건너뛴다(`if (v3)`)
+    } else {
+        for (int dir = 0; dir < 256; dir += 6) {
+            MissileObj m;
+            m.netCode = nextShotNetCode_++;
+            if (nextShotNetCode_ == 0) nextShotNetCode_ = 4096;
+            m.type = pt->type;
+            m.flags = pt->flags;
+            m.posX = m.newX = m.prevX = x;
+            m.posY = m.newY = m.prevY = y;
+            m.dir1 = m.dir2 = static_cast<uint8_t>(dir);
+            m.createdFrame = m.frame136 = frame_;
+            m.velX = DirVecX(static_cast<uint8_t>(dir)) * 4.0f;
+            m.velY = DirVecY(static_cast<uint8_t>(dir)) * 4.0f;
+            m.damping = 1.0f;                                   // 위 머리 주석 — 원본 감쇠 0 = 우리 틀 1
+            m.owner = d.caster;
+            m.ud0 = m.ud2 = d.caster;
+            m.spell = 21;
+            m.level = d.level;
+            m.collideKind = 11;                                 // UndeadKillerCollide · UndeadKillerUpdate
+            m.durId = d.id;
+            missiles_.push_back(m); ++missilesMade_;
+            ++turnUndeadStat_[static_cast<size_t>(TurnUndeadStat::Killer)];
+        }
+    }
+    const uint16_t ix = static_cast<uint16_t>(static_cast<int>(x)), iy = static_cast<uint16_t>(static_cast<int>(y));
+    const uint8_t fx[5] = { static_cast<uint8_t>(Op::FX_TURN_UNDEAD), static_cast<uint8_t>(ix), static_cast<uint8_t>(ix >> 8),
+                            static_cast<uint8_t>(iy), static_cast<uint8_t>(iy >> 8) };
+    SendFxAllCli(x, y, fx, sizeof(fx));
+    return 0;
+}
+
+// ★ 11-21 W6 — 언데드 쫓기 끝 `nox_xxx_spellTurnUndeadDelete_531420`(`GAME4_3.c:1279~1293`) — 이 주문에 매인 빛 조각을 전부 늦게 지운다
+void Server::DurTurnUndeadEnd(DurSpell& d) {
+    for (auto& m : missiles_) {
+        if (m.collideKind != 11 || m.durId != d.id || m.destroyed) continue;
+        m.destroyed = true;                                     // 늦은 지우기(+16 & 0x20) — 날아가는 것 고리 머리·꼬리가 지운다
+        ++turnUndeadStat_[static_cast<size_t>(TurnUndeadStat::GoneEnd)];
+    }
+}
+
+// ★ 11-21 W6 — 빛 조각 갱신 `nox_xxx_updateUndeadKiller_53E190`(`GAME4_3.c:7267~7276`)
+//   매인 지속 주문이 끊겼으면(+88 & 1) 지운다 · 아니면 만든 지(+136) 70(0x46) 프레임이 **넘으면** 지운다
+bool Server::UndeadKillerUpdate(const MissileObj& m, uint32_t frame) {
+    for (const auto& d : durSpells_) {
+        if (d.id != m.durId || d.spell != 21) continue;
+        if (d.flags88 & 1) { ++turnUndeadStat_[static_cast<size_t>(TurnUndeadStat::GoneCancel)]; return false; }
+        break;
+    }
+    if (frame - m.frame136 > 70u) { ++turnUndeadStat_[static_cast<size_t>(TurnUndeadStat::GoneAge)]; return false; }
+    return true;
+}
+
+// ★ 11-21 W6 — 빛 조각 닿음 `nox_xxx_collideUndeadKiller_4EBD40`(`GAME3_3.c:5546~5584`)
+//   · 닿는 것은 **몬스터(+8 & 2)이면서 하위 분류 UNDEAD(+12 & 0x40)** 뿐 — 사람·장애물·산 몬스터는 그냥 지나간다
+//   · 남은 양(지속 주문 +72) ≤ 그 체력이면 — 양이 있으면 피해 = 양(종류 6 DISPEL_UNDEAD · 임자 = 주인 사슬의 사람 · 때린 것 = 빛 조각) 뒤
+//     빛 조각을 지우고 양을 0 으로 · 양이 0 이면 그냥 지운다
+//   · 남은 양 > 체력이면 — 피해 = 그 체력 · 양 −= 체력 · 빛 조각은 **계속 난다**
+//   · 시체(0x8000 — 원본 충돌 짝 `sub_54E730` 은 DEAD 를 안 본다)는 체력 0 이라 양이 있으면 피해 0 을 부른다 — 피해 함수가 불탐(0x80000) 표시를 켜고
+//     좀비면 때린 이를 적는다(`GAME3_2.c:7072~7091`). 우리 `HurtTarget` 은 0 피해를 맨 앞(⚠ 0 피해 관문)에서 돌려보내므로 그 두 일을 여기서 한다
+//   · 닿음 판정 = 빛 조각 몸(EXTENT CIRCLE 10)과 몬스터 몸(원)이 겹침 — 한 프레임에 4 씩이라 이번 자리(+64)만 본다
+//   · 문 · 벽 — 원본 벽 추적이 막으면 그 걸음의 새 자리를 안 적어 **제자리에 멈춘다**(`GAME4_1.c:3235~3239` — ALLOW_OVERLAP 이라 벽 밀기 `sub_54FEF0` 도 안 탄다).
+//     멈춘 빛 조각은 수명까지 그 자리에 있다(부르는 쪽이 한다)
+bool Server::UndeadKillerCollide(size_t i) {
+    DurSpell* ds = nullptr;
+    for (auto& d : durSpells_) if (d.id == missiles_[i].durId && d.spell == 21) { ds = &d; break; }
+    if (!ds) return true;                                       // 매인 주문이 없다 — 원본은 걸린 주문이 늘 있다(끝이 조각을 먼저 지운다)
+    const uint16_t nc = missiles_[i].netCode;
+    for (size_t k = 0; k < pets_.size(); ++k) {
+        if (i >= missiles_.size() || missiles_[i].netCode != nc) return true;   // 피해가 목록을 바꿨다 — 그 조각은 이미 갔다
+        const MissileObj& m = missiles_[i];
+        Creature& c = pets_[k];
+        const auto tb = gt_->typeBodies.find(c.type);
+        if (tb == gt_->typeBodies.end() || !(tb->second.subclass & 0x40) || tb->second.shape != 2) continue;
+        if (PetObjFlags(c) & 0x40) continue;                    // NO_COLLIDE — 충돌 짝에 안 든다(`sub_5481C0`)
+        const float dx = static_cast<float>(c.x) - m.newX, dy = static_cast<float>(c.y) - m.newY;
+        const float rr = tb->second.r + 10.0f;
+        if (dx * dx + dy * dy > rr * rr) continue;
+        const Target t{ kNoSession, static_cast<int>(k) };
+        const int hp = c.dead ? 0 : TargetHealth(t);
+        const int pts = ds->killPoints;
+        AttackSrc src;
+        src.x = m.prevX; src.y = m.prevY;
+        src.byMonsterType = m.type;
+        src.rootIsMonster = false;                              // 주인은 사람(시전자)
+        const HitterRef hit = HitterMissile(m);
+        const int64_t by = m.owner;
+        if (pts <= hp) {
+            if (pts > 0) {
+                ds->killPoints = 0;                             // `-= v8` — 양을 다 쓴다
+                HurtTarget(t, pts, by, 6, &src, hit);
+                ++turnUndeadStat_[static_cast<size_t>(TurnUndeadStat::HitSpent)];
+            } else {
+                ++turnUndeadStat_[static_cast<size_t>(TurnUndeadStat::HitEmpty)];
+            }
+            return false;
+        }
+        ds->killPoints = pts - hp;
+        if (hp > 0) {
+            HurtTarget(t, hp, by, 6, &src, hit);
+            ++turnUndeadStat_[static_cast<size_t>(TurnUndeadStat::HitKill)];
+        } else {
+            // 피해 0 — 위 머리 주석(불탐 · 좀비면 때린 이) · 무적(23)이면 원본도 그 앞에서 1(`GAME3_2.c:7064~7070`)
+            if (k < pets_.size() && !pets_[k].buffs.Has(23)) {
+                Creature& z = pets_[k];
+                z.burned = true;
+                if (IsZombieType(z.type)) ZombieCorpseRecord(z, by, &src, 6);
+            }
+            ++turnUndeadStat_[static_cast<size_t>(TurnUndeadStat::HitCorpse)];
+        }
+    }
+    return true;
 }
 
 // ★ 11-20 C2 — 죽음의 공 갱신 `nox_xxx_updateDeathBall_53D080`(`object_death_ball.go:17~52`). false 면 부르는 쪽이 지운다
@@ -16736,6 +16884,9 @@ void Server::UpdateMissiles(uint32_t frame) {
         } else if (m.collideKind == 10) {
             // ★ 11-20 트레일러 컨저러 C2 — 죽음의 공 `UPDATE = DeathBallUpdate`(`DeathBallUpdate` 머리 주석) — 힘을 안 주고 처음 속도 그대로 난다(감쇠 1)
             if (!DeathBallUpdate(i, frame)) { DestroyMissile(i); continue; }
+        } else if (m.collideKind == 11) {
+            // ★ 11-21 W6 — 언데드 쫓기 빛 조각 `UPDATE = UndeadKillerUpdate`(`UndeadKillerUpdate` 머리 주석 — 주문 끊김 · 70 프레임)
+            if (!UndeadKillerUpdate(m, frame)) { DestroyMissile(i); continue; }
         } else if (m.collideKind == 9) {
             // ★ 11-20 트레일러 위저드 W4 — 노란 별도 `UPDATE = ProjectileUpdate`(40틱) — 때가 되면 닿음 함수를 대상·벽 없이(0,0) 부른다:
             //   그림 136 만 나고(`collideSulphurShot2_4E9D80` 은 둘 다 없으면 아무 일 없음) 지운다
@@ -16816,6 +16967,31 @@ void Server::UpdateMissiles(uint32_t frame) {
         //     닫으려면 수명도 멈추거나, 덫을 한 번만 쏘게 해야 한다.
         if (arrowFreeze_ && IsArrowType(m.type)) { m.velX = m.velY = 0.0f; }
         m.newX += m.velX; m.newY += m.velY;
+        // ★ 11-21 W6 — 빛 조각(11)은 MISSILE 이 아니라 아래 선 추적 맞힘(④)을 안 탄다(`DurTurnUndeadCreate` 머리 주석).
+        //   걸음 물리의 벽 추적(깃발 1 — AIRBORNE 아님 · `GAME4_1.c:3226~3239`)이 막으면 새 자리를 안 적어 제자리 ·
+        //   닿음은 몸 겹침으로 언데드만(`UndeadKillerCollide`). 피해가 목록을 바꿀 수 있어 번호(netCode)로 다시 찾는다
+        if (m.collideKind == 11) {
+            if (!MapTraceRay(m.posX, m.posY, m.newX, m.newY, 0x1)) {
+                m.newX = m.posX; m.newY = m.posY;
+                ++turnUndeadStat_[static_cast<size_t>(TurnUndeadStat::WallStop)];
+            }
+            const uint16_t nc = m.netCode;
+            const bool keep = UndeadKillerCollide(i);
+            if (i >= missiles_.size() || missiles_[i].netCode != nc) {
+                size_t at = missiles_.size();
+                for (size_t j = 0; j < missiles_.size(); ++j) if (missiles_[j].netCode == nc) { at = j; break; }
+                if (at == missiles_.size()) continue;       // 이미 지워졌다 — i 가 다음 것을 가리킨다
+                i = at;
+            }
+            if (!keep) { DestroyMissile(i); continue; }
+            MissileObj& km = missiles_[i];
+            km.dir1 = km.dir2;
+            km.prevX = km.posX; km.prevY = km.posY;
+            km.posX = km.newX; km.posY = km.newY;
+            km.forceX = km.forceY = 0;
+            ++i;
+            continue;
+        }
         // ④ 선 추적 맞힘 projectileTraceHit_537850(`GAME4_3.c:3386`) → 충돌 함수 둘(sub_537770)
         bool erased = false;
         // ★ 09-24 사람 판 — 「더는 안 부딪힘」(FlagNoCollide 0x40)이 선 것은 맞힘을 **통째로 건너뛴다**(움직임·넘김은 한다).
