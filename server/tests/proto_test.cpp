@@ -1490,7 +1490,7 @@ void TestAppearanceAndFx() {
     {
         nox::CSyncHost srv;
         nox::Gamedata g;
-        g.Parse("LightningDamage = 1.5;\nLightningRange = 240;\n" "SummonDuration = 60, 210, 375;\n");
+        g.Parse("LightningDamage = 1.5;\nLightningRange = 240;\nLightningSearchTime = 30;\n" "SummonDuration = 60, 210, 375;\n");
         srv->SetGamedata(g);
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
@@ -8517,7 +8517,8 @@ void TestManaBomb() {
 //
 // 지속 주문이다(`duration.New(..., create = spellEnergyBoltStop_52E820, update = spellEnergyBoltTick_52E850, dt = 30)`).
 //   · 켤 때 **연쇄 번개(43)를 끈다**
-//   · 매 틱 : 시전자가 **달리면**(버프 8) 끊김 · 만든 뒤 2틱 넘겨 **맞으면** 끊김 · **마나 0** 이면 끊김
+//   · 매 틱 : 시전자가 **달리기 마법(70 · 버프 8)** 에 걸리면 끊김 · 만든 뒤 2틱 넘겨 **맞으면** 끊김 · **마나 0** 이면 끊김
+//   · 끝 : 맞힐 때마다 「지금 + `LightningSearchTime`」으로 미룬다 — 시험 `TestLightningHold1121`(11-21)
 //   · 대상 : 지금 대상이 앞쪽·`LightningRange` 안·볼 수 있으면 그대로, 아니면 둘레에서 **가장 가까운 적**을 다시 고른다
 //   · 피해 : `EnergyBoltDamage[세기-1]`(아레나 1.3·1.6·2.0·2.3·2.6) + **소수 이월** · 종류 **17(공중 전기 · 방어 안 탐)**
 //   · 대상이 바뀌면 옛 빔(`9e`)을 끄고 새 빔을 켠다 · 시전자는 자세 10 · **틱마다 마나 1**
@@ -8526,7 +8527,7 @@ void TestEnergyBolt() {
     const std::string b = "10.9.11.2:9112";
     auto mk = [&](nox::CSyncHost& srv) {
         nox::Gamedata g;
-        g.Parse("EnergyBoltDamage = 1.3, 1.6, 2.0, 2.3, 2.6;\nLightningRange = 300;\n" "SummonDuration = 60, 210, 375;\n");
+        g.Parse("EnergyBoltDamage = 1.3, 1.6, 2.0, 2.3, 2.6;\nLightningRange = 300;\nLightningSearchTime = 30;\n" "SummonDuration = 60, 210, 375;\n");
         srv->SetGamedata(g);
         srv->SetSpellDef(24, 0, 0x1000000, { 1, 2 });         // 어느 직업이나 · 겨누지 않음 · 마나 0(끊김을 따로 본다)
         srv.DebugEnterGame(a, 820, false, nox::CharClass::Wizard);
@@ -8718,7 +8719,7 @@ void TestChainLightning() {
     const std::string c = "10.9.12.3:9123";
     auto mk = [&](nox::CSyncHost& srv) {
         nox::Gamedata g;
-        g.Parse("LightningDamage = 1.5;\nLightningRange = 240;\n" "SummonDuration = 60, 210, 375;\n");
+        g.Parse("LightningDamage = 1.5;\nLightningRange = 240;\nLightningSearchTime = 30;\n" "SummonDuration = 60, 210, 375;\n");
         srv->SetGamedata(g);
         srv->SetSpellDef(43, 0, 0x1000000, { 1, 2 });         // 어느 직업이나 · 겨누지 않음
         srv->SetSpellDef(24, 0, 0x1000000, { 3, 4 });         // 에너지볼트 — 끄는지 보려고
@@ -10976,7 +10977,7 @@ void TestChargedStaffCast() {
     auto mk = [&](nox::CSyncHost& srv, bool withWand) {
         RegSpell(srv, 43, 0);                                // 연쇄 번개
         nox::Gamedata g;
-        g.Parse("LightningRange = 240;\nLightningDamage = 1.5;\n");
+        g.Parse("LightningRange = 240;\nLightningDamage = 1.5;\nLightningSearchTime = 30;\n");
         srv->SetGamedata(g);
         srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
         srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
@@ -24457,7 +24458,7 @@ void TestMonsterCastB7() {
     // 비홀더(1000,1000 · 동쪽을 봄) · a 는 앞 ax · 실물 주문 깃발(24 = 0x42340033 · 4 = 0x811c0491) · 번개 사거리 300 · 시전 애니 8칸/붙듦 2/한 번
     auto mk = [&](nox::CSyncHost& srv, uint32_t& ms, float ax, bool invul) {
         nox::Gamedata g;
-        g.Parse("EnergyBoltDamage = 1.3, 1.6, 2.0, 2.3, 2.6;\nLightningRange = 300;\n");
+        g.Parse("EnergyBoltDamage = 1.3, 1.6, 2.0, 2.3, 2.6;\nLightningRange = 300;\nLightningSearchTime = 30;\n");
         srv->SetGamedata(g);
         srv->SetSpellDef(24, 0, 0x42340033u, { 1, 2 });
         srv->SetSpellDef(4, 0, 0x811c0491u, { 1, 2 });
@@ -25147,6 +25148,92 @@ void TestDurTwoTick1120() {
         run("무작위 표식(121 · 퀘스트)", two, toMark(121), atMark);
     }
     std::printf("  11-20 지속 주문 두 틱 걸음 — 소환 · 점멸 · 표식으로 · 무작위 표식: 끝 하루 전에 됨 · 두 틱 걸음 앞에 걸려도 됨\n");
+}
+
+// ★ 11-21 — 번개 둘(에너지볼트 24 · 연쇄 번개 43)은 **맞히는 동안 계속**된다(사용자 「번개 사양이 그게 맞아?」)
+//   만들 때 끝 = 지금 + dt 30 · 맞힐 때마다 끝 = 지금 + `LightningSearchTime`(gamedata.bin 실측 30)
+//   (`GAME4_2.c:11005~11006` · `GAME4_3.c:382~383`) · 에너지볼트는 맞힌 것이 죽으면 다음 틱에 끝(`GAME4_2.c:11015~11019`)
+//   11-20 까지 우리는 이 미루기가 없어 맞히는 중에도 만든 뒤 30프레임에 끊겼다
+void TestLightningHold1121() {
+    const std::string a = "10.11.21.1:1121";
+    const std::string b = "10.11.21.2:1122";
+    auto mk = [&](nox::CSyncHost& srv) {
+        nox::Gamedata g;
+        g.Parse("EnergyBoltDamage = 1.3, 1.6, 2.0, 2.3, 2.6;\nLightningDamage = 1.5;\nLightningRange = 240;\nLightningSearchTime = 30;\n");
+        srv->SetGamedata(g);
+        srv->SetSpellDef(24, 0, 0x1000000, { 1, 2 });         // 어느 직업이나 · 겨누지 않음
+        srv->SetSpellDef(43, 0, 0x1000000, { 3, 4 });
+        srv.DebugEnterGame(a, 1121, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 1122, false, nox::CharClass::Warrior);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv->DebugMoveTo(Sid(srv, b), 1100, 1000);                      // a 의 몸 방향(+x) 앞 100
+    };
+    // n 프레임을 한 틱씩 걷는다(33ms = 한 틱 · `TestDurTwoTick1120` 과 같은 걸음) — 틱마다 a 의 마나를 채운다(마나 0 끊김과 섞이지 않게)
+    auto walk = [&](nox::CSyncHost& srv, uint32_t& ms, std::vector<nox::OutPacket>& out, uint32_t n, bool keepAlive) {
+        const uint32_t f = srv->DebugFrame() + n;
+        for (int t = 0; t < 1000 && srv->DebugFrame() < f; ++t) {
+            if (keepAlive) srv->DebugSetHealth(Sid(srv, b), 150);
+            srv->DebugSetMana(Sid(srv, a), 200);
+            ms += 33; srv.Tick(ms, out);
+        }
+    };
+    auto start = [&](nox::CSyncHost& srv, uint32_t& ms, std::vector<nox::OutPacket>& out, uint8_t sp) {
+        srv.Tick(ms, out);
+        ms += 33; srv.Tick(ms, out);
+        srv->DebugSpellAccept(Sid(srv, a), sp, 1); srv.TakeOut(out);   // 세기 1
+        Check(srv->DebugDurActive(sp, Sid(srv, a)), "번개를 못 걸었다(시험 전제)");
+    };
+    for (const uint8_t sp : { uint8_t{24}, uint8_t{43} }) {
+        const char* nm = (sp == 24) ? "에너지볼트(24)" : "연쇄 번개(43)";
+        // ① 맞히는 동안은 dt 30 을 넘겨 계속 — 45프레임 뒤에도 걸려 있고 마지막 다섯 프레임에도 깎는다
+        {
+            nox::CSyncHost srv; mk(srv);
+            std::vector<nox::OutPacket> out;
+            uint32_t ms = 0;
+            start(srv, ms, out, sp);
+            walk(srv, ms, out, 40, true);
+            srv->DebugSetHealth(Sid(srv, b), 150);
+            walk(srv, ms, out, 5, false);
+            const int lost = 150 - static_cast<int>(srv->HealthOf(Sid(srv, b)));
+            const bool on = srv->DebugDurActive(sp, Sid(srv, a));
+            if (!on || lost <= 0) std::printf("  [번개 이어 감] %s 45프레임 뒤 걸림 %d · 마지막 다섯 프레임에 잃은 값 %d\n", nm, on ? 1 : 0, lost);
+            Check(on && lost > 0, sp == 24 ? "에너지볼트가 맞히는 중인데 dt 30 에 끊겼다(LightningSearchTime 미루기 빠짐)"
+                                           : "연쇄 번개가 맞히는 중인데 dt 30 에 끊겼다(LightningSearchTime 미루기 빠짐)");
+        }
+        // ② 맞힐 것이 없어지면 **마지막으로 맞힌 뒤** 30프레임에 끝 — 15프레임 맞히고 사거리 밖으로 뺀 뒤
+        //    20프레임(만든 뒤 35 · dt 만이면 이미 끝)에는 걸려 있고 · 35프레임(맞힌 뒤 30 넘음)에는 끝
+        {
+            nox::CSyncHost srv; mk(srv);
+            std::vector<nox::OutPacket> out;
+            uint32_t ms = 0;
+            start(srv, ms, out, sp);
+            walk(srv, ms, out, 15, true);
+            srv->DebugMoveTo(Sid(srv, b), 1600, 1000);                  // 600 — LightningRange 240 밖
+            walk(srv, ms, out, 20, false);
+            const bool mid = srv->DebugDurActive(sp, Sid(srv, a));
+            walk(srv, ms, out, 15, false);
+            const bool late = srv->DebugDurActive(sp, Sid(srv, a));
+            if (!mid || late) std::printf("  [번개 이어 감] %s 대상 뺀 뒤 20프레임 걸림 %d · 35프레임 걸림 %d\n", nm, mid ? 1 : 0, late ? 1 : 0);
+            Check(mid, sp == 24 ? "에너지볼트가 마지막으로 맞힌 뒤 30프레임이 안 됐는데 끊겼다"
+                                : "연쇄 번개가 마지막으로 맞힌 뒤 30프레임이 안 됐는데 끊겼다");
+            Check(!late, sp == 24 ? "에너지볼트가 맞힐 것이 30프레임 넘게 없는데 안 끊겼다"
+                                  : "연쇄 번개가 맞힐 것이 30프레임 넘게 없는데 안 끊겼다");
+        }
+    }
+    // ③ 에너지볼트는 맞힌 것이 **죽으면 다음 틱에 끝**(`:11015~11019` · 연쇄 번개는 점 효과만 — `GAME4_3.c:337~338`)
+    {
+        nox::CSyncHost srv; mk(srv);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        start(srv, ms, out, 24);
+        walk(srv, ms, out, 3, true);
+        srv->DebugSetHealth(Sid(srv, b), 1);
+        walk(srv, ms, out, 1, false);                                    // 이 틱에 죽는다
+        Check(srv->HealthOf(Sid(srv, b)) == 0, "b 가 안 죽었다(시험 전제)");
+        walk(srv, ms, out, 2, false);
+        Check(!srv->DebugDurActive(24, Sid(srv, a)), "에너지볼트가 맞힌 것이 죽었는데 안 끊겼다(다음 틱 끝 빠짐)");
+    }
+    std::printf("  11-21 번개 이어 감 — 24·43 맞히는 동안 dt 30 을 넘겨 계속 · 맞힐 것 없으면 마지막 맞힘 뒤 30 에 끝 · 24 는 대상이 죽으면 다음 틱 끝\n");
 }
 
 // ── 11-20 트레일러 전사 1-b — 수식 효과(modifier.bin `Server::ParseModEffects`) · 휘두를 때 위력 배수 · 맞힐 때 불·번개 ─────
@@ -38382,6 +38469,7 @@ int main() {
     TestSummonGolems1120();
     TestForceOfNature1120();
     TestDurTwoTick1120();
+    TestLightningHold1121();
     TestModEffects1120();
     TestPickupAutoEquip();
     TestArmorEquip();

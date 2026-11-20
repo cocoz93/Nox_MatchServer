@@ -7902,8 +7902,11 @@ int Server::DurEnergyBoltCreate(DurSpell& d) {
     return 0;
 }
 
-// spellEnergyBoltTick_52E850(`GAME4_2.c:10639`) — 매 틱
+// spellEnergyBoltTick_52E850(`GAME4_2.c:10879`) — 매 틱
 //   끊기는 자리: 시전자가 **달리기(8)** · 시전자가 없음 · 만든 뒤 2틱 넘겨 **맞음** · **마나 0**
+//   ★ 11-21 — 끝 프레임: 맞힐 때마다 「지금 + `LightningSearchTime`(30)」으로 미룬다 → **맞히는 동안 계속**, 맞힐 것이 30프레임 없으면 끝 ·
+//     맞힌 것이 죽었으면 「지금 + 1」 = 다음 틱에 끝(`GAME4_2.c:11005~11006` · `:11015~11019`). 이게 없으면 만들 때의 dt 30 에 늘 끊긴다
+//     (11-20 까지 그랬다). 미루는 기준은 `durFrame_` — 끝 검사(`SpellCastByPlayer`)가 이 값과 견준다(두 틱을 몰아 돌 때 frame_ 는 한 칸 앞)
 //   고르기: 지금 대상이 아직 앞쪽·사거리 안·볼 수 있으면 그대로, 아니면 둘레에서 다시 고른다
 //   피해: `EnergyBoltDamage[세기-1]` + 소수 이월 · 종류 **17(공중 전기)** · 대상이 바뀌면 옛 빔을 끄고 새 빔을 켠다
 //   시전자는 자세 10 · **틱마다 마나 1**
@@ -7912,7 +7915,7 @@ int Server::DurEnergyBoltTick(DurSpell& d) {
     //   달리기(8)면 끊김 · **시전 자리(+28)에서 5 넘게 움직였으면 끊김**(`sub_4FEA70` — 몬스터만) · 만든 뒤 2틱 넘겨 맞았으면 끊김 ·
     //   지금 대상이 살았고·앞쪽·사거리 안·보이면 그대로 · 아니면 둘레에서 다시 · 없으면 빔만 끄고 이어 감 ·
     //   피해 = `EnergyBoltDamage[세기-1]` + 이월 · 종류 17 · 때린 것 = 그 몬스터 · 마나·자세는 사람만(몬스터는 없음)
-    //   ⚠ 1/3초마다 소리 32(시전자·대상)·`LightningSearchTime`·죽은 대상 점 효과 130 은 사람 쪽에도 아직 없음(미결)
+    //   ⚠ 1/3초마다 소리 32(시전자·대상)·죽은 대상 점 효과 130 은 사람 쪽에도 아직 없음(미결) · `LightningSearchTime` 은 11-21 에 넣음
     if (d.casterPet != 0) {
         const int ki = PetIndexByNet(d.casterPet);
         if (ki < 0) return 1;
@@ -7958,12 +7961,15 @@ int Server::DurEnergyBoltTick(DurSpell& d) {
         HurtTarget(tgt, dmg, kOwner, 17, &src, hitter);  // `k` 는 여기서부터 안 쓴다(목록이 당겨질 수 있다)
         d.field36 = tgt;
         ++castStat_[static_cast<size_t>(CastStat::BeamHit)];
+        // 맞혔다 — 끝을 미룬다(`:11006`). ⚠ 시험 없음 — 비홀더는 뇌가 40프레임 안에 다시 걸어(11-21 탐침 「받음 +1 · 시전 +1」) 미루기 유무가 안 갈린다
+        d.frame68 = durFrame_ + static_cast<uint32_t>(BalanceFloat("LightningSearchTime"));
+        if (TargetDeadOrGone(tgt)) d.frame68 = durFrame_ + 1;                                 // 죽었으면 다음 틱에 끝(`:11018`)
         return 0;
     }
     auto c = sessions_.find(d.caster);
     if ((d.caster == kNoSession) || c == sessions_.end() || !c->second.inGame) return 1;
     Session& caster = c->second;
-    if (caster.buffs.Has(8)) return 1;                       // 달리면 끊긴다
+    if (caster.buffs.Has(8)) return 1;                       // 달리기 마법(70 · 버프 8)에 걸리면 끊긴다 — 제 발로 걷거나 뛰는 것은 아님
     const float range = static_cast<float>(BalanceFloat("LightningRange"));
     if (frame_ - d.frame60 > 2 && TargetJustDamaged(Target{ d.caster, -1 })) return 1;
     // 지금 대상을 지킬 수 있나
@@ -7995,10 +8001,12 @@ int Server::DurEnergyBoltTick(DurSpell& d) {
     HurtTarget(d.target, dmg, d.caster, 17, nullptr, HitterBySession(d.caster));   // 종류 17 = 공중 전기(방어를 안 탄다)
     d.field36 = d.target;
     PlayerSetState(caster, 10, frame_);                      // 시전 자세
+    d.frame68 = durFrame_ + static_cast<uint32_t>(BalanceFloat("LightningSearchTime"));   // 맞혔다 — 끝을 미룬다(`:11006` · 마나 깎기 앞)
     PlayerManaSub(caster, 1);
     // ★ 정답지는 깎은 **뒤에 「이전 마나」**(`unitGetOldMana_4EEC80` = +6)를 본다 —
     //   즉 **이미 0 이던 틱**에 끊긴다(그 틱의 피해는 이미 들어간 뒤다).
     if (caster.manaPrev == 0) return 1;
+    if (TargetDeadOrGone(d.target)) d.frame68 = durFrame_ + 1;                              // 죽었으면 다음 틱에 끝(`:11018`)
     return 0;
 }
 
@@ -8076,7 +8084,7 @@ int Server::DurChainLightningTick(DurSpell& d) {
     auto c = sessions_.find(d.caster);
     if ((d.caster == kNoSession) || c == sessions_.end() || !c->second.inGame) return 1;
     Session& caster = c->second;
-    if (caster.buffs.Has(8)) return 1;                        // 달리면 끊긴다
+    if (caster.buffs.Has(8)) return 1;                        // 달리기 마법(70 · 버프 8)에 걸리면 끊긴다 — 제 발로 걷거나 뛰는 것은 아님
     if (caster.manaPrev == 0) return 1;                       // unitGetOldMana — 이미 0 이면 시작도 못 한다
     if (frame_ - d.frame60 > 2 && TargetJustDamaged(Target{ d.caster, -1 })) return 1;
     const float range = static_cast<float>(BalanceFloat("LightningRange"));
@@ -8136,6 +8144,12 @@ int Server::DurChainLightningTick(DurSpell& d) {
     }
     for (size_t i = d.sub108.size(); i < prev.size(); ++i)     // 남은 옛 빔은 끈다
         if (!prev[i].target.none()) NetStopRaySpell(prev[i], prev[i].target);
+
+    // ★ 11-21 — 첫 대상을 맞혔다 — 끝을 「지금 + `LightningSearchTime`(30)」으로 미룬다(`GAME4_3.c:382~383`) → **맞히는 동안 계속** ·
+    //   첫 대상이 없는 틱은 위에서 미루지 않고 돌아간다(`:311~312`) → 30프레임 동안 없으면 끝.
+    //   정답지는 충전·마나를 깎은 **뒤**에 미루지만, 그 사이 갈래는 끊기(1)거나 여기와 같은 0 이라 앞에 둬도 같다
+    //   (우리 몫 갈래 `chargesMax == 0` 의 `return 0` 도 미룬 뒤가 되게). 기준 = `durFrame_`(에너지볼트 머리 주석)
+    d.frame68 = durFrame_ + static_cast<uint32_t>(BalanceFloat("LightningSearchTime"));
 
     // ★ 묶음 5-g — **완드를 들었으면 마나 대신 충전을 쓴다**(`GAME4_3.c:346~372`).
     //   자세도 다르다 — 완드면 **22(집중)**, 마나면 **10(시전)**.
