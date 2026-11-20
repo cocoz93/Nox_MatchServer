@@ -1172,6 +1172,12 @@ uint16_t Server::SummonType(uint8_t spell) {
         //   번호 = `dumpscan -things <thing.bin> -find Imp` 의 색인 1327 + 1.
         //   **와이어 번호는 색인 +1** 이다(genthings.go 의 실측 주석). Bat 색인 1356 → 1357 로 검산했다.
         case 87: return 1328;  // SUMMON_IMP                → Imp
+        // ★ 11-20 트레일러 컨저러 C1 — 센 소환수 셋. 원본은 `guideNameByN_427230(주문 − 74)` 이름으로 종류를 찾는다(`GAME4.c:4090~4091`) —
+        //   이름표 순서는 Game.exe 문자열(GUIDE_INVALID 뒤 40개)로 읽었다: 15 MechanicalGolem · 27 StoneGolem · 37 Demon
+        //   (위 열셋도 같은 표 1~13 과 다 맞는다) · 번호 = thing.bin THNG 순번 + 1(Imp 1328 · Demon 1347 로 검산)
+        case 89:  return 1318; // SUMMON_MECHANICAL_GOLEM   → MechanicalGolem
+        case 101: return 1324; // SUMMON_STONE_GOLEM        → StoneGolem
+        case 111: return 1347; // SUMMON_DEMON              → Demon
         default: return 0;
     }
 }
@@ -7334,7 +7340,8 @@ bool Server::SpellAccept(uint8_t spell, Session& s, int64_t obj3, const SpellArg
                 break;
             }
             case 75: case 76: case 77: case 78: case 79: case 80: case 81: case 82: case 83:
-            case 84: case 85: case 86: case 87: {                                              // Summon — 지속(크기별 시전 시간)
+            case 84: case 85: case 86: case 87:
+            case 89: case 101: case 111: {                                                     // Summon — 지속(크기별 시전 시간) · ★ 11-20 C1 센 소환수 셋
                 DurFns f;
                 f.create = &Server::DurSummonCreate;
                 f.update = &Server::DurSummonTick;
@@ -13457,6 +13464,7 @@ void Server::ObjectApplyForce(float fromX, float fromY, const Target& t, double 
 //   · ★ 11-19 독 좀비(`strikeVileZombie_549700` `:2654~2692`) — 대상 없으면 1(기본과 같음 · 거미와 다름) · 때린 뒤 같은 독 · 글만 「aifunc.c:PoisonedByZombie」
 int Server::MonsterStrike(Creature& k, const MeleeStrikeInfo& si, int dmg) {
     if (si.fn == StrikeFn::Bomber) { ++meleeStrike_[static_cast<size_t>(MeleeStrikeWay::Bomber)]; return 1; }
+    if (si.fn == StrikeFn::Golem) return GolemStrike(k, si, dmg);   // ★ 11-20 C1
     const MonsterStats* m = FindMonster(k.type);
     const double range = (m && m->meleeRange > 0.0) ? m->meleeRange : 0.0;
     const Target v = MonsterPickMeleeTarget(k, range);
@@ -13502,6 +13510,63 @@ int Server::MonsterStrike(Creature& k, const MeleeStrikeInfo& si, int dmg) {
         ++meleeStrike_[static_cast<size_t>(MeleeStrikeWay::GhostFlee)];
     }
     return 1;
+}
+
+// ★ 11-20 트레일러 컨저러 C1 — 골렘 둘의 근접 함수(`strikeStoneGolem_5497E0` · `strikeMechGolem_549960` `GAME5.c:2695~2763` ·
+//   이름 → 함수 `blob_init.go:3163~3166`). 둘 다 한 몸통 `sendEquakeAfterGolem_549800`(전역 2491560 에 0·1 을 적지만 읽는 곳이 없다):
+//   · 둘레 = 근접 사거리(+112) + 제 몸 반지름(+176) + 30(`blob 287328` — 30.0) 안의 유닛마다(`unitsGetInCircle_517F90` → `areaDamage_549860`)
+//     자기 아님 · 앞쪽(`testTwoPointsAndDirection(나, 방향 +124, 그것) & 1`) · 가장자리 거리(`calcDistance_4E6C00`) ≤ 근접 사거리 ·
+//     선(5)이 통함 → 피해 함수(그것, 나, 나, 근접 피해 +116, 종류 +124) · 사람·몬스터(클래스 & 6)면 맞힘 1 · 밀기(+120) > 0 이면 밀기
+//   · 끝에 늘 땅 흔들기 30(`earthquakeSend_4D9110`) · 돌려주는 값 = 맞힘(0 이면 부르는 쪽이 빗나감 소리)
+//   기본 근접과 다른 셋 — 적·편을 안 고른다(가르는 것은 피해 함수 — 같은 편 피해는 원본대로) · 대상 하나가 아니라 앞쪽 전부 · 아무도 안 맞으면 0
+//   ⚠ 둘레는 중심 거리로 잰다(원본은 충돌 칸 겹침 — 뒤의 가장자리 거리 관문이 더 좁아 상대 몸 반지름이 30 이하면 같은 답) ·
+//     유닛 밖 물건(통·상자)과 죽어 있는 사람은 안 본다(둘레 피해 `DamageUnitsAround` 와 같은 거르기)
+int Server::GolemStrike(Creature& k, const MeleeStrikeInfo& si, int dmg) {
+    ++meleeStrike_[static_cast<size_t>(MeleeStrikeWay::GolemSwing)];
+    const MonsterStats* m = FindMonster(k.type);
+    const double range = (m && m->meleeRange > 0.0) ? m->meleeRange : 0.0;
+    double myR = 0.0;
+    {
+        const auto tb = gt_->typeBodies.find(k.type);
+        if (tb != gt_->typeBodies.end()) myR = static_cast<double>(tb->second.r);
+    }
+    const double circle = range + myR + 30.0;
+    // 때리다 상대가 죽어 다음 무리가 불리면 `pets_` 가 옮겨진다 — 골렘 값은 떠 두고, 상대는 번호로 센다
+    const Creature me = k;
+    const size_t self = static_cast<size_t>(&k - pets_.data());
+    const float kx = static_cast<float>(me.x), ky = static_cast<float>(me.y);
+    AttackSrc src;
+    src.x = kx; src.y = ky;
+    src.byMonsterType = me.type;
+    src.byPet = static_cast<int>(self);
+    src.rootIsMonster = (me.owner == kNoSession);
+    const HitterRef hitter = HitterMonster(me);
+    int res = 0;
+    auto strike = [&](const Target& t, float tx, float ty) {
+        const double dx = static_cast<double>(tx) - me.x, dy = static_cast<double>(ty) - me.y;
+        if (dx * dx + dy * dy > circle * circle) return;
+        if (!(TestTwoPointsAndDirection(kx, ky, me.facing, tx, ty) & 1)) return;
+        if (CalcDistanceEdge(me, t, tx, ty) > range) return;
+        if (!MapTraceRay(kx, ky, tx, ty, 0x5)) return;
+        const size_t before = pets_.size();
+        HurtTarget(t, dmg, me.owner, si.dtype, &src, hitter);   // a2 = a3 = 그 골렘(`GAME5.c:2743~2745`)
+        ++meleeStrike_[static_cast<size_t>(MeleeStrikeWay::GolemHurt)];
+        res = 1;                                                 // 사람·크리처뿐이라 늘 클래스 & 6
+        if (si.impact > 0.0f && ((t.sessionId != kNoSession) || pets_.size() == before)) ObjectApplyForce(kx, ky, t, si.impact);
+    };
+    std::vector<int64_t> who;
+    for (const auto& kv : sessions_) if (kv.second.inGame && !kv.second.observer && kv.second.respawnAtFrame == 0) who.push_back(kv.first);
+    for (const int64_t id : who) {
+        auto it = sessions_.find(id);
+        if (it == sessions_.end()) continue;
+        strike(Target{ id, -1 }, static_cast<float>(it->second.posX), static_cast<float>(it->second.posY));
+    }
+    for (size_t i = 0; i < pets_.size(); ++i) {
+        if (i == self) continue;
+        strike(Target{ kNoSession, static_cast<int>(i) }, static_cast<float>(pets_[i].x), static_cast<float>(pets_[i].y));
+    }
+    EarthquakeSend(kx, ky, 30);                                  // `:2713`
+    return res;
 }
 
 // ── ★ 09-29 B4 두뇌 반응 층 ─────────────────────────────────────────────
@@ -15737,6 +15802,9 @@ void Server::MagicMissileBoom(MissileObj& m, const Target& hit) {
 //     · EmberDemonDead(EmberDemon·MeleeDemon) — r 96 · 힘 100 · 피해 96(협동 2048 이면 30 — 멀티 아님) · 양 128 (`GAME5.c:2946~2956`)
 //     · DemonDead(Demon)                       — r 150 · 힘 150 · 피해 148 · 양 255 (`:2959~2966`)
 //   ⚠ 나머지 이름(ImpDead·SpiderDead·BomberDead …)은 우리 표의 몬스터에 안 걸려 있거나 아직 안 옮겼다 — 여기는 악마 둘만
+//   ★ 11-20 C1 — 골렘 둘(GolemDead `sub_549FA0` `GAME5.c:3016~3063` · MechGolemDead `sub_549E90` `:2975~3013`) — 소리(487 GolemDie · 494 MechGolemDie
+//     `sound.go:524·531` − 37) → 점 그림 138(`netSendPointFx_522FF0` = `8a <x u16> <y u16>` FX_SMOKE_BLAST) → 조각 뿌리기 · 지우지 않는다
+//     (기계 골렘은 31 의 DESTROY_WHEN_DEAD 가 치우고 돌 골렘은 시체가 남는다) · ⚠ 조각 물체(돌 6개 · 기계 부품 MechGear 등 — 띄우고 밀고 몇 초 뒤 썩음)는 안 옮김
 //   ⚠ 정답지는 죽음 시작 자리에서 곧장 부른다. 우리는 그 틱 AI 를 다 돈 뒤 부른다(같은 프레임) — 둘레 피해가 퀘스트 다음 무리를 부르면
 //     `pets_` 가 옮겨져 AI 가 쥔 참조가 깨지기 때문이다. 그래서 번호를 받고, 둘레 피해 뒤에는 번호로 다시 잡는다
 void Server::MonsterDeadFn(size_t idx) {
@@ -15746,6 +15814,17 @@ void Server::MonsterDeadFn(size_t idx) {
     int dmg = 0, amount = 0;
     if (k.type == 1337 || k.type == 1338) { r = 96.0f; power = 100.0f; dmg = 96; amount = 128; ++deadFnStat_[0]; }
     else if (k.type == 1347)              { r = 150.0f; power = 150.0f; dmg = 148; amount = 255; ++deadFnStat_[1]; }
+    else if (k.type == 1324 || k.type == 1318) {
+        const bool mech = k.type == 1318;
+        ++deadFnStat_[mech ? 4 : 3];
+        const float gx = static_cast<float>(k.x), gy = static_cast<float>(k.y);
+        PlaySoundAt(mech ? 494 : 487, gx, gy, 0, 0, kNoSession, PetTarget(k));   // aud_501960(487·494, 그 골렘, 0, 0)
+        const int16_t ex = static_cast<int16_t>(gx), ey = static_cast<int16_t>(gy);
+        const uint8_t fx[5] = { static_cast<uint8_t>(Op::FX_SMOKE_BLAST),
+                                static_cast<uint8_t>(ex), static_cast<uint8_t>(ex >> 8), static_cast<uint8_t>(ey), static_cast<uint8_t>(ey >> 8) };
+        SendFxAllCli(gx, gy, fx, sizeof(fx));
+        return;
+    }
     else { ++deadFnStat_[2]; return; }
     const float kx = static_cast<float>(k.x), ky = static_cast<float>(k.y);
     PushUnitsAround(kx, ky, r, 10.0f, power);

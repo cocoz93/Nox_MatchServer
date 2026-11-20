@@ -584,6 +584,7 @@ struct MonsterStats {
 };
 
 // `SummonType()` 이 부를 수 있는 열셋 전부 + 맵에만 나오는 넷(★ 11-19 — MeleeDemon·Demon·Zombie·VileZombie). **전부 monster.bin 에서 뽑은 값**이다.
+// ★ 11-20 트레일러 컨저러 C1 — 센 소환수 골렘 둘(소환 89 기계 · 101 돌)을 더했다 · 큰 악마(1347)는 소환 111 로도 부른다(같은 줄)
 // ⚠ 0 은 「그 키가 파일에 없다」는 뜻이지 「0 이다」가 아니다 —
 //   원거리형(Imp·EvilCherub·Beholder·Bomber·EmberDemon)은 근접 칸이 비어 있다.
 // ⚠ 근접 간격이 SOLO 에만 있으면(MeleeDemon 15~25) 아레나 값은 0 이다 — 근접 시작(16)이 0 을 30 으로 읽는다(옛 갈래 그대로)
@@ -607,6 +608,9 @@ constexpr MonsterStats kMonsters[] = {
     { "Demon",              1347,   200,    0,    0.0,    96,   0,  0,  nullptr,       200.0,  0,  0, 1.3, 110000 },   // 큰 악마 · 근접·발사체 없음 — 공격은 주문뿐(SpawnCreature 자동 주문) · 사거리 200 = 주문 다가가기 자 · 죽으면 큰 터짐(DemonDead)
     { "Zombie",             1360,    75,   20,   15.0,    30,  10, 30,  nullptr,         0.0,  0,  0, 1.3,  30000 },   // ARENA 체력 75 · 피해 20 · 간격 10~30
     { "VileZombie",         1361,   150,   30,   15.0,    30,   0,  0,  nullptr,         0.0,  0,  0, 1.3,  90000 },   // ARENA 피해 30 · 간격 키 없음 · 독(VileZombieStrike)
+    // ★ 11-20 C1 — 골렘 둘 ⭕ monster.bin 복호(`nox_datadump --out`) ARENA 값 · 둘 다 LARGE(크기 4) · 근접 함수는 앞쪽 둘레 피해 + 땅 흔들기(`GolemStrike`)
+    { "StoneGolem",         1324,   300,  100,   50.0,    50,  60, 90,  nullptr,         0.0,  0,  0, 1.3, 120000 },   // 돌 골렘 · CRUSH · 밀기 없음 · StoneGolemStrike · 죽음 GolemDead(시체 남음)
+    { "MechanicalGolem",    1318,   275,  100,   50.0,    55,  60, 90,  nullptr,         0.0,  0,  0, 1.3, 130000 },   // 기계 골렘 · CRUSH · 밀기 100 · MechGolemStrike · 죽음 MechGolemDead · DESTROY_WHEN_DEAD
 };
 
 // ★ 09-23 nine-defects 2-a4 — monster.bin `STATUS` 에 **`CAN_CAST_SPELLS`** 가 있는 몬스터(정답지 `MonStatusCanCastSpells` 0x20 ·
@@ -673,6 +677,8 @@ inline MonsterBrainInfo MonsterBrainOf(uint16_t wire) {
         case 1347: return { 0x28, 0.0f, 1.0f,  0.0f };   // Demon       CAN_CAST_SPELLS+CAN_DODGE
         case 1360: return { 0x00, 0.0f, 1.0f,  0.0f };   // Zombie
         case 1361: return { 0x00, 0.0f, 1.0f,  0.0f };   // VileZombie
+        case 1324: return { 0x00, 0.0f, 1.0f,  0.0f };   // StoneGolem ★ 11-20 C1(STATUS CAN_HEAR 뿐)
+        case 1318: return { 0x01, 0.0f, 1.0f,  0.0f };   // MechanicalGolem DESTROY_WHEN_DEAD
         default:   return {};
     }
 }
@@ -700,6 +706,8 @@ inline MonsterMoveSound MonsterMoveSoundOf(uint16_t wire) {
         case 1347: return { 0, 4 };   // Demon
         case 1360: return { 1, 5 };   // Zombie
         case 1361: return { 1, 5 };   // VileZombie
+        case 1324: return { 0, 4 };   // StoneGolem ★ 11-20 C1
+        case 1318: return { 0, 4 };   // MechanicalGolem
         default:   return {};
     }
 }
@@ -739,6 +747,8 @@ inline int MonsterMeleeFrameOf(uint16_t wire) {
         case 1347: return 0;   // Demon(근접 NULL)
         case 1360: return 5;   // Zombie
         case 1361: return 5;   // VileZombie
+        case 1324: return 5;   // StoneGolem ★ 11-20 C1(근접 애니 13칸)
+        case 1318: return 5;   // MechanicalGolem(근접 애니 8칸)
         default:   return 0;
     }
 }
@@ -748,7 +758,8 @@ inline int MonsterMeleeFrameOf(uint16_t wire) {
 //   피해 종류 번호는 아래 18칸 표(8 BITE · 2 CRUSH · 4 DRAIN · 10 CLAW). NULL(Imp·EvilCherub·Beholder)은 근접을 못 한다(`532440` — 빠짐)
 //   ★ 11-19 — VileZombie(`strikeVileZombie_549700` `GAME5.c:2654`) = 기본처럼 대상이 없으면 1 · 때린 뒤 거미와 같은 독(`sub_549690`) ·
 //     걸리면 글 「aifunc.c:PoisonedByZombie」
-enum class StrikeFn : uint8_t { None = 0, Monster, Spider, Ghost, Bomber, VileZombie };
+//   ★ 11-20 C1 — Golem = StoneGolemStrike·MechGolemStrike(`GAME5.c:2695~2763` — 한 몸통 `sendEquakeAfterGolem_549800` · 앞쪽 전부 · 땅 흔들기 30)
+enum class StrikeFn : uint8_t { None = 0, Monster, Spider, Ghost, Bomber, VileZombie, Golem };
 struct MeleeStrikeInfo { StrikeFn fn = StrikeFn::None; uint8_t dtype = 0; float impact = 0.0f; int poisonChance = 0, poisonStrength = 0, poisonMax = 0; };
 inline MeleeStrikeInfo MeleeStrikeOf(uint16_t wire) {
     switch (wire) {
@@ -765,6 +776,8 @@ inline MeleeStrikeInfo MeleeStrikeOf(uint16_t wire) {
         case 1338: return { StrikeFn::Monster, 10, 0.0f, 0, 0, 0 };    // MeleeDemon CLAW ★ 11-19 맵 몬스터 넷
         case 1360: return { StrikeFn::Monster, 10, 0.0f, 0, 0, 0 };    // Zombie CLAW
         case 1361: return { StrikeFn::VileZombie, 10, 0.0f, 10, 1, 3 }; // VileZombie CLAW · 독 10% · 세기 1 · 최대 3
+        case 1324: return { StrikeFn::Golem, 2,   0.0f, 0, 0, 0 };  // StoneGolem CRUSH ★ 11-20 C1
+        case 1318: return { StrikeFn::Golem, 2, 100.0f, 0, 0, 0 };  // MechanicalGolem CRUSH · 밀어내기 100(MELEE_ATTACK_IMPACT)
         default:   return {};                                          // Imp·EvilCherub·Beholder·Demon — NULL
     }
 }

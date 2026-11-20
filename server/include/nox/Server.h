@@ -294,6 +294,8 @@ enum class MeleeStrikeWay : uint8_t {
     Poisoned,    // 거미·독 좀비(★ 11-19) 독이 걸림(Hit 의 덤)
     GhostFlee,   // 유령 — 기절·도망 사슬(Hit 의 덤)
     MissSound,   // 빗나감 소리(칸 8)를 부름
+    GolemSwing,  // ★ 11-20 C1 — 골렘 근접 함수(앞쪽 둘레)를 부름
+    GolemHurt,   // ★ 11-20 C1 — 그 둘레에서 피해 함수를 부른 유닛 수(한 번 휘둘러 여럿)
     Count
 };
 constexpr size_t kMeleeStrikeWayCount = static_cast<size_t>(MeleeStrikeWay::Count);
@@ -2116,6 +2118,8 @@ public:
     // 몬스터가 연 지속 주문(주문 번호 · 시전자 번호)이 있나 · 그 대상
     bool DebugPetDurActive(uint8_t sp, uint16_t net) const { for (const auto& d : durSpells_) if (d.spell == sp && d.casterPet == net && !(d.flags88 & 1)) return true; return false; }
     uint16_t DebugPetNet(size_t i) const { return i < pets_.size() ? pets_[i].netCode : 0; }
+    uint16_t DebugPetType(size_t i) const { return i < pets_.size() ? pets_[i].type : 0; }   // ★ 11-20 C1
+    int64_t DebugPetOwner(size_t i) const { return i < pets_.size() ? pets_[i].owner : kNoSession; }   // ★ 11-20 C1
     // 종류별 몬스터 아종 비트(thing.bin SUBCLASS — 0x200 IMMUNE_POISON · 0x400 IMMUNE_FIRE …) · 위험한 종류(1 불 FIRE · 2 독구름 · 3 DANGEROUS)
     void SetMonsterSubclass(uint16_t wire, uint32_t bits) { GtMut().monsterSubclass[wire] = bits; }
     void SetDangerType(uint16_t wire, uint8_t kind) { GtMut().dangerTypes[wire] = kind; }
@@ -4482,7 +4486,7 @@ public:
     // 불려 나온 것이 죽은 횟수.
     unsigned long long petsKilled() const { return petsKilled_; }
     unsigned long long corpseStat(int i) const { return i >= 0 && i < 4 ? corpseStat_[i] : 0; }   // ★ 10-01 — 0 죽음 · 1 썩어 지움 · 2 즉시 지움 · 3 동시 시체 최대
-    unsigned long long deadFnStat(int i) const { return i >= 0 && i < 3 ? deadFnStat_[i] : 0; }   // ★ 11-19 — 0 EmberDemonDead · 1 DemonDead · 2 죽은 뒤 함수 없음(NULL)
+    unsigned long long deadFnStat(int i) const { return i >= 0 && i < 5 ? deadFnStat_[i] : 0; }   // ★ 11-20 C1 — 3 GolemDead · 4 MechGolemDead   // ★ 11-19 — 0 EmberDemonDead · 1 DemonDead · 2 죽은 뒤 함수 없음(NULL)
     bool DebugPetDead(size_t i) const { return i < pets_.size() && pets_[i].dead; }
     bool DebugPetBurned(size_t i) const { return i < pets_.size() && pets_[i].burned; }   // ★ 11-20 트레일러 전사 3-b
     uint32_t DebugPetObjFlags(size_t i) const { return i < pets_.size() ? PetObjFlags(pets_[i]) : 0; }
@@ -5104,6 +5108,7 @@ private:
     Target MonsterPickMeleeTarget(const Creature& k, double meleeRange) const;
     void ObjectApplyForce(float fromX, float fromY, const Target& t, double force);
     int  MonsterStrike(Creature& k, const MeleeStrikeInfo& si, int dmg);
+    int  GolemStrike(Creature& k, const MeleeStrikeInfo& si, int dmg);     // ★ 11-20 C1 — sendEquakeAfterGolem_549800(앞쪽 둘레 피해 + 땅 흔들기 30)
     // ★ 09-29 B4 — 두뇌 반응 층(Server.cpp 「B4」 절)
     void MonsterBrain(Creature& k);
     void MonsterPopAttackActions(Creature& k);
@@ -6318,7 +6323,7 @@ private:
     unsigned long long code6Seen_ = 0;
     unsigned long long petsKilled_ = 0;
     unsigned long long corpseStat_[4] = {};   // ★ 10-01 — 0 죽음 · 1 썩어 지움 · 2 즉시 지움(DESTROY_WHEN_DEAD) · 3 동시 시체 최대
-    unsigned long long deadFnStat_[3] = {};   // ★ 11-19 — 죽음 시작(31)의 죽은 뒤 함수 갈래마다(0 EmberDemonDead · 1 DemonDead · 2 없음)
+    unsigned long long deadFnStat_[5] = {};   // ★ 11-20 C1 — 3 GolemDead · 4 MechGolemDead   // ★ 11-19 — 죽음 시작(31)의 죽은 뒤 함수 갈래마다(0 EmberDemonDead · 1 DemonDead · 2 없음)
     unsigned long long modFnStat_[static_cast<size_t>(ModFn::Count)] = {};   // ★ 11-20 1-b — 수식 효과 갈래마다
     unsigned long long modNotPorted_ = 0, modPreHitGate_[3] = {};
     unsigned long long modVampUndead_ = 0;   // ★ 11-20 1-d — 흡혈 수식이 언데드(하위 분류 0x40)라 안 든 번

@@ -24693,6 +24693,160 @@ void TestMapMobs1119() {
     std::printf("  11-19 — 맵 몬스터 넷: 표 · 독 좀비 독(대상 없으면 1) · 큰 악마 자동 주문·화염구(TitanFireball) · 악마 터짐(둘레 피해·불똥·지움) · 거머리 대조\n");
 }
 
+// ── 11-20 트레일러 컨저러 C1 — 센 소환수 셋(기계 골렘 89 · 돌 골렘 101 · 큰 악마 111) ─────
+//   ① 표 — monster.bin 값 · 근접 함수 Golem · 두뇌 · 소환 짝
+//   ② 소환 — 101 을 부르면 큰 것 시간(375틱) 뒤 돌 골렘 · 크기 4 라 89 는 거절 · 111 은 아레나 거절 · 퀘스트면 큰 악마 + 자동 주문 다섯
+//   ③ 골렘 근접 — 앞쪽 사거리 안 둘이 다 깎임 · 뒤쪽·사거리 밖은 그대로 · 땅 흔들기 30 · 기계 골렘만 밀기 · 아무도 없으면 빗나감
+//   ④ 죽음 — 돌 골렘 소리 487 · 그림 8a · 시체 남음 / 기계 골렘 소리 494 · 그림 8a · 치움
+void TestSummonGolems1120() {
+    const std::string a = "10.11.20.1:9501", b = "10.11.20.2:9502", c = "10.11.20.3:9503", d = "10.11.20.4:9504";
+    using MW = nox::MeleeStrikeWay;
+    char msg[320];
+    {
+        const nox::MonsterStats* sg = nox::FindMonster(1324); const nox::MonsterStats* mg = nox::FindMonster(1318);
+        Check(sg && mg && sg->health == 300 && sg->meleeDamage == 100 && sg->meleeRange == 50.0 && sg->speed == 50 && sg->minDelay == 60 && sg->maxDelay == 90 &&
+              mg->health == 275 && mg->meleeDamage == 100 && mg->meleeRange == 50.0 && mg->speed == 55 && mg->minDelay == 60 && mg->maxDelay == 90,
+              "C1 ① 골렘 둘 표가 monster.bin 과 다르다");
+        const nox::MeleeStrikeInfo ss = nox::MeleeStrikeOf(1324), ms = nox::MeleeStrikeOf(1318);
+        Check(ss.fn == nox::StrikeFn::Golem && ss.dtype == 2 && ss.impact == 0.0f && ms.fn == nox::StrikeFn::Golem && ms.dtype == 2 && ms.impact == 100.0f,
+              "C1 ① 골렘 근접 함수 표(Golem · CRUSH · 밀기 0/100)가 다르다");
+        Check(nox::MonsterBrainOf(1324).status == 0x00 && nox::MonsterBrainOf(1318).status == 0x01 &&
+              nox::MonsterMeleeFrameOf(1324) == 5 && nox::MonsterMeleeFrameOf(1318) == 5, "C1 ① 골렘 두뇌·때림칸 표가 다르다");
+        Check(nox::Server::SummonType(89) == 1318 && nox::Server::SummonType(101) == 1324 && nox::Server::SummonType(111) == 1347 &&
+              nox::Server::SummonType(88) == 0, "C1 ① 소환 짝(89·101·111)이 다르다");
+    }
+    auto body = [](float r) {
+        nox::Server::PhysBody bb; bb.shape = 2; bb.r = r; bb.cls = 0x2;
+        bb.subclass = nox::Server::MonsterClassBitsOf("LARGE_MONSTER");   // thing.bin — 셋 다 LARGE
+        return bb;
+    };
+    auto heard = [](const std::vector<nox::OutPacket>& out, const std::string& who, uint16_t id) {
+        int n = 0;
+        for (const auto& x : FlattenTo(out, who))
+            if (x.size() == 4 && x[0] == static_cast<uint8_t>(nox::Op::AUDIO_EVENT) && (static_cast<uint16_t>(x[2] | (x[3] << 8)) & 0x3ff) == id) ++n;
+        return n;
+    };
+    // ② 소환 — 지속 주문 · 큰 것 시간 · 한도 4
+    auto mkSum = [&](nox::CSyncHost& srv) {
+        nox::Gamedata g; g.Parse("SummonDuration = 60, 210, 375;\n"); srv->SetGamedata(g);
+        // 깃발은 임프 것(소환 갈래만 본다) · 음소는 주문마다 달리(같으면 음소 나무에서 겹친다)
+        srv->SetSpellDef(89,  0, 0x44542438u, { 0, 8, 2, 6, 5, 1 });
+        srv->SetSpellDef(101, 0, 0x44542438u, { 0, 8, 2, 6, 5, 2 });
+        srv->SetSpellDef(111, 0, 0x44542438u, { 0, 8, 2, 6, 5, 3 });
+        srv->SetTypeBody(1318, body(25.0f)); srv->SetTypeBody(1324, body(25.0f)); srv->SetTypeBody(1347, body(15.0f));
+        srv.DebugEnterGame(a, 880, false, nox::CharClass::Conjurer);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+    };
+    {
+        nox::CSyncHost srv; mkSum(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv->DebugFillMana(Sid(srv, a));
+        CastAndWait(srv, a, 101, false, ms, out);
+        std::snprintf(msg, sizeof(msg), "C1 ② 돌 골렘 소환이 지속 주문으로 안 걸렸다 — 지속 %zu · 몬스터 %zu", size_t(srv->DurCount()), srv->pets());
+        Check(srv->DurCount() == 1 && srv->pets() == 0, msg);
+        for (int t = 0; t < 300; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv->pets() == 0, "C1 ② 돌 골렘이 300틱 안에 나왔다 — 큰 것은 375틱");
+        for (int t = 0; t < 120 && srv->pets() == 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(srv->pets() == 1 && srv->DebugPetType(0) == 1324 && srv->DebugPetHealth(0) == 300, "C1 ② 돌 골렘(1324 · 체력 300)이 안 나왔다");
+        out.clear();
+        srv->DebugFillMana(Sid(srv, a));
+        CastAndWait(srv, a, 89, false, ms, out);
+        for (int t = 0; t < 30; ++t) { ms += 34; srv.Tick(ms, out); }
+        Check(HasPriMsg(out, a, "Summon.c:CreatureControlFailed") && srv->pets() == 1, "C1 ② 큰 것이 있는데 기계 골렘이 거절 안 됐다(한도 4)");
+    }
+    // 큰 악마(111)는 퀘스트에서만(`sub_4D7100` `GAME3_2.c:3368~3369` — 게임 깃발 4096 이 아니면 111~114 는 코드 10) —
+    //   아레나는 지속 주문조차 안 걸리고 · 퀘스트(웨이브는 멀리)면 나온다 + 자동 주문 다섯
+    for (const bool quest : { false, true }) {
+        nox::CSyncHost srv; mkSum(srv);
+        if (quest) srv->StartQuest(2, 5000, 5000, 100.0);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.Tick(ms, out);
+        const size_t before = srv->pets();
+        srv->DebugFillMana(Sid(srv, a));
+        CastAndWait(srv, a, 111, false, ms, out);
+        const size_t durAfterCast = srv->DurCount();
+        for (int t = 0; t < 420; ++t) { ms += 34; srv.Tick(ms, out); }
+        int demon = -1;
+        for (size_t i = 0; i < srv->pets(); ++i) if (srv->DebugPetType(i) == 1347 && srv->DebugPetOwner(i) == Sid(srv, a)) demon = static_cast<int>(i);
+        std::snprintf(msg, sizeof(msg), "C1 ② 큰 악마 소환(111) 퀘스트 %d — 시전 뒤 지속 %zu · 몬스터 %zu → %zu · 악마 칸 %d · 주문 %zu · 화염구 %d",
+                      int(quest), durAfterCast, before, srv->pets(), demon, demon < 0 ? size_t(0) : srv->DebugPetSpellCount(size_t(demon)),
+                      demon < 0 ? 0 : int(srv->DebugPetHasSpell(size_t(demon), 27)));
+        if (!quest) Check(durAfterCast == 0 && demon < 0 && srv->pets() == before, msg);
+        else        Check(durAfterCast == 1 && demon >= 0 && srv->DebugPetSpellCount(size_t(demon)) == 5 && srv->DebugPetHasSpell(size_t(demon), 27), msg);
+    }
+    // ③ 골렘 근접 — 골렘(맵 몬스터 · 동쪽을 봄) 1000,1000 · 몸 25 · 사거리 50 → 가장자리 거리 = 중심 − 35
+    //   b 1060,1000(앞 · 25) · c 1070,1020(앞 · 약 38) · d 940,1000(뒤 · 25) · a 1100,1000(앞 · 65 — 사거리 밖)
+    struct GCase { uint16_t type; bool front; };
+    for (const GCase& gc : { GCase{ 1324, true }, GCase{ 1318, true }, GCase{ 1324, false } }) {
+        nox::CSyncHost srv;
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(c, 730, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(d, 731, false, nox::CharClass::Warrior);
+        srv->SetTypeBody(gc.type, body(25.0f));
+        srv->SetMonsterAnim(gc.type, 1, gc.type == 1324 ? 13 : 8, 0, false);   // 근접 애니 칸 수(thing.bin MonsterDraw — `_animprobe`)
+        srv->DebugTeleport(Sid(srv, a), gc.front ? 1100.0f : 3000.0f, gc.front ? 1000.0f : 3000.0f);
+        srv->DebugTeleport(Sid(srv, b), gc.front ? 1060.0f : 3100.0f, gc.front ? 1000.0f : 3000.0f);
+        srv->DebugTeleport(Sid(srv, c), gc.front ? 1070.0f : 3200.0f, gc.front ? 1020.0f : 3000.0f);
+        srv->DebugTeleport(Sid(srv, d), 940.0f, 1000.0f);
+        srv->DebugSpawnPet(gc.type, 1000, 1000, Sid(srv, std::string()));
+        srv->DebugSetAutoFight(false);
+        std::vector<nox::OutPacket> o; srv.Tick(0, o);
+        srv->DebugSetPetPos(0, 1000, 1000);
+        srv->DebugSetPetFacing(0, 0);                                            // 0 = 동쪽(+x)
+        srv->DebugSetFrame(1000);
+        const int ha0 = srv->HealthOf(Sid(srv, a)), hb0 = srv->HealthOf(Sid(srv, b)), hc0 = srv->HealthOf(Sid(srv, c)), hd0 = srv->HealthOf(Sid(srv, d));
+        std::vector<nox::OutPacket> out;
+        srv->DebugSetPetNextHit(0, 0);
+        srv->DebugAIPush(0, 16);
+        RunSwing(srv, 0, out);
+        const int ha = srv->HealthOf(Sid(srv, a)), hb = srv->HealthOf(Sid(srv, b)), hc = srv->HealthOf(Sid(srv, c)), hd = srv->HealthOf(Sid(srv, d));
+        int jig = 0, jigVal = -1;
+        for (const auto& x : FlattenTo(out, d))
+            if (x.size() == 2 && x[0] == static_cast<uint8_t>(nox::Op::FX_JIGGLE)) { ++jig; jigVal = x[1]; }
+        std::snprintf(msg, sizeof(msg), "C1 ③ 종류 %u 앞 %d — 휘두름 %llu · 피해 %llu · 빗나감 소리 %llu · 기본 맞힘 %llu · a %d→%d b %d→%d c %d→%d d %d→%d · 흔들기 %d(값 %d) · b 힘 %.2f",
+                      unsigned(gc.type), int(gc.front), srv->meleeStrike(MW::GolemSwing), srv->meleeStrike(MW::GolemHurt), srv->meleeStrike(MW::MissSound),
+                      srv->meleeStrike(MW::Hit), ha0, ha, hb0, hb, hc0, hc, hd0, hd, jig, jigVal, srv->DebugForceX(Sid(srv, b)));
+        const bool common = srv->meleeStrike(MW::GolemSwing) == 1 && srv->meleeStrike(MW::Hit) == 0 && hd == hd0 && jig == 1 && jigVal == 28;   // d 거리 60 → (1 − 3600/90000) × 30 = 28
+        if (gc.front) {
+            const bool push = gc.type == 1318 ? srv->DebugForceX(Sid(srv, b)) > 0.0 : srv->DebugForceX(Sid(srv, b)) == 0.0;
+            Check(common && srv->meleeStrike(MW::GolemHurt) == 2 && srv->meleeStrike(MW::MissSound) == 0 && hb < hb0 && hc < hc0 && ha == ha0 && push, msg);
+        } else {
+            Check(common && srv->meleeStrike(MW::GolemHurt) == 0 && srv->meleeStrike(MW::MissSound) == 1, msg);
+        }
+    }
+    // ④ 죽음 — 돌 골렘 시체 남음 · 기계 골렘 치움(DESTROY_WHEN_DEAD) · 둘 다 점 그림 8a 하나
+    for (const uint16_t type : { uint16_t(1324), uint16_t(1318) }) {
+        nox::CSyncHost srv;
+        {
+            std::vector<nox::Server::SoundDefIn> sd;
+            for (const uint16_t id : { uint16_t(487), uint16_t(494) }) { nox::Server::SoundDefIn sdi; sdi.id = id; sdi.samples = 1; sdi.maxDist = 600; sd.push_back(sdi); }
+            srv->SetSoundDefs(sd);
+        }
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv->DebugTeleport(Sid(srv, b), 1100.0f, 1000.0f);
+        srv->SetTypeBody(type, body(25.0f));
+        srv->SetMonsterAnim(type, 1, type == 1324 ? 13 : 8, 0, false);   // 표를 세운다 — 죽어가기(9)는 실물대로 0칸(`_animprobe` · 곧장 끝남)
+        srv->DebugSpawnPet(type, 1000, 1000, Sid(srv, std::string()));
+        std::vector<nox::OutPacket> o; srv.Tick(0, o);
+        srv->DebugHurt(Sid(srv, std::string()), 0, 9999, Sid(srv, b), 0); srv.TakeOut(o);
+        uint32_t ms = srv->DebugNowMs();
+        std::vector<nox::OutPacket> all = o;
+        for (int t = 0; t < 60; ++t) { ms += 34; srv.Tick(ms, all); }
+        int smoke = 0;
+        for (const auto& x : FlattenTo(all, b))
+            if (x.size() == 5 && x[0] == static_cast<uint8_t>(nox::Op::FX_SMOKE_BLAST) && (x[1] | (x[2] << 8)) == 1000 && (x[3] | (x[4] << 8)) == 1000) ++smoke;
+        const bool mech = type == 1318;
+        const int snd = heard(all, b, mech ? 494 : 487);
+        std::snprintf(msg, sizeof(msg), "C1 ④ 종류 %u — 죽은 뒤 함수 [돌 %llu · 기계 %llu · 없음 %llu] · 소리 %d · 그림 8a %d · 남은 몬스터 %zu",
+                      unsigned(type), srv->deadFnStat(3), srv->deadFnStat(4), srv->deadFnStat(2), snd, smoke, srv->pets());
+        Check(srv->deadFnStat(mech ? 4 : 3) == 1 && srv->deadFnStat(mech ? 3 : 4) == 0 && srv->deadFnStat(2) == 0 && snd == 1 && heard(all, b, mech ? 487 : 494) == 0 && smoke == 1 &&
+              srv->pets() == (mech ? 0u : 1u), msg);
+    }
+    std::printf("  11-20 C1 — 센 소환수: 표 · 소환 89·101·111(큰 것 375틱 · 한도 4 · 큰 악마는 퀘스트만 · 자동 주문) · 골렘 근접(앞쪽 전부 · 뒤·사거리 밖 그대로 · 흔들기 28 · 기계만 밀기 · 빈 앞 = 빗나감) · 죽음 소리·그림·시체/치움\n");
+}
+
 // ── 11-20 트레일러 전사 1-b — 수식 효과(modifier.bin `Server::ParseModEffects`) · 휘두를 때 위력 배수 · 맞힐 때 불·번개 ─────
 //   ① 진짜 복호본을 읽어 번호 차례·값(빠진 `;` 칸 Speed4 포함)을 본다
 //   ② 워리어 롱소드로 곰을 한 대 — 수식 없음 / 위력6(×1.2) / 불1(+3 폭발) / 번개4(+12 전기) / 불1인데 곰이 무적(관문)
@@ -37923,6 +38077,7 @@ int main() {
     TestMonsterHearB6();
     TestMonsterCastB7();
     TestMapMobs1119();
+    TestSummonGolems1120();
     TestModEffects1120();
     TestPickupAutoEquip();
     TestArmorEquip();
