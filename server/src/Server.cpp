@@ -13557,7 +13557,7 @@ Target Server::MonsterEnemyAggro(const Creature& k, float r) const {
 // `nox_xxx_mobActionToAnimation_533790`(`GAME4_3.c:2278~2364`) — 맨 위 행동 → 애니 순번(libs `MonsterAnimationType`)
 //   걷는 행동(7·8·10·13·29·36·37)은 달리기(0x4000)면 13 MOVE_2 · 아니면 12 MOVE · 피하기 9 는 12 · 근접 16 → 1 · 쏘기 17 → 3 ·
 //   주문 18~20 → 7 · 막기 21·23 → 5 · 22 → 6 · 도망 24 → 13 · 죽어가는 중 30 → 9 · 죽음 31 → 10 · 변신 33·35 → 14 · 34 → 15 · 그 밖 8 IDLE
-//   · 식충식물은 놀기(8)인데 지금 상대가 없으면 14 · 흉내쟁이·좀비 갈래는 우리 몬스터에 없음
+//   · 식충식물은 놀기(8)인데 지금 상대가 없으면 14 · 좀비는 죽어가기(9)인데 불에 맞았으면 15(★ 11-20) · 흉내쟁이 갈래는 우리 몬스터에 없음
 int Server::MonsterAnimIndex(const Creature& k) const {
     int v = 8;
     switch (k.aiStack[k.aiStackInd].action) {
@@ -13576,6 +13576,9 @@ int Server::MonsterAnimIndex(const Creature& k) const {
         default: v = 8;  break;
     }
     if (k.type == kCarnivorousPlantType && v == 8 && (k.enemySessionId == kNoSession) && k.enemyPet < 0) return 14;   // `534A10` · +1196 없음
+    // ★ 11-20 트레일러 전사 3-c — 좀비가 죽어가는(9) 중인데 불에 맞았으면(+1440 0x80000) 15(`GAME4_3.c:2353~2363`) — 불타며 쓰러지는 애니
+    //   (그 애니가 끝나면 죽어가기 끝이 지운다 · 와이어 애니 번호도 이 함수 — `netSendComplexObject_518960`)
+    if (IsZombieType(k.type) && v == 9 && k.burned) return 15;
     return v;
 }
 

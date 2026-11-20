@@ -698,6 +698,14 @@ std::shared_ptr<const nox::Server::GameTables> BuildGameTables(const GameFiles& 
                 }
                 srv.Log("[몬스터칸] 표 %zu종 중 표 없음 %d · 때림칸이 칸 수 밖 %d · 쏨칸이 칸 수 밖 %d · 공격 애니가 되풀이 %d\n",
                         sizeof(nox::kMonsters) / sizeof(nox::kMonsters[0]), noDraw, meleeOut, shotOut, loopAtk);
+                // ★ 11-20 트레일러 전사 3 — 좀비 둘의 죽음(10)·일어나기(14)·불타기(15) — 0칸이면 일어나기·불타기가 그 틱에 끝난다(원본도 같은 표를 읽는다)
+                for (const uint16_t zw : { nox::kZombieType, nox::kVileZombieType }) {
+                    const nox::ThingInfo* t = tdb.ByWire(zw);
+                    if (!t || !t->hasMonsterDraw) { srv.Log("[좀비애니] %u 표 없음\n", unsigned(zw)); continue; }
+                    srv.Log("[좀비애니] %u 죽음(10) %d칸 · 일어나기(14) %d칸/붙듦 %d/되풀이 %d · 불타기(15) %d칸/붙듦 %d/되풀이 %d\n", unsigned(zw),
+                                t->monsterAnims[10].frames, t->monsterAnims[14].frames, t->monsterAnims[14].hold, (int)t->monsterAnims[14].loop,
+                                t->monsterAnims[15].frames, t->monsterAnims[15].hold, (int)t->monsterAnims[15].loop);
+                }
             }
         }
         // ★ 09-23 2-a1 — 함성(46)·광전사(45) 애니 길이도 찍는다. 함성 애니가 끝나면 켜짐 값이 내려가 광전사·작살을 더는 안 막으므로

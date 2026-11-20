@@ -24695,7 +24695,7 @@ void TestArmorEquip() {
 //      일어남(61·35 · 체력 가득 · 0x8000·0x40·0x10 끔) · 일어나기 애니가 끝나면 35 빠짐
 //   ② 독 좀비 — 죽은 뒤 상대가 멀어지면 알아보기가 놓아 안 일어남 · 곰(좀비 아님) 대조 — 첫 죽음 갱신에 치울 표시 · 시체를 때리면 바로 1
 //   ③ 불로 죽은 좀비 — 죽어가기(30) 끝에 사라짐(눕지 않음 · 불똥 없음) · ④ 칼로 죽어 누운 좀비에 불 — 다음 갱신에 불똥 100 · 사라짐
-//   ⑤ 산 좀비 — 칼은 불 표시 없음 · 용암(12)은 켬
+//   ⑤ 산 좀비 — 칼은 불 표시 없음 · 용암(12)은 켬 · ③④ 죽어가기 애니 — 불이면 15 · 칼이면 9
 static void ZombieSetup(nox::CSyncHost& srv, const std::string& a, uint16_t type) {
     srv.DebugEnterGame(a, 728, false, nox::CharClass::Warrior);
     srv->DebugTeleport(Sid(srv, a), 1100.0f, 1000.0f);
@@ -24785,6 +24785,11 @@ void TestZombie1120() {
         srv->SetMonsterAnim(1360, 15, 10, 1, false);        // 불타기(9 + 불 → 15) 10칸
         std::vector<nox::OutPacket> o, all;
         srv->DebugHurt(none, 0, 9999, Sid(srv, a), 1); srv.TakeOut(o);   // 불로 죽임
+        {
+            const int an = srv->DebugPetAnimIndex(0);
+            std::snprintf(msg, sizeof(msg), "③ 불로 죽은 좀비의 죽어가기 애니가 15(불타기)가 아니다 — %d", an);
+            Check(an == 15, msg);
+        }
         uint32_t ms = srv->DebugNowMs();
         for (int t = 0; t < 40; ++t) { ms += 34; srv.Tick(ms, all); }
         const int sp = sparksTo(all, -1);
@@ -24797,6 +24802,11 @@ void TestZombie1120() {
         nox::CSyncHost srv; ZombieSetup(srv, a, 1360);
         std::vector<nox::OutPacket> o, all;
         srv->DebugHurt(none, 0, 9999, Sid(srv, a), 0); srv.TakeOut(o);   // 칼로 죽임 — 누운 뒤 불
+        {
+            const int an = srv->DebugPetAnimIndex(0);
+            std::snprintf(msg, sizeof(msg), "④ 칼로 죽은 좀비의 죽어가기 애니가 9 가 아니다 — %d", an);
+            Check(an == 9, msg);
+        }
         uint32_t ms = srv->DebugNowMs();
         for (int t = 0; t < 40; ++t) { ms += 34; srv.Tick(ms, o); }
         const bool lying = srv->pets() == 1 && srv->DebugAIAction(0, srv->DebugAIStackInd(0)) == 31;
@@ -24818,7 +24828,7 @@ void TestZombie1120() {
         Check(!b0 && b1 && !srv->DebugPetDead(0), msg);
     }
     std::printf("  11-20 — 좀비: 시체로 남음(SHORT 만) · 누워서 알아보기 · 누운 몸 맞음 기록 · 300~600 프레임 뒤 일어남(61·35 · 체력 가득) · 상대 없으면 그대로 · 곰 대조 · "
-                "불로 죽으면 죽어가기 끝에 사라짐 · 누운 채 불이면 불똥 100 · 불 표시\n");
+                "불로 죽으면 죽어가기 끝에 사라짐(애니 15) · 누운 채 불이면 불똥 100 · 불 표시\n");
 }
 
 // ★ 11-20 트레일러 전사 2 — 수리검·차크람(던지기 `GAME4_3.c:4327~4419` · 날기 `updateChakramInMotion_53DCC0` · 맞기 `collideChakram_4EAF00`)
