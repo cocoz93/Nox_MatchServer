@@ -3747,7 +3747,8 @@ public:
         return it == sessions_.end() ? 0 : it->second.lastDamageType;
     }
     // 날아가는 종류 하나 — thing.bin 에서 읽어 main 이 넣는다(이름으로 찾는다).
-    struct ProjTypeInfo { uint16_t type = 0; float speed = 0; uint32_t flags = 0; uint8_t collideAmount = 0; };
+    // ★ 11-21 C5 — monsterArrow = thing.bin `COLLIDE = MonsterArrowCollide`(크리처가 쏘면 닿음 갈래 5 · 아니면 3 ProjectileCollide)
+    struct ProjTypeInfo { uint16_t type = 0; float speed = 0; uint32_t flags = 0; uint8_t collideAmount = 0; bool monsterArrow = false; };
     // ★ 09-23 nine-defects 2-a3 — 반주문에 지워지는 날아가는 것(thing.bin 서브클래스 `MISSILE_COUNTERSPELL`)의 종류.
     //   main 이 thing.bin 에서 넣고, 시험은 손으로 넣는다. Estate 기준 `Magic`·불덩이 셋·`Pixie` 다(`--dump-thing` 실측)
     void SetCounterMissileType(uint16_t wire) { GtMut().counterMissileTypes.insert(wire); }
@@ -3766,12 +3767,14 @@ public:
     int DebugCastCounterSpell(int64_t a) {
         auto i = sessions_.find(a); return i == sessions_.end() ? 0 : CastCounterSpell(i->second);
     }
-    void SetProjType(const std::string& name, uint16_t type, int speedRaw, uint32_t flags, uint8_t collideAmount) {
+    void SetProjType(const std::string& name, uint16_t type, int speedRaw, uint32_t flags, uint8_t collideAmount,
+                     bool monsterArrow = false) {
         ProjTypeInfo p;
         p.type = type;
         p.speed = static_cast<float>(speedRaw) / 32.0f * 2.0f;   // SpeedBase = SPEED/32 · MISSILE 은 ×2
         p.flags = flags;
         p.collideAmount = collideAmount;
+        p.monsterArrow = monsterArrow;
         GtMut().projTypes[name] = p;
     }
     const ProjTypeInfo* ProjType(const std::string& name) const {

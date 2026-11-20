@@ -1184,6 +1184,8 @@ uint16_t Server::SummonType(uint8_t spell) {
         case 92:  return 1390; // SUMMON_OGRE_BRUTE         → OgreBrute
         case 109: return 1360; // SUMMON_ZOMBIE             → Zombie
         case 110: return 1361; // SUMMON_VILE_ZOMBIE        → VileZombie
+        // ★ 11-21 C5 — 이름표 19 OgreWarlord(도끼 근접 + 표창)
+        case 93:  return 1389; // SUMMON_OGRE_WARLORD       → OgreWarlord
         default: return 0;
     }
 }
@@ -7377,6 +7379,7 @@ bool Server::SpellAccept(uint8_t spell, Session& s, int64_t obj3, const SpellArg
             case 75: case 76: case 77: case 78: case 79: case 80: case 81: case 82: case 83:
             case 84: case 85: case 86: case 87:
             case 89: case 101: case 111:                                                       // ★ 11-20 C1 센 소환수 셋
+            case 93:                                                                           // ★ 11-21 C5 오우거 군주(표창)
             case 90: case 92: case 109: case 110: {                                            // Summon — 지속(크기별 시전 시간) · ★ 11-21 C4 근접 넷
                 DurFns f;
                 f.create = &Server::DurSummonCreate;
@@ -9836,7 +9839,9 @@ bool Server::SpawnCreatureMissile(Creature& k, const char* name, float tx, float
     m.owner = k.owner;                                       // 점수는 부른 사람 것이다
     m.ownerPet = static_cast<int>(&k - pets_.data());         // 09-20 — 쏜 것이 크리처라는 표시(뿌리 가리기)
     m.ud0 = m.ud2 = k.owner;
-    m.collideKind = 3;                                       // ProjectileCollide
+    // ★ 11-21 C5 — 닿음 함수는 thing.bin `COLLIDE` 이름대로 — `MonsterArrowCollide`(오우거 군주 표창 · 체럽 화살)면 갈래 5
+    //   (`collideMonsterArrow_4EB800` — 종류 3 · 벽이면 사라짐), 그 밖(ImpShot 등)은 3 ProjectileCollide(종류 11)
+    m.collideKind = pt->monsterArrow ? 5 : 3;
     m.fromPet = static_cast<int>(&k - pets_.data());         // 제 몸에 안 맞게
     m.collideAmount = pt->collideAmount;
     m.velX = DirVecX(dir) * m.speed;
@@ -17380,6 +17385,9 @@ void Server::UpdateMissiles(uint32_t frame) {
                     // `collideMonsterArrow_4EB800` — 맞는 것에 **종류 3**(꺿림) 피해를 주고 사라진다.
                     //   ★ **적·아군을 안 가린다**(갈래 3 과 같다). 양은 `COLLIDE` 의 둘째 인자인데
                     //   화살 덧은 그걸 `ArrowTrapDamage`(25)로 덮어 버린다(`GAME5.c:6432~6435`)
+                    //   ✖ 11-21 C5 정정 — 협동(2048)이면 첫째·아니면 둘째 인자를 쓰지만(`GAME3_3.c:5320~5324`), 읽는 함수 `sub_536E80`
+                    //     (`GAME4_3.c:3240~3243`)가 둘째 `strtok` 에도 a1 을 넘겨 **둘째 칸에도 첫째 수가 들어간다** — 그래서 양 = 첫째 수
+                    //     (같은 파일의 다른 파서는 `strtok(0, …)` 라 복호 산물이 아니다) · 표창 `15 20` → 15 · 체럽 화살 `10 15` → 10
                     if (!handled && m.collideKind == 5) {
                         const Target tgt = HitTargetOf(hk, hSessionId, hIdx);
                         AttackSrc src;

@@ -150,13 +150,16 @@ std::shared_ptr<const nox::Server::GameTables> BuildGameTables(const GameFiles& 
                                 // ★ 11-20 트레일러 컨저러 C2 — 자연의 힘이 놓는 죽음의 공(SPEED 두 줄 200·150 — 뒤 값 · AIRBORNE+FLICKER · DeathBallCollide — 인자 없음)
                                 "DeathBall",
                                 // ★ 11-21 트레일러 위저드 W6 — 언데드 쫓기 빛 조각(SPEED 200 · ALLOW_OVERLAP · LIGHT+CLIENT_PREDICT · UndeadKillerCollide — 인자 없음)
-                                "UndeadKiller" }) {
+                                "UndeadKiller",
+                                // ★ 11-21 트레일러 컨저러 C5 — 오우거 군주 표창(SPEED 400 · SHURIKEN · MonsterArrowCollide 15 20 — 양은 첫째 수 15)
+                                "OgreShuriken" }) {
             const uint16_t w = tdb.WireByName(nm);
             const nox::ThingInfo* t2 = w ? tdb.ByWire(w) : nullptr;
             int amount = 0;
             if (t2 && !t2->collideArgs.empty()) amount = std::atoi(t2->collideArgs.c_str());
             if (t2) srv.SetProjType(nm, w, t2->speed, nox::ParseObjectFlags(t2->flagsRaw),
-                                    static_cast<uint8_t>(amount < 0 ? 0 : (amount > 255 ? 255 : amount)));
+                                    static_cast<uint8_t>(amount < 0 ? 0 : (amount > 255 ? 255 : amount)),
+                                    t2->collideFn == "MonsterArrowCollide");   // ★ 11-21 C5 — 크리처가 쏘면 닿음 갈래 5
             srv.Log("[날리기 종류] %s = %u · SPEED %d · 닿음 %s %d · 그리기 %s%s\n", nm, static_cast<unsigned>(w),
                         t2 ? t2->speed : 0, t2 ? t2->collideFn.c_str() : "?", amount,
                         // ⑫ — 클라는 이 이름으로 그리는 함수를 고른다(`drawFuncs[name]`).

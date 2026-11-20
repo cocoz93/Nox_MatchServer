@@ -25625,6 +25625,83 @@ void TestCounterSpellCast1121() {
     std::printf("  11-21 W8 주문 깨기 시전 — 시전자 둘레 · 남의 불덩이 지움 · 부름 한 번 · 소리 한 번\n");
 }
 
+// ── 11-21 트레일러 컨저러 C5 — 오우거 군주(93) · 표창(OgreShuriken)은 화살 닿음 갈래(5) ─────
+//   ① 표(monster.bin 그대로) · 짝 93 → 1389 · 진짜 thing.bin — 이름·중간 크기 · 표창 COLLIDE = MonsterArrowCollide · 양 15
+//   ② 군주가 쏜 표창이 사람에게 닿으면 종류 3(`collideMonsterArrow_4EB800`) · 양 15 · 지워짐 — 갈래 3 이면 종류 11
+//   ③ 그 표창이 b 를 죽이면 점수는 군주의 주인(a) 것 ④ 벽에 닿으면 사라짐(화살 벽 갈래)
+void TestOgreWarlord1121() {
+    char msg[360];
+    {
+        const nox::MonsterStats* w = nullptr;
+        for (const auto& ms : nox::kMonsters) if (ms.wireType == 1389) w = &ms;
+        const auto st = nox::MeleeStrikeOf(1389);
+        const auto br = nox::MonsterBrainOf(1389);
+        const auto mv = nox::MonsterMoveSoundOf(1389);
+        Check(nox::Server::SummonType(93) == 1389, "C5 ① 소환 짝 93 → 1389(OgreWarlord)가 아니다");
+        Check(w && std::string(w->name) == "OgreWarlord" && w->health == 130 && w->meleeDamage == 45 && w->meleeRange == 40.0 &&
+              w->speed == 60 && w->minDelay == 20 && w->maxDelay == 30 && w->missileName && std::string(w->missileName) == "OgreShuriken" &&
+              w->missileRange == 200.0 && w->missileMin == 20 && w->missileMax == 30 && w->runMul == 1.38 && w->experience == 90000,
+              "C5 ① 오우거 군주 표가 monster.bin 과 다르다");
+        Check(st.fn == nox::StrikeFn::Monster && st.dtype == 11 && st.impact == 50.0f && nox::MonsterMeleeFrameOf(1389) == 7 &&
+              nox::MonsterMissileFrameOf(1389) == 4 && br.status == 0 && br.retreat == 0.0f && br.resume == 0.30f && mv.a == 2 && mv.b == 10,
+              "C5 ① 근접 함수·칸·두뇌·걸음 소리 표가 다르다");
+        nox::ThingDb tdb;
+        if (tdb.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\thing.bin")) {
+            const nox::ThingInfo* t = tdb.ByWire(1389);
+            const uint16_t sw = tdb.WireByName("OgreShuriken");
+            const nox::ThingInfo* s = sw ? tdb.ByWire(sw) : nullptr;
+            std::snprintf(msg, sizeof(msg), "C5 ① thing.bin — 1389 이름 %s · 크기 비트 0x%x · 표창 %u · 닿음 %s · 인자 %s",
+                          t ? t->name.c_str() : "?", t ? nox::Server::MonsterClassBitsOf(t->subclassRaw) & 0x7u : 0u, unsigned(sw),
+                          s ? s->collideFn.c_str() : "?", s ? s->collideArgs.c_str() : "?");
+            Check(t && t->name == "OgreWarlord" && (nox::Server::MonsterClassBitsOf(t->subclassRaw) & 0x6u) == 0x2u && s &&
+                  s->collideFn == "MonsterArrowCollide" && std::atoi(s->collideArgs.c_str()) == 15, msg);
+        } else {
+            std::printf("  (C5 ① thing.bin 없음 — 진짜 데이터 대조 건너뜀)\n");
+        }
+    }
+    const std::string a = "10.11.21.11:9521";   // 군주의 주인
+    const std::string b = "10.11.21.12:9522";   // 맞는 쪽
+    for (int kase = 2; kase <= 4; ++kase) {
+        nox::CSyncHost srv;
+        srv->SetProjType("OgreShuriken", 1180, 400, 0, 15, /*monsterArrow=*/true);
+        nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
+        srv->SetTypeBody(1389, body);
+        if (kase == 4) srv->SetWalls({ { 47, 43 } });                       // 군주(1000)와 과녁(1300) 사이 x 1081 언저리
+        srv.DebugEnterGame(a, 892, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(b, 893, false, nox::CharClass::Warrior);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1200);
+        srv->DebugMoveTo(Sid(srv, b), 1100, 1000);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv->DebugSpawnPet(1389, 1000.0f, 1000.0f, Sid(srv, a));
+        if (kase == 3) srv->DebugSetHealth(Sid(srv, b), 10);
+        const uint16_t bHp = srv->HealthOf(Sid(srv, b));
+        const int sA = srv->DebugScore(Sid(srv, a));
+        const unsigned long long w0 = srv->arrowGoneWall();
+        if (kase == 4) srv->DebugCreatureShoot(0, "OgreShuriken", 1300.0f, 1000.0f);
+        else           srv->DebugCreatureShoot(0, "OgreShuriken", 1100.0f, 1000.0f);
+        srv.TakeOut(out);
+        const size_t made = srv->missiles();
+        int t = 0;
+        for (; t < 30 && srv->missiles() > 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        const uint16_t hp = srv->HealthOf(Sid(srv, b));
+        if (kase == 2) {
+            std::snprintf(msg, sizeof(msg), "C5 ② 사람에게 — 만듦 %zu · %d틱 · 체력 %u→%u · 피해 종류 %u(3 이어야 — 11 이면 갈래 3) · 남은 것 %zu",
+                          made, t, bHp, hp, unsigned(srv->DebugLastDamageType(Sid(srv, b))), srv->missiles());
+            Check(made == 1 && srv->missiles() == 0 && hp < bHp && bHp - hp <= 15 && srv->DebugLastDamageType(Sid(srv, b)) == 3, msg);
+        } else if (kase == 3) {
+            std::snprintf(msg, sizeof(msg), "C5 ③ 죽임 — 체력 %u→%u · a 점수 %d→%d", bHp, hp, sA, srv->DebugScore(Sid(srv, a)));
+            Check(made == 1 && hp == 0 && srv->DebugScore(Sid(srv, a)) > sA, msg);
+        } else {
+            std::snprintf(msg, sizeof(msg), "C5 ④ 벽 — 만듦 %zu · %d틱 · 벽에서 사라짐 %llu→%llu · b 체력 %u→%u",
+                          made, t, w0, srv->arrowGoneWall(), bHp, hp);
+            Check(made == 1 && srv->missiles() == 0 && t < 20 && srv->arrowGoneWall() == w0 + 1 && hp == bHp, msg);
+        }
+    }
+    std::printf("  11-21 C5 오우거 군주 — 표 · thing.bin 대조 · 표창 = 화살 닿음(종류 3 · 15) · 점수는 주인 · 벽에서 사라짐\n");
+}
+
 // ── 11-20 트레일러 전사 1-b — 수식 효과(modifier.bin `Server::ParseModEffects`) · 휘두를 때 위력 배수 · 맞힐 때 불·번개 ─────
 //   ① 진짜 복호본을 읽어 번호 차례·값(빠진 `;` 칸 Speed4 포함)을 본다
 //   ② 워리어 롱소드로 곰을 한 대 — 수식 없음 / 위력6(×1.2) / 불1(+3 폭발) / 번개4(+12 전기) / 불1인데 곰이 무적(관문)
@@ -38863,6 +38940,7 @@ int main() {
     TestSummonMore1121();
     TestOvalShield1121();
     TestCounterSpellCast1121();
+    TestOgreWarlord1121();
     TestModEffects1120();
     TestPickupAutoEquip();
     TestArmorEquip();
