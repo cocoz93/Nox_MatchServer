@@ -400,6 +400,10 @@ enum class CastStat : uint8_t {
     BeamMoved,       // 몬스터가 시전 자리에서 5 넘게 움직여 끊김(`sub_4FEA70`)
     ChainHit,        // ★ 11-21 C11-a 몬스터 사슬 번개 조각 하나가 피해를 줌(조각마다 하나)
     ChainMoved,      //   몬스터 사슬 번개 — 시전 자리에서 5 넘게 움직여 끊김
+    FlyMade,         // ★ 11-21 C11-c 몬스터가 겨눈 주문을 날림(Magic 하나)
+    FlyWall,         //   몸 앞이 벽이라 안 만듦(정답지 `mapTraceRay` 거짓)
+    FlyHit,          //   대상에 닿아 효과 함수가 1
+    FlyLost,         //   대상에 닿았는데 효과 없음(처음 시전자[2]·주인[0]이 지워짐 · 효과 함수 0)
     Count
 };
 constexpr size_t kCastStatCount = static_cast<size_t>(CastStat::Count);
@@ -3830,6 +3834,9 @@ public:
     uint16_t DebugMissileNetCode(size_t i) const { return i < missiles_.size() ? missiles_[i].netCode : 0; }
     uint16_t DebugMissileOwnerNet(size_t i) const { return i < missiles_.size() ? missiles_[i].ownerNet : 0; }   // ★ 11-21 C11-b
     Target DebugMissileTarget(size_t i) const { return i < missiles_.size() ? missiles_[i].ud1 : Target{}; }      // ★ 11-21 C11-b 갱신 짐 [1]
+    uint16_t DebugMissileCasterNet(size_t i) const { return i < missiles_.size() ? missiles_[i].casterNet : 0; }  // ★ 11-21 C11-c 갱신 짐 [2] 몬스터
+    int DebugMissileLevel(size_t i) const { return i < missiles_.size() ? missiles_[i].level : -1; }              // ★ 11-21 C11-c 갱신 짐 [4]
+    bool DebugAssistSet(int64_t sid) const { auto it = sessions_.find(sid); return it != sessions_.end() && it->second.assistSet; }   // ★ 11-21 C11-c +3600
     void DebugRemovePetNow(size_t i) { RemovePet(i); }                                                            // ★ 11-21 C11-b 주인 몬스터 지우기
     uint16_t DebugPlacedOwnerNet(size_t i) const { return i < placed_.size() ? placed_[i].ownerNet : 0; }      // ★ 11-21 C11-b
     void SetMagicType(uint16_t type, int speedRaw, float mass, uint32_t flags) {
@@ -4816,6 +4823,7 @@ private:
         int64_t ud0 = 0;                 // [0] 시전자(되받아치면 바뀐다)
         Target ud1;                      // [1] 대상
         int64_t ud2 = 0;                 // [2] 처음 시전자
+        uint16_t casterNet = 0;          // ★ 11-21 C11-c — [2] 가 몬스터면 그 번호(되받아쳐도 안 바뀐다 · 사람이면 0 — `ud2` 를 쓴다)
         uint8_t spell = 0;               // [3]
         int level = 0;                   // [4]
         // ★ 닿음 함수 갈래(묶음 4-c3 날리는 것) — thing.bin `COLLIDE` 가 정한다.
@@ -4959,6 +4967,9 @@ private:
     int MonsterCastPixieSwarm(Creature& k, uint8_t spell, int lvl);                          // castPixies_540440
     int MonsterCastMagicMissile(Creature& k, uint8_t spell, int lvl);                        // spellMissiles.Cast
     Target SpellFlySearchTargetPet(const Creature& k, float mslX, float mslY, const Buffs* mslBuffs, float dist) const;   // spellFlySearchTarget(pos 없음 · 주인 몬스터)
+    // ★ 11-21 C11-c — 몬스터가 남을 겨눠 날리는 주문(혼란 12 · 실수 33 · 독 60 · 느림 72 — 머리 주석은 `Server.cpp`)
+    bool MonsterCreateSpellFly(Creature& k, Target target, uint8_t spell);                   // createSpellFly_4FDDA0 몬스터 판
+    int MonsterFlyAccept(uint8_t spell, int64_t obj3, const Target& targ, int lvl);          // spellAccept 의 그 넷 갈래(시전자 = 몬스터)
     Target EnergyBoltSearchPet(const Creature& k, float range) const;
     // ★ 10-02 — 원본 거리 `nox_xxx_calcDistance_4E6C00` — 중심 거리 − 두 몸 크기(머리 주석은 `Server.cpp`)
     double CalcDistanceEdge(const Creature& k, const Target& t, float tx, float ty) const;

@@ -242,11 +242,12 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                     srv.hearStat(HS::WallQuiet), srv.hearStat(HS::Heard), srv.hearStat(HS::ReactGo), srv.hearStat(HS::ReactLook), srv.hearStat(HS::ReactSkip),
                     srv.hearStat(HS::Cond59), srv.hearStat(HS::Cond69));
         using CS = nox::CastStat;    // ★ 09-29 B7 — 몬스터 주문
-        srv.Log("[몬스터주문] 고름 공격 %llu · 달아남 %llu · 제몸 %llu · 되받기 %llu · 가까워 점멸 %llu · 시전소리 %llu · 시전 %llu(반주문 %llu) · 받음 %llu · 안옮김 %llu · 빔맞힘 %llu · 움직여끊김 %llu · 사슬맞힘 %llu · 사슬끊김 %llu\n",
+        srv.Log("[몬스터주문] 고름 공격 %llu · 달아남 %llu · 제몸 %llu · 되받기 %llu · 가까워 점멸 %llu · 시전소리 %llu · 시전 %llu(반주문 %llu) · 받음 %llu · 안옮김 %llu · 빔맞힘 %llu · 움직여끊김 %llu · 사슬맞힘 %llu · 사슬끊김 %llu · 날림 %llu(벽 %llu) · 날림맞힘 %llu · 날림헛것 %llu\n",
                     srv.castStat(CS::PickOffense), srv.castStat(CS::PickEscape), srv.castStat(CS::PickBuff), srv.castStat(CS::PickReact), srv.castStat(CS::BlinkNear),
                     srv.castStat(CS::InitSound), srv.castStat(CS::Cast), srv.castStat(CS::CastAnti), srv.castStat(CS::Accepted), srv.castStat(CS::NotPorted),
                     srv.castStat(CS::BeamHit), srv.castStat(CS::BeamMoved),
-                    srv.castStat(CS::ChainHit), srv.castStat(CS::ChainMoved));   // ★ 11-21 C11-a 몬스터 사슬 번개
+                    srv.castStat(CS::ChainHit), srv.castStat(CS::ChainMoved),    // ★ 11-21 C11-a 몬스터 사슬 번개
+                    srv.castStat(CS::FlyMade), srv.castStat(CS::FlyWall), srv.castStat(CS::FlyHit), srv.castStat(CS::FlyLost));   // ★ 11-21 C11-c 날아가는 주문
     }
     // ★ 09-29 Z1-A — 벽 피해 갈래: 벽없음(홀수칸·문·부서짐 포함) · 안부서지는벽(소리만) · 깎음 · 부서짐 · 부서짐 알림(받는 사람별)
     srv.Log("[벽피해] 벽없음 %llu · 안부서지는벽 %llu · 깎음 %llu · 부서짐 %llu · 알림 %llu\n",
