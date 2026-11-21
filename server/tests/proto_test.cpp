@@ -30225,6 +30225,230 @@ void TestShieldFx1122() {
                 "죽을 만큼도 · 독·방패 없음은 0 · 둘레 모두 · 소리 131 한 번\n");
 }
 
+// ── 11-22 순간이동 꼬리(`TeleportWake`) — 옮겨지는 유닛의 옛 자리에 1초 · 밟은 사람·몬스터도 목적지로 ─────────
+//   `spellTeleportCreateWake_530560`(`GAME4_3.c:690~712`) · `collideTeleportWake_4EAE30`(`GAME3_3.c:4928~4951`) · `updateExpire_53DB00`(`:6972~6975`)
+//   갈래마다 개수: 놓음(부르는 곳 넷) · 만든 프레임은 안 닿음 · 1초 끝 프레임 닿음/다음 프레임 지움 · 닻 · 퀘스트 몬스터 꼬리(대조 둘) ·
+//   몬스터 옮김 · 투명이면 그림 없이 소리만
+void TestTeleportWake1122() {
+    const std::string a = "10.11.22.71:9771", b = "10.11.22.72:9772";
+    using WS = nox::Server::WakeStat;
+    using TS = nox::Server::TeleStat;
+    constexpr uint16_t kWake = 1312;
+    char msg[480];
+    auto snd = [](nox::CSyncHost& srv, uint16_t id) -> unsigned long long {
+        const auto& m = srv->soundsDroppedIds();
+        const auto it = m.find(id);
+        return it == m.end() ? 0ull : it->second;
+    };
+    auto fx = [](const std::vector<nox::OutPacket>& out, const std::string& to, nox::Op op, std::vector<std::pair<int, int>>* at) {
+        int n = 0;
+        for (const auto& m : FlattenTo(out, to)) {
+            if (m.size() != 5 || m[0] != static_cast<uint8_t>(op)) continue;
+            if (at) at->push_back({ m[1] | (m[2] << 8), m[3] | (m[4] << 8) });
+            ++n;
+        }
+        return n;
+    };
+    auto mk = [&](nox::CSyncHost& srv, uint32_t& ms, std::vector<nox::OutPacket>& out, float bx, float by) {
+        srv->SetSpellDef(126, 20, 0x021c0409u, { 7, 1, 3, 5 });   // thing.bin SPELL_TELEPORT_TO_TARGET(겨눔 없음 · 위저드)
+        srv->SetSpellDef(4, 0, 0x1000000, { 1 });
+        srv->SetSpellDef(121, 0, 0x1000000, { 1 });
+        srv->SetSpellDef(122, 0, 0x1000000, { 1 });
+        srv->SetNamedType("TeleportWake", kWake);
+        srv->SetPlayerStarts({ { 3000.0f, 3000.0f } });            // 점멸 갈 데(길목이 없으면 시작 지점)
+        srv.DebugEnterGame(a, 1171, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 1172, false, nox::CharClass::Warrior);
+        srv->DebugSetScreenHalf(Sid(srv, a), 320, 240);
+        srv->DebugTeleport(Sid(srv, a), 1000.0f, 1000.0f);
+        srv->DebugTeleport(Sid(srv, b), bx, by);
+        srv.Tick(ms, out);
+        ms += 33; srv.Tick(ms, out);
+        srv.TakeOut(out); out.clear();
+    };
+    auto step = [&](nox::CSyncHost& srv, uint32_t& ms, std::vector<nox::OutPacket>& out) {   // 프레임 하나(33ms 는 두 프레임을 한 번에 안 돈다)
+        const uint32_t f = srv->DebugFrame() + 1;
+        for (int t = 0; t < 10 && srv->DebugFrame() < f; ++t) { ms += 33; srv.Tick(ms, out); }
+    };
+    auto wakeIdx = [](nox::CSyncHost& srv) -> int {
+        for (size_t i = 0; i < srv->PlacedCount(); ++i) if (srv->DebugPlacedKind(i) == 10) return static_cast<int>(i);
+        return -1;
+    };
+    auto at = [&](nox::CSyncHost& srv, const std::string& who, double x, double y) {
+        return std::fabs(srv->DebugPosX(Sid(srv, who)) - x) < 0.01 && std::fabs(srv->DebugPosY(Sid(srv, who)) - y) < 0.01;
+    };
+    // 대상에게 순간이동(126) 을 패킷으로 걸고 터지는 틱 바로 뒤에서 멈춘다
+    auto ttt = [&](nox::CSyncHost& srv, uint32_t& ms, std::vector<nox::OutPacket>& out) {
+        srv->DebugAimAt(Sid(srv, a), 1200, 1000);
+        srv->DebugFillMana(Sid(srv, a));
+        CastAndWait(srv, a, 126, false, ms, out);
+        for (int t = 0; t < 10 && srv->teleStat(TS::TttDone) == 0; ++t) step(srv, ms, out);
+        Check(srv->teleStat(TS::TttDone) == 1, "대상에게 순간이동이 안 터졌다(시험 전제)");
+    };
+
+    // ① 대상에게(126) — 옛 자리 (1000,1000) 에 꼬리 하나 · 목적지 (1200,1000) · 임자 a · 1초(+30) · 종류 1312
+    //    밟은 b 는 다음 프레임에 목적지로 · 점 그림 138(옛 자리) · 137(새 자리) 하나씩 · 소리 147 둘
+    {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        mk(srv, ms, out, 2000.0f, 2000.0f);
+        ttt(srv, ms, out);
+        const int w = wakeIdx(srv);
+        float wx = -1, wy = -1, dx = -1, dy = -1;
+        if (w >= 0) { srv->DebugPlacedXY(static_cast<size_t>(w), wx, wy); srv->DebugPlacedDest(static_cast<size_t>(w), dx, dy); }
+        const uint32_t life = w >= 0 ? srv->DebugPlacedExpire(static_cast<size_t>(w)) - srv->DebugFrame() : 0;
+        std::snprintf(msg, sizeof(msg), "① 대상에게 — 놓음 %llu · 꼬리 %d · 종류 %u · 자리 %.0f,%.0f · 목적지 %.0f,%.0f · 임자 %d · 몬스터 번호 %u · 남은 %u(30) · a 옮김 %d",
+                      srv->wakeStat(WS::Made), w, w >= 0 ? srv->DebugPlacedType(static_cast<size_t>(w)) : 0u, wx, wy, dx, dy,
+                      w >= 0 && srv->DebugPlacedOwner(static_cast<size_t>(w)) == Sid(srv, a) ? 1 : 0,
+                      w >= 0 ? srv->DebugPlacedOwnerNet(static_cast<size_t>(w)) : 0u, life, at(srv, a, 1200, 1000) ? 1 : 0);
+        Check(srv->wakeStat(WS::Made) == 1 && w >= 0 && srv->DebugPlacedType(static_cast<size_t>(w)) == kWake && wx == 1000.0f && wy == 1000.0f &&
+              dx == 1200.0f && dy == 1000.0f && srv->DebugPlacedOwner(static_cast<size_t>(w)) == Sid(srv, a) &&
+              srv->DebugPlacedOwnerNet(static_cast<size_t>(w)) == 0 && life == 30 && at(srv, a, 1200, 1000), msg);
+        srv.TakeOut(out); out.clear();
+        const unsigned long long s0 = snd(srv, 147);
+        srv->DebugTeleport(Sid(srv, b), 1000.0f, 1000.0f);
+        step(srv, ms, out);
+        std::vector<std::pair<int, int>> p138, p137;
+        const int n138 = fx(out, b, nox::Op::FX_SMOKE_BLAST, &p138), n137 = fx(out, b, nox::Op::FX_TELEPORT, &p137);
+        std::snprintf(msg, sizeof(msg), "① b 밟음 — 옮김 사람 %llu · b (%.0f,%.0f) · 그림 138 %d(%d,%d) · 137 %d(%d,%d) · 소리 147 %llu(2)",
+                      srv->wakeStat(WS::MovePlayer), srv->DebugPosX(Sid(srv, b)), srv->DebugPosY(Sid(srv, b)),
+                      n138, n138 ? p138[0].first : -1, n138 ? p138[0].second : -1, n137, n137 ? p137[0].first : -1, n137 ? p137[0].second : -1,
+                      snd(srv, 147) - s0);
+        Check(srv->wakeStat(WS::MovePlayer) == 1 && at(srv, b, 1200, 1000) && n138 == 1 && p138[0] == std::make_pair(1000, 1000) &&
+              n137 == 1 && p137[0] == std::make_pair(1200, 1000) && snd(srv, 147) - s0 == 2, msg);
+    }
+    // ② 만든 프레임에는 안 닿는다 — 시전 전부터 옛 자리 곁에 선 것은 터진 틱엔 그대로 · 다음 프레임에 옮겨진다.
+    //    사람끼리는 몸이 겹치면 밀려나(b 가 (1005,1000) → (1026,1000)) 걷지 않는 몬스터를 a 곁(1010,1000)에 세운다
+    {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        mk(srv, ms, out, 2000.0f, 2000.0f);
+        srv->DebugSpawnPet(nox::kCarnivorousPlantType, 1010.0f, 1000.0f, Sid(srv, std::string()));
+        step(srv, ms, out);
+        double p0x = 0, p0y = 0; srv->DebugPetXY(0, p0x, p0y);
+        ttt(srv, ms, out);
+        const int w = wakeIdx(srv);
+        float wx = -1, wy = -1;
+        if (w >= 0) srv->DebugPlacedXY(static_cast<size_t>(w), wx, wy);
+        double p1x = 0, p1y = 0; srv->DebugPetXY(0, p1x, p1y);
+        const double reach = 10.0 + nox::kBodyRadius;
+        const bool near = std::hypot(p1x - wx, p1y - wy) < reach;
+        const bool still = p1x == p0x && p1y == p0y;
+        const unsigned long long m0 = srv->wakeStat(WS::MoveMonster);
+        step(srv, ms, out);
+        double p2x = 0, p2y = 0; srv->DebugPetXY(0, p2x, p2y);
+        std::snprintf(msg, sizeof(msg), "② 만든 프레임 — 꼬리 (%.0f,%.0f) · 몬스터 (%.0f,%.0f) 겹침 %d · 그 틱 그대로 %d · 옮김 %llu(0) · 다음 프레임 옮김 %llu(1) · 몬스터 (%.0f,%.0f)",
+                      wx, wy, p1x, p1y, near ? 1 : 0, still ? 1 : 0, m0, srv->wakeStat(WS::MoveMonster), p2x, p2y);
+        Check(w >= 0 && near && still && m0 == 0 && srv->wakeStat(WS::MoveMonster) == 1 && std::fabs(p2x - 1200.0) < 1.0 && std::fabs(p2y - 1000.0) < 1.0, msg);
+    }
+    // ③ 1초 — 만든 프레임 + 30 까지 닿고(`+136 < 지금` 이 아님) · + 31 에 지운다
+    for (const uint32_t k : { 29u, 30u }) {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        mk(srv, ms, out, 2000.0f, 2000.0f);
+        ttt(srv, ms, out);
+        const uint32_t f0 = srv->DebugFrame();
+        for (int t = 0; t < 200 && srv->DebugFrame() < f0 + k; ++t) step(srv, ms, out);
+        srv->DebugTeleport(Sid(srv, b), 1000.0f, 1000.0f);
+        step(srv, ms, out);
+        const bool moved = at(srv, b, 1200, 1000);
+        std::snprintf(msg, sizeof(msg), "③ +%u 프레임 — 밟은 프레임 +%u · 옮김 %d · 지움 %llu · 꼬리 %d · 기대 %s",
+                      k, srv->DebugFrame() - f0, moved ? 1 : 0, srv->wakeStat(WS::Expired), wakeIdx(srv), k == 29 ? "옮김" : "지움");
+        if (k == 29) Check(srv->DebugFrame() - f0 == 30 && moved && srv->wakeStat(WS::Expired) == 0 && wakeIdx(srv) >= 0, msg);
+        else         Check(srv->DebugFrame() - f0 == 31 && !moved && srv->wakeStat(WS::Expired) == 1 && wakeIdx(srv) < 0, msg);
+    }
+    // ④ 닻(14) — 안 옮김 · 그림·소리 없음(대조 = ①)
+    {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        mk(srv, ms, out, 2000.0f, 2000.0f);
+        ttt(srv, ms, out);
+        srv->DebugApplyEnchant(Sid(srv, b), 14, 3000, 1);
+        srv->DebugTeleport(Sid(srv, b), 1000.0f, 1000.0f);
+        srv.TakeOut(out); out.clear();
+        const unsigned long long s0 = snd(srv, 147);
+        step(srv, ms, out);
+        std::snprintf(msg, sizeof(msg), "④ 닻 — 닻 %llu(1) · 옮김 %llu · b 그대로 %d · 그림 138 %d · 소리 147 %llu",
+                      srv->wakeStat(WS::Anchor), srv->wakeStat(WS::MovePlayer), at(srv, b, 1000, 1000) ? 1 : 0,
+                      fx(out, b, nox::Op::FX_SMOKE_BLAST, nullptr), snd(srv, 147) - s0);
+        Check(srv->wakeStat(WS::Anchor) == 1 && srv->wakeStat(WS::MovePlayer) == 0 && at(srv, b, 1000, 1000) &&
+              fx(out, b, nox::Op::FX_SMOKE_BLAST, nullptr) == 0 && snd(srv, 147) == s0, msg);
+    }
+    // ⑤ 퀘스트(4096) — 몬스터가 남긴 꼬리는 안 옮김 · 대조: 퀘스트에서 사람이 남긴 것 · 퀘스트 밖 몬스터가 남긴 것은 옮김
+    for (int c = 0; c < 3; ++c) {
+        const bool quest = c != 2, monster = c != 1;
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        mk(srv, ms, out, 1500.0f, 1500.0f);
+        srv->DebugSpawnPet(nox::kCarnivorousPlantType, 3000.0f, 3000.0f, Sid(srv, std::string()));   // 꼬리 임자로만 쓴다(걷지 않는 몬스터)
+        step(srv, ms, out);
+        if (quest) srv->DebugSetQuestTotal(1);
+        const nox::Target own = monster ? nox::Target{ nox::kNoSession, 0 } : nox::Target{ Sid(srv, a), -1 };
+        srv->DebugMakeTeleportWake(own, 1500.0f, 1500.0f, 1700.0f, 1500.0f);
+        step(srv, ms, out);
+        const bool moved = at(srv, b, 1700, 1500);
+        std::snprintf(msg, sizeof(msg), "⑤ 퀘스트 %d · 몬스터 꼬리 %d — 놓음 %llu · 막음 %llu · 옮김 %d · 기대 %s",
+                      quest ? 1 : 0, monster ? 1 : 0, srv->wakeStat(WS::Made), srv->wakeStat(WS::OwnerRule), moved ? 1 : 0,
+                      c == 0 ? "막음" : "옮김");
+        if (c == 0) Check(srv->wakeStat(WS::Made) == 1 && srv->wakeStat(WS::OwnerRule) == 1 && !moved, msg);
+        else        Check(srv->wakeStat(WS::Made) == 1 && srv->wakeStat(WS::OwnerRule) == 0 && moved, msg);
+    }
+    // ⑥ 몬스터도 옮긴다 — 걷지 않는 몬스터를 꼬리 위에 · 사람 셈은 그대로
+    {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        mk(srv, ms, out, 2000.0f, 2000.0f);
+        srv->DebugSpawnPet(nox::kCarnivorousPlantType, 1500.0f, 1500.0f, Sid(srv, std::string()));
+        step(srv, ms, out);
+        srv->DebugMakeTeleportWake(nox::Target{ Sid(srv, a), -1 }, 1500.0f, 1500.0f, 1700.0f, 1500.0f);
+        step(srv, ms, out);
+        double px = 0, py = 0; srv->DebugPetXY(0, px, py);
+        std::snprintf(msg, sizeof(msg), "⑥ 몬스터 — 옮김 몬스터 %llu(1) · 사람 %llu(0) · 몬스터 (%.0f,%.0f)",
+                      srv->wakeStat(WS::MoveMonster), srv->wakeStat(WS::MovePlayer), px, py);
+        Check(srv->wakeStat(WS::MoveMonster) == 1 && srv->wakeStat(WS::MovePlayer) == 0 && std::fabs(px - 1700.0) < 1.0 && std::fabs(py - 1500.0) < 1.0, msg);
+    }
+    // ⑦ 투명(0) — 옮기되 점 그림 138·137 없이 소리 147 둘만
+    {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        mk(srv, ms, out, 1500.0f, 1500.0f);
+        srv->DebugApplyEnchant(Sid(srv, b), 0, 3000, 1);
+        srv->DebugMakeTeleportWake(nox::Target{ Sid(srv, a), -1 }, 1500.0f, 1500.0f, 1700.0f, 1500.0f);
+        srv.TakeOut(out); out.clear();
+        const unsigned long long s0 = snd(srv, 147);
+        step(srv, ms, out);
+        const int n138 = fx(out, a, nox::Op::FX_SMOKE_BLAST, nullptr), n137 = fx(out, a, nox::Op::FX_TELEPORT, nullptr);
+        std::snprintf(msg, sizeof(msg), "⑦ 투명 — 옮김 %llu · b 옮김 %d · 그림 138 %d · 137 %d · 소리 147 %llu(2)",
+                      srv->wakeStat(WS::MovePlayer), at(srv, b, 1700, 1500) ? 1 : 0, n138, n137, snd(srv, 147) - s0);
+        Check(srv->wakeStat(WS::MovePlayer) == 1 && at(srv, b, 1700, 1500) && n138 == 0 && n137 == 0 && snd(srv, 147) - s0 == 2, msg);
+    }
+    // ⑧ 부르는 곳 — 점멸(4) · 표식으로(122) · 무작위 표식(121) 도 옮기기 전 옛 자리에 꼬리 하나 · 목적지 = 옮겨 간 자리(대상에게는 ①)
+    for (const uint8_t sp : { uint8_t(4), uint8_t(122), uint8_t(121) }) {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        mk(srv, ms, out, 2000.0f, 2000.0f);
+        if (sp == 122) srv->DebugSetMarkAt(Sid(srv, a), 0, 1300.0f, 1100.0f);
+        if (sp == 121) srv->DebugSetMarkAt(Sid(srv, a), 2, 900.0f, 1300.0f);
+        const bool ok = srv->DebugSpellAcceptOn(Sid(srv, a), sp, 1, nox::Target{ Sid(srv, a), -1 }, 1000.0f, 1000.0f);   // 대상 = 자기(`DurNew` 는 arg.obj 를 대상으로 든다)
+        srv->DebugDurFireNextTick();                     // 틱 밖 받기 — 다음 틱에 터지게(W9 ④ 와 같은 꼴)
+        for (int t = 0; t < 10 && srv->wakeStat(WS::Made) == 0; ++t) step(srv, ms, out);
+        const int w = wakeIdx(srv);
+        float wx = -1, wy = -1, dx = -1, dy = -1;
+        if (w >= 0) { srv->DebugPlacedXY(static_cast<size_t>(w), wx, wy); srv->DebugPlacedDest(static_cast<size_t>(w), dx, dy); }
+        const double ax = srv->DebugPosX(Sid(srv, a)), ay = srv->DebugPosY(Sid(srv, a));
+        const bool want = sp == 122 ? (dx == 1300.0f && dy == 1100.0f) : sp == 121 ? (dx == 900.0f && dy == 1300.0f) : true;
+        std::snprintf(msg, sizeof(msg), "⑧ 주문 %u — 받음 %d · 놓음 %llu · 자리 %.0f,%.0f · 목적지 %.0f,%.0f · a (%.0f,%.0f)",
+                      unsigned(sp), ok ? 1 : 0, srv->wakeStat(WS::Made), wx, wy, dx, dy, ax, ay);
+        Check(ok && srv->wakeStat(WS::Made) == 1 && w >= 0 && wx == 1000.0f && wy == 1000.0f && want &&
+              std::fabs(ax - dx) < 0.01 && std::fabs(ay - dy) < 0.01 && (ax != 1000.0 || ay != 1000.0), msg);
+    }
+    // ⑨ 닿는 거리 = 꼬리 반지름 10(EXTENT CIRCLE 10) + 몸 반지름 — 그 안쪽 2 는 옮김 · 바깥쪽 2 는 그대로
+    for (const double off : { -2.0, 2.0 }) {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        const float bx = static_cast<float>(1500.0 + 10.0 + nox::kBodyRadius + off);
+        mk(srv, ms, out, bx, 1500.0f);
+        srv->DebugMakeTeleportWake(nox::Target{ Sid(srv, a), -1 }, 1500.0f, 1500.0f, 1700.0f, 1700.0f);
+        step(srv, ms, out);
+        const bool moved = at(srv, b, 1700, 1700);
+        std::snprintf(msg, sizeof(msg), "⑨ 닿는 거리 %+.0f — b x %.1f · 옮김 %d · 셈 %llu · 기대 %s",
+                      off, double(bx), moved ? 1 : 0, srv->wakeStat(WS::MovePlayer), off < 0 ? "옮김" : "그대로");
+        Check(off < 0 ? (moved && srv->wakeStat(WS::MovePlayer) == 1) : (!moved && srv->wakeStat(WS::MovePlayer) == 0), msg);
+    }
+    std::printf("  11-22 — 순간이동 꼬리: 대상에게·점멸·표식·무작위 표식 모두 옛 자리에 꼬리(목적지 · 임자 · 1초) · 만든 프레임 안 닿음 · +30 닿음/+31 지움 · "
+                "닻 · 퀘스트 몬스터 꼬리(대조 둘) · 몬스터 옮김 · 투명은 소리만 · 닿는 거리 10 + 몸 반지름(안팎 2)\n");
+}
+
 // ★ 11-20 트레일러 전사 2 — 수리검·차크람(던지기 `GAME4_3.c:4327~4419` · 날기 `updateChakramInMotion_53DCC0` · 맞기 `collideChakram_4EAF00`)
 void TestChakram1120() {
     using CE = nox::ChakramEv;
@@ -42770,6 +42994,7 @@ int main() {
     TestScorch1122();                 // ★ 11-22 그을음 일곱 자리
     TestLightningFx1122();            // ★ 11-22 번개 셋(그림 130·129 · 소리 32·78 · NO_SPELL_TARGET)
     TestShieldFx1122();               // ★ 11-22 방패 그림 0x80(넷코드 · 9칸 방향 출처 셋)
+    TestTeleportWake1122();           // ★ 11-22 순간이동 꼬리(옛 자리 1초 · 밟으면 목적지로)
     TestConnectZeroTail();
     TestReconnectAfterClose();
     TestSessionIds();

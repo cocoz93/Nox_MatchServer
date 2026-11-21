@@ -277,6 +277,13 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                 srv.lightningEv(0), srv.lightningEv(1), srv.lightningEv(2), srv.lightningEv(3), srv.lightningEv(4), srv.lightningEv(5));
         // ★ 11-22 방패 그림 — 방향 출처 셋(`SendShieldFx`) · 시험이 같은 칸을 센다(`TestShieldFx1122`)
         srv.Log("[방패 그림] 때린 것 자리 %llu · 때린 이 자리 %llu · 바라보는 쪽 %llu\n", srv.shieldFx(0), srv.shieldFx(1), srv.shieldFx(2));
+        // ★ 11-22 순간이동 꼬리(`MakeTeleportWake` · `TeleportWakeCollide`) · 시험이 같은 칸을 센다(`TestTeleportWake1122`)
+        {
+            using WS = nox::Server::WakeStat;
+            srv.Log("[순간이동 꼬리] 놓음 %llu · 종류 없음 %llu · 옮김 사람 %llu · 몬스터 %llu · 닻 %llu · 퀘스트 몬스터 꼬리 %llu · 1초 지나 지움 %llu\n",
+                    srv.wakeStat(WS::Made), srv.wakeStat(WS::NoType), srv.wakeStat(WS::MovePlayer), srv.wakeStat(WS::MoveMonster),
+                    srv.wakeStat(WS::Anchor), srv.wakeStat(WS::OwnerRule), srv.wakeStat(WS::Expired));
+        }
         // ★ 10-01 — 클라 대체 무기 알림 `e0`(비움 · 가방에 없음 · 맞음 · 직업·힘 안 맞아 `e0 0 01` 되돌림)
         srv.Log("[대체무기] 비움 %llu · 없음 %llu · 맞음 %llu · 되돌림 %llu\n", srv.secondaryWeaponStat(0),
                     srv.secondaryWeaponStat(1), srv.secondaryWeaponStat(2), srv.secondaryWeaponStat(3));

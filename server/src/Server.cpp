@@ -9756,6 +9756,7 @@ int Server::DurBlinkTick(DurSpell& d) {
                                  static_cast<uint8_t>(iy), static_cast<uint8_t>(iy >> 8) };
         SendFxAllCli(px, py, msg, sizeof(msg));
     };
+    MakeTeleportWake(d.target, ox, oy, tx, ty);              // ★ 11-22 꼬리 `:657` — 점 그림 137 앞
     pointFx(ox, oy);
     TeleportTarget(d.target, tx, ty, /*forgetDrawables=*/true);
     pointFx(tx, ty);
@@ -9790,6 +9791,71 @@ void Server::PlaySoundOnTarget(uint16_t id, const Target& t) {
     float x = 0, y = 0;
     if (!TargetXY(t, x, y)) return;
     PlaySoundAt(id, x, y, 0, 0, t.sessionId, t);
+}
+
+// ★ 11-22 순간이동 꼬리 `nox_xxx_spellTeleportCreateWake_530560`(`GAME4_3.c:690~712`) — 옮겨지는 유닛의 **옛 자리**에 `TeleportWake` 하나를 놓는다.
+//   · 갱신자료(+700) 두 칸 = 목적지 · 임자 = 옮겨지는 그 유닛(`createAt_4DAA50(v5, a1, …)` 의 a1 = 부르는 쪽의 a1[12])
+//   · +136 = 지금 + FPS → `ExpireUpdate`(`updateExpire_53DB00` `:6972~6975`)가 `+136 < 지금` 이면 지운다 — 1초
+//   · 부르는 곳 넷 = 점멸(`spellBlink1_530380` `:657`) · 표식으로(`sub_530650` `:784`) · 무작위 표식(`sub_530880` `:895`) ·
+//     대상에게(`castTTT_530B70` `:948`) — 모두 옮기기 **앞**. 자리 바꾸기(115)는 안 부른다
+//   · 클라 그림은 thing.bin `DRAW NoDraw` · `CLIENTUPDATE = TeleportWakeUpdateDraw` · 빛(LIGHTINTENSITY 32 · 50 50 255) — 우리는 오브젝트만 보낸다
+//   임자 칸 — 사람이면 `owner` = 그 사람 · 몬스터면 `ownerNet` = 그 몬스터 번호(퀘스트에서 「몬스터가 남긴 꼬리」를 가른다 · `ownerNet` 을 읽는 다른 자리는 kind 3 만 본다)
+void Server::MakeTeleportWake(const Target& t, float ox, float oy, float dx, float dy) {
+    const uint16_t type = NamedType("TeleportWake");
+    if (type == 0) { ++wakeStat_[static_cast<size_t>(WakeStat::NoType)]; return; }
+    uint16_t petNet = 0;
+    if (t.sessionId == kNoSession) {
+        if (t.pet < 0 || static_cast<size_t>(t.pet) >= pets_.size()) return;
+        petNet = pets_[static_cast<size_t>(t.pet)].netCode;
+    }
+    PlacedObj* o = PlaceObject(type, ox, oy, t.sessionId, kPlacedNoLife, /*kind=*/10, 0, 0, /*radius=*/10.0f);   // EXTENT CIRCLE 10
+    if (o == nullptr) return;
+    o->ownerNet = petNet;
+    o->destX = dx; o->destY = dy;
+    o->expireFrame = frame_ + kServerTickRate;               // +136 = gameFrame + gameFPS
+    ++wakeStat_[static_cast<size_t>(WakeStat::Made)];
+}
+
+// ★ 11-22 `nox_xxx_collideTeleportWake_4EAE30`(`GAME3_3.c:4928~4951`) — 꼬리에 몸이 겹친 것을 목적지(+700)로 옮긴다.
+//   ① 닻(버프 14)이면 안 옮긴다 ② 퀘스트(4096)에선 임자가 없거나 사람일 때만 — 몬스터가 남긴 꼬리는 안 옮긴다
+//   ③ 갈래 0x3001016 = 몬스터(2) · 사람(4) · 음식(0x10) · 지팡이(0x1000) · 무기(0x1000000) · 갑옷(0x2000000)
+//      ⚠ 우리는 사람·몬스터만 — 바닥 물건은 안 옮긴다(바닥 물건을 순간이동시키는 길이 아직 없다)
+//   ④ 투명(버프 0)이 아니면 옛 자리에 점 그림 138 → 소리 147 → 옮김 → 투명이 아니면 새 자리에 점 그림 137 → 소리 147
+//   겹침 = 꼬리 반지름 10 + 몸 반지름 · 훑는 대상은 `PlacedCollide` 와 같은 꼴(부활 기다리는 사람 · 지울 표시가 선 몬스터는 거름)
+//   ⚠ 원본 짝 고르기(`sub_54E730` `GAME5.c:5701~5730`)는 지워진 것(+16 & 0x20)·NO_COLLIDE(0x40)·투사체를 거른다 — 죽은 몸을 따로 거르는지는 안 봤다
+void Server::TeleportWakeCollide(PlacedObj& o) {
+    const bool quest = (questTotal_ > 0 || questStage_ > 0);   // gameFlags 4096
+    const float reach = o.radius + static_cast<float>(kBodyRadius);
+    const float rr = reach * reach;
+    const float ox = o.x, oy = o.y, destX = o.destX, destY = o.destY;
+    const bool monsterWake = (o.ownerNet != 0);
+    auto touch = [&](const Target& t, float tx, float ty) {
+        const float dx = tx - ox, dy = ty - oy;
+        if (dx * dx + dy * dy > rr) return;
+        const Buffs* b = BuffsOf(t);
+        if (b && b->Has(14)) { ++wakeStat_[static_cast<size_t>(WakeStat::Anchor)]; return; }        // `:4934`
+        if (quest && monsterWake) { ++wakeStat_[static_cast<size_t>(WakeStat::OwnerRule)]; return; }   // `:4935~4936`
+        const bool invis = b && b->Has(0);
+        if (!invis) SendPointFx(static_cast<uint8_t>(Op::FX_SMOKE_BLAST), tx, ty);          // 138 `:4938~4940`
+        PlaySoundOnTarget(147, t);
+        TeleportTarget(t, destX, destY, /*forgetDrawables=*/true);                          // teleportToMB_4E7190
+        float nx = destX, ny = destY;
+        TargetXY(t, nx, ny);
+        if (!invis) SendPointFx(static_cast<uint8_t>(Op::FX_TELEPORT), nx, ny);             // 137 `:4943~4945`
+        PlaySoundOnTarget(147, t);
+        ++wakeStat_[static_cast<size_t>(t.sessionId != kNoSession ? WakeStat::MovePlayer : WakeStat::MoveMonster)];
+    };
+    std::vector<int64_t> who;
+    for (const auto& kv : sessions_) if (kv.second.inGame && kv.second.respawnAtFrame == 0) who.push_back(kv.first);
+    for (const auto& sessionId : who) {
+        auto it = sessions_.find(sessionId);
+        if (it == sessions_.end()) continue;
+        touch(Target{ sessionId, -1 }, static_cast<float>(it->second.posX), static_cast<float>(it->second.posY));
+    }
+    for (size_t k = 0; k < pets_.size(); ++k) {
+        if (pets_[k].removeMe) continue;
+        touch(Target{ kNoSession, static_cast<int>(k) }, static_cast<float>(pets_[k].x), static_cast<float>(pets_[k].y));
+    }
 }
 
 // sub_52CBD0(`GAME4_2.c:9800`) — 표식 걸기(46~49). 칸 = **주문 − 46**.
@@ -9831,6 +9897,7 @@ int Server::DurTeleMarkTick(DurSpell& d) {
     if (slot < 0 || slot > 3 || !c->second.markSet[slot]) return 1;
     float ox = 0, oy = 0;
     TargetXY(d.target, ox, oy);
+    MakeTeleportWake(d.target, ox, oy, c->second.markX[slot], c->second.markY[slot]);   // ★ 11-22 꼬리 `:784`
     TeleportTarget(d.target, c->second.markX[slot], c->second.markY[slot], /*forgetDrawables=*/true);
     SendTeleportFx(ox, oy, c->second.markX[slot], c->second.markY[slot]);
     return 1;
@@ -9860,6 +9927,7 @@ int Server::DurTelePopTick(DurSpell& d) {
     do { slot = static_cast<int>(NextRandom(4)); } while (!c->second.markSet[slot]);
     float ox = 0, oy = 0;
     TargetXY(d.target, ox, oy);
+    MakeTeleportWake(d.target, ox, oy, c->second.markX[slot], c->second.markY[slot]);   // ★ 11-22 꼬리 `:895`
     TeleportTarget(d.target, c->second.markX[slot], c->second.markY[slot], /*forgetDrawables=*/true);
     SendTeleportFx(ox, oy, c->second.markX[slot], c->second.markY[slot]);
     return 1;
@@ -9987,7 +10055,7 @@ int Server::DurTeleTargetCreate(DurSpell& d) {
 
 // nox_xxx_castTTT_530B70(`GAME4_3.c:918~970`) — 그 프레임에 **한 번** 옮기고 끝난다
 //   ① 대상·시전자가 없거나 죽었으면 끝 ② 아직이면 이어 간다 ③ 대상이 닻(14)이면 소리 231 · 끝
-//   ④ 옛 자리에 점 효과 137 · 시전 소리 · 꼬리(`spellTeleportCreateWake_530560` — ⚠ 안 옮김 · 다른 순간이동도 없다) · 커서 자리로 옮김
+//   ④ 옛 자리에 점 효과 137 · 시전 소리 · 꼬리(`spellTeleportCreateWake_530560` — ★ 11-22 `MakeTeleportWake` · 다른 순간이동 셋도 같은 함수) · 커서 자리로 옮김
 //   ⑤ 투명(0)이면 — 사람이면 시전 소리를 **그 사람에게만**(갈래 2 · 번호) · 사람 아니면 소리 없이 도운 사람만 · 끝
 //      투명 아니면 새 자리에 점 효과 137 · 시전 소리 ⑥ 도운 사람(`sub_4E7540`)
 int Server::DurTeleTargetTick(DurSpell& d) {
@@ -10016,6 +10084,7 @@ int Server::DurTeleTargetTick(DurSpell& d) {
     const uint16_t snd = gt_->spellDefs[d.spell].valid ? gt_->spellDefs[d.spell].castSound : 0;   // spellGetAud44(spell, 0)
     pointFx(ox, oy);
     PlaySoundAt(snd, ox, oy, 0, 0, d.target.sessionId, d.target);
+    MakeTeleportWake(d.target, ox, oy, d.pos2X, d.pos2Y);    // ★ 11-22 꼬리 `:948`
     TeleportTarget(d.target, d.pos2X, d.pos2Y, /*forgetDrawables=*/true);
     ++teleStat_[static_cast<size_t>(TeleStat::TttDone)];
     if (tbuf && tbuf->Has(0)) {
@@ -16873,6 +16942,18 @@ void Server::UpdatePlaced() {
                 continue;
             }
             PlacedCollide(o);
+        }
+        // ── kind 10 — 순간이동 꼬리(★ 11-22 `ExpireUpdate` + `TeleportWakeCollide`) ──────
+        //   +136(`expireFrame`) < 지금이면 지운다(`updateExpire_53DB00` `GAME4_3.c:6972~6975`).
+        //   새 오브젝트는 그 프레임 끝에 세상에 들어간다(`newObjectWithTypeInd` → `createAt` 은 더할 목록에 싣는다) —
+        //   지속 주문이 놓인 것보다 앞에 돌아(이 프레임 `SpellCastByPlayer` → `UpdatePlaced`) 만든 프레임에는 닿지 않게 거른다
+        if (o.kind == 10) {
+            if (o.expireFrame < frame_) {
+                ++wakeStat_[static_cast<size_t>(WakeStat::Expired)];
+                DestroyPlaced(i);
+                continue;
+            }
+            if (frame_ != o.createdFrame) TeleportWakeCollide(o);
         }
         // ── kind 3 — 떨어지는 운석(MeteorUpdate = meteorExplode_53D6E0) ──────
         //   하는 일이 하나다: **높이(+104)가 0 이하면** 터뜨리고 지운다.

@@ -2527,8 +2527,12 @@ public:
     unsigned long long fistRoseGone() const { return fistRoseGone_; }   // ★ 11-22 주먹 되튀어 200 에 지움(`GAME4_3.c:6744`)
     unsigned long long scorchMade(int size) const { return (size >= 0 && size < 3) ? scorchMade_[size] : 0; }   // ★ 11-22 그을음 크기별(0·1·2)
     unsigned long long scorchNoType() const { return scorchNoType_; }   // ★ 11-22 그을음 — 종류를 못 찾아 못 놓음
-    unsigned long long lightningEv(int i) const { return (i >= 0 && i < 6) ? lightningEv_[i] : 0; }
-    unsigned long long shieldFx(int i) const { return (i >= 0 && i < 3) ? shieldFx_[i] : 0; }   // ★ 11-22 방패 그림 — 칸 뜻은 `shieldFx_`   // ★ 11-22 번개 셋 — 칸 뜻은 `lightningEv_`
+    unsigned long long lightningEv(int i) const { return (i >= 0 && i < 6) ? lightningEv_[i] : 0; }   // ★ 11-22 번개 셋 — 칸 뜻은 `lightningEv_`
+    unsigned long long shieldFx(int i) const { return (i >= 0 && i < 3) ? shieldFx_[i] : 0; }   // ★ 11-22 방패 그림 — 칸 뜻은 `shieldFx_`
+    // ★ 11-22 순간이동 꼬리 갈래 — 놓음 · 종류 없음 / 닿아 옮김(사람 · 몬스터) · 닻이라 안 옮김 · 퀘스트에서 몬스터가 남긴 꼬리라 안 옮김 / 1초 지나 지움.
+    //   세는 자리마다 하나(시험은 개수를 본다)
+    enum class WakeStat : uint8_t { Made = 0, NoType, MovePlayer, MoveMonster, Anchor, OwnerRule, Expired, Count };
+    unsigned long long wakeStat(WakeStat k) const { return wakeStat_[static_cast<size_t>(k)]; }
     // 부활 무적 안 걸기(`--no-spawn-invuln`) — 화면 확인을 막는 무적을 우회한다
     void SetNoSpawnInvuln(bool v) { noSpawnInvuln_ = v; }
     unsigned long long spawnInvulnApplied() const { return spawnInvulnApplied_; }
@@ -3789,6 +3793,16 @@ public:
     void DebugMakeScorch(float x, float y, int size) { MakeScorch(x, y, size); }                                   // ★ 11-22 그을음 갈래 시험
     int64_t DebugPlacedOwner(size_t i) const { return i < placed_.size() ? placed_[i].owner : kNoSession; }       // ★ 11-21 W14 +508
     void DebugPlacedBackdate(size_t i, uint32_t frames) { if (i < placed_.size()) placed_[i].createdFrame -= frames; }   // ★ 11-21 W14 +128 를 앞당김(300초 시험)
+    // ★ 11-22 순간이동 꼬리 시험 — 목적지(+700) · 지울 프레임(+136) · 곧바로 하나 놓기 · 퀘스트(4096) 갈래만 켜기(몬스터는 안 세운다) · 표식 자리
+    bool DebugPlacedDest(size_t i, float& x, float& y) const { if (i >= placed_.size()) return false; x = placed_[i].destX; y = placed_[i].destY; return true; }
+    uint32_t DebugPlacedExpire(size_t i) const { return i < placed_.size() ? placed_[i].expireFrame : 0; }
+    void DebugMakeTeleportWake(const Target& t, float ox, float oy, float dx, float dy) { MakeTeleportWake(t, ox, oy, dx, dy); }
+    void DebugSetQuestTotal(int n) { questTotal_ = n; }
+    void DebugSetMarkAt(int64_t a, int i, float x, float y) {
+        auto it = sessions_.find(a);
+        if (it == sessions_.end() || i < 0 || i >= 4) return;
+        it->second.markSet[i] = true; it->second.markX[i] = x; it->second.markY[i] = y;
+    }
     // 마지막으로 받은 피해 종류(+524) — 불꽃 1 · 독 5 처럼 **무엇에 맞았나**를 시험이 가른다
     uint8_t DebugLastDamageType(int64_t sessionId) const {
         auto it = sessions_.find(sessionId);
@@ -4932,6 +4946,7 @@ private:
                                      //                 7 = 거미 낳는 자리(ArachnaphobiaUpdate)
                                      //                 8 = 달빛 빛(MoonglowUpdate — 임자의 커서를 따라간다 · ★ 11-21 W14)
                                      //                 9 = 염동력 손(TelekinesisUpdate — 선이 통하면 임자의 커서로 · 20초 · ★ 11-21 W11)
+                                     //                 10 = 순간이동 꼬리(ExpireUpdate + TeleportWakeCollide — 밟은 사람·몬스터를 목적지로 · ★ 11-22)
         int lastZSent = -1000;   // 09-20 — 마지막으로 알린 높이(같으면 안 보낸다)
         bool landed = false;         // +16 비트 31 — 주먹이 한 번 땅에 닿았나(닿음 피해는 그 뒤에만)
         // ★ kind 6 — 바깥으로 나가는 불꽃(정화의 불꽃). 놓인 것 가운데 **처음으로 움직인다**.
@@ -4950,6 +4965,7 @@ private:
         uint8_t dmgAmount = 0;
         uint8_t dmgType = 0;
         float radius = 0.0f;         // EXTENT CIRCLE — 닿음 판정 반지름(불꽃 6)
+        float destX = 0.0f, destY = 0.0f;    // ★ 11-22 kind 10 — 순간이동 꼬리의 목적지(갱신자료 +700 두 칸)
     };
     bool CreateSpellFly(Session& s, Target target, uint8_t spell);   // createSpellFly_4FDDA0
     Target SpellFlySearchTarget(bool havePos, float px, float py, float mslX, float mslY, int64_t mslOwner,
@@ -5153,6 +5169,8 @@ private:
     void SendTeleportFx(float ox, float oy, float nx, float ny);          // netSendPointFx 137 두 번
     void SendPointFx(uint8_t op, float x, float y);                       // ★ 11-22 netSendPointFx_522FF0 — `<op> <x u16> <y u16>` 한 번
     void PlaySoundOnTarget(uint16_t id, const Target& t);                 // ★ 11-22 aud_501960(id, 유닛, 0, 0) — 그 유닛 자리 · 사람이면 임자 = 그 사람
+    void MakeTeleportWake(const Target& t, float ox, float oy, float dx, float dy);   // ★ 11-22 spellTeleportCreateWake_530560 — 옮겨지는 유닛의 옛 자리에 꼬리(목적지를 든다)
+    void TeleportWakeCollide(PlacedObj& o);                               // ★ 11-22 collideTeleportWake_4EAE30 — 꼬리에 겹친 사람·몬스터를 목적지로
     int DurBlinkCreate(DurSpell& d);                                      // spellBlink2_530310
     int DurBlinkTick(DurSpell& d);                                        // spellBlink1_530380
     // teleportToMB_4E7190 — 그 자리로 옮긴다(물리 자리·옛 자리칸 둘 다).
@@ -6624,6 +6642,7 @@ private:
     mutable unsigned long long lightningEv_[6] = {};
     // ★ 11-22 방패 그림(`SendShieldFx`) 방향을 어디서 셌나 — [0] 때린 것(`AttackSrc` 자리) · [1] 때린 이(a2 · 출처 없음) · [2] 맞은 이 바라보는 쪽(+124 · 둘 다 없음)
     unsigned long long shieldFx_[3] = {};
+    unsigned long long wakeStat_[static_cast<size_t>(WakeStat::Count)] = {};   // ★ 11-22 순간이동 꼬리 — 칸 뜻은 `WakeStat`
     // ★ 부활 무적을 아예 안 거는 진단 스위치(`--no-spawn-invuln`).
     //   CLIENT_READY 되풀이(B-1b 미결) 때문에 무적이 안 풀려 화면 확인이 통째로 막힌다.
     //   그 원인과 **따로** 나머지를 진행하려는 우회로다. 기본 끔.
