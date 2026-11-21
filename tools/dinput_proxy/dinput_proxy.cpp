@@ -14,6 +14,8 @@
 //   GetAsyncKeyState 0 (= 안 눌림). 윈도 전체 키 상태라 창과 무관하게 답한다 —
 //                    Game.exe 가 USER32 에서 들여오므로 그 수입표(IAT) 칸을 바꿔 끼운다
 //   앞에 있는지 = 「지금 앞 창이 이 프로세스 것인가」
+// ★ 11-20 — 앞에 있을 때 왼쪽 버튼 **꾹 누르기 = 계속 공격**(`HoldRepeat`). 끄기 = Scroll Lock 켜기
+// ★ 11-21 — 게임 화면 위에서 누른 것만 반복 · 주문 막대·책 같은 창 위에서 누르면 한 번만(`CursorKnown` · 커서 칸 0x5AB824)
 //
 // ※ cnc-ddraw(ddraw.dll) 도 DirectInput 을 후킹하지만 ddraw.ini 에서 꺼 두었다(no_dinput_hook=true).
 //   켜 두면 마우스는 막아 주나 키보드는 안 막는다(cnc-ddraw v7.1.0.0 src/directinput.c:92~93).
@@ -91,6 +93,45 @@ static bool InForeground()
 // DIMOUSESTATE 안 자리값 — 축 X=0 Y=4 Z=8, 버튼 0~3 = 12~15
 #define OFS_B0  12
 
+// ★ 11-20 — 꾹 누르기: 진짜 버튼이 눌린 채 이만큼 지나면 뗌·누름을 끼워 넣는다
+//   0.1초 = 서버 한 틱(1/30초)의 세 배 · 롱소드 휘두르기 8프레임(0.27초)보다 짧아 휘두르기가 끝나자마자 다음 누름이 기다리고 있다.
+//   공격이 실제로 나가는 간격은 서버의 기력(롱소드 70 · 초당 90 참)이 정한다 — 모자라면 서버가 그 누름을 버린다
+#define HOLD_REPEAT_MS  100
+
+// ★ 11-21 — 꾹 누르기는 **게임 화면 위에서 누른 것만**. 주문 막대·책 같은 창 위에서 누르면 한 번만
+//   (사용자 11-21 「공격은 누르고 있어도 계속 나가되 마법 클릭은 계속 클릭이 아니게 · 책에서 막대로 못 옮긴다」).
+//   가르는 값 = 게임이 매 프레임 정하는 커서 모양 — 창 위면 0(고르기), 게임 화면이면 14(걷기 화살표)·5(겨눔) 따위
+//   (opennox `input_c.go:405~411` · `client/gui` 커서 표 — 원본 기준).
+//   자리 0x5AB824 = 이 Game.exe(PE 시각 0x3978A3FE)에서 실측으로 찾았다 — 11-21 사용자가 커서를 화면↔주문 막대로 오가며
+//   마우스로 주문을 쓰는 동안 335번 떠서 0·5·14 만 오간 칸(옆 후보 0x6F7300 은 0·14 만 — 누름 로그에 같이 찍어 견준다).
+//   opennox 기록 자리(0x6E0384)는 이 실행 파일에선 다른 것이 들어 있어 못 쓴다(같은 책의 0x59D684 「화면 너비」 자리에 글자 "oshe").
+//   실행 파일이 바뀌어 시각이 다르면 가르기를 끄고 옛 동작(늘 반복)으로 간다 — 엉뚱한 칸을 읽지 않게
+#define CURSOR_TYPE_VA      0x5AB824u
+#define CURSOR_TYPE_VA_ALT  0x6F7300u
+#define GAME_EXE_STAMP      0x3978A3FEu
+
+static int g_cursorOk = -1;   // -1 = 아직 안 봄 · 0 = 못 믿음 · 1 = 믿음
+static bool CursorKnown()
+{
+    if (g_cursorOk >= 0) return g_cursorOk == 1;
+    const BYTE* base = (const BYTE*)GetModuleHandleA(NULL);
+    bool ok = false;
+    DWORD stamp = 0, sizeImg = 0;
+    if (base == (const BYTE*)0x400000) {
+        const IMAGE_DOS_HEADER* dos = (const IMAGE_DOS_HEADER*)base;
+        const IMAGE_NT_HEADERS32* nt = (const IMAGE_NT_HEADERS32*)(base + dos->e_lfanew);
+        stamp = nt->FileHeader.TimeDateStamp;
+        sizeImg = nt->OptionalHeader.SizeOfImage;
+        ok = stamp == GAME_EXE_STAMP && CURSOR_TYPE_VA_ALT + 4 <= 0x400000u + sizeImg;
+    }
+    g_cursorOk = ok ? 1 : 0;
+    Log("[커서 칸] 실행 파일 바탕 %p · 시각 0x%08lX · 크기 0x%lX → %s", base, stamp, sizeImg,
+        ok ? "믿음(게임 화면에서 누른 것만 반복)" : "못 믿음(옛 동작 — 늘 반복)");
+    return ok;
+}
+static DWORD CursorType()    { return *(volatile const DWORD*)CURSOR_TYPE_VA; }
+static DWORD CursorTypeAlt() { return *(volatile const DWORD*)CURSOR_TYPE_VA_ALT; }
+
 // 뒤에 있을 때 남길 이벤트 = 뗌만.
 //   마우스 축 이벤트의 dwData 는 이동량이라 0x80 비트로 누름을 가를 수 없다 — 자리값으로 먼저 가른다
 static bool KeepInBackground(bool isMouse, DWORD ofs, DWORD data)
@@ -139,9 +180,20 @@ public:
     // GetDeviceData 호출 — 성공 / 실패(안 잡힘 등). 뒤에 있는 창이 아예 안 부르는지 가르는 분모
     long  cCallOk, cCallFail;
     int   lastFg;   // -1 = 아직 모름
+    // ★ 11-20 꾹 누르기 — 진짜 왼쪽 버튼 상태 · 0 = 게임이 본 것도 누름 / 1 = 뗌을 끼워 넣어 다음 호출에 누름을 넣어야 함 ·
+    //   마지막으로 누름이 된 때 · 끼워 넣은 순번 · 끼워 넣은 뗌/누름 수
+    bool  holdDown;
+    int   holdPhase;
+    DWORD holdTick, holdSeq;
+    long  cInjUp, cInjDown;
+    // ★ 11-21 — 이번 누름이 게임 화면에서 시작했나 · 누름 갈래 셋(화면 / 창 / 칸 못 믿음) · 뗀 뒤 창 위라 누름을 안 넣고 멈춘 수
+    bool  holdWorld;
+    long  cPressWorld, cPressGui, cPressBlind, cStopGui;
 
     DevProxy(IDirectInputDeviceA* real, REFGUID g)
-        : r(real), ref(1), cFg(0), cBgKept(0), cBgDropped(0), cStateZeroed(0), cCallOk(0), cCallFail(0), lastFg(-1)
+        : r(real), ref(1), cFg(0), cBgKept(0), cBgDropped(0), cStateZeroed(0), cCallOk(0), cCallFail(0), lastFg(-1),
+          holdDown(false), holdPhase(0), holdTick(0), holdSeq(0), cInjUp(0), cInjDown(0),
+          holdWorld(false), cPressWorld(0), cPressGui(0), cPressBlind(0), cStopGui(0)
     {
         isMouse = (IsEqualGUID(g, GUID_SysMouse) != 0);
         name = isMouse ? "마우스" : (IsEqualGUID(g, GUID_SysKeyboard) ? "키보드" : "기타");
@@ -158,6 +210,51 @@ public:
         if ((int)fg == lastFg) return;
         lastFg = fg ? 1 : 0;
         LogCounts(fg ? "앞으로 옴" : "뒤로 감");
+    }
+
+    // ★ 11-20 트레일러 — 왼쪽 버튼 꾹 누르기 = 계속 공격.
+    //   정품 클라는 공격(CCAction 6)을 **누르는 순간 한 번만** 서버에 보낸다(2026-09-09 실측 — 180초 눌러 2번 ·
+    //   서버 `Server.cpp` 코드 6 주석). 서버는 버튼이 눌려 있는지 모르므로 여기서 누름을 다시 만든다 —
+    //   진짜 버튼이 눌린 채 HOLD_REPEAT_MS 가 지나면 「뗌」을, **다음 호출에** 「누름」을 그릇 끝에 붙인다.
+    //   한 호출에 둘을 같이 넣지 않는 까닭 = 게임이 한 번 읽은 것의 마지막 상태만 보면 누름 변화가 안 생긴다(짐작 — 나눠 넣으면 어느 쪽이든 성립)
+    //   진짜 버튼 이벤트가 오면 그것이 이긴다(게임이 본 상태 = 진짜 상태로 되돌림).
+    //   ⚠ 누른 채 쓰는 다른 조작(가방에서 물건 끌기 등)도 끊긴다 — 그때는 Scroll Lock 을 켠다(새 뗌만 막고, 이미 넣은 뗌의 누름은 마저 넣는다)
+    //   → 11-21 창(책·가방·주문 막대) 위에서 시작한 끌기는 이제 안 끊긴다(커서 칸으로 가름 · 위 `CursorKnown`). 게임 화면에서 시작한 끌기만 위 그대로
+    void HoldRepeat(BYTE* base, DWORD cb, LPDWORD pn, DWORD cap)
+    {
+        if (cb < 4 * sizeof(DWORD)) return;              // dwOfs · dwData · dwTimeStamp · dwSequence 를 못 채운다
+        const DWORD now = GetTickCount();
+        const DWORD n = *pn;
+        for (DWORD i = 0; i < n; i++) {
+            const DWORD* e = (const DWORD*)(base + (size_t)i * cb);
+            if (e[3] > holdSeq) holdSeq = e[3];
+            if (e[0] != OFS_B0) continue;
+            holdDown = (e[1] & 0x80) != 0;
+            holdPhase = 0;
+            holdTick = now;
+            if (!holdDown) continue;
+            // ★ 11-21 — 진짜 누름마다 갈래 셋: 칸 못 믿음 → 옛 동작(반복) · 커서 0(창 위) → 이번 누름은 한 번만 · 그 밖(게임 화면) → 반복.
+            //   커서 값은 게임이 앞 프레임에 정한 것 — 누른 자리에 커서가 있던 때다
+            if (!CursorKnown()) { holdWorld = true; cPressBlind++; continue; }
+            const DWORD ct = CursorType();
+            holdWorld = (ct != 0);
+            if (holdWorld) cPressWorld++; else cPressGui++;
+            Log("[마우스] 왼쪽 누름 — 커서 %lu (옆 칸 %lu) → %s", ct, CursorTypeAlt(), holdWorld ? "게임 화면 · 반복" : "창 · 한 번만");
+        }
+        if (!holdDown || !holdWorld || n >= cap) return; // 안 눌림 · 창에서 시작한 누름 · 그릇이 참(다음 호출에)
+        // 누른 채 커서를 창 위로 끌고 갔으면 끼워 넣지 않는다 — 창 위에서 누름을 넣으면 그 창(주문 아이콘 등)을 누른다
+        const bool overGui = CursorKnown() && CursorType() == 0;
+        DWORD data;
+        if (holdPhase == 1) {
+            if (overGui) { holdPhase = 0; holdWorld = false; cStopGui++; return; }   // 뗀 채로 멈춘다 — 진짜 뗌이 와도 뗌이라 어긋나지 않는다
+            data = 0x80; holdPhase = 0; holdTick = now; cInjDown++;
+        }
+        else if (now - holdTick >= HOLD_REPEAT_MS && !(GetKeyState(VK_SCROLL) & 1) && !overGui) { data = 0; holdPhase = 1; cInjUp++; }
+        else return;
+        DWORD* e = (DWORD*)(base + (size_t)n * cb);
+        memset(e, 0, cb);
+        e[0] = OFS_B0; e[1] = data; e[2] = now; e[3] = ++holdSeq;
+        *pn = n + 1;
     }
 
     STDMETHOD(QueryInterface)(REFIID riid, LPVOID* pp)
@@ -202,6 +299,7 @@ public:
     }
     STDMETHOD(GetDeviceData)(DWORD cb, LPDIDEVICEOBJECTDATA p, LPDWORD pn, DWORD f)
     {
+        const DWORD cap = pn ? *pn : 0;                  // ★ 11-20 — 들어올 때 *pn = 그릇 칸 수(꾹 누르기를 붙일 자리)
         HRESULT hr = r->GetDeviceData(cb, p, pn, f);
         if (FAILED(hr)) { cCallFail++; return hr; }
         cCallOk++;
@@ -211,7 +309,13 @@ public:
         bool fg = InForeground();
         NoteFg(fg);
         DWORD n = *pn;
-        if (fg) { cFg += (long)n; return hr; }
+        if (fg) {
+            cFg += (long)n;
+            if (isMouse && !(f & DIGDD_PEEK)) HoldRepeat((BYTE*)p, cb, pn, cap);   // 엿보기는 안 건드린다(같은 것을 다시 읽는다)
+            return hr;
+        }
+        // ★ 11-20 — 뒤로 가면 꾹 누르기를 잊는다(뒤에서 온 뗌을 HoldRepeat 가 못 봐 앞으로 돌아왔을 때 안 눌린 버튼을 되풀이하지 않게)
+        if (isMouse) { holdDown = false; holdPhase = 0; }
 
         // 한 칸 크기는 cb 를 따른다(DirectInput 판마다 구조체 크기가 다르다). 앞 두 칸 dwOfs·dwData 만 본다
         BYTE* base = (BYTE*)p;
@@ -355,15 +459,16 @@ static DWORD WINAPI SummaryThread(LPVOID)
 {
     for (;;) {
         Sleep(2000);
-        long m[6] = { 0 }, k[6] = { 0 };
+        long m[6] = { 0 }, k[6] = { 0 }, inj[2] = { 0 }, pr[4] = { 0 };
         EnterCriticalSection(&g_devcs);
-        if (g_mouseDev) { m[0] = g_mouseDev->cCallOk; m[1] = g_mouseDev->cCallFail; m[2] = g_mouseDev->cFg; m[3] = g_mouseDev->cBgKept; m[4] = g_mouseDev->cBgDropped; m[5] = 1; }
+        if (g_mouseDev) { m[0] = g_mouseDev->cCallOk; m[1] = g_mouseDev->cCallFail; m[2] = g_mouseDev->cFg; m[3] = g_mouseDev->cBgKept; m[4] = g_mouseDev->cBgDropped; m[5] = 1; inj[0] = g_mouseDev->cInjUp; inj[1] = g_mouseDev->cInjDown;
+                          pr[0] = g_mouseDev->cPressWorld; pr[1] = g_mouseDev->cPressGui; pr[2] = g_mouseDev->cPressBlind; pr[3] = g_mouseDev->cStopGui; }
         if (g_kbDev)    { k[0] = g_kbDev->cCallOk;    k[1] = g_kbDev->cCallFail;    k[2] = g_kbDev->cFg;    k[3] = g_kbDev->cBgKept;    k[4] = g_kbDev->cBgDropped;    k[5] = 1; }
         LeaveCriticalSection(&g_devcs);
         char vks[256 * 3 + 1]; vks[0] = 0;
         for (int i = 0; i < 256; i++) if (g_vkAsked[i]) { char t[8]; sprintf(t, "%02X ", i); strcat(vks, t); }
-        Log("[요약] 앞=%s | 마우스 호출 %ld/실패 %ld · 앞 %ld · 뒤 남김 %ld · 뒤 버림 %ld | 키보드 호출 %ld/실패 %ld · 앞 %ld · 뒤 남김 %ld · 뒤 버림 %ld | GetAsyncKeyState 호출 %ld · 앞 눌림 %ld · 뒤 막음 %ld · 물은 키 %s",
-            InForeground() ? "나" : "남", m[0], m[1], m[2], m[3], m[4], k[0], k[1], k[2], k[3], k[4],
+        Log("[요약] 앞=%s | 마우스 호출 %ld/실패 %ld · 앞 %ld · 뒤 남김 %ld · 뒤 버림 %ld · 꾹 누르기 뗌 %ld/누름 %ld · 왼쪽 누름 화면 %ld/창 %ld/칸 못 믿음 %ld · 창 위라 멈춤 %ld | 키보드 호출 %ld/실패 %ld · 앞 %ld · 뒤 남김 %ld · 뒤 버림 %ld | GetAsyncKeyState 호출 %ld · 앞 눌림 %ld · 뒤 막음 %ld · 물은 키 %s",
+            InForeground() ? "나" : "남", m[0], m[1], m[2], m[3], m[4], inj[0], inj[1], pr[0], pr[1], pr[2], pr[3], k[0], k[1], k[2], k[3], k[4],
             g_gaksCalls, g_gaksFgDown, g_gaksBgBlocked, vks[0] ? vks : "-");
     }
 }
