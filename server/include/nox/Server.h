@@ -2533,6 +2533,10 @@ public:
     //   세는 자리마다 하나(시험은 개수를 본다)
     enum class WakeStat : uint8_t { Made = 0, NoType, MovePlayer, MoveMonster, Anchor, OwnerRule, Expired, Count };
     unsigned long long wakeStat(WakeStat k) const { return wakeStat_[static_cast<size_t>(k)]; }
+    // ★ 11-22 실수(33) 갈래 — 사람: 든 무기·지팡이·방패 하나 떨굼 · 공을 든 사람(⚠ 공 밀기 안 옮김) /
+    //   몬스터: NPC(0x10 — 가방이 없어 떨굴 것 없음) · 밀기(힘 50) · 폭탄병(0x2000 — 아무것도 안 함). 세는 자리마다 하나
+    enum class FumbleStat : uint8_t { Dropped = 0, BallSkip, NpcNoBag, Pushed, Bomber, Count };
+    unsigned long long fumbleStat(FumbleStat k) const { return fumbleStat_[static_cast<size_t>(k)]; }
     // 부활 무적 안 걸기(`--no-spawn-invuln`) — 화면 확인을 막는 무적을 우회한다
     void SetNoSpawnInvuln(bool v) { noSpawnInvuln_ = v; }
     unsigned long long spawnInvulnApplied() const { return spawnInvulnApplied_; }
@@ -4843,6 +4847,10 @@ private:
     struct SpellArg {                    // server.SpellAcceptArg
         Target obj;
         float x = 0, y = 0;
+        // ★ 11-22 spellAccept 의 obj4 자리 — 날아간 주문(Magic)이 닿아 받아들일 때 그 덩어리의 자리(`GAME3_3.c:4001` 넷째 인자).
+        //   via 가 거짓이면 obj4 = 시전자(`castSpellByUser` 는 셋 다 시전자). 지금은 실수(33)의 몬스터 밀기 기점만 쓴다
+        bool via = false;
+        float viaX = 0, viaY = 0;
     };
     bool SpellByBookInsert(Session& s, const uint32_t spells[5], int count, uint32_t gap, bool targetSelf);
     void SpellCastByBook(uint32_t frame);
@@ -4976,7 +4984,8 @@ private:
     void GameServerReadyMB(Session& s);                                // gameServerReadyMB_4DD180
     int CastConfuse(int64_t obj3, const Target& targ, int lvl);                          // 4-b4 52C1E0
     int CastStun(int64_t obj3, const Target& targ, int lvl);                             // 52C2C0
-    int CastFumble(const Target& targ);                                                              // 52C060
+    int CastFumble(const Target& targ, float fromX, float fromY);                                    // 52C060 · from = obj4 자리(몬스터 밀기 기점)
+    void RandomReachablePointAround(float dist, float px, float py, float& ox, float& oy);          // sub_4ED970 — 강제 떨구기 자리
     int CastInversion(const Session& a4, int64_t obj3);                                  // 52BEB0
     int CastCurePoison(uint8_t spell, Session& a2, const Target& targ, int lvl);   // 52CDB0
     // ── 묶음 4-b5a 즉발 회복 ──
@@ -5053,7 +5062,7 @@ private:
     Target SpellFlySearchTargetPet(const Creature& k, float mslX, float mslY, const Buffs* mslBuffs, float dist) const;   // spellFlySearchTarget(pos 없음 · 주인 몬스터)
     // ★ 11-21 C11-c — 몬스터가 남을 겨눠 날리는 주문(혼란 12 · 실수 33 · 독 60 · 느림 72 — 머리 주석은 `Server.cpp`)
     bool MonsterCreateSpellFly(Creature& k, Target target, uint8_t spell);                   // createSpellFly_4FDDA0 몬스터 판
-    int MonsterFlyAccept(uint8_t spell, int64_t obj3, const Target& targ, int lvl);          // spellAccept 의 그 넷 갈래(시전자 = 몬스터)
+    int MonsterFlyAccept(uint8_t spell, int64_t obj3, const Target& targ, int lvl, float viaX, float viaY);   // spellAccept 의 그 넷 갈래(시전자 = 몬스터 · via = 날아간 것 자리)
     Target EnergyBoltSearchPet(const Creature& k, float range) const;
     // ★ 10-02 — 원본 거리 `nox_xxx_calcDistance_4E6C00` — 중심 거리 − 두 몸 크기(머리 주석은 `Server.cpp`)
     double CalcDistanceEdge(const Creature& k, const Target& t, float tx, float ty) const;
@@ -6643,6 +6652,7 @@ private:
     // ★ 11-22 방패 그림(`SendShieldFx`) 방향을 어디서 셌나 — [0] 때린 것(`AttackSrc` 자리) · [1] 때린 이(a2 · 출처 없음) · [2] 맞은 이 바라보는 쪽(+124 · 둘 다 없음)
     unsigned long long shieldFx_[3] = {};
     unsigned long long wakeStat_[static_cast<size_t>(WakeStat::Count)] = {};   // ★ 11-22 순간이동 꼬리 — 칸 뜻은 `WakeStat`
+    unsigned long long fumbleStat_[static_cast<size_t>(FumbleStat::Count)] = {};   // ★ 11-22 실수 — 칸 뜻은 `FumbleStat`
     // ★ 부활 무적을 아예 안 거는 진단 스위치(`--no-spawn-invuln`).
     //   CLIENT_READY 되풀이(B-1b 미결) 때문에 무적이 안 풀려 화면 확인이 통째로 막힌다.
     //   그 원인과 **따로** 나머지를 진행하려는 우회로다. 기본 끔.

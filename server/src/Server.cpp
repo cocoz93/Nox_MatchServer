@@ -7654,7 +7654,8 @@ bool Server::SpellAccept(uint8_t spell, Session& s, int64_t obj3, const SpellArg
             case 71:  c.durOpt = "ShockEnchantDuration"; fnc = CastBuffSpell(spell, 22, fl5, targ, c); break;
             case 12: fnc = CastConfuse(obj3, targ, fl5); break;                                   // nox_xxx_castConfuse_52C1E0
             case 74: fnc = CastStun(obj3, targ, fl5); break;                                      // nox_xxx_castStun_52C2C0
-            case 33: fnc = CastFumble(targ); break;                                               // nox_xxx_castFumble_52C060
+            case 33: fnc = CastFumble(targ, arg.via ? arg.viaX : static_cast<float>(s.posX),     // nox_xxx_castFumble_52C060 — a4 = obj4
+                                      arg.via ? arg.viaY : static_cast<float>(s.posY)); break;
             case 38: fnc = CastInversion(s, obj3); break;                                         // sub_52BEB0
             case 14: fnc = CastCurePoison(spell, s, targ, fl5); break;                       // nox_xxx_castCurePoison_52CDB0
             case 8: {                                                                          // ChannelLife — 지속(빔 없음)
@@ -7924,12 +7925,72 @@ int Server::CastStun(int64_t obj3, const Target& targ, int lvl) {
     return 1;
 }
 
-// nox_xxx_castFumble_52C060(`GAME4_2.c:9359`) — 대상 없으면 0 · 소리(주문 On → 10) · 1
-//   ⚠ 사람·NPC: 든 무기·지팡이·방패(EQUIPPED 0x100 · 클래스 0x1001000 / 0x2000000+SUBCLASS 2) 떨구기는 아이템(5) · 공 들고 있으면 밀어내기(8)
-//   ⚠ 그 밖 몬스터(SUBCLASS 0x2000 아님): 가진 것 전부 떨구기(5) + 시전자 자리에서 힘 50(소환수 물리 6)
-int Server::CastFumble(const Target& targ) {
+// nox_xxx_castFumble_52C060(`GAME4_2.c:9359~9418`) — 대상 없으면 0 · 갈래 셋 뒤 늘 켬 소리(`spellGetAud44(33, 1)`)를 대상에 · 1
+//   ★ 11-22 감사 9 — 몸통을 옮겼다.
+//   · 사람(클래스 4) 또는 NPC 몬스터(클래스 2 + SUBCLASS 0x10) — 가방 머리부터(우리 가방은 뒤에 붙이므로 **뒤에서부터**) 입은 것(+16 & 0x100) 가운데
+//     무기·지팡이(클래스 0x1001000 = `weaponClass`) 또는 방패(갑옷 0x2000000 + SUBCLASS 2)를 하나씩 강제로 떨군다(`invForceDropItem_4ED930`
+//     `GAME3_3.c:6651~6656` — 몸 둘레 50 의 트인 자리 `RandomReachablePointAround` → `drop_4ED790` = 손 버리기와 같은 `DropCarriedToWorld`)
+//     ⚠ 그 뒤 든 공(GameBall · 주인 사슬 +516)을 힘 100 으로 밀고 주인을 떼며 소리 926(`:9390~9406`) — 우리 공은 물리가 없어
+//       주인만 떼면 같은 사람이 다음 틱에 다시 줍는다 → **안 옮김**(공 물리를 옮길 때) · 셈만 `BallSkip`
+//     ⚠ NPC 몬스터는 우리에게 가방이 없어 떨굴 것이 없다 — 셈만
+//   · 그 밖(몬스터가 아니거나 · SUBCLASS 0x2000 BOMBER 가 아닌 몬스터) — 가진 것 전부 떨구기(우리 몬스터는 가방 없음) + a4(obj4)
+//     자리에서 대상에게 힘 50(`objectApplyForce_52DF80`). obj4 = 날아온 주문 덩어리(사람·몬스터 시전 모두 날려 보낸다) · 바로 걸면 시전자
+//   · BOMBER 몬스터 — 소리만
+int Server::CastFumble(const Target& targ, float fromX, float fromY) {
     if (!BuffsOf(targ)) return 0;
+    float tx = 0, ty = 0;
+    TargetXY(targ, tx, ty);                                  // 소리 자리 — 밀기 앞(정답지 밀기는 빠르기만 바꿔 이 틱 자리는 그대로)
+    if (targ.sessionId != kNoSession) {
+        Session& t = sessions_.at(targ.sessionId);
+        std::vector<uint16_t> drop;
+        for (size_t k = t.inventory.size(); k-- > 0;) {      // 가방 머리 = 우리 끝
+            const Session::Carried& c = t.inventory[k];
+            if (!c.equipped) continue;                       // +16 & 0x100
+            if (c.weaponClass || (IsArmorItem(c) && (c.subclass & 2))) drop.push_back(c.netCode);
+        }
+        for (const uint16_t nc : drop) {
+            size_t at = t.inventory.size();
+            for (size_t k = 0; k < t.inventory.size(); ++k) if (t.inventory[k].netCode == nc) { at = k; break; }
+            if (at == t.inventory.size()) continue;
+            float dx = 0, dy = 0;
+            RandomReachablePointAround(50.0f, static_cast<float>(t.posX), static_cast<float>(t.posY), dx, dy);
+            DropCarriedToWorld(t, at, dx, dy, /*dead=*/false);
+            ++fumbleStat_[static_cast<size_t>(FumbleStat::Dropped)];
+        }
+        if (!ball_.empty() && ball_[0].carrier == t.sessionId) ++fumbleStat_[static_cast<size_t>(FumbleStat::BallSkip)];
+    } else {
+        const auto tb = gt_->typeBodies.find(pets_[static_cast<size_t>(targ.pet)].type);
+        const uint32_t cls = tb != gt_->typeBodies.end() ? tb->second.cls : 0u;
+        const uint32_t sub = tb != gt_->typeBodies.end() ? tb->second.subclass : 0u;
+        if ((cls & 0x2) && (sub & 0x10)) {
+            ++fumbleStat_[static_cast<size_t>(FumbleStat::NpcNoBag)];
+        } else if (!(cls & 0x2) || !(sub & 0x2000)) {
+            ObjectApplyForce(fromX, fromY, targ, 50.0);      // `:9409` objectApplyForce(a4 + 56, 대상, 50)
+            ++fumbleStat_[static_cast<size_t>(FumbleStat::Pushed)];
+        } else {
+            ++fumbleStat_[static_cast<size_t>(FumbleStat::Bomber)];
+        }
+    }
+    const uint16_t snd = gt_->spellDefs[33].valid ? gt_->spellDefs[33].onSound : 0;   // spellGetAud44(a1, 1) — a1 = 33
+    if (snd != 0) PlaySoundAt(snd, tx, ty, 0, 0, kNoSession, targ);
     return 1;
+}
+
+// ★ 11-22 `sub_4ED970`(`GAME3_3.c:6659~6698` · Go `RandomReachablePointAround`) — 무작위 방향(−π~π)에서 1.8849558(108°)씩 돌며
+//   거리 dist 자리까지 선 추적(깃발 1)이 트인 첫 자리. 막히면 거리를 처음의 1/64 씩 줄여 64 번 · 끝내 없으면 제자리.
+//   각은 float 칸(v11)에 담고 x 는 그 앞 double 값(v6)의 cos · y 는 float 칸의 sin 이다(원본 그대로)
+void Server::RandomReachablePointAround(float dist, float px, float py, float& ox, float& oy) {
+    const float step = dist * 0.015625f;
+    float ang = static_cast<float>(-3.1415927 + 6.2831854 * static_cast<double>(NextRandomFloat()));   // randomFloat_416030(−π, π)
+    for (int n = 0; n < 64; ++n) {
+        const double a = static_cast<double>(ang) + 1.8849558;
+        ang = static_cast<float>(a);
+        const float cx = static_cast<float>(std::cos(a) * dist + px);
+        const float cy = static_cast<float>(std::sin(static_cast<double>(ang)) * dist + py);
+        if (MapTraceRay(px, py, cx, cy, 1)) { ox = cx; oy = cy; return; }
+        dist = dist - step;
+    }
+    ox = px; oy = py;
 }
 
 // sub_52BEB0(`GAME4_2.c:9295`) — 시전자(a4) 둘레 InversionRange 안 날아가는 것마다 changeOwner(그것, a3) · 소리(10) · 1
@@ -17972,11 +18033,11 @@ bool Server::MonsterCreateSpellFly(Creature& k, Target target, uint8_t spell) {
 //   · obj3 = 갱신 짐 [0] — 몬스터면 `kNoSession`(도운 사람 기록 `sub_4E7540` 은 둘 다 사람일 때만) · 되받아쳐 사람이 됐으면 그 사람
 //   · 머리 거르기(`:211~217`) — 0x80(대상이 유닛 아님)은 우리 대상이 늘 유닛 · 깃발 든 사람 거절(0x80000)은 이 넷의 실물 깃발에 없다
 //   · 돌림값 −1 = 이 넷이 아님(부르는 쪽이 날리기 전에 이미 거른다)
-int Server::MonsterFlyAccept(uint8_t spell, int64_t obj3, const Target& targ, int lvl) {
+int Server::MonsterFlyAccept(uint8_t spell, int64_t obj3, const Target& targ, int lvl, float viaX, float viaY) {
     const int fl5 = lvl > 5 ? 5 : lvl;
     switch (spell) {
         case 12: return CastConfuse(obj3, targ, fl5);                        // nox_xxx_castConfuse_52C1E0
-        case 33: return CastFumble(targ);                                    // nox_xxx_castFumble_52C060 — ⚠ 떨구기는 사람 판과 같이 안 옮김
+        case 33: return CastFumble(targ, viaX, viaY);                        // nox_xxx_castFumble_52C060 — ★ 11-22 몸통 · a4 = 날아간 것
         case 60: return CastPoison(obj3, targ, fl5);                         // castPoison_52C720
         case 72: {                                                           // castSlow — 사람 판 72 갈래와 같은 BuffConf
             BuffConf c;
@@ -19681,13 +19742,15 @@ void Server::UpdateMissiles(uint32_t frame) {
                                 const bool a2Gone = PetIndexByNet(m.casterNet) < 0;
                                 const bool obj3Gone = (m.ownerNet != 0) ? (m.ownerPet < 0) : (m.ud0 == kNoSession);
                                 const int fnc = (a2Gone || obj3Gone) ? 0
-                                              : MonsterFlyAccept(m.spell, (m.ownerNet != 0) ? kNoSession : m.ud0, HitTargetOf(hk, hSessionId, hIdx), m.level);
+                                              : MonsterFlyAccept(m.spell, (m.ownerNet != 0) ? kNoSession : m.ud0, HitTargetOf(hk, hSessionId, hIdx), m.level,
+                                                                 m.posX, m.posY);   // ★ 11-22 obj4 = 날아간 것
                                 ++castStat_[static_cast<size_t>(fnc > 0 ? CastStat::FlyHit : CastStat::FlyLost)];
                             } else {
                             auto casterIt = sessions_.find(m.ud2);
                             if (casterIt != sessions_.end()) {
                                 SpellArg arg;
                                 arg.obj = HitTargetOf(hk, hSessionId, hIdx);
+                                arg.via = true; arg.viaX = m.posX; arg.viaY = m.posY;   // ★ 11-22 obj4 = 날아가는 것(실수의 몬스터 밀기 기점)
                                 SpellAccept(m.spell, casterIt->second, m.ud0, arg, m.level);   // (ud[3], ud[2], ud[0], 날아가는 것, 대상)
                             }
                             }

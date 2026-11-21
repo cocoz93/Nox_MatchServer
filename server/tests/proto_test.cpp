@@ -27564,7 +27564,7 @@ void TestMonsterTargetSpells1121() {
         srv->DebugSetPetFacing(0, nox::DirFromVec(1.0, 0.0));
     };
     const nox::Target none{};
-    // ① 맵 몬스터가 a 에게 넷 — Magic 하나(몸 반지름 12 + 4 앞) · 짐 [0]·[2] = 그 몬스터 · 세기 3(아레나) · 대상 a · 닿으면 효과 · 실수는 떨구기를 안 옮겨 받아들이기만
+    // ① 맵 몬스터가 a 에게 넷 — Magic 하나(몸 반지름 12 + 4 앞) · 짐 [0]·[2] = 그 몬스터 · 세기 3(아레나) · 대상 a · 닿으면 효과 · 실수는 a 가방이 비어 떨굴 것 없이 받아들이기만(떨구기는 `TestFumble1122`)
     for (const uint8_t sp : { uint8_t(12), uint8_t(33), uint8_t(60), uint8_t(72) }) {
         nox::CSyncHost srv; uint32_t ms = 0; mk(srv, 1335, 1200.0f, 1000.0f);
         const uint16_t kn = srv->DebugPetNet(0);
@@ -30447,6 +30447,177 @@ void TestTeleportWake1122() {
     }
     std::printf("  11-22 — 순간이동 꼬리: 대상에게·점멸·표식·무작위 표식 모두 옛 자리에 꼬리(목적지 · 임자 · 1초) · 만든 프레임 안 닿음 · +30 닿음/+31 지움 · "
                 "닻 · 퀘스트 몬스터 꼬리(대조 둘) · 몬스터 옮김 · 투명은 소리만 · 닿는 거리 10 + 몸 반지름(안팎 2)\n");
+}
+
+// ── 11-22 실수(33) — 사람: 입은 무기·지팡이·방패를 몸 둘레 50 의 트인 자리로 강제로 떨굼 / 몬스터: NPC · 밀기 50 · 폭탄병 / 늘 켬 소리 ─────────
+//   `castFumble_52C060`(`GAME4_2.c:9359~9418`) · `invForceDropItem_4ED930` · `sub_4ED970`(`GAME3_3.c:6651~6698`)
+//   갈래마다 개수: 떨굼(차례 · 자리) · 안 입은 것·방패 아닌 갑옷 그대로 · 벽이면 거리를 줄임 · 몬스터 다섯(밀기 둘 · NPC 둘 · 폭탄병) ·
+//   날아온 덩어리가 미는 기점 · 공 든 사람(셈만)
+void TestFumble1122() {
+    const std::string a = "10.11.22.81:9781", b = "10.11.22.82:9782";
+    using FS = nox::Server::FumbleStat;
+    constexpr uint16_t kOn = 333;
+    char msg[480];
+    auto snd = [](nox::CSyncHost& srv, uint16_t id) -> unsigned long long {
+        const auto& m = srv->soundsDroppedIds();
+        const auto it = m.find(id);
+        return it == m.end() ? 0ull : it->second;
+    };
+    auto mk = [&](nox::CSyncHost& srv, uint32_t& ms, std::vector<nox::OutPacket>& out) {
+        srv->SetSpellDef(33, 10, 0x1000000u | 0x4u, { 1, 2 }, 0, kOn, 0);   // 겨눔(0x4) — 남에게는 날린다
+        srv->SetMagicType(1237, 50, 10.0f, 0x4000);
+        srv.DebugEnterGame(a, 1181, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 1182, false, nox::CharClass::Warrior);
+        srv->DebugTeleport(Sid(srv, a), 1000.0f, 1000.0f);
+        srv->DebugTeleport(Sid(srv, b), 1100.0f, 1000.0f);
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.TakeOut(out); out.clear();
+    };
+    auto item = [](uint16_t nc, bool weapon, uint32_t sub, bool equipped) {
+        nox::Session::Carried c;
+        c.netCode = nc; c.type = static_cast<uint16_t>(900 + nc % 100);
+        c.equipped = equipped; c.equipBit = weapon ? 0x1000u : 0x2u;
+        c.isWeapon = weapon; c.weaponClass = weapon; c.subclass = sub;
+        return c;
+    };
+    auto dropDist = [](nox::CSyncHost& srv, uint16_t nc, int& x, int& y) -> double {
+        if (!srv->DebugStaticPos(nc, x, y)) return -1.0;
+        return std::hypot(x - 1100.0, y - 1000.0);
+    };
+
+    // ① 사람 — 든 무기(7101) · 입은 방패(7102 · SUBCLASS 2) 떨굼 / 안 입은 무기(7103) · 입은 투구(7104 · SUBCLASS 1) 그대로.
+    //    자리 = 몸 둘레 50(벽 없음 — 첫 각에서 트인다) · 차례 = 가방 머리부터(나중에 넣은 방패 먼저) · 든 무기 칸 비움 · 켬 소리 하나
+    {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        mk(srv, ms, out);
+        const int64_t sb = Sid(srv, b);
+        srv->DebugHoldItem(sb, item(7101, true, 0x1, true));
+        srv->DebugGiveCarried(sb, item(7102, false, 0x2, true));
+        srv->DebugGiveCarried(sb, item(7103, true, 0x1, false));
+        srv->DebugGiveCarried(sb, item(7104, false, 0x1, true));
+        const unsigned long long s0 = snd(srv, kOn);
+        const bool ok = srv->DebugSpellAcceptOn(Sid(srv, a), 33, 1, nox::Target{ sb, -1 }, 1100.0f, 1000.0f);
+        srv.TakeOut(out);
+        std::vector<uint16_t> order;
+        for (const auto& m : FlattenTo(out, b))
+            if (m.size() == 5 && m[0] == static_cast<uint8_t>(nox::Op::REPORT_DROP)) order.push_back(static_cast<uint16_t>(m[1] | (m[2] << 8)));
+        const auto inv = srv->DebugInventory(sb);
+        auto has = [&](uint16_t nc) { for (const auto& c : inv) if (c.netCode == nc) return true; return false; };
+        int x1 = 0, y1 = 0, x2 = 0, y2 = 0;
+        const double d1 = dropDist(srv, 7101, x1, y1), d2 = dropDist(srv, 7102, x2, y2);
+        std::snprintf(msg, sizeof(msg), "① 사람 — 받음 %d · 떨굼 %llu(2) · 차례 %u,%u(7102,7101) · 가방 7101 %d 7102 %d 7103 %d 7104 %d · 거리 %.1f %.1f(50) · 든 무기 %d · 소리 %llu(1) · 공 %llu",
+                      ok ? 1 : 0, srv->fumbleStat(FS::Dropped), order.size() > 0 ? order[0] : 0u, order.size() > 1 ? order[1] : 0u,
+                      has(7101) ? 1 : 0, has(7102) ? 1 : 0, has(7103) ? 1 : 0, has(7104) ? 1 : 0, d1, d2,
+                      srv->DebugHeld(sb) != nullptr ? 1 : 0, snd(srv, kOn) - s0, srv->fumbleStat(FS::BallSkip));
+        Check(ok && srv->fumbleStat(FS::Dropped) == 2 && order.size() == 2 && order[0] == 7102 && order[1] == 7101 &&
+              !has(7101) && !has(7102) && has(7103) && has(7104) && std::fabs(d1 - 50.0) < 1.0 && std::fabs(d2 - 50.0) < 1.0 &&
+              srv->DebugHeld(sb) == nullptr && snd(srv, kOn) - s0 == 1 && srv->fumbleStat(FS::BallSkip) == 0, msg);
+    }
+    // ② 벽에 둘러싸임 — 둘레 여덟 칸이 X 자 벽이면 50 은 어느 쪽도 막힌다 → 거리를 줄여 가며 트인 자리(0 보다 크고 50 보다 작음 · 선이 트임)
+    {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        mk(srv, ms, out);
+        const int64_t sb = Sid(srv, b);
+        srv->SetWalls({ { 46, 42 }, { 47, 42 }, { 48, 42 }, { 46, 43 }, { 48, 43 }, { 46, 44 }, { 47, 44 }, { 48, 44 } });   // b(1100,1000) = 칸 (47,43)
+        srv->DebugHoldItem(sb, item(7201, true, 0x1, true));
+        const bool ok = srv->DebugSpellAcceptOn(Sid(srv, a), 33, 1, nox::Target{ sb, -1 }, 1100.0f, 1000.0f);
+        int x = 0, y = 0;
+        const double d = dropDist(srv, 7201, x, y);
+        const bool clear = srv->DebugTraceRay(1100.0f, 1000.0f, static_cast<float>(x), static_cast<float>(y));
+        const bool far50 = srv->DebugTraceRay(1100.0f, 1000.0f, 1150.0f, 1000.0f) || srv->DebugTraceRay(1100.0f, 1000.0f, 1050.0f, 1000.0f);
+        std::snprintf(msg, sizeof(msg), "② 벽 — 받음 %d · 떨굼 %llu · 자리 (%d,%d) 거리 %.1f(0~40) · 선 트임 %d · 50 동서 트임 %d(0 — 시험 전제)",
+                      ok ? 1 : 0, srv->fumbleStat(FS::Dropped), x, y, d, clear ? 1 : 0, far50 ? 1 : 0);
+        Check(ok && srv->fumbleStat(FS::Dropped) == 1 && d > 0.5 && d < 40.0 && clear && !far50, msg);
+    }
+    // ③ 몬스터 다섯 — 시전자 a(1000,1000) 에서 남동(1100,1200)의 몬스터를 바로 걸면: 보통 몬스터 · 몬스터가 아닌 것(폭탄병 비트가 있어도)은 힘 50
+    //    (질량 10 → 10×50÷10 = 50 만큼 a 반대쪽으로) · NPC(0x10)는 폭탄병 비트가 같이 있어도 NPC 갈래 · 폭탄병(0x2000)만이면 그대로. 소리는 늘 하나
+    struct Mc { uint32_t cls, sub; int want; };   // want 0 밀기 · 1 NPC · 2 폭탄병
+    for (const Mc c : { Mc{ 0x2, 0x0, 0 }, Mc{ 0x2, 0x10, 1 }, Mc{ 0x2, 0x2000, 2 }, Mc{ 0x2, 0x2010, 1 }, Mc{ 0x0, 0x2000, 0 } }) {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        mk(srv, ms, out);
+        nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = c.cls; body.subclass = c.sub; body.mass = 10.0f;
+        srv->SetTypeBody(nox::kCarnivorousPlantType, body);
+        srv->DebugSpawnPet(nox::kCarnivorousPlantType, 1100.0f, 1200.0f, Sid(srv, std::string()));
+        ms += 34; srv.Tick(ms, out);
+        double x0 = 0, y0 = 0; srv->DebugPetXY(0, x0, y0);
+        const unsigned long long s0 = snd(srv, kOn);
+        const bool ok = srv->DebugSpellAcceptOn(Sid(srv, a), 33, 1, nox::Target{ nox::kNoSession, 0 }, 1100.0f, 1200.0f);
+        double x1 = 0, y1 = 0; srv->DebugPetXY(0, x1, y1);
+        const double ex = c.want == 0 ? 50.0 * 100.0 / std::hypot(100.0, 200.0) : 0.0, ey = c.want == 0 ? 50.0 * 200.0 / std::hypot(100.0, 200.0) : 0.0;
+        const bool moved = std::fabs((x1 - x0) - ex) < 0.5 && std::fabs((y1 - y0) - ey) < 0.5;
+        std::snprintf(msg, sizeof(msg), "③ 몬스터 클래스 %#x 서브 %#x — 받음 %d · 몬스터 %zu · 옮김 (%.1f,%.1f) 기대 (%.1f,%.1f) · 밀기 %llu · NPC %llu · 폭탄병 %llu · 소리 %llu(1)",
+                      c.cls, c.sub, ok ? 1 : 0, srv->pets(), x1 - x0, y1 - y0, ex, ey, srv->fumbleStat(FS::Pushed), srv->fumbleStat(FS::NpcNoBag),
+                      srv->fumbleStat(FS::Bomber), snd(srv, kOn) - s0);
+        Check(ok && srv->pets() == 1 && moved && srv->fumbleStat(FS::Pushed) == (c.want == 0 ? 1u : 0u) && srv->fumbleStat(FS::NpcNoBag) == (c.want == 1 ? 1u : 0u) &&
+              srv->fumbleStat(FS::Bomber) == (c.want == 2 ? 1u : 0u) && snd(srv, kOn) - s0 == 1 && srv->fumbleStat(FS::Dropped) == 0, msg);
+    }
+    // ④ 날아온 덩어리가 미는 기점 — a 가 동쪽 몬스터(1100,1000)에 실수를 날린 뒤 a 를 몬스터 남쪽(1100,1250)으로 옮긴다.
+    //    기점이 덩어리면 서쪽에서 맞아 동쪽으로 밀리고(+50 · 0) · 시전자 자리면 북쪽(0 · −50)으로 밀린다
+    {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        mk(srv, ms, out);
+        srv->DebugTeleport(Sid(srv, b), 3000.0f, 3000.0f);
+        nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2; body.mass = 10.0f;
+        srv->SetTypeBody(nox::kCarnivorousPlantType, body);
+        srv->DebugSpawnPet(nox::kCarnivorousPlantType, 1100.0f, 1000.0f, Sid(srv, std::string()));
+        ms += 34; srv.Tick(ms, out);
+        double x0 = 0, y0 = 0; srv->DebugPetXY(0, x0, y0);
+        srv->DebugAimAt(Sid(srv, a), 1100, 1000);
+        srv->DebugFillMana(Sid(srv, a));
+        CastAndWait(srv, a, 33, false, ms, out);
+        const size_t flying = srv->MissileCount();
+        srv->DebugTeleport(Sid(srv, a), 1100.0f, 1250.0f);
+        for (int k = 0; k < 120 && srv->MissileCount() > 0; ++k) { ms += 34; srv.Tick(ms, out); }
+        double x1 = 0, y1 = 0; srv->DebugPetXY(0, x1, y1);
+        std::snprintf(msg, sizeof(msg), "④ 덩어리 기점 — 날던 것 %zu(1) · 남은 것 %zu · 밀기 %llu · 옮김 (%.1f,%.1f) 기대 동쪽 (+50,0)",
+                      flying, srv->MissileCount(), srv->fumbleStat(FS::Pushed), x1 - x0, y1 - y0);
+        Check(flying == 1 && srv->MissileCount() == 0 && srv->fumbleStat(FS::Pushed) == 1 && (x1 - x0) > 45.0 && std::fabs(y1 - y0) < 5.0, msg);
+    }
+    // ⑤ 공 든 사람 — 공 밀기는 안 옮겨 셈만 오르고 든 사람은 그대로(대조 = ① 의 공 0)
+    {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        mk(srv, ms, out);
+        const int64_t sb = Sid(srv, b);
+        srv->StartFlagBall(1100, 1000, 1000, 1400, 1000, 600);
+        srv->DebugSetTeam(sb, 1);
+        srv->DebugSetPos(sb, 1100, 1000);
+        srv->DebugUpdateBall(); srv.TakeOut(out); out.clear();
+        const bool held = srv->BallCarrier() == sb;
+        const bool ok = srv->DebugSpellAcceptOn(Sid(srv, a), 33, 1, nox::Target{ sb, -1 }, 1100.0f, 1000.0f);
+        std::snprintf(msg, sizeof(msg), "⑤ 공 — 들었음 %d(시험 전제) · 받음 %d · 공 셈 %llu(1) · 그대로 듦 %d",
+                      held ? 1 : 0, ok ? 1 : 0, srv->fumbleStat(FS::BallSkip), srv->BallCarrier() == sb ? 1 : 0);
+        Check(held && ok && srv->fumbleStat(FS::BallSkip) == 1 && srv->BallCarrier() == sb, msg);
+    }
+    // ⑥ 몬스터가 날린 실수(`MonsterFlyAccept`) — 맵 몬스터(1100,880 · 남쪽을 봄)가 b 의 식물(1100,1000)에 날리면 북쪽에서 맞아 남쪽으로(0 · +50)
+    {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        mk(srv, ms, out);
+        srv->SetSpellDef(33, 0, 0x222000b5u, { 3, 5, 7 }, 0, kOn, 0);   // thing.bin 실수 깃발(몬스터 시험 C11-c 와 같음)
+        srv->DebugTeleport(Sid(srv, a), 3000.0f, 3000.0f);
+        srv->DebugTeleport(Sid(srv, b), 3200.0f, 3000.0f);
+        constexpr uint16_t kCaster = 1335;
+        srv->SetMonsterAnim(kCaster, 7, 8, 2, false);
+        nox::Server::PhysBody cb; cb.shape = 2; cb.r = 12.0f; cb.cls = 0x2;
+        srv->SetTypeBody(kCaster, cb);
+        nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2; body.mass = 10.0f;
+        srv->SetTypeBody(nox::kCarnivorousPlantType, body);
+        srv->DebugSpawnPet(kCaster, 1100.0f, 880.0f, Sid(srv, std::string()));
+        srv->DebugSpawnPet(nox::kCarnivorousPlantType, 1100.0f, 1000.0f, Sid(srv, b));
+        ms += 34; srv.Tick(ms, out);
+        srv->DebugSetPetCastNextAll(0, 0xFFFFFF00u);
+        srv->DebugSetPetFacing(0, nox::DirFromVec(0.0, 1.0));
+        double x0 = 0, y0 = 0; srv->DebugPetXY(1, x0, y0);
+        const bool cast = srv->DebugPetCastNow(0, 33, nox::Target{ nox::kNoSession, 1 });
+        const size_t flying = srv->MissileCount();
+        for (int k = 0; k < 120 && srv->MissileCount() > 0; ++k) { ms += 34; srv.Tick(ms, out); }
+        double x1 = 0, y1 = 0; srv->DebugPetXY(1, x1, y1);
+        std::snprintf(msg, sizeof(msg), "⑥ 몬스터가 날림 — 걸음 %d · 날던 것 %zu(1) · 남은 것 %zu · 밀기 %llu · 옮김 (%.1f,%.1f) 기대 남쪽 (0,+50)",
+                      cast ? 1 : 0, flying, srv->MissileCount(), srv->fumbleStat(FS::Pushed), x1 - x0, y1 - y0);
+        Check(cast && flying == 1 && srv->MissileCount() == 0 && srv->fumbleStat(FS::Pushed) == 1 && (y1 - y0) > 45.0 && std::fabs(x1 - x0) < 5.0, msg);
+    }
+    std::printf("  11-22 — 실수: 사람은 입은 무기·방패만 몸 둘레 50 으로(가방 머리부터 · 벽이면 줄임) · 몬스터 밀기 50(기점 = 날아온 덩어리) · NPC · 폭탄병 · "
+                "공 든 사람은 셈만 · 켬 소리 늘 하나 · 몬스터가 날린 것도 덩어리 기점\n");
 }
 
 // ★ 11-20 트레일러 전사 2 — 수리검·차크람(던지기 `GAME4_3.c:4327~4419` · 날기 `updateChakramInMotion_53DCC0` · 맞기 `collideChakram_4EAF00`)
@@ -42995,6 +43166,7 @@ int main() {
     TestLightningFx1122();            // ★ 11-22 번개 셋(그림 130·129 · 소리 32·78 · NO_SPELL_TARGET)
     TestShieldFx1122();               // ★ 11-22 방패 그림 0x80(넷코드 · 9칸 방향 출처 셋)
     TestTeleportWake1122();           // ★ 11-22 순간이동 꼬리(옛 자리 1초 · 밟으면 목적지로)
+    TestFumble1122();                 // ★ 11-22 실수(사람 떨굼 · 몬스터 밀기 · NPC · 폭탄병 · 공)
     TestConnectZeroTail();
     TestReconnectAfterClose();
     TestSessionIds();

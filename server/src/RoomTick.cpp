@@ -284,6 +284,12 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                     srv.wakeStat(WS::Made), srv.wakeStat(WS::NoType), srv.wakeStat(WS::MovePlayer), srv.wakeStat(WS::MoveMonster),
                     srv.wakeStat(WS::Anchor), srv.wakeStat(WS::OwnerRule), srv.wakeStat(WS::Expired));
         }
+        {
+            using FS = nox::Server::FumbleStat;   // ★ 11-22 실수(33)
+            srv.Log("[실수] 떨굼 %llu · 공 든 사람(공 밀기 안 옮김) %llu · NPC(가방 없음) %llu · 밀기 %llu · 폭탄병 %llu\n",
+                    srv.fumbleStat(FS::Dropped), srv.fumbleStat(FS::BallSkip), srv.fumbleStat(FS::NpcNoBag),
+                    srv.fumbleStat(FS::Pushed), srv.fumbleStat(FS::Bomber));
+        }
         // ★ 10-01 — 클라 대체 무기 알림 `e0`(비움 · 가방에 없음 · 맞음 · 직업·힘 안 맞아 `e0 0 01` 되돌림)
         srv.Log("[대체무기] 비움 %llu · 없음 %llu · 맞음 %llu · 되돌림 %llu\n", srv.secondaryWeaponStat(0),
                     srv.secondaryWeaponStat(1), srv.secondaryWeaponStat(2), srv.secondaryWeaponStat(3));
