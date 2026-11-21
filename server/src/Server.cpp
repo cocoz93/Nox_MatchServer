@@ -5110,7 +5110,7 @@ void Server::DoorUnlockQuest(size_t di) {
 }
 
 // ★ 09-29 Z1-A — `nox_xxx_collideDoor_4E8AC0(문, 닿은 것)`(`GAME3_3.c:3383~3516` · 열쇠 찾기 `DoorCheckKey` `server/object_door.go:57~92`).
-//   ① 닫힘 각도일 때만(`:3407` +12 == +4) ② 마법 잠금(+508 · SPELL_LOCK)은 우리에게 없다 — 늘 비어 있다
+//   ① 닫힘 각도일 때만(`:3407` +12 == +4) ② 마법 잠금(+508 · SPELL_LOCK) — ★ 11-21 W12 로 들어왔다(아래 갈래 · 머리 주석은 `CastLock`)
 //   ③ 잠김 0 → 끝 ④ 잠김 5(장치) → 「…LockedMechanism」 ⑤ 열쇠 없음 → 소리 + `f0 21` 「…LockedKey」(잠김 종류를 끝 바이트에)
 //   ⑥ 열쇠 있음 → 잠김 0 · 짝 문도 0(`fnFindCloseDoors_4E8340`) · 퀘스트면 `f0 0f` · 소리 234(Unlock) · 열쇠 지움(`4d` — `sub_4ED0C0`)
 //   ④⑤ 의 말은 1.5초에 한 번(정답지는 실시간 ms 한 칸을 모든 문·사람이 같이 쓴다 — 우리는 프레임으로 센다)
@@ -5121,6 +5121,24 @@ void Server::DoorCollide(size_t di, Session& s) {
     WorldProp& d = props_[di];
     const int coarse = (32 * static_cast<int>(d.fine) / 256) & 31;
     if (coarse != static_cast<int>(d.angle)) { ++doorTouch_[static_cast<size_t>(DoorTouch::NotClosed)]; return; }
+    // ★ 11-21 W12 — 마법 잠김(`GAME3_3.c:3408~3428`). +508 이 차 있으면 ① 끝 프레임(+136)이 지났으면 비우고 아래 열쇠 잠김으로 이어 간다
+    //   ② 아니고 닿은 이가 건 사람이 아니면 1.5초에 한 번(열쇠 잠김과 **같은 시계** `qword_5d4594_1567940`) 소리 244/240 + 「…LockedMagic」 · 끝
+    //   ③ 건 사람이면 아래 열쇠 잠김으로 이어 간다(그 사람에게 마법 잠김은 없는 것)
+    if (d.lockBy != kNoSession) {
+        if (d.teamMsgFrame <= frame_) {
+            d.lockBy = kNoSession;
+            ++lockStat_[static_cast<size_t>(LockStat::Expired)];
+        } else if (d.lockBy != s.sessionId) {
+            if (frame_ < doorLockMsgFrame_) { ++lockStat_[static_cast<size_t>(LockStat::TouchQuiet)]; return; }
+            doorLockMsgFrame_ = frame_ + kServerTickRate * 3 / 2 + 1;
+            PlaySoundAt(d.gate ? 244 : 240, static_cast<float>(d.x), static_cast<float>(d.y));   // GateLocked · WoodenDoorLocked
+            SendPriMsg(s, d.gate ? "objcoll.c:GateLockedMagic" : "objcoll.c:DoorLockedMagic");
+            ++lockStat_[static_cast<size_t>(LockStat::Touch)];
+            return;
+        } else {
+            ++lockStat_[static_cast<size_t>(LockStat::OwnerTouch)];
+        }
+    }
     if (d.lock == 0) { ++doorTouch_[static_cast<size_t>(DoorTouch::Unlocked)]; return; }
     // 1.5초 — `ticks − 지난 ms <= 0x5DC` 면 말 없이 끝(`:3413~3417`). 30fps 에서 45프레임 이하 = 조용
     auto quiet = [&]() {
@@ -6586,6 +6604,10 @@ void Server::UpdatePlayerMovement(uint32_t frame) {
                         }
                     } else if (p.lock != 0) {
                         ++doorTouch_[static_cast<size_t>(DoorTouch::SpinLocked)];
+                    } else if (p.lockBy != kNoSession && p.lockBy != s.sessionId) {
+                        // ★ 11-21 W12 — 마법 잠김(+508 = `v3[127]`)이 남의 것이면 안 돈다(`GAME5.c:2194~2195` `!v18 || v18 == v7`).
+                        //   여기서는 끝 프레임을 안 본다 — 풀림은 닿음 함수(`DoorCollide`)만 한다(원본 그대로)
+                        ++lockStat_[static_cast<size_t>(LockStat::SpinBlocked)];
                     } else {
                         const double rx = s.posX - p.x, ry = s.posY - p.y;
                         const double cross = dirx * ry - diry * rx;
@@ -7684,6 +7706,7 @@ bool Server::SpellAccept(uint8_t spell, Session& s, int64_t obj3, const SpellArg
                 fnc = DurNew(spell, s.sessionId, obj3, false, arg, lvl, f, 0) ? 1 : 0;
                 break;
             }
+            case 44: fnc = CastLock(s); break;                                                // ★ 11-21 W12 nox_xxx_castLock_52CE90 — 함수 갈래(머리 주석은 `CastLock`)
             case 21: {                                                                         // ★ 11-21 W6 TurnUndead(언데드 쫓기) — 지속 · dt 70(`spells.go:252~253`)
                 DurFns f;                                                                      //   갱신 `531410` 은 0 만 돌려준다 — 없는 것과 같다
                 f.create = &Server::DurTurnUndeadCreate;
@@ -9219,6 +9242,62 @@ void Server::SendInterestingId(Session& s, uint16_t net, uint16_t type, uint8_t 
     const uint8_t msg[7] = { static_cast<uint8_t>(Op::INTERESTING_ID), static_cast<uint8_t>(net), static_cast<uint8_t>(net >> 8),
                              static_cast<uint8_t>(type), static_cast<uint8_t>(type >> 8), onOff, kind };
     EmitImportantRaw(s, msg, sizeof(msg));
+}
+
+// ★ 11-21 트레일러 위저드 W12 — 잠그기(SPELL_LOCK 44). 원본 `spells.go` 함수 갈래 → `nox_xxx_castLock_52CE90`(`GAME4_2.c:9856~9884`).
+//   · 찾기 `sub_52CF90`(9887~9914) — 시전자(a4) 둘레 ±150 사각형의 문(+8 & 0x80) 가운데 거리² ≤ 22500 이고 지금까지보다 **작은** 것,
+//     그리고 시전자 → 문짝 가운데(문 자리 + 표값[지금 거친각 +12] × 0.5)로 선 추적(깃발 0)이 통하는 것. 처음 최솟값 = 1e8(1287568416 = 0x4CBEBC20).
+//     거리²는 float 에 담아 견준다(`v8`). 사각형 겹침은 거리 150 보다 넓어(150 안의 문은 늘 그 사각형과 겹친다) 거리만 본다
+//   · 못 찾으면 0(함수 갈래 0 — 받기 실패 · 소리 PermanentFizzle 은 10)
+//   · 그 문의 +508 이 차 있고 시전자가 아니면 「ExecSpel.c:DoorAlreadyLocked」 · 0. 끝 프레임이 지났어도 +508 은 누가 닿기 전까지 남아 막는다(원본 그대로)
+//   · 아니면 +508 = 시전자 · +136 = 지금 + 60초 → 둘레 잠그기 `sub_52D060`(9917~9931) — 그 문의 벽 칸(+16·+20 = `DoorWallCell`) 모서리
+//     ±34 사각형과 충돌 상자가 겹치는 문 **전부**(짝 칸을 안 따진다 · 찾은 문 자신도 든다)에 같은 시전자·끝 프레임(`sub_52CE60` 9848~9853)
+//     → 시전 소리(spellGetAud44(44, 0))를 찾은 문 자리에 · 1
+//   ⚠ 원본은 몬스터가 닿아도 잠김을 본다(`collideDoor` a3 = 아무 물체) — 우리 문 닿음은 사람만 본다(`DoorCollide` 머리 주석의 안 옮긴 것과 같음)
+int Server::CastLock(Session& s) {
+    const float cx = static_cast<float>(s.posX), cy = static_cast<float>(s.posY);
+    size_t found = props_.size();
+    float bestD = 1.0e8f;
+    for (size_t i = 0; i < props_.size(); ++i) {
+        const WorldProp& p = props_[i];
+        if (p.kind != PropKind::Door) continue;
+        const double dx = static_cast<double>(cx) - p.x, dy = static_cast<double>(cy) - p.y;
+        const float d2 = static_cast<float>(dy * dy + dx * dx);
+        if (!(d2 <= 22500.0f && d2 < bestD)) continue;
+        const int coarse = (32 * static_cast<int>(p.fine) / 256) & 31;
+        const float tx = static_cast<float>(static_cast<double>(kDoorWallTable[coarse][0]) * 0.5 + p.x);
+        const float ty = static_cast<float>(static_cast<double>(kDoorWallTable[coarse][1]) * 0.5 + p.y);
+        if (!MapTraceRay(cx, cy, tx, ty, 0)) continue;
+        found = i;
+        bestD = d2;
+    }
+    if (found == props_.size()) { ++lockStat_[static_cast<size_t>(LockStat::NoDoor)]; return 0; }
+    WorldProp& d = props_[found];
+    if (d.lockBy != kNoSession && d.lockBy != s.sessionId) {
+        SendPriMsg(s, "ExecSpel.c:DoorAlreadyLocked");
+        ++lockStat_[static_cast<size_t>(LockStat::Already)];
+        return 0;
+    }
+    const uint32_t until = frame_ + 60u * static_cast<uint32_t>(kServerTickRate);
+    d.lockBy = s.sessionId;
+    d.teamMsgFrame = until;
+    int gx = 0, gy = 0;
+    DoorWallCell(d, gx, gy);
+    const double rx0 = 23.0 * gx - 34.0, rx1 = 23.0 * gx + 34.0, ry0 = 23.0 * gy - 34.0, ry1 = 23.0 * gy + 34.0;
+    for (auto& o : props_) {
+        if (o.kind != PropKind::Door) continue;
+        double r = 0.0;
+        auto tb = gt_->typeBodies.find(o.type);
+        if (tb != gt_->typeBodies.end()) r = static_cast<double>(tb->second.r);
+        if (!(o.x - r < rx1 && o.x + r > rx0 && o.y - r < ry1 && o.y + r > ry0)) continue;   // `DoorCollide` 짝 찾기와 같은 겹침(`server/map.go:305~306`)
+        o.lockBy = s.sessionId;
+        o.teamMsgFrame = until;
+        ++lockStat_[static_cast<size_t>(LockStat::DoorsLocked)];
+    }
+    const uint16_t snd = gt_->spellDefs[44].valid ? gt_->spellDefs[44].castSound : 0;   // spellGetAud44(spell, 0)
+    if (snd) PlaySoundAt(snd, static_cast<float>(d.x), static_cast<float>(d.y));
+    ++lockStat_[static_cast<size_t>(LockStat::Cast)];
+    return 1;
 }
 
 // sub_517590 = `ValidIndexPos`(`server/map.go:229~232`) — 칸 번호(`RoundCoord` ÷85 반올림 · 음수는 0 쪽으로 버림 `server/math.go:15~21`)가

@@ -243,6 +243,13 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                     srv.tagStat(TS::On), srv.tagStat(TS::NoTarget), srv.tagStat(TS::DeadTarget), srv.tagStat(TS::Gone),
                     srv.tagStat(TS::Off), srv.tagStat(TS::OffSkip));
         }
+        {   // ★ 11-21 W12 — 잠그기(44) 갈래 · 시험이 같은 칸을 센다(`TestLock1121`)
+            using LS = nox::Server::LockStat;
+            srv.Log("[잠그기] 걸림 %llu · 문 없음 %llu · 남이 이미 %llu · 같이 잠긴 문 %llu / 닿음 막힘 %llu · 조용 %llu · 풀림 %llu · 건 사람 %llu / 밀어도 안 돎 %llu\n",
+                    srv.lockStat(LS::Cast), srv.lockStat(LS::NoDoor), srv.lockStat(LS::Already), srv.lockStat(LS::DoorsLocked),
+                    srv.lockStat(LS::Touch), srv.lockStat(LS::TouchQuiet), srv.lockStat(LS::Expired), srv.lockStat(LS::OwnerTouch),
+                    srv.lockStat(LS::SpinBlocked));
+        }
         // ★ 10-01 — 클라 대체 무기 알림 `e0`(비움 · 가방에 없음 · 맞음 · 직업·힘 안 맞아 `e0 0 01` 되돌림)
         srv.Log("[대체무기] 비움 %llu · 없음 %llu · 맞음 %llu · 되돌림 %llu\n", srv.secondaryWeaponStat(0),
                     srv.secondaryWeaponStat(1), srv.secondaryWeaponStat(2), srv.secondaryWeaponStat(3));

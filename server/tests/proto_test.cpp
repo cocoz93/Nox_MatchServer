@@ -28077,6 +28077,225 @@ void TestTag1121() {
     std::printf("  11-21 W15 꼬리표 — 시전자에게만 d2 켜기·끄기 · 세기 × 길이 · 죽어도 남음 · 지워지면 끝 · 자리 밀림 · 다시 걸기 · 시전자 죽음도 끄기 · 나감은 안 보냄\n");
 }
 
+// ── 11-21 트레일러 위저드 W12 — 잠그기(SPELL_LOCK 44) `nox_xxx_castLock_52CE90`(`GAME4_2.c:9856~9931`) · 닿음 `GAME3_3.c:3408~3428` · 밀기 `GAME5.c:2194~2195` ──
+//   문(각도 0 · 자리 1000,1000 · 문짝 가운데 988.5,988.5 · 벽 칸 43,43 → 둘레 사각형 955~1023) — 사람이 문짝 위(990,990)에 서면 닿는다(`TestDoorLock` 과 같은 틀)
+void TestLock1121() {
+    using LS = nox::Server::LockStat;
+    const std::string a = "10.11.21.21:9531", b = "10.11.21.22:9532";
+    char msg[400];
+    auto door = [](uint16_t nc, int x, int y, uint8_t angle, bool gate) {
+        nox::Server::WorldProp d; d.kind = nox::PropKind::Door; d.netCode = nc; d.type = 306; d.x = x; d.y = y;
+        d.angle = angle; d.fine = static_cast<uint8_t>(angle * 8); d.gate = gate;   // 닫힘 = 거친각(32 × 미세각 / 256) == 닫힘 각도
+        return d;
+    };
+    auto priMsg = [](const std::vector<nox::OutPacket>& out, const std::string& to, const char* key) {
+        int n = 0;
+        for (const auto& m : FlattenTo(out, to))
+            if (m.size() > 3 && m[0] == static_cast<uint8_t>(nox::Op::INFORM) && m[1] == 15 &&
+                std::strcmp(reinterpret_cast<const char*>(m.data() + 3), key) == 0) ++n;
+        return n;
+    };
+    auto dropped = [](const nox::CSyncHost& srv, uint16_t id) -> unsigned long long {
+        auto it = srv->soundsDroppedIds().find(id); return it == srv->soundsDroppedIds().end() ? 0 : it->second;
+    };
+    auto mk = [&](nox::CSyncHost& srv, std::vector<nox::Server::WorldProp> doors, float ax, float ay) {
+        srv->SetSpellDef(44, 10, 0x02200000u, { 1, 7, 8 }, /*castSound=*/777);   // thing.bin SPELL_LOCK(깃발 02200000 · 음소 1 7 8) · 소리는 시험 번호
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Warrior);
+        srv->SetWorldProps(std::move(doors));
+        { std::vector<nox::OutPacket> warm; srv.Tick(0, warm); }        // 첫 Tick 은 기준점만 잡는다
+        srv->DebugMoveTo(Sid(srv, a), static_cast<int>(ax), static_cast<int>(ay));
+        srv->DebugMoveTo(Sid(srv, b), 1300, 1300);                      // 멀리(문에 안 닿음)
+        { std::vector<nox::OutPacket> w; srv.Tick(33, w); }             // 실수 자리(+56 posX)는 틱이 정수 자리에서 다시 맞춘다 — 시전은 그 자리를 본다
+    };
+    auto tick = [](nox::CSyncHost& srv, std::vector<nox::OutPacket>& out, uint32_t& ms, int n) {
+        for (int t = 0; t < n; ++t) { ms += 33; srv.Tick(ms, out); }
+    };
+    // ① 걸기 — 150 안 · 선 통함 → 잠김(+508 = a · 끝 = 지금 + 60초) · 소리 · 받기 참
+    // ② 남(b)이 닿음 → 「DoorLockedMagic」 + 소리 240 · 문이 안 돎 · 1.5초 안은 조용
+    {
+        nox::CSyncHost srv; mk(srv, { door(800, 1000, 1000, 0, false) }, 900, 1000);
+        const int64_t sa = Sid(srv, a);
+        const bool acc = srv->DebugSpellAccept(sa, 44, 3);
+        std::vector<nox::OutPacket> out; uint32_t ms = 33;
+        srv->DebugMoveTo(Sid(srv, b), 990, 990);
+        tick(srv, out, ms, 1);
+        const int m1 = priMsg(out, b, "objcoll.c:DoorLockedMagic"), mKey = priMsg(out, b, "objcoll.c:DoorLockedKey");
+        out.clear();
+        tick(srv, out, ms, 30);
+        const int mQuiet = priMsg(out, b, "objcoll.c:DoorLockedMagic");
+        std::snprintf(msg, sizeof(msg), "W12 ①② 걸기 — 받음 %d · 건 사람 %d · 소리 %llu · 문 %llu · b 닿음 글 %d(열쇠 글 %d) · 1초 안 글 %d · 소리 240 %llu · 미세각 %d · 막힘 %llu · 조용 %llu · 안 돎 %llu",
+                      int(acc), int(srv->DebugPropLockBy(800) == sa), dropped(srv, 777), srv->lockStat(LS::DoorsLocked), m1, mKey, mQuiet,
+                      dropped(srv, 240), srv->DebugPropFine(800), srv->lockStat(LS::Touch), srv->lockStat(LS::TouchQuiet), srv->lockStat(LS::SpinBlocked));
+        Check(acc && srv->DebugPropLockBy(800) == sa && dropped(srv, 777) == 1 && srv->lockStat(LS::Cast) == 1 && srv->lockStat(LS::DoorsLocked) == 1 &&
+              m1 == 1 && mKey == 0 && mQuiet == 0 && dropped(srv, 240) == 1 && srv->DebugPropFine(800) == 0 &&
+              srv->lockStat(LS::Touch) == 1 && srv->lockStat(LS::TouchQuiet) >= 25 && srv->lockStat(LS::SpinBlocked) >= 25, msg);
+    }
+    // ③ 건 사람(a)은 닿아도 막히지 않고 민다(대조 — 같은 자리에 선 b 는 ② 에서 못 밀었다)
+    {
+        nox::CSyncHost srv; mk(srv, { door(800, 1000, 1000, 0, false) }, 900, 1000);
+        const int64_t sa = Sid(srv, a);
+        const bool acc = srv->DebugSpellAccept(sa, 44, 3);
+        std::vector<nox::OutPacket> out; uint32_t ms = 33;
+        srv->DebugMoveTo(sa, 990, 990);
+        tick(srv, out, ms, 16);
+        //   ⚠ 민 문은 그 틱에 이미 돌아 닿음 함수는 「닫히지 않음」으로 빠진다(`TestDoorLock` ③ 주석) — 건 사람 갈래는 아래 ③-2 가 센다
+        std::snprintf(msg, sizeof(msg), "W12 ③ 건 사람 — 받음 %d · 미세각 %d(0 아님) · 글 %d · 안 돎 %llu",
+                      int(acc), srv->DebugPropFine(800), priMsg(out, a, "objcoll.c:DoorLockedMagic"), srv->lockStat(LS::SpinBlocked));
+        Check(acc && srv->DebugPropFine(800) != 0 && priMsg(out, a, "objcoll.c:DoorLockedMagic") == 0 && srv->lockStat(LS::SpinBlocked) == 0, msg);
+    }
+    // ③-2 건 사람은 마법 잠김을 지나 **열쇠 잠김으로 이어 간다**(`GAME3_3.c:3412` `v4 != a3` 가 아니면 아래로) — 열쇠로도 잠긴 문(1 은)에 닿으면
+    //   「DoorLockedKey」(f0 21)가 가고 「…LockedMagic」은 안 간다 · 남(b)은 「…LockedMagic」만 받고 끝(`:3426` return — 열쇠 글 없음)
+    for (const bool owner : { true, false }) {
+        auto keyDoor = door(800, 1000, 1000, 0, false); keyDoor.lock = 1;
+        nox::CSyncHost srv; mk(srv, { keyDoor }, 900, 1000);
+        const int64_t sa = Sid(srv, a);
+        const bool acc = srv->DebugSpellAccept(sa, 44, 3);
+        std::vector<nox::OutPacket> out; uint32_t ms = 33;
+        const std::string& who = owner ? a : b;
+        srv->DebugMoveTo(Sid(srv, who), 990, 990);
+        tick(srv, out, ms, 2);
+        int key = 0;
+        for (const auto& m : FlattenTo(out, who))
+            if (m.size() == 52 && m[0] == static_cast<uint8_t>(nox::Op::GAUNTLET) && m[1] == 33 &&
+                std::strcmp(reinterpret_cast<const char*>(m.data() + 2), "objcoll.c:DoorLockedKey") == 0) ++key;
+        const int magic = priMsg(out, who, "objcoll.c:DoorLockedMagic");
+        std::snprintf(msg, sizeof(msg), "W12 ③-2 %s + 열쇠 잠김 — 받음 %d · 열쇠 글 %d · 마법 글 %d · 건 사람 닿음 %llu · 열쇠 없음 %llu · 막힘 %llu",
+                      owner ? "건 사람" : "남", int(acc), key, magic, srv->lockStat(LS::OwnerTouch),
+                      srv->doorTouch(nox::Server::DoorTouch::KeyMissing), srv->lockStat(LS::Touch));
+        if (owner)
+            Check(acc && key == 1 && magic == 0 && srv->lockStat(LS::OwnerTouch) >= 1 &&
+                  srv->doorTouch(nox::Server::DoorTouch::KeyMissing) == 1 && srv->lockStat(LS::Touch) == 0, msg);
+        else
+            Check(acc && key == 0 && magic == 1 && srv->lockStat(LS::OwnerTouch) == 0 &&
+                  srv->doorTouch(nox::Server::DoorTouch::KeyMissing) == 0 && srv->lockStat(LS::Touch) == 1, msg);
+    }
+    // ③-3 열쇠를 가진 채 닿기 — 남(b)은 마법 잠김에서 끝나 **열쇠를 못 쓴다**(문 잠김 1 · 열쇠 그대로) · 건 사람(a)은 지나가 열쇠로 푼다(잠김 0 · 열쇠 씀)
+    //   (`GAME3_3.c:3426` return — 일부러 틀리기 L21: 그 return 이 없으면 남이 열쇠로 마법 잠김을 뚫는다. 열쇠 없는 ③-2 는 같은 1.5초 시계가 열쇠 글을 막아 못 가른다)
+    for (const bool owner : { true, false }) {
+        auto keyDoor = door(800, 1000, 1000, 0, false); keyDoor.lock = 1;
+        nox::CSyncHost srv; mk(srv, { keyDoor }, 900, 1000);
+        srv->SetKeyTypes(623, 624, 625, 626);
+        const int64_t sa = Sid(srv, a);
+        const bool acc = srv->DebugSpellAccept(sa, 44, 3);
+        std::vector<nox::OutPacket> out; uint32_t ms = 33;
+        const std::string& who = owner ? a : b;
+        srv->DebugGiveItemType(Sid(srv, who), 623);
+        srv->DebugMoveTo(Sid(srv, who), 990, 990);
+        tick(srv, out, ms, 2);
+        const size_t keys = srv->DebugInventory(Sid(srv, who)).size();
+        std::snprintf(msg, sizeof(msg), "W12 ③-3 %s + 열쇠 가짐 — 받음 %d · 문 잠김 %d · 가방 %zu · 열쇠 씀 %llu · 마법 글 %d",
+                      owner ? "건 사람" : "남", int(acc), int(srv->PropLock(800)), keys,
+                      srv->doorTouch(nox::Server::DoorTouch::KeyUsed), priMsg(out, who, "objcoll.c:DoorLockedMagic"));
+        if (owner)
+            Check(acc && srv->PropLock(800) == 0 && keys == 0 && srv->doorTouch(nox::Server::DoorTouch::KeyUsed) == 1 &&
+                  priMsg(out, who, "objcoll.c:DoorLockedMagic") == 0, msg);
+        else
+            Check(acc && srv->PropLock(800) == 1 && keys == 1 && srv->doorTouch(nox::Server::DoorTouch::KeyUsed) == 0 &&
+                  priMsg(out, who, "objcoll.c:DoorLockedMagic") == 1, msg);
+    }
+    // ④ 60초 — 끝 프레임(+136 <= 지금)에 닿으면 풀리고 문이 돈다 · 그 앞 프레임은 막힘
+    {
+        nox::CSyncHost srv; mk(srv, { door(800, 1000, 1000, 0, false) }, 900, 1000);
+        const int64_t sa = Sid(srv, a);
+        const uint32_t f0 = srv->frame();
+        const bool acc = srv->DebugSpellAccept(sa, 44, 3);
+        const uint32_t until = f0 + 60u * static_cast<uint32_t>(nox::kServerTickRate);
+        std::vector<nox::OutPacket> out; uint32_t ms = 33;
+        srv->DebugMoveTo(Sid(srv, b), 990, 990);
+        uint32_t expAt = 0, lastBlocked = 0;
+        for (int t = 0; t < 1900 && expAt == 0; ++t) {
+            ms += 33; srv.Tick(ms, out); out.clear();
+            if (srv->lockStat(LS::Expired) > 0) expAt = srv->frame();
+            else if (srv->DebugPropFine(800) == 0) lastBlocked = srv->frame();
+        }
+        tick(srv, out, ms, 8);
+        std::snprintf(msg, sizeof(msg), "W12 ④ 60초 — 받음 %d · 풀린 프레임 +%u(끝 +%u) · 마지막 막힘 +%u · 건 사람 %d(비어야) · 미세각 %d(돎)",
+                      int(acc), expAt ? expAt - f0 : 0u, until - f0, lastBlocked ? lastBlocked - f0 : 0u,
+                      int(srv->DebugPropLockBy(800) != nox::kNoSession), srv->DebugPropFine(800));
+        Check(acc && expAt == until && lastBlocked + 1 == expAt && srv->lockStat(LS::Expired) == 1 &&
+              srv->DebugPropLockBy(800) == nox::kNoSession && srv->DebugPropFine(800) != 0, msg);
+    }
+    // ⑤ 남이 이미 — b 가 걸면 「DoorAlreadyLocked」 · 거짓 · 건 사람 그대로 · a 가 다시 걸면 참(제 것은 덮는다)
+    //   ⑤-2 끝 프레임이 지났어도 아무도 안 닿았으면 +508 이 남아 b 는 여전히 못 건다(원본 그대로)
+    {
+        nox::CSyncHost srv; mk(srv, { door(800, 1000, 1000, 0, false) }, 900, 1000);
+        const int64_t sa = Sid(srv, a), sb = Sid(srv, b);
+        const bool accA = srv->DebugSpellAccept(sa, 44, 3);
+        srv->DebugMoveTo(sb, 1000, 1100);
+        std::vector<nox::OutPacket> out; uint32_t ms = 33;
+        tick(srv, out, ms, 1); out.clear();                             // b 의 실수 자리를 맞춘다
+        const bool accB = srv->DebugSpellAccept(sb, 44, 3);
+        tick(srv, out, ms, 1);
+        const int mb = priMsg(out, b, "ExecSpel.c:DoorAlreadyLocked"), ma = priMsg(out, a, "ExecSpel.c:DoorAlreadyLocked");
+        const bool keep = srv->DebugPropLockBy(800) == sa;
+        const bool accA2 = srv->DebugSpellAccept(sa, 44, 3);
+        out.clear();
+        tick(srv, out, ms, 60 * nox::kServerTickRate + 10);
+        const bool accB2 = srv->DebugSpellAccept(sb, 44, 3);
+        std::snprintf(msg, sizeof(msg), "W12 ⑤ 남이 이미 — a %d · b %d(거짓) · b 글 %d · a 글 %d · 그대로 %d · a 다시 %d · 61초 뒤 b %d(거짓) · 남이 이미 %llu · 걸림 %llu",
+                      int(accA), int(accB), mb, ma, int(keep), int(accA2), int(accB2), srv->lockStat(LS::Already), srv->lockStat(LS::Cast));
+        Check(accA && !accB && mb == 1 && ma == 0 && keep && accA2 && !accB2 && srv->DebugPropLockBy(800) == sa &&
+              srv->lockStat(LS::Already) == 2 && srv->lockStat(LS::Cast) == 2, msg);
+    }
+    // ⑥ 거리 — 정확히 150(거리² 22500)은 잡고 151 은 못 잡음(받기 거짓 · 잠김 없음) · 시전자 발밑의 오벨리스크(문 아님 — +8 & 0x80 없음)는 안 잡는다
+    for (const int ax : { 1150, 1151 }) {
+        auto obelisk = door(801, ax, 1010, 0, false); obelisk.kind = nox::PropKind::Obelisk;
+        nox::CSyncHost srv; mk(srv, { door(800, 1000, 1000, 0, false), obelisk }, static_cast<float>(ax), 1000);
+        const int64_t sa = Sid(srv, a);
+        const bool acc = srv->DebugSpellAccept(sa, 44, 3);
+        std::snprintf(msg, sizeof(msg), "W12 ⑥ 거리 %d — 받음 %d · 건 사람 %d · 문 없음 %llu", ax - 1000, int(acc),
+                      int(srv->DebugPropLockBy(800) == sa), srv->lockStat(LS::NoDoor));
+        const bool in = ax == 1150;
+        Check(acc == in && (srv->DebugPropLockBy(800) == sa) == in && srv->lockStat(LS::NoDoor) == (in ? 0u : 1u), msg);
+    }
+    // ⑦ 가장 가까운 것 — 문 P(1000,1000)·Q(1100,1000)은 둘레 사각형이 안 겹친다(955~1023 · 1047~1115).
+    //   a 가 1040 이면 P · 1060 이면 Q · 1050(같은 거리)이면 **먼저 본 P**(더 작을 때만 바꾼다) — 고른 것 하나만 잠긴다
+    for (const int ax : { 1040, 1060, 1050 }) {
+        nox::CSyncHost srv; mk(srv, { door(810, 1000, 1000, 0, false), door(811, 1100, 1000, 0, false) }, static_cast<float>(ax), 1000);
+        const int64_t sa = Sid(srv, a);
+        const bool acc = srv->DebugSpellAccept(sa, 44, 3);
+        const bool p = srv->DebugPropLockBy(810) == sa, q = srv->DebugPropLockBy(811) == sa;
+        const bool wantP = ax != 1060;
+        std::snprintf(msg, sizeof(msg), "W12 ⑦ 가까운 것(a x %d) — 받음 %d · P %d · Q %d · 같이 잠긴 문 %llu", ax, int(acc), int(p), int(q), srv->lockStat(LS::DoorsLocked));
+        Check(acc && p == wantP && q == !wantP && srv->lockStat(LS::DoorsLocked) == 1, msg);
+    }
+    // ⑧ 둘레 — 찾은 문 A(1000,1000)의 벽 칸 사각형과 겹치는 문 **전부**(짝 칸 B 980,980 · 짝 아닌 D 1015,1015 각도 16) · 먼 C(1500,1500)는 아님
+    {
+        nox::CSyncHost srv; mk(srv, { door(820, 1000, 1000, 0, false), door(821, 980, 980, 0, false), door(822, 1500, 1500, 0, false),
+                                      door(823, 1015, 1015, 16, false) }, 1000, 1080);
+        const int64_t sa = Sid(srv, a);
+        const bool acc = srv->DebugSpellAccept(sa, 44, 3);
+        std::snprintf(msg, sizeof(msg), "W12 ⑧ 둘레 — 받음 %d · A %d · B %d · C %d(아님) · D %d · 같이 잠긴 문 %llu", int(acc),
+                      int(srv->DebugPropLockBy(820) == sa), int(srv->DebugPropLockBy(821) == sa), int(srv->DebugPropLockBy(822) == sa),
+                      int(srv->DebugPropLockBy(823) == sa), srv->lockStat(LS::DoorsLocked));
+        Check(acc && srv->DebugPropLockBy(820) == sa && srv->DebugPropLockBy(821) == sa && srv->DebugPropLockBy(822) == nox::kNoSession &&
+              srv->DebugPropLockBy(823) == sa && srv->lockStat(LS::DoorsLocked) == 3, msg);
+    }
+    // ⑨ 선 막힘 — 시전자(988,860) → 문짝 가운데(988.5,988.5) 사이 칸 (42,40)에 벽(방향 0) → 못 찾음 · 대조(벽 없음)는 찾음
+    for (const bool wall : { true, false }) {
+        nox::CSyncHost srv;
+        if (wall) srv->SetWallTiles({ { 42, 40, 0, 0, false } });
+        mk(srv, { door(800, 1000, 1000, 0, false) }, 988, 860);
+        const int64_t sa = Sid(srv, a);
+        const bool acc = srv->DebugSpellAccept(sa, 44, 3);
+        std::snprintf(msg, sizeof(msg), "W12 ⑨ 선 %s — 받음 %d · 문 없음 %llu", wall ? "막힘" : "통함(대조)", int(acc), srv->lockStat(LS::NoDoor));
+        Check(acc == !wall && srv->lockStat(LS::NoDoor) == (wall ? 1u : 0u), msg);
+    }
+    // ⑩ GATE 문 — 「GateLockedMagic」 + 소리 244(240 아님)
+    {
+        nox::CSyncHost srv; mk(srv, { door(800, 1000, 1000, 0, true) }, 900, 1000);
+        const bool acc = srv->DebugSpellAccept(Sid(srv, a), 44, 3);
+        std::vector<nox::OutPacket> out; uint32_t ms = 33;
+        srv->DebugMoveTo(Sid(srv, b), 990, 990);
+        tick(srv, out, ms, 1);
+        const int g = priMsg(out, b, "objcoll.c:GateLockedMagic"), w = priMsg(out, b, "objcoll.c:DoorLockedMagic");
+        std::snprintf(msg, sizeof(msg), "W12 ⑩ GATE — 받음 %d · Gate 글 %d · Door 글 %d · 소리 244 %llu · 240 %llu", int(acc), g, w, dropped(srv, 244), dropped(srv, 240));
+        Check(acc && g == 1 && w == 0 && dropped(srv, 244) == 1 && dropped(srv, 240) == 0, msg);
+    }
+    std::printf("  11-21 W12 잠그기 — 150 안 가장 가까운(같으면 먼저 본) 선 통하는 문 · 둘레 문 전부 · 남은 막힘 글·소리·안 돎 · 건 사람은 밂 · 60초 끝에 닿으면 풀림 · 남이 이미면 거절\n");
+}
+
 // ── 11-20 트레일러 전사 1-b — 수식 효과(modifier.bin `Server::ParseModEffects`) · 휘두를 때 위력 배수 · 맞힐 때 불·번개 ─────
 //   ① 진짜 복호본을 읽어 번호 차례·값(빠진 `;` 칸 Speed4 포함)을 본다
 //   ② 워리어 롱소드로 곰을 한 대 — 수식 없음 / 위력6(×1.2) / 불1(+3 폭발) / 번개4(+12 전기) / 불1인데 곰이 무적(관문)
@@ -41328,6 +41547,7 @@ int main() {
     TestMagicWall1121();
     TestMoonglow1121();
     TestTag1121();
+    TestLock1121();
     TestModEffects1120();
     TestPickupAutoEquip();
     TestArmorEquip();

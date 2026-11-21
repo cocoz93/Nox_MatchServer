@@ -2039,6 +2039,9 @@ public:
         uint8_t team = 0;
         bool gate = false;
         uint32_t teamMsgFrame = 0;  // +136 — 팀 문 「GateLockedMechanism」 다음 알림 프레임(`GAME5.c:2210~2212`)
+                                    //   ★ 11-21 W12 — 마법 잠김 끝 프레임도 **같은 +136** 이다(`sub_52CE60` `GAME4_2.c:9851` · 닿음 `GAME3_3.c:3410`).
+                                    //   원본이 한 칸을 둘이 같이 쓴다 — 팀 문 알림이 이 값을 지금 + 1초로 덮으면 잠김도 그때 풀린다(원본 그대로 둔다)
+        int64_t lockBy = kNoSession; // ★ 11-21 W12 +508 — 잠그기(SPELL_LOCK 44)를 건 사람(그 사람만 밀고 지나간다 · 끝 프레임은 위 +136)
         // ★★ 09-22 — 문이 **도는** 얼개(정답지 `GAME5.c:2193` + `sub_548B60`).
         //   `fine` 은 미세각 0~255, 클라에 보내는 거친각은 `32 × fine / 256`(0~31)이다.
         //   `spin` 은 사람이 민 각속도 — 걸음마다 미세각을 돌리고 그 자리에서 지운다
@@ -4254,6 +4257,11 @@ public:
     // ★ 11-21 W15 꼬리표(116) 갈래 — 만들기(켬 · 대상 없음 · 대상 죽음·지워짐) / 틱(대상 지워짐) / 끝 함수(끔 · 시전자 없음·대상 번호 없음이라 안 보냄)
     enum class TagStat : uint8_t { On = 0, NoTarget, DeadTarget, Gone, Off, OffSkip, Count };
     unsigned long long tagStat(TagStat k) const { return tagStat_[static_cast<size_t>(k)]; }
+    // ★ 11-21 W12 잠그기(44) 갈래 — 시전(걸림 · 문 없음 · 남이 이미 잠금) · 같이 잠긴 문 수 / 닿음(남이 닿아 「…LockedMagic」 · 1.5초 안이라 조용 ·
+    //   끝 프레임이 지나 풀림 · 건 사람이 닿음) / 밀기(남이 밀어 안 돎)
+    enum class LockStat : uint8_t { Cast = 0, NoDoor, Already, DoorsLocked, Touch, TouchQuiet, Expired, OwnerTouch, SpinBlocked, Count };
+    unsigned long long lockStat(LockStat k) const { return lockStat_[static_cast<size_t>(k)]; }
+    int64_t DebugPropLockBy(uint16_t netCode) const { for (const auto& p : props_) if (p.netCode == netCode) return p.lockBy; return kNoSession; }
     size_t DebugMagicWallCount() const { return magicWalls_.size(); }
     int DebugWallTileAt(int gx, int gy) const {
         return (gx >= 0 && gx < 256 && gy >= 0 && gy < 256 && !wallTiles_.empty() && wallTiles_[gy * 256 + gx].present) ? wallTiles_[gy * 256 + gx].tile : -1;
@@ -5034,6 +5042,7 @@ private:
     int DurTagTick(DurSpell& d);                                           // ★ 11-21 W15 sub_530250 — 대상이 지워졌으면 끝(죽음은 안 끝남)
     void DurTagEnd(DurSpell& d);                                           // ★ 11-21 W15 sub_530270 — 시전자가 남아 있으면 `d2` 끄기
     void SendInterestingId(Session& s, uint16_t net, uint16_t type, uint8_t onOff, uint8_t kind);   // ★ 11-21 W15 MSG_INTERESTING_ID(0xD2) 7바이트
+    int CastLock(Session& s);                                              // ★ 11-21 W12 castLock_52CE90 — 가장 가까운 문 + 그 둘레 문을 60초 잠금
     static bool MapIndexPosValid(float x, float y);                        // ★ 11-21 W14 sub_517590 = `ValidIndexPos`(`server/map.go:229`)
     bool UndeadKillerUpdate(const MissileObj& m, uint32_t frame);          // ★ 11-21 W6 updateUndeadKiller_53E190 — 거짓이면 지운다
     bool UndeadKillerCollide(size_t i);                                    // ★ 11-21 W6 collideUndeadKiller_4EBD40 — 거짓이면 지운다
@@ -5874,6 +5883,7 @@ private:
     unsigned long long wallMagicStat_[static_cast<size_t>(WallMagicStat::Count)] = {};     // ★ 11-21 W10 벽(132) 갈래
     unsigned long long moonStat_[static_cast<size_t>(MoonStat::Count)] = {};               // ★ 11-21 W14 달빛(54) 갈래
     unsigned long long tagStat_[static_cast<size_t>(TagStat::Count)] = {};                 // ★ 11-21 W15 꼬리표(116) 갈래
+    unsigned long long lockStat_[static_cast<size_t>(LockStat::Count)] = {};               // ★ 11-21 W12 잠그기(44) 갈래
     unsigned long long charmStat_[static_cast<size_t>(CharmStat::Count)] = {};             // ★ 11-21 C6 매혹 갈래
     uint32_t durFrame_ = 0;   // ★ 11-20 C2 — `SpellCastByPlayer` 가 지금 도는 걸음의 프레임(한 번에 여러 틱이면 frame_ 보다 작다 — 끝 프레임 견주기는 이 값으로)
     unsigned long long missilesGone_ = 0;     // 날아가는 것이 사라진 누계
