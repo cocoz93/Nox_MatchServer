@@ -9763,6 +9763,36 @@ bool Server::DebugMakeFragment(int64_t owner, float x, float y, uint8_t dir) {
     return missiles_.size() == n0 + 1;
 }
 
+// ★ 11-22 감사 13 — `nox_xxx_collideDeathBall_4E9E90` 대상이 문(CLASS DOOR)인 갈래(`object_death_ball.go:61~78`).
+//   ① 새 자리(+64) = 지난 자리(+72) — 이번 걸음을 무르고 지난 틱 자리로 돌아간다
+//   ② 문짝 방향 = 표[지금 거친각(ud+12)](`0x587000+196184` = `kDoorWallTable`) → 그 수직 vv = (−표.y, 표.x) ·
+//      vv·(문 자리 − 지난 자리) > 0 이면 vv 를 뒤집는다(⚠ 아래 되튀기는 vv 부호와 상관없이 같은 값 — 원본 그대로 둔다)
+//   ③ 속도를 vv 에 대해 되튀긴다(`sub_57B770` `:96~108` — vv 쪽 성분만 뒤집는다 · |vv|+0.1 로 나눠 조금 줄어든다)
+//   ④ 소리 283(SoundFireExtinguish — `common/sound/sound.go:320` − `:37` · 같은 식으로 ForceOfNatureReflect = 37) · 임자 = 공 · 공은 안 사라진다
+void Server::DeathBallDoorBounce(MissileObj& m, const WorldProp& door) {
+    m.newX = m.prevX; m.newY = m.prevY;
+    const int a = (32 * static_cast<int>(door.fine) / 256) & 31;
+    const double dx = static_cast<double>(static_cast<float>(door.x) - m.prevX);
+    const double dy = static_cast<double>(static_cast<float>(door.y) - m.prevY);
+    const double xx = -static_cast<double>(kDoorWallTable[a][1]);
+    const double yy = static_cast<double>(kDoorWallTable[a][0]);
+    float vvx = static_cast<float>(xx), vvy = static_cast<float>(yy);
+    if (yy * dy + xx * dx > 0.0) { vvx = -vvx; vvy = -vvy; }
+    const float v9 = vvx;
+    const double v3 = std::sqrt(static_cast<double>(vvx * vvx + vvy * vvy));
+    const double v4 = v3 + 0.1;
+    const double v5 = static_cast<double>(-vvy);
+    const double v6 = static_cast<double>(m.velX * vvx + m.velY * vvy) / (v3 + 0.1);
+    const float v11 = static_cast<float>((static_cast<double>(vvx * m.velY) + v5 * static_cast<double>(m.velX)) / v4);
+    const float v7 = static_cast<float>(v6 * static_cast<double>(vvx) / v4);
+    const float v8 = static_cast<float>(v6 * static_cast<double>(vvy) / v4);
+    const float v10 = static_cast<float>(static_cast<double>(v11) * v5 / v4);
+    m.velX = v10 - v7;
+    m.velY = static_cast<float>(static_cast<double>(v11 * v9) / v4 - static_cast<double>(v8));
+    PlaySoundAt(283, m.posX, m.posY);
+    ++fonStat_[static_cast<size_t>(FonStat::BallDoor)];
+}
+
 // unitShield_52F690(`:11557`) — 그 대상에게 걸린 **방패 주문(51)** 을 찾아 주머니에서 뺀다.
 //   찾는 주문이 없으면 버프만 끄고, 다 쓰면(또는 대상이 죽었으면) 주문을 취소한다.
 void Server::ShieldDrain(const Target& t, int amount) {
@@ -19391,7 +19421,7 @@ void Server::UpdateMissiles(uint32_t frame) {
         //   꽂힌 작살 화살이 이 깃발을 켜는데(`HarpoonCollide`) 거르는 자리가 대상 쪽(`passFlags`)뿐이라 **매 틱 다시 맞았다** —
         //   사람 판 hj1: 5발에 「걸림」 91 · 그때마다 피해 1 과 맞는 소리. 정답지는 NO_COLLIDE 인 것을 충돌 짝에서 아예 뺀다(`sub_5481C0`)
         if (!(m.flags & 0x40)) {
-            enum { HitNone, HitPlayer, HitPet, HitObstacle } hk = HitNone;
+            enum { HitNone, HitPlayer, HitPet, HitObstacle, HitDoor } hk = HitNone;   // ★ 11-22 감사 13 — 문(아래 pointHit 끝)
             int64_t hSessionId = 0; int hIdx = -1;
             // ★★ 2026-09-16 — **닿은 것을 셋으로 가른다.** 전에는 `HitPlayer` 인가 아닌가로만
             //   갈라서, `HitObstacle` 의 **장애물 색인이 소환수 색인 자리로** 들어갔다
@@ -19422,7 +19452,7 @@ void Server::UpdateMissiles(uint32_t frame) {
             auto ownIt = sessions_.find(m.owner);
             const uint8_t ownTeam = (ownIt != sessions_.end()) ? ownIt->second.team : 0;
             // sub_54E810 — 점이 모양 안에 드는 것(원 거리² ≤ R² · 상자 · 문 선분은 9) · 마지막 것
-            auto pointHit = [&](float qx, float qy) {
+            auto pointHit = [&](float px, float py, float qx, float qy) {   // ★ 11-22 감사 13 — 지난 점(px,py)도 받는다(문은 걸음 선분으로 본다)
                 bool any = false;
                 for (const auto& kv : sessions_) {
                     const Session& o = kv.second;
@@ -19452,19 +19482,39 @@ void Server::UpdateMissiles(uint32_t frame) {
                     if (!BodyContains(o, qx, qy)) continue;
                     hk = HitObstacle; hIdx = static_cast<int>(k); hx = o.x; hy = o.y; any = true;
                 }
+                // ★ 11-22 감사 13 — 문(CLASS DOOR · `sub_54E850` `GAME5.c:5759~5780`) — 깃발 거르기 없이 **이번 걸음 선분**(지난 점 → 이 점)이
+                //   문짝 선분(문 자리 → 문 자리 + 표[지금 거친각])과 걸치면(`sub_427980` = `LineTraceXxx` — C 몸통은 사본에 없어 Go `server/map.go:606` 기준)
+                //   맞은 것 = 문 · 맞은 자리 = 문 자리(경첩 — 아래 벽과의 거리 견주기가 이 자리를 쓴다). 부분류 GATE(+12 & 4)는 안 본다
+                //   ⚠ 원본은 모든 날아가는 것이 문에 닿는다 — 지금은 죽음의 공(갈래 10)만. 다른 갈래는 저마다 닿음 함수의 문 갈래를 옮길 때 넓힌다
+                //   ⚠ 원본은 문에 걸리면 이 점을 지난 점으로 되돌린 뒤 같은 칸의 다음 오브젝트를 본다 — 우리는 문을 맨 끝에 봐서 되돌린 점을 쓸 데가 없다
+                //   ⚠ 원본 그대로 둔 것 — `LineTraceXxx` 는 두 선분을 축마다 정렬한다(Go `map.go:607~608` Canon). 그래서 표 x·y 부호가 다른 `/` 문짝
+                //     (닫힘 8·24)은 `\` 대각으로 시험돼 공이 문 벽 칸(추적은 막힘 · 법선은 없음)에서 수명 끝까지 멈춘다 — 11-22 Wiz10B 실측:
+                //     `/` 쌍문(2254,4439)·(2300,4393) 앞 (2278.39,4419.65)에 멈춤 · `\` 쌍문(닫힘 0·16)은 문 튕김 2. 정품 화면은 사람 확인 표에서 본다
+                if (m.collideKind == 10) {
+                    for (size_t k = 0; k < props_.size(); ++k) {
+                        const WorldProp& p = props_[k];
+                        if (p.kind != PropKind::Door || p.gate) continue;
+                        const int a = (32 * static_cast<int>(p.fine) / 256) & 31;
+                        const float x0 = static_cast<float>(p.x), y0 = static_cast<float>(p.y);
+                        const float x1 = static_cast<float>(static_cast<double>(kDoorWallTable[a][0]) + x0);
+                        const float y1 = static_cast<float>(static_cast<double>(kDoorWallTable[a][1]) + y0);
+                        if (!LineTraceXxx(px, py, qx, qy, x0, y0, x1, y1)) continue;
+                        hk = HitDoor; hIdx = static_cast<int>(k); hx = x0; hy = y0; any = true;
+                    }
+                }
                 return any;
             };
             const float ddx = m.newX - m.posX, ddy = m.newY - m.posY;
             const double d2 = static_cast<double>(ddy) * ddy + static_cast<double>(ddx) * ddx;
             if (d2 <= 36.0) {
-                if (pointHit(m.newX, m.newY)) { onx = m.posX - hx; ony = m.posY - hy; }
+                if (pointHit(m.posX, m.posY, m.newX, m.newY)) { onx = m.posX - hx; ony = m.posY - hy; }
             } else {
                 const int steps = static_cast<int>(std::sqrt(d2 * 0.027777778)) + 1;
                 const float stx = ddx / static_cast<float>(steps), sty = ddy / static_cast<float>(steps);
                 float lx = m.posX, ly = m.posY, qx = m.posX, qy = m.posY;
                 for (int k = 0; k < steps; ++k) {
                     qx += stx; qy += sty;
-                    if (pointHit(qx, qy)) { onx = lx - hx; ony = ly - hy; break; }
+                    if (pointHit(lx, ly, qx, qy)) { onx = lx - hx; ony = ly - hy; break; }
                     lx = qx; ly = qy;
                 }
             }
@@ -19614,9 +19664,14 @@ void Server::UpdateMissiles(uint32_t frame) {
                     // ★ 11-20 C2 — `collideDeathBall_4E9E90` 대상 갈래(`object_death_ball.go:58~81`) — 문이 아니면 `DeathBallCollideDamage`(255) · CRUSH ·
                     //   임자 = 주인 사슬의 사람 · 때린 것 = 공 · **공은 안 사라지고** 지나간다(겹친 틱마다 다시). 방패·대검 되받아치기 갈래는
                     //   주문 투사체·불덩이 닿음 함수 몫이라 이 공은 안 탄다(막기는 피해 함수 안에서)
-                    //   ⚠ 안 옮김 — 문에 닿으면 문 방향으로 되튀기(+소리 FireExtinguish) · 장애물(통·상자)에 주는 피해
+                    //   ⚠ 안 옮김 — 장애물(통·상자)에 주는 피해(장애물 체력이 우리에게 없다)
+                    //   ✔ 11-22 감사 13 — 문에 닿으면 문 방향으로 되튀기(+소리 FireExtinguish) — `DeathBallDoorBounce`
+                    //   ⚠ 안 옮김 — 원본은 이어서 문 쪽 닿음 함수(`collideDoor_4E8AC0`)도 공을 닿은 것으로 부른다 — 닫힌 문이 잠겼으면 잠김 소리 240/244
+                    //     (1.5초에 한 번). 우리 문 닿음(`DoorCollide`)은 사람만 받는다(그 함수 머리 주석의 「몬스터가 닿는 문」과 같은 틀)
                     if (m.collideKind == 10) {
-                        if (hk == HitObstacle) {
+                        if (hk == HitDoor) {
+                            DeathBallDoorBounce(m, props_[static_cast<size_t>(hIdx)]);
+                        } else if (hk == HitObstacle) {
                             ++fonStat_[static_cast<size_t>(FonStat::BallObstacle)];
                         } else {
                             AttackSrc src;

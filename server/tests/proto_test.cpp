@@ -31152,6 +31152,139 @@ void TestDeathBallFragment1122() {
                 "닿으면 피해 뒤 사라짐 · 장애물 · 벽 튕김·소리 37 · 종류 없음\n");
 }
 
+// ★ 11-22 감사 13 — 자연의 힘 공이 문짝에 닿으면 문 방향으로 되튐 · 소리 283 · 공은 남음
+//   (`collideDeathBall_4E9E90` 문 갈래 `object_death_ball.go:61~78` · 문짝 선분 `sub_54E850` `GAME5.c:5759~5780`)
+//   ① 세로 문(거친각 4 — 표 (0,−32) · 문짝 y 984~1016)에 +x 로 날아든 공 → 속도 −x(×(32/32.1)² 로 조금 줄어) · 자리 = 지난 자리 · 소리 283 · 문 1 · 벽·닿음 0 · 공 남음
+//   ② 대각 문(거친각 8 — 표 (23,−23))에 +x → 속도 −y
+//   ③ 문짝 끝을 비껴 지나감(y 1020) → 문 0 · 공이 문 너머로 · 속도 그대로
+//   ④ 부분류 GATE 문 → 안 닿음
+//   ⑤ 조각(갈래 13)은 문에 안 닿는다(지금 범위 — 공만) → 조각이 문 너머로
+//   ⑥ 벽 칸을 붙인 닫힌 대각 문(실제 맵의 닫힌 문) — 선 추적(깃발 5 → 0x10)은 문 벽 칸에서 막혀 새 자리를 지금 자리로 되돌리지만
+//      벽 법선 `sub_57CDB0` 은 `sub_57B500(…, 64)`(0x10 없음 → 문 칸은 −1 · `GAME5_2.c:1769`)이라 **벽으로 안 친다** → 문짝만 남아 문 갈래(`GAME4_3.c:3498~3503`)
+//      → 문 튕김(소리 283) · 벽 튕김 0. ✖ 이 감사 전에는 문짝을 안 봐서 공이 닫힌 문 앞에서 **멈춰 있었다**(추적만 막히고 갈래가 없음)
+//   ①~⑤ 는 문을 닫힌 각도로 두고(열린 문은 틱마다 닫힘 쪽으로 돈다 — `UpdateProps`) 벽 칸은 안 붙인다(문짝 선분만 본다)
+void TestDeathBallDoor1122() {
+    const std::string a = "10.11.22.1:9721";
+    using FS = nox::Server::FonStat;
+    constexpr uint16_t kBall = 706, kFrag = 707;
+    char msg[500];
+    auto mk = [&](nox::CSyncHost& srv, uint8_t coarse, bool gate) {
+        nox::Gamedata g;
+        g.Parse("DeathBallCollideDamage = 255;\n" "DeathBallNearbyDamage = 100;\n" "DeathBallInRadius = 0.0f;\n"
+                "DeathBallOutRadius = 50.0f;\n" "DeathBallCancelRange = 150.0f;\n" "SummonDuration = 60, 210, 375;\n" "CounterspellRange = 600;\n");
+        srv->SetGamedata(g);
+        srv->SetProjType("DeathBall", kBall, 150, /*AIRBORNE+FLICKER*/ 0x20004000u, 0);
+        srv->SetProjType("DeathBallFragment", kFrag, 250, /*AIRBORNE+FLICKER*/ 0x20004000u, 0);
+        srv->SetNamedType("ForceOfNatureCharge", 1224);
+        srv->SetSpellDef(31, 0, 0x4434003au, { 0, 8, 2, 6, 5, 4 });
+        std::vector<nox::Server::SoundDefIn> sd;
+        for (uint16_t id : { 37, 283 }) { nox::Server::SoundDefIn sdi; sdi.id = id; sdi.samples = 1; sdi.maxDist = 1000; sd.push_back(sdi); }
+        srv->SetSoundDefs(sd);
+        nox::Server::WorldProp door;
+        door.netCode = 300; door.type = 306;
+        door.x = 1020; door.y = 1016;
+        door.kind = nox::PropKind::Door;
+        door.angle = coarse; door.fine = static_cast<uint8_t>(coarse * 8); door.gate = gate;
+        srv->SetWorldProps({ door });
+        srv.DebugEnterGame(a, 895, false, nox::CharClass::Conjurer);
+        srv->DebugMoveTo(Sid(srv, a), 600, 600);
+    };
+    auto heard = [](const std::vector<nox::OutPacket>& out, const std::string& who, uint16_t id) {
+        int n = 0;
+        for (const auto& x : FlattenTo(out, who))
+            if (x.size() == 4 && (x[0] == static_cast<uint8_t>(nox::Op::AUDIO_EVENT) || x[0] == static_cast<uint8_t>(nox::Op::AUDIO_PLAYER_EVENT)) &&
+                (static_cast<uint16_t>(x[2] | (x[3] << 8)) & 0x3ff) == id) ++n;
+        return n;
+    };
+    // 공을 쏘아 (1000, y) 에 놓는다 — 속도는 +x 9.375 그대로(힘 없음 · 감쇠 1)
+    auto ball = [&](nox::CSyncHost& srv, uint32_t& ms, std::vector<nox::OutPacket>& out, float y) {
+        srv.Tick(ms, out);
+        ms += 33; srv.Tick(ms, out);
+        srv->DebugSetFacing(Sid(srv, a), 0);
+        srv->DebugSpellAccept(Sid(srv, a), 31, 3); srv.TakeOut(out);
+        for (int k = 0; k < 30 && srv->missiles() == 0; ++k) { ms += 33; srv.Tick(ms, out); }
+        if (srv->missiles() != 1) return false;
+        srv->DebugSetMissileXY(0, 1000.0f, y);
+        out.clear();
+        return true;
+    };
+    const float kV = 150.0f / 32.0f * 2.0f;                                   // 9.375
+    // ① 세로 문
+    {
+        nox::CSyncHost srv; mk(srv, 4, false);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        const bool up = ball(srv, ms, out, 1000.0f);
+        const float v0 = up ? srv->missileList()[0].velX : 0.0f;
+        for (int k = 0; k < 3; ++k) { ms += 33; srv.Tick(ms, out); }       // 1000 → 1009.375 → 1018.75 → (1028.125 이 문 x 1020 을 넘음)
+        const auto& ml = srv->missileList();
+        const float want = -kV * (32.0f / 32.1f) * (32.0f / 32.1f);
+        std::snprintf(msg, sizeof(msg), "공 문 ① 공 %d(처음 속도 %.3f) · 문 %llu(1) · 벽 %llu(0) · 닿음 %llu(0) · 남은 것 %zu(1) · 속도 %.4f,%.4f(%.4f,0) · 자리 x %.3f(1009.375) · 소리 283 %d(1)",
+                      int(up), v0, srv->fonStat(FS::BallDoor), srv->fonStat(FS::BallWall), srv->fonStat(FS::BallHit), ml.size(),
+                      ml.empty() ? 0.0 : ml[0].velX, ml.empty() ? 0.0 : ml[0].velY, want, ml.empty() ? 0.0 : ml[0].posX, heard(out, a, 283));
+        Check(up && std::fabs(v0 - kV) < 0.001f && srv->fonStat(FS::BallDoor) == 1 && srv->fonStat(FS::BallWall) == 0 && srv->fonStat(FS::BallHit) == 0 &&
+              ml.size() == 1 && std::fabs(ml[0].velX - want) < 0.001f && std::fabs(ml[0].velY) < 0.001f && std::fabs(ml[0].posX - 1009.375f) < 0.001f &&
+              heard(out, a, 283) == 1, msg);
+        for (int k = 0; k < 3; ++k) { ms += 33; srv.Tick(ms, out); }       // 되튄 뒤 −x 로 멀어진다 — 다시 안 닿음
+        std::snprintf(msg, sizeof(msg), "공 문 ① 뒤 — 문 %llu(1) · 자리 x %.3f(< 1009)", srv->fonStat(FS::BallDoor), ml.empty() ? 0.0 : ml[0].posX);
+        Check(srv->fonStat(FS::BallDoor) == 1 && !ml.empty() && ml[0].posX < 1009.0f, msg);
+    }
+    // ② 대각 문 — +x 가 −y 로 꺾인다
+    {
+        nox::CSyncHost srv; mk(srv, 8, false);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        const bool up = ball(srv, ms, out, 1000.0f);
+        for (int k = 0; k < 6; ++k) { ms += 33; srv.Tick(ms, out); }
+        const auto& ml = srv->missileList();
+        const double vv2 = std::sqrt(23.0 * 23.0 * 2.0) + 0.1;
+        const float want = static_cast<float>(-2.0 * kV * 23.0 * 23.0 / (vv2 * vv2));
+        std::snprintf(msg, sizeof(msg), "공 문 ② 공 %d · 문 %llu(1) · 속도 %.4f,%.4f(0,%.4f) · 소리 283 %d(1)", int(up), srv->fonStat(FS::BallDoor),
+                      ml.empty() ? 0.0 : ml[0].velX, ml.empty() ? 0.0 : ml[0].velY, want, heard(out, a, 283));
+        Check(up && srv->fonStat(FS::BallDoor) == 1 && ml.size() == 1 && std::fabs(ml[0].velX) < 0.01f && std::fabs(ml[0].velY - want) < 0.01f &&
+              heard(out, a, 283) == 1, msg);
+    }
+    // ③ 문짝 끝을 비껴 지나감 · ④ GATE 는 안 닿음
+    for (int c = 0; c < 2; ++c) {
+        nox::CSyncHost srv; mk(srv, 4, c == 1);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        const bool up = ball(srv, ms, out, c == 0 ? 1020.0f : 1000.0f);
+        for (int k = 0; k < 4; ++k) { ms += 33; srv.Tick(ms, out); }
+        const auto& ml = srv->missileList();
+        std::snprintf(msg, sizeof(msg), "공 문 %s 공 %d · 문 %llu(0) · 자리 x %.3f(> 1020) · 속도 x %.3f(%.3f) · 소리 283 %d(0)", c == 0 ? "③ 비껴감" : "④ GATE",
+                      int(up), srv->fonStat(FS::BallDoor), ml.empty() ? 0.0 : ml[0].posX, ml.empty() ? 0.0 : ml[0].velX, kV, heard(out, a, 283));
+        Check(up && srv->fonStat(FS::BallDoor) == 0 && ml.size() == 1 && ml[0].posX > 1020.0f && std::fabs(ml[0].velX - kV) < 0.001f &&
+              heard(out, a, 283) == 0, msg);
+    }
+    // ⑤ 조각은 문에 안 닿는다
+    {
+        nox::CSyncHost srv; mk(srv, 4, false);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 33; srv.Tick(ms, out);
+        const bool made = srv->DebugMakeFragment(Sid(srv, a), 1000, 1000, 0);
+        for (int k = 0; k < 3; ++k) { ms += 33; srv.Tick(ms, out); }
+        const auto& ml = srv->missileList();
+        std::snprintf(msg, sizeof(msg), "공 문 ⑤ 조각 %d · 문 %llu(0) · 조각 벽 %llu(0) · 닿음 %llu(0) · 남은 것 %zu(1) · 자리 x %.3f(> 1020)", int(made),
+                      srv->fonStat(FS::BallDoor), srv->fonStat(FS::FragWall), srv->fonStat(FS::FragHit), ml.size(), ml.empty() ? 0.0 : ml[0].posX);
+        Check(made && srv->fonStat(FS::BallDoor) == 0 && srv->fonStat(FS::FragWall) == 0 && srv->fonStat(FS::FragHit) == 0 && ml.size() == 1 &&
+              ml[0].posX > 1020.0f, msg);
+    }
+    // ⑥ 벽 칸을 붙인 닫힌 문 — 벽이 더 가까워 벽 튕김
+    {
+        nox::CSyncHost srv; mk(srv, 8, false);
+        srv->AttachDoorWalls();
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        const bool up = ball(srv, ms, out, 1000.0f);
+        for (int k = 0; k < 4; ++k) { ms += 33; srv.Tick(ms, out); }
+        const auto& ml = srv->missileList();
+        std::snprintf(msg, sizeof(msg), "공 문 ⑥ 닫힌 문(벽 칸) 공 %d · 문 %llu(1) · 벽 %llu(0) · 소리 283 %d(1) · 37 %d(0) · 남은 것 %zu(1) · 자리 %.2f,%.2f(1009.38,990.68)", int(up),
+                      srv->fonStat(FS::BallDoor), srv->fonStat(FS::BallWall), heard(out, a, 283), heard(out, a, 37), ml.size(),
+                      ml.empty() ? 0.0 : ml[0].posX, ml.empty() ? 0.0 : ml[0].posY);
+        Check(up && srv->fonStat(FS::BallDoor) == 1 && srv->fonStat(FS::BallWall) == 0 && heard(out, a, 283) == 1 && heard(out, a, 37) == 0 &&
+              ml.size() == 1 && ml[0].posY < 995.0f, msg);
+    }
+    std::printf("  11-22 감사 13 — 자연의 힘 공 문: 세로 문 −x(지난 자리로 · 소리 283) · 대각 문 −y · 비껴감 · GATE 안 닿음 · 조각은 문 안 봄 · 닫힌 문(벽 칸)도 문 튕김\n");
+}
+
 // ★ 11-20 트레일러 전사 2 — 수리검·차크람(던지기 `GAME4_3.c:4327~4419` · 날기 `updateChakramInMotion_53DCC0` · 맞기 `collideChakram_4EAF00`)
 void TestChakram1120() {
     using CE = nox::ChakramEv;
@@ -43702,6 +43835,7 @@ int main() {
     TestDrainObelisk1122();           // ★ 11-22 마나 흡수(마나 기둥에서 빪 · 잔량 알림 · 빔 끝 · 빨린 소리)
     TestCastSound1122();              // ★ 11-22 시전 소리(밀기·당기기 · 운석 · 날림 주문 — 사람·몬스터)
     TestDeathBallFragment1122();      // ★ 11-22 감사 12 죽음의 공 조각(반주문이 공을 지울 때 셋 · 둘레 · 닿음 · 장애물 · 벽 · 수명)
+    TestDeathBallDoor1122();          // ★ 11-22 감사 13 자연의 힘 공 문(문 방향으로 되튐 · 소리 283 · 비껴감 · GATE · 조각은 안 봄)
     TestConnectZeroTail();
     TestReconnectAfterClose();
     TestSessionIds();
