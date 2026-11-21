@@ -7710,6 +7710,47 @@ void TestFist() {
         Check(roseAgain, "땅에 닿은 뒤 안 떠올랐다(되튐이 빠졌나)");
     }
 
+    // ①e ★ 11-22 되튄 주먹은 **높이 200 에서 사라진다**(`updateFist_53D400` `GAME4_3.c:6744`) — 두 번째로 땅에 닿지 않는다.
+    //   전에는 이 갈래가 없어 한 번 더 떨어지다 3초 수명에 끊겼다(사람 판 「두 번 내려오다 끊김」).
+    //   처음 닿을 때 소리 48 한 번 · 연기(8a) 셋 — (x+35, y) · (x−35, y) · (x, y+35)(세기 3 LargeFist 둘레 35 · `:6729~6742`)
+    {
+        nox::CSyncHost srv; mk(srv);
+        srv->DebugMoveTo(Sid(srv, b), 5000, 5000);
+        std::vector<nox::OutPacket> out;
+        uint32_t ms = 0;
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv->DebugAimAt(Sid(srv, a), 1300, 1000);
+        CastAndWait(srv, a, 29, false, ms, out);
+        Check(srv->PlacedCount() == 1, "①e 주먹이 안 떴다(시험 전제)");
+        int landings = 0, goneTick = -1, smokeHit = 0, smokeOther = 0;
+        bool down = false;
+        float lastZ = -1.0f;
+        for (int t = 0; t < 100; ++t) {
+            std::vector<nox::OutPacket> o2;
+            ms += 34; srv.Tick(ms, o2);
+            for (const auto& m : FlattenTo(o2, a)) {
+                if (m.size() != 5 || m[0] != static_cast<uint8_t>(nox::Op::FX_SMOKE_BLAST)) continue;
+                const int x = m[1] | (m[2] << 8), y = m[3] | (m[4] << 8);
+                if ((x == 1335 && y == 1000) || (x == 1265 && y == 1000) || (x == 1300 && y == 1035)) ++smokeHit; else ++smokeOther;
+            }
+            if (srv->PlacedCount() == 0) { goneTick = t; break; }
+            const float z = srv->DebugPlacedZ(0);
+            if (z <= 0.0f && !down) { ++landings; down = true; }
+            else if (z > 0.0f) down = false;
+            lastZ = z;
+        }
+        if (landings != 1 || goneTick < 0 || goneTick >= 60)
+            std::printf("  [주먹 ①e] 닿음 %d · 사라진 틱 %d · 마지막 높이 %.1f\n", landings, goneTick, lastZ);
+        Check(landings == 1, "①e 되튄 주먹이 두 번째로 땅에 닿았다 — 200 에서 지우는 갈래가 빠졌나");
+        Check(goneTick >= 0 && goneTick < 60, "①e 되튄 주먹이 2초 안에 안 사라졌다(3초 수명까지 남았나)");
+        Check(lastZ > 150.0f && lastZ < 200.0f, "①e 사라지기 바로 전 높이가 200 바로 밑이 아니다(지우는 높이가 200 이 아닌가)");
+        Check(smokeHit == 3 && smokeOther == 0, "①e 처음 닿을 때 연기(8a)가 정한 세 점에 하나씩 안 갔다");
+        const auto& dropped = srv->soundsDroppedIds();
+        Check(dropped.count(48) == 1 && dropped.at(48) == 1, "①e 처음 닿을 때 소리 48 이 한 번 안 났다");
+        Check(srv->fistLanded() == 1 && srv->fistRoseGone() == 1, "①e 착지·되튀어지움 카운터가 1·1 이 아니다");
+    }
+
     // ①c 세기별 **둘레**가 다르다 — 세기 3 은 35(+몸 10 = 45)라 40 떨어진 사람도 맞는다
     {
         nox::CSyncHost srv; mk(srv);
@@ -7826,7 +7867,9 @@ void TestFist() {
         Check(FindMsg(toA, static_cast<uint8_t>(nox::Op::FX_JIGGLE)) != nullptr, "주먹이 닿았는데 화면이 안 흔들렸다");
     }
 
-    // ⑥ **3초(90틱)** 면 사라진다
+    // ⑥ **3초(90틱)** 면 사라진다(`GAME4_3.c:6747`)
+    //   ★ 11-22 — 되튄 주먹은 200 에서 먼저 지워지므로(①e) 이 갈래는 **되튀지 않는 주먹**으로 본다:
+    //   처음 닿은 틱에 높이·z속도를 0 으로 눌러 200 에 못 닿게 한 뒤 만든 지 80틱엔 남고 100틱엔 없어야 한다
     {
         nox::CSyncHost srv; mk(srv);
         srv->DebugMoveTo(Sid(srv, b), 5000, 5000);
@@ -7836,7 +7879,12 @@ void TestFist() {
         ms += 34; srv.Tick(ms, out);
         srv->DebugAimAt(Sid(srv, a), 1300, 1000);
         CastAndWait(srv, a, 29, false, ms, out);
-        for (int t = 0; t < 80; ++t) { ms += 34; srv.Tick(ms, out); }
+        bool held = false;
+        for (int t = 0; t < 80; ++t) {
+            ms += 34; srv.Tick(ms, out);
+            if (!held && srv->PlacedCount() == 1 && srv->DebugPlacedZ(0) <= 0.0f) { srv->DebugSetPlacedZ(0, 0.0f, 0.0f); held = true; }
+        }
+        Check(held, "⑥ 주먹이 땅에 안 닿았다(시험 전제)");
         Check(srv->PlacedCount() == 1, "80틱 만에 사라졌다 — 3초는 남아야 한다");
         for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
         Check(srv->PlacedCount() == 0, "100틱이 지났는데 주먹이 안 걷혔다");

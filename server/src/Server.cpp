@@ -16740,6 +16740,12 @@ void Server::UpdatePlaced() {
         //   처음 땅에 닿을 때 **화면 흔들기 30** 을 보내고 「닿았음」을 적는다(+16 비트 31).
         //   닿음 피해는 **닿은 뒤에만** — 몸이 겹친 틱마다 `FistOfVengeanceDamage`(50·100·200·300·400) 종류 **2(짓눌림)**.
         //   수명은 3초(90틱).
+        //   ★ 11-22 트레일러 — `updateFist_53D400`(`GAME4_3.c:6727~6750`) 세 갈래를 다 옮김:
+        //     ① 처음 닿을 때 소리 48 · 연기 점 효과 138(FX_SMOKE_BLAST) 셋 — (x+둘레, y) · (x−둘레, y) · (x, y+둘레) · 흔들기 30
+        //     ② **닿은 뒤 되튀어 높이 200 이상이면 지운다**(`:6744`) — 전에는 이 갈래가 없어 되튄 주먹이 한 번 더 떨어지다
+        //        3초 수명에 끊겼다(사람 판 「두 번 내려오다 끊김」). 255 에서 떨어져 닿는 속도 ≈18.8 × 되튐 0.9 → 최고 ≈286 이라 200 에 닿는다
+        //     ③ 3초 수명(`:6747`) — 그대로
+        //   ⚠ 안 옮김 — 그을음(`sMakeScorch_537AF0(자리, 2)`) — 서버 어디에도 아직 없다(불덩이·운석도 같음)
         if (o.kind == 5) {
             o.z += o.zVel;
             if (o.z >= 0.0f) {
@@ -16751,7 +16757,21 @@ void Server::UpdatePlaced() {
             }
             if (o.z <= 0.0f && !o.landed) {
                 o.landed = true;
+                ++fistLanded_;
+                PlaySoundAt(48, o.x, o.y, 0, 0, o.owner);  // aud_501960(48, 주먹, 0, 0)
+                const float r = o.radius;                   // +176 = 둘레 반지름(25·30·35)
+                for (const auto& p : { std::pair<float, float>{ o.x + r, o.y }, { o.x - r, o.y }, { o.x, o.y + r } }) {
+                    const uint16_t ix = static_cast<uint16_t>(static_cast<int>(p.first)), iy = static_cast<uint16_t>(static_cast<int>(p.second));
+                    const uint8_t fx[5] = { static_cast<uint8_t>(Op::FX_SMOKE_BLAST), static_cast<uint8_t>(ix), static_cast<uint8_t>(ix >> 8),
+                                            static_cast<uint8_t>(iy), static_cast<uint8_t>(iy >> 8) };
+                    SendFxAllCli(p.first, p.second, fx, sizeof(fx));   // netSendPointFx_522FF0(138, 점)
+                }
                 SendJiggle(o.x, o.y, 30);               // earthquakeSend_4D9110(자리, 30)
+            }
+            if (o.landed && o.z >= 200.0f) {            // `:6744` — 되튀어 200 이면 지움
+                ++fistRoseGone_;
+                DestroyPlaced(i);
+                continue;
             }
             if (o.z <= 0.0f && o.damage > 0) {
                 const float reach = o.radius + static_cast<float>(kBodyRadius);

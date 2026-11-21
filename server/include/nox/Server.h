@@ -2523,6 +2523,8 @@ public:
     unsigned long long spellCastFailed() const { return spellCastFailed_; }
     unsigned long long fistTooMany() const { return fistTooMany_; }
     unsigned long long fistNoLos()   const { return fistNoLos_; }
+    unsigned long long fistLanded()   const { return fistLanded_; }     // ★ 11-22 주먹 처음 닿음(소리 48 · 연기 셋)
+    unsigned long long fistRoseGone() const { return fistRoseGone_; }   // ★ 11-22 주먹 되튀어 200 에 지움(`GAME4_3.c:6744`)
     // 부활 무적 안 걸기(`--no-spawn-invuln`) — 화면 확인을 막는 무적을 우회한다
     void SetNoSpawnInvuln(bool v) { noSpawnInvuln_ = v; }
     unsigned long long spawnInvulnApplied() const { return spawnInvulnApplied_; }
@@ -3777,6 +3779,7 @@ public:
     }
     uint8_t DebugPlacedKind(size_t i) const { return i < placed_.size() ? placed_[i].kind : 0; }
     float DebugPlacedZ(size_t i) const { return i < placed_.size() ? placed_[i].z : 0.0f; }
+    void DebugSetPlacedZ(size_t i, float z, float zVel) { if (i < placed_.size()) { placed_[i].z = z; placed_[i].zVel = zVel; } }   // ★ 11-22 시험 — 주먹 되튐을 끄고 3초 수명 갈래만 보기
     uint16_t DebugPlacedType(size_t i) const { return i < placed_.size() ? placed_[i].type : 0; }
     int64_t DebugPlacedOwner(size_t i) const { return i < placed_.size() ? placed_[i].owner : kNoSession; }       // ★ 11-21 W14 +508
     void DebugPlacedBackdate(size_t i, uint32_t frames) { if (i < placed_.size()) placed_[i].createdFrame -= frames; }   // ★ 11-21 W14 +128 를 앞당김(300초 시험)
@@ -6584,6 +6587,8 @@ private:
     unsigned long long spellCastFailed_ = 0;     // 시전 함수가 거짓을 돌려줬다
     unsigned long long fistTooMany_ = 0;         // 주먹 — 이미 자기 것이 떠 있다
     unsigned long long fistNoLos_ = 0;           // 주먹 — 커서 자리가 안 보인다
+    unsigned long long fistLanded_ = 0;          // ★ 11-22 주먹 — 처음 땅에 닿음
+    unsigned long long fistRoseGone_ = 0;        // ★ 11-22 주먹 — 닿은 뒤 되튀어 200 이상이라 지움
     // ★ 부활 무적을 아예 안 거는 진단 스위치(`--no-spawn-invuln`).
     //   CLIENT_READY 되풀이(B-1b 미결) 때문에 무적이 안 풀려 화면 확인이 통째로 막힌다.
     //   그 원인과 **따로** 나머지를 진행하려는 우회로다. 기본 끔.

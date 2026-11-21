@@ -532,7 +532,7 @@ void nox::CRoom::TickDiagnostics(size_t made) {
                     " · 악수(수락 %llu·맵지정 %llu·준비 %llu·무적건 %llu)"
                     " · 시전거절(죽음 %llu·범위 %llu·안배움 %llu·시전중 %llu·직업 %llu·못씀 %llu→받음 %llu)"
                     // ★ 시전 뒷단 갈래 — 「받음은 있는데 발사가 0」일 때 어디서 새는지 가른다
-                    " · 시전뒷단(부름 %llu·잎0 %llu·번호0 %llu·안배움 %llu·커서아군 %llu·막힘 %llu·시전실패 %llu[주먹 중복 %llu·안보임 %llu])"
+                    " · 시전뒷단(부름 %llu·잎0 %llu·번호0 %llu·안배움 %llu·커서아군 %llu·막힘 %llu·시전실패 %llu[주먹 중복 %llu·안보임 %llu·착지 %llu·되튀어지움 %llu])"
                     " · 화살사라짐(벽 %llu[태어나자마자 %llu]·수명 %llu·평균 %.1f틱·**동시최대 %zu**)"
                     // ★ 09-19 — 「항목에 담았다」 ≠ 「와이어에 나갔다」.
                     //   512B 를 넘기면 EncodeUpdate 가 0 을 돌려주고 그 틱은 통째로 안 나간다
@@ -558,7 +558,7 @@ void nox::CRoom::TickDiagnostics(size_t made) {
                     srv.castRejBusy(), srv.castRejClass(), srv.castRejCant(), srv.castAccepted(),
                     srv.spellPlayerCalls(), srv.spellLeafZero(), srv.spellIndZero(), srv.spellNotLearned(),
                     srv.spellFriendAtCursor(), srv.spellErrInform(), srv.spellCastFailed(),
-                    srv.fistTooMany(), srv.fistNoLos(),
+                    srv.fistTooMany(), srv.fistNoLos(), srv.fistLanded(), srv.fistRoseGone(),
                     srv.arrowGoneWall(), srv.arrowGoneWallAtBirth(), srv.arrowGoneAge(), srv.arrowLifeAvg(), srv.missilesPeak(),
                     srv.updateEncOk(), srv.updateEncFail(), srv.updateEncFailObjsMax(), srv.updateEncOkObjsMax(),
                     srv.updateDroppedObjs(), srv.updateDroppedTicks(), srv.updateDroppedMax(),
