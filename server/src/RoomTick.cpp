@@ -237,6 +237,12 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                     srv.moonStat(MS::OffMap), srv.moonStat(MS::GoneOwner), srv.moonStat(MS::GoneAge), srv.moonStat(MS::EndLight),
                     srv.moonStat(MS::EndMonster));
         }
+        {   // ★ 11-21 W15 — 꼬리표(116) 갈래 · 시험이 같은 칸을 센다(`TestTag1121`)
+            using TS = nox::Server::TagStat;
+            srv.Log("[꼬리표] 켬 %llu · 대상 없음 %llu · 대상 죽음·지워짐 %llu / 대상 지워져 끝 %llu / 끔 %llu · 끔 안 보냄 %llu\n",
+                    srv.tagStat(TS::On), srv.tagStat(TS::NoTarget), srv.tagStat(TS::DeadTarget), srv.tagStat(TS::Gone),
+                    srv.tagStat(TS::Off), srv.tagStat(TS::OffSkip));
+        }
         // ★ 10-01 — 클라 대체 무기 알림 `e0`(비움 · 가방에 없음 · 맞음 · 직업·힘 안 맞아 `e0 0 01` 되돌림)
         srv.Log("[대체무기] 비움 %llu · 없음 %llu · 맞음 %llu · 되돌림 %llu\n", srv.secondaryWeaponStat(0),
                     srv.secondaryWeaponStat(1), srv.secondaryWeaponStat(2), srv.secondaryWeaponStat(3));

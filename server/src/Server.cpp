@@ -7675,6 +7675,15 @@ bool Server::SpellAccept(uint8_t spell, Session& s, int64_t obj3, const SpellArg
                     fnc = DurNew(spell, s.sessionId, targ.sessionId, false, arg, lvl, f, 0) ? 1 : 0;
                 break;
             }
+            case 116: {                                                                        // ★ 11-21 W15 Tag(꼬리표) — 지속 · dt 0(`spells.go:388~389`)
+                //   u2(+16 Caster16) = 시전자(obj3) · 대상 = +48(sa.Obj) — 끝 프레임은 만들기가 세기로 정한다(머리 주석은 `DurTagCreate`)
+                DurFns f;
+                f.create = &Server::DurTagCreate;
+                f.update = &Server::DurTagTick;
+                f.destroy = &Server::DurTagEnd;
+                fnc = DurNew(spell, s.sessionId, obj3, false, arg, lvl, f, 0) ? 1 : 0;
+                break;
+            }
             case 21: {                                                                         // ★ 11-21 W6 TurnUndead(언데드 쫓기) — 지속 · dt 70(`spells.go:252~253`)
                 DurFns f;                                                                      //   갱신 `531410` 은 0 만 돌려준다 — 없는 것과 같다
                 f.create = &Server::DurTurnUndeadCreate;
@@ -9135,6 +9144,81 @@ void Server::DurMoonglowEnd(DurSpell& d) {
     d.moonglowNet = 0;
     BuffOff(t, 1);
     ++moonStat_[static_cast<size_t>(MoonStat::EndLight)];
+}
+
+// ★ 11-21 트레일러 위저드 W15 — 꼬리표(SPELL_TAG 116). 원본 `spells.go:388~389` → 지속(dt 0 · u2 = 시전자 obj3 · 대상 = +48 sa.Obj).
+//   하는 일은 **시전자 한 사람에게만** `MSG_INTERESTING_ID`(0xD2)를 보내 대상을 클라 미니맵 목록에 넣고(켜기) · 끝나면 빼는 것(끄기)이다.
+//   클라(`client__network__cdecode.c:2610~2633`) — [5] == 1 이면 그 번호의 그림을 찾아(없으면 종류 [3] 으로 만들어) 미니맵 목록에 [6] 갈래로 넣고 · 2 면 뺀다.
+//   ⚠ 안 옮김 — 서버 쪽 미니맵 장부(`netMarkMinimapObject_417190` · `netUnmarkMinimapObj_417300`). 장부에 든 것은 시야 밖이어도 틱마다 하나씩
+//     자리를 보내 점이 움직인다(`server.go:581~597`) — 이 리포는 장부를 아직 안 옮겼다(소환·처치 쪽도 같은 표기) → 시야 밖 점은 마지막 자리에 머문다
+//
+// nox_xxx_spellTagCreature_530160(`GAME4_3.c:512~552`) — 시작.
+//   · 시전자(+16)가 없거나 죽음·지워짐이거나 사람이 아니면 1 — 우리 `DurNew` 가 시전자를 산 사람으로 이미 거른다(그래서 여기서 다시 안 본다)
+//   · 대상(+48)이 없거나 죽음·지워짐(0x8020)이면 1 — 대상이 있으면 그 번호·종류는 먼저 담는다(끝 함수가 그 대상에 끄기를 보낸다 · 원본도
+//     +48 이 비어 있지 않으면 보낸다 `:580~593`)
+//   · 끝 프레임(+68) = 지금 + 세기(+8) × `TagDurationPerLevel`(nox_float2int = 버림)
+//   · 시전자에게 `d2 [대상 번호][대상 종류][1][1]`(Packet0 · 꼭 가는 쪽) · 0
+int Server::DurTagCreate(DurSpell& d) {
+    const Target t = d.target;
+    bool dead = false;
+    if (t.pet >= 0) {
+        if (static_cast<size_t>(t.pet) >= pets_.size()) { ++tagStat_[static_cast<size_t>(TagStat::NoTarget)]; return 1; }
+        const Creature& k = pets_[static_cast<size_t>(t.pet)];
+        d.tagNet = k.netCode;
+        d.tagType = k.type;
+        dead = k.dead;
+    } else {
+        auto it = sessions_.find(t.sessionId);
+        if (t.sessionId == kNoSession || it == sessions_.end()) { ++tagStat_[static_cast<size_t>(TagStat::NoTarget)]; return 1; }
+        d.tagNet = it->second.netCode;
+        d.tagType = kPlayerType;
+        dead = !it->second.inGame || it->second.respawnAtFrame != 0;
+    }
+    if (dead) { ++tagStat_[static_cast<size_t>(TagStat::DeadTarget)]; return 1; }
+    d.frame68 = frame_ + static_cast<uint32_t>(d.level * static_cast<int>(BalanceFloat("TagDurationPerLevel")));
+    auto ci = sessions_.find(d.caster);
+    if (ci != sessions_.end()) SendInterestingId(ci->second, d.tagNet, d.tagType, 1, 1);   // 늘 있다(`DurNew` 가 방금 봤다)
+    ++tagStat_[static_cast<size_t>(TagStat::On)];
+    return 0;
+}
+
+// sub_530250(`GAME4_3.c:555~566`) — 틱. 대상(+48)이 없거나 지워졌으면(+16 & 0x20) 1(끝) · **죽음(0x8000)은 안 본다** — 죽어도 꼬리표는 남는다.
+//   몬스터는 번호(`tagNet`)로 다시 찾고(자리 번호는 밀린다) · 사람은 나감(세션 없음·게임 밖)이 지워짐
+int Server::DurTagTick(DurSpell& d) {
+    bool gone = false;
+    if (d.target.pet >= 0) {
+        gone = PetIndexByNet(d.tagNet) < 0;
+    } else {
+        auto it = sessions_.find(d.target.sessionId);
+        gone = it == sessions_.end() || !it->second.inGame;
+    }
+    if (!gone) return 0;
+    ++tagStat_[static_cast<size_t>(TagStat::Gone)];
+    return 1;
+}
+
+// sub_530270(`GAME4_3.c:569~597`) — 끝. 시전자(+16)가 사람으로 남아 있고 대상(+48)이 있으면 그 시전자에게 `d2 [번호][종류][2][1]`
+//   (대상이 사람이 아니면 장부에서도 빼는데 장부는 안 옮김 — 위 머리 주석).
+//   · 시전자가 죽으면 죽는 자리(`GAME5.c:5103` playerCancelSpells)가 먼저 취소 깃발을 세우고, 다음 지속 틱은 깃발을 +16 지우기보다 먼저 본다
+//     (`spells_dur.go:65` → `:69`) — 그래서 +16 이 남아 **죽은 시전자에게도 끄기가 간다**. 나간 시전자는 받을 사람이 없어 안 보낸다
+//     (나가기는 세션을 지운다 `Server.cpp` 나감 갈래 `sessions_.erase` — 못 찾음으로 걸러진다 · 게임 밖으로만 빠진 시전자는 지속 틱이 +16 을 먼저 비운다)
+//   · 원본은 게임 안인지를 안 본다(시전자가 있고 사람이면 보낸다) — 그래서 우리도 안 본다(11-21 일부러 틀리기 T19 가 그 확인이 닿지 않는 줄임을 보였다)
+void Server::DurTagEnd(DurSpell& d) {
+    auto ci = sessions_.find(d.caster);
+    if (d.caster == kNoSession || ci == sessions_.end() || d.tagNet == 0) {
+        ++tagStat_[static_cast<size_t>(TagStat::OffSkip)];
+        return;
+    }
+    SendInterestingId(ci->second, d.tagNet, d.tagType, 2, 1);
+    ++tagStat_[static_cast<size_t>(TagStat::Off)];
+}
+
+// MSG_INTERESTING_ID(0xD2) — [번호 u16][종류 u16][1 켜기 · 2 끄기][갈래] 7바이트 · Packet0(`netSendPacket0_4E5420(…, 0, 1)` — 꼭 가는 쪽)
+//   갈래 — 꼬리표 1 · `NetSendInterestingIDOn/Off`(`server/network.go:676~697` 모두에게) 2
+void Server::SendInterestingId(Session& s, uint16_t net, uint16_t type, uint8_t onOff, uint8_t kind) {
+    const uint8_t msg[7] = { static_cast<uint8_t>(Op::INTERESTING_ID), static_cast<uint8_t>(net), static_cast<uint8_t>(net >> 8),
+                             static_cast<uint8_t>(type), static_cast<uint8_t>(type >> 8), onOff, kind };
+    EmitImportantRaw(s, msg, sizeof(msg));
 }
 
 // sub_517590 = `ValidIndexPos`(`server/map.go:229~232`) — 칸 번호(`RoundCoord` ÷85 반올림 · 음수는 0 쪽으로 버림 `server/math.go:15~21`)가

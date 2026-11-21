@@ -27863,6 +27863,220 @@ void TestMoonglow1121() {
     std::printf("  11-21 W14 달빛 — 커서 따라가는 빛 · 버프 1 · 맵 칸 밖 그대로 · 300초 · 다시 걸기·죽음·나감 · 남에게 · 몬스터는 15 한 틱\n");
 }
 
+// ── 11-21 트레일러 위저드 W15 — 꼬리표(116) `spells.go:388~389` · 만들기 `GAME4_3.c:512~552` · 틱 `:555~566` · 끝 `:569~597` ─────
+//   ① 몬스터(세기 3) — 시전자에게만 `d2 [번호][1357][1][1]` · 끝 프레임 = 지금 + 3 × TagDurationPerLevel(시험 45 → 135) · 그 뒤 틱에 `d2 … [2][1]`
+//   ② 사람 b — `d2 [883][713][1][1]` · b 가 죽어도 남음(틱은 지워짐만 본다) · b 나감 → 끝 · 끄기 · b 는 `d2` 를 못 받음
+//   ③ 몬스터 자리 밀림 — 둘 중 1번에 건 뒤 0번을 지워도 남음(번호로 쫓는다) · 그 몬스터를 지우면 끝 · 끄기
+//   ④ 다시 걸기 — 옛 대상 끄기가 새 대상 켜기보다 먼저
+//   ⑤ 시전자 죽음 — 죽는 자리가 먼저 취소(`GAME5.c:5103`) → 다음 틱 끝 함수에 시전자가 남아 끄기를 보냄 · 시전자 나감 — 안 보냄(끔 안 보냄 1)
+//   ⑥ 죽은 대상(사람 b · 몬스터 시체) — 받음 거절 · 켜기 없음 · 끝 함수가 그 대상에 끄기를 보냄(원본도 +48 이 차 있으면 보낸다)
+//   ⑦ 대상 없음 — 받음 거절 · 아무것도 안 보냄
+//   ⑧ gamedata.bin TagDurationPerLevel(진짜 값 찍기)
+void TestTag1121() {
+    using TS = nox::Server::TagStat;
+    const std::string a = "10.11.21.11:9521", b = "10.11.21.12:9522";
+    char msg[360];
+    const uint8_t kD2 = static_cast<uint8_t>(nox::Op::INTERESTING_ID);
+    auto d2 = [&](uint16_t net, uint16_t type, uint8_t onOff) {
+        return std::vector<uint8_t>{ kD2, static_cast<uint8_t>(net), static_cast<uint8_t>(net >> 8),
+                                     static_cast<uint8_t>(type), static_cast<uint8_t>(type >> 8), onOff, 1 };
+    };
+    auto cnt = [](const std::vector<nox::OutPacket>& out, const std::string& to, const std::vector<uint8_t>& want) {
+        int n = 0;
+        for (const auto& m : FlattenTo(out, to)) if (m == want) ++n;
+        return n;
+    };
+    auto countOp = [](const std::vector<nox::OutPacket>& out, const std::string& to, uint8_t op) {
+        int n = 0;
+        for (const auto& m : FlattenTo(out, to)) if (!m.empty() && m[0] == op) ++n;
+        return n;
+    };
+    auto mk = [&](nox::CSyncHost& srv) {
+        nox::Gamedata g;
+        g.Parse("TagDurationPerLevel = 45;\n");
+        srv->SetGamedata(g);
+        srv->SetSpellDef(116, 0, 0x01340025u, { 2, 2 });                      // thing.bin SPELL_TAG(깃발 01340025 — 겨눔 0x4 · 공격 0x20)
+        srv->SetTypeBody(1357, [] { nox::Server::PhysBody bb; bb.shape = 2; bb.r = 10.0f; bb.cls = 0x2; return bb; }());
+        srv.DebugEnterGame(a, 882, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 883, false, nox::CharClass::Warrior);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv->DebugMoveTo(Sid(srv, b), 1100, 1000);
+    };
+    auto tick = [](nox::CSyncHost& srv, std::vector<nox::OutPacket>& out, uint32_t& ms, int n) {
+        for (int t = 0; t < n; ++t) { ms += 34; srv.Tick(ms, out); }
+    };
+    const nox::Target pet0{ nox::kNoSession, 0 }, pet1{ nox::kNoSession, 1 };
+    // ① 몬스터 · 끝 프레임
+    {
+        nox::CSyncHost srv; mk(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.Tick(ms, out);
+        const int64_t sa = Sid(srv, a);
+        srv->DebugSpawnPet(1357, 1200, 1000, Sid(srv, std::string()));
+        const uint16_t net = srv->DebugPetNet(0);
+        tick(srv, out, ms, 1); out.clear();
+        const uint32_t f0 = srv->frame();
+        const bool acc = srv->DebugSpellAcceptOn(sa, 116, 3, pet0, 1200, 1000);
+        const uint32_t endF = srv->DebugDurEndFrame();
+        tick(srv, out, ms, 1);
+        const int on = cnt(out, a, d2(net, 1357, 1)), toB = countOp(out, b, kD2), allA = countOp(out, a, kD2);
+        out.clear();
+        uint32_t offAt = 0; bool early = false;
+        for (int t = 0; t < 200 && offAt == 0; ++t) {
+            ms += 34; srv.Tick(ms, out);
+            if (cnt(out, a, d2(net, 1357, 2)) > 0) offAt = srv->frame();
+            else if (srv->frame() < endF && !srv->DebugDurActive(116, sa)) early = true;
+            out.clear();
+        }
+        std::snprintf(msg, sizeof(msg), "W15 ① 몬스터 — 받음 %d · 켜기 %d(a 의 d2 %d · b %d) · 끝 프레임 +%u(135) · 일찍 끝남 %d · 끄기 +%u · 켬 %llu · 끔 %llu · 지워져 끝 %llu",
+                      int(acc), on, allA, toB, endF - f0, int(early), offAt ? offAt - f0 : 0u, srv->tagStat(TS::On), srv->tagStat(TS::Off), srv->tagStat(TS::Gone));
+        Check(acc && on == 1 && allA == 1 && toB == 0 && endF - f0 == 135 && !early && offAt != 0 && offAt - endF <= 1 &&
+              !srv->DebugDurActive(116, sa) && srv->tagStat(TS::On) == 1 && srv->tagStat(TS::Off) == 1 && srv->tagStat(TS::Gone) == 0, msg);
+    }
+    // ② 사람 b · 죽어도 남음 · 나가면 끝
+    {
+        nox::CSyncHost srv; mk(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.Tick(ms, out);
+        const int64_t sa = Sid(srv, a), sb = Sid(srv, b);
+        const bool acc = srv->DebugSpellAcceptOn(sa, 116, 2, nox::Target{ sb, -1 }, 1100, 1000);
+        tick(srv, out, ms, 1);
+        const int on = cnt(out, a, d2(883, nox::kPlayerType, 1)), toB = countOp(out, b, kD2);
+        out.clear();
+        srv->Damage(sb, 1000);
+        tick(srv, out, ms, 3);
+        const bool bDead = srv->HealthOf(sb) == 0, keep = srv->DebugDurActive(116, sa);
+        const int offDead = countOp(out, a, kD2);
+        out.clear();
+        srv->DebugLeave(sb);
+        tick(srv, out, ms, 3);
+        const int off = cnt(out, a, d2(883, nox::kPlayerType, 2));
+        std::snprintf(msg, sizeof(msg), "W15 ② 사람 b — 받음 %d · 켜기 %d · b 가 받은 d2 %d · b 죽음 %d · 죽은 뒤 남음 %d(d2 %d) · 나간 뒤 끄기 %d · 지속 %d · 지워져 끝 %llu · 끔 %llu",
+                      int(acc), on, toB, int(bDead), int(keep), offDead, off, int(srv->DebugDurActive(116, sa)), srv->tagStat(TS::Gone), srv->tagStat(TS::Off));
+        Check(acc && on == 1 && toB == 0 && bDead && keep && offDead == 0 && off == 1 && !srv->DebugDurActive(116, sa) &&
+              srv->tagStat(TS::Gone) == 1 && srv->tagStat(TS::Off) == 1, msg);
+    }
+    // ③ 몬스터 자리 밀림 · 지우면 끝
+    {
+        nox::CSyncHost srv; mk(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.Tick(ms, out);
+        const int64_t sa = Sid(srv, a);
+        srv->DebugSpawnPet(1357, 1200, 1000, Sid(srv, std::string()));
+        srv->DebugSpawnPet(1357, 1300, 1000, Sid(srv, std::string()));
+        const uint16_t net1 = srv->DebugPetNet(1);
+        const bool acc = srv->DebugSpellAcceptOn(sa, 116, 3, pet1, 1300, 1000);
+        tick(srv, out, ms, 1); out.clear();
+        srv->DebugRemovePetNow(0);
+        tick(srv, out, ms, 3);
+        const bool keep = srv->DebugDurActive(116, sa) && srv->DebugPetNet(0) == net1;
+        const int offEarly = countOp(out, a, kD2);
+        out.clear();
+        srv->DebugRemovePetNow(0);
+        tick(srv, out, ms, 3);
+        const int off = cnt(out, a, d2(net1, 1357, 2));
+        std::snprintf(msg, sizeof(msg), "W15 ③ 자리 밀림 — 받음 %d · 0번 지운 뒤 남음 %d(d2 %d) · 건 몬스터 지운 뒤 끄기 %d · 지속 %d · 지워져 끝 %llu",
+                      int(acc), int(keep), offEarly, off, int(srv->DebugDurActive(116, sa)), srv->tagStat(TS::Gone));
+        Check(acc && keep && offEarly == 0 && off == 1 && !srv->DebugDurActive(116, sa) && srv->tagStat(TS::Gone) == 1, msg);
+    }
+    // ④ 다시 걸기 — 끄기(옛) 다음 켜기(새)
+    {
+        nox::CSyncHost srv; mk(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.Tick(ms, out);
+        const int64_t sa = Sid(srv, a);
+        srv->DebugSpawnPet(1357, 1200, 1000, Sid(srv, std::string()));
+        srv->DebugSpawnPet(1357, 1300, 1000, Sid(srv, std::string()));
+        const uint16_t n0 = srv->DebugPetNet(0), n1 = srv->DebugPetNet(1);
+        srv->DebugSpellAcceptOn(sa, 116, 3, pet0, 1200, 1000);
+        tick(srv, out, ms, 1); out.clear();
+        const bool acc = srv->DebugSpellAcceptOn(sa, 116, 3, pet1, 1300, 1000);
+        tick(srv, out, ms, 1);
+        int iOff = -1, iOn = -1, k = 0, nD2 = 0;
+        for (const auto& m : FlattenTo(out, a)) {
+            if (m == d2(n0, 1357, 2) && iOff < 0) iOff = k;
+            if (m == d2(n1, 1357, 1) && iOn < 0) iOn = k;
+            if (!m.empty() && m[0] == kD2) ++nD2;
+            ++k;
+        }
+        std::snprintf(msg, sizeof(msg), "W15 ④ 다시 걸기 — 받음 %d · 옛 끄기 자리 %d · 새 켜기 자리 %d · d2 %d · 켬 %llu · 끔 %llu · 지속 %d",
+                      int(acc), iOff, iOn, nD2, srv->tagStat(TS::On), srv->tagStat(TS::Off), int(srv->DebugDurActive(116, sa)));
+        Check(acc && iOff >= 0 && iOn > iOff && nD2 == 2 && srv->tagStat(TS::On) == 2 && srv->tagStat(TS::Off) == 1 && srv->DebugDurActive(116, sa), msg);
+    }
+    // ⑤ 시전자 죽음 — 끄기 감 · 시전자 나감 — 안 보냄
+    for (const bool leave : { false, true }) {
+        nox::CSyncHost srv; mk(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.Tick(ms, out);
+        const int64_t sa = Sid(srv, a);
+        srv->DebugSpawnPet(1357, 1200, 1000, Sid(srv, std::string()));
+        const uint16_t net = srv->DebugPetNet(0);
+        const bool acc = srv->DebugSpellAcceptOn(sa, 116, 3, pet0, 1200, 1000);
+        tick(srv, out, ms, 1); out.clear();
+        if (leave) srv->DebugLeave(sa); else srv->Damage(sa, 1000);
+        tick(srv, out, ms, 3);
+        const bool gone = leave ? true : srv->HealthOf(sa) == 0;
+        const int off = cnt(out, a, d2(net, 1357, 2));
+        std::snprintf(msg, sizeof(msg), "W15 ⑤ 시전자 %s — 받음 %d · 죽음 %d · 끄기 %d · 지속 %d · 끔 %llu · 끔 안 보냄 %llu",
+                      leave ? "나감" : "죽음", int(acc), int(gone), off, int(srv->DebugDurActive(116, sa)), srv->tagStat(TS::Off), srv->tagStat(TS::OffSkip));
+        Check(acc && gone && off == (leave ? 0 : 1) && !srv->DebugDurActive(116, sa) &&
+              srv->tagStat(TS::Off) == (leave ? 0u : 1u) && srv->tagStat(TS::OffSkip) == (leave ? 1u : 0u), msg);
+    }
+    // ⑥ 죽은 대상 — 사람 b · 몬스터 시체
+    for (const bool onPet : { false, true }) {
+        nox::CSyncHost srv; mk(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.Tick(ms, out);
+        const int64_t sa = Sid(srv, a), sb = Sid(srv, b);
+        uint16_t net = 883, type = nox::kPlayerType;
+        bool dead = false;
+        if (onPet) {
+            srv->DebugSpawnPet(1357, 1200, 1000, Sid(srv, std::string()));
+            net = srv->DebugPetNet(0); type = 1357;
+            srv->DebugHurt(Sid(srv, std::string()), 0, 9999, sa, 0);
+            dead = srv->DebugPetDead(0);
+        } else {
+            srv->Damage(sb, 1000);
+            dead = srv->HealthOf(sb) == 0;
+        }
+        tick(srv, out, ms, 1); out.clear();
+        const bool acc = srv->DebugSpellAcceptOn(sa, 116, 2, onPet ? pet0 : nox::Target{ sb, -1 }, 1200, 1000);
+        tick(srv, out, ms, 2);
+        const int on = cnt(out, a, d2(net, type, 1)), off = cnt(out, a, d2(net, type, 2)), all = countOp(out, a, kD2);
+        std::snprintf(msg, sizeof(msg), "W15 ⑥ 죽은 대상(%s) — 죽음 %d · 받음 %d · 켜기 %d · 끄기 %d · d2 %d · 죽음·지워짐 %llu · 켬 %llu · 끔 %llu · 지속 %zu",
+                      onPet ? "몬스터" : "사람", int(dead), int(acc), on, off, all, srv->tagStat(TS::DeadTarget), srv->tagStat(TS::On), srv->tagStat(TS::Off), srv->DurCount());
+        Check(dead && !acc && on == 0 && off == 1 && all == 1 && srv->tagStat(TS::DeadTarget) == 1 && srv->tagStat(TS::On) == 0 &&
+              srv->tagStat(TS::Off) == 1 && srv->DurCount() == 0, msg);
+    }
+    // ⑦ 대상 없음
+    {
+        nox::CSyncHost srv; mk(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.Tick(ms, out);
+        const int64_t sa = Sid(srv, a);
+        tick(srv, out, ms, 1); out.clear();
+        const bool acc = srv->DebugSpellAcceptOn(sa, 116, 2, nox::Target{}, 1200, 1000);
+        tick(srv, out, ms, 2);
+        std::snprintf(msg, sizeof(msg), "W15 ⑦ 대상 없음 — 받음 %d · d2 %d · 대상 없음 %llu · 끔 안 보냄 %llu · 끔 %llu · 지속 %zu",
+                      int(acc), countOp(out, a, kD2), srv->tagStat(TS::NoTarget), srv->tagStat(TS::OffSkip), srv->tagStat(TS::Off), srv->DurCount());
+        Check(!acc && countOp(out, a, kD2) == 0 && srv->tagStat(TS::NoTarget) == 1 && srv->tagStat(TS::OffSkip) == 1 &&
+              srv->tagStat(TS::Off) == 0 && srv->DurCount() == 0, msg);
+    }
+    // ⑧ 진짜 gamedata.bin 값
+    {
+        nox::Gamedata real;
+        if (real.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\gamedata.bin")) {
+            const double v = real.Float("ARENA", "TagDurationPerLevel", -1.0);
+            std::snprintf(msg, sizeof(msg), "W15 ⑧ gamedata.bin TagDurationPerLevel = %.2f", v);
+            Check(v > 0.0, msg);
+            std::printf("  (%s)\n", msg);
+        } else {
+            std::printf("  (W15 ⑧ gamedata.bin 대조 건너뜀)\n");
+        }
+    }
+    std::printf("  11-21 W15 꼬리표 — 시전자에게만 d2 켜기·끄기 · 세기 × 길이 · 죽어도 남음 · 지워지면 끝 · 자리 밀림 · 다시 걸기 · 시전자 죽음도 끄기 · 나감은 안 보냄\n");
+}
+
 // ── 11-20 트레일러 전사 1-b — 수식 효과(modifier.bin `Server::ParseModEffects`) · 휘두를 때 위력 배수 · 맞힐 때 불·번개 ─────
 //   ① 진짜 복호본을 읽어 번호 차례·값(빠진 `;` 칸 Speed4 포함)을 본다
 //   ② 워리어 롱소드로 곰을 한 대 — 수식 없음 / 위력6(×1.2) / 불1(+3 폭발) / 번개4(+12 전기) / 불1인데 곰이 무적(관문)
@@ -41113,6 +41327,7 @@ int main() {
     TestMonsterTargetSpells1121();
     TestMagicWall1121();
     TestMoonglow1121();
+    TestTag1121();
     TestModEffects1120();
     TestPickupAutoEquip();
     TestArmorEquip();
