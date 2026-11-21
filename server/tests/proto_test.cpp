@@ -29887,6 +29887,263 @@ void TestScorch1122() {
                 "좀비 불 두 길(대조 칼) · 죽음의 공 서로 지우기(대조 혼자) · 죽음 광선 + 시전 소리\n");
 }
 
+// ── 11-22 번개 셋 — 죽은 대상 점 그림 · 1/3초 소리 · NO_SPELL_TARGET 거르기 ─────────────
+// 에너지볼트(24 `spellEnergyBoltTick_52E850` `GAME4_2.c:10992~11004`) — 피해 뒤 대상이 죽음·사라짐이면 그 자리에 점 그림 130(FX_YELLOW_SPARKS) ·
+//   1/3초마다(30 프레임에 10 마다) 소리 32 를 시전자·대상에 하나씩. 사람·몬스터 시전자가 같은 줄
+// 연쇄 번개(43 `onFrameLightning_52F8A0` `GAME4_3.c:336~339 · 377~380`) — 조각마다 죽으면 점 그림 129(FX_BLUE_SPARKS) ·
+//   1/3초마다 소리 78 을 시전자·첫 대상에 — 지팡이·마나 갈래를 무사히 지난 틱만(마나가 말라 끊기는 틱엔 없다)
+// 대상 고르기(`GAME4_2.c:11057` · `GAME4_3.c:407`) — 몬스터 SUBCLASS 0x8000(NO_SPELL_TARGET)은 고르지 않는다
+void TestLightningFx1122() {
+    const std::string a = "10.11.22.51:9751", b = "10.11.22.52:9752", c = "10.11.22.53:9753";
+    char msg[400];
+    auto snd = [](nox::CSyncHost& srv, uint16_t id) -> unsigned long long {
+        const auto& m = srv->soundsDroppedIds();
+        const auto it = m.find(id);
+        return it == m.end() ? 0ull : it->second;
+    };
+    // 점 그림(다섯 바이트) 그 번호의 수 · 자리들
+    auto fx = [](const std::vector<nox::OutPacket>& out, const std::string& to, nox::Op op, std::vector<std::pair<int, int>>* at) {
+        int n = 0;
+        for (const auto& m : FlattenTo(out, to)) {
+            if (m.size() != 5 || m[0] != static_cast<uint8_t>(op)) continue;
+            if (at) at->push_back({ m[1] | (m[2] << 8), m[3] | (m[4] << 8) });
+            ++n;
+        }
+        return n;
+    };
+    auto mk = [&](nox::CSyncHost& srv) {
+        nox::Gamedata g;
+        g.Parse("EnergyBoltDamage = 1.3, 1.6, 2.0, 2.3, 2.6;\nLightningDamage = 1.5;\nLightningRange = 240;\nLightningSearchTime = 30;\n");
+        srv->SetGamedata(g);
+        srv->SetSpellDef(24, 0, 0x1000000, { 1, 2 });         // 어느 직업이나 · 겨누지 않음
+        srv->SetSpellDef(43, 0, 0x1000000, { 3, 4 });
+        srv.DebugEnterGame(a, 1151, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 1152, false, nox::CharClass::Warrior);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv->DebugMoveTo(Sid(srv, b), 1100, 1000);                      // a 의 몸 방향(+x) 앞 100
+    };
+    // 한 틱(33ms)씩 n 프레임 — 틱마다 a 마나를 채우고 `keep` 사람들의 체력을 채운다
+    auto walk = [&](nox::CSyncHost& srv, uint32_t& ms, std::vector<nox::OutPacket>& out, uint32_t n, const std::vector<std::string>& keep) {
+        const uint32_t f = srv->DebugFrame() + n;
+        for (int t = 0; t < 1000 && srv->DebugFrame() < f; ++t) {
+            for (const auto& k : keep) srv->DebugSetHealth(Sid(srv, k), 150);
+            srv->DebugSetMana(Sid(srv, a), 200);
+            ms += 33; srv.Tick(ms, out);
+        }
+    };
+    auto start = [&](nox::CSyncHost& srv, uint32_t& ms, std::vector<nox::OutPacket>& out, uint8_t sp, int lvl) {
+        srv.Tick(ms, out);
+        ms += 33; srv.Tick(ms, out);
+        srv->DebugSpellAccept(Sid(srv, a), sp, lvl); srv.TakeOut(out);
+        Check(srv->DebugDurActive(sp, Sid(srv, a)), "번개를 못 걸었다(시험 전제)");
+    };
+    const std::vector<std::string> none;
+    const char* const nm[2] = { "에너지볼트(24)", "연쇄 번개(43)" };
+
+    // ① 1/3초 소리 — 30 프레임 맞히는 동안 쌍 셋(30 프레임 안의 10 배수는 늘 셋) = 소리 여섯 · 다른 번개 소리는 0
+    for (int w = 0; w < 2; ++w) {
+        const uint8_t sp = w == 0 ? 24 : 43;
+        const uint16_t id = w == 0 ? 32 : 78, other = w == 0 ? 78 : 32;
+        const int ev = w == 0 ? 1 : 3;
+        nox::CSyncHost srv; mk(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        start(srv, ms, out, sp, 1);
+        walk(srv, ms, out, 5, { b });
+        const unsigned long long s0 = snd(srv, id), o0 = snd(srv, other), e0 = srv->lightningEv(ev);
+        walk(srv, ms, out, 30, { b });
+        const unsigned long long ds = snd(srv, id) - s0, dO = snd(srv, other) - o0, de = srv->lightningEv(ev) - e0;
+        const bool on = srv->DebugDurActive(sp, Sid(srv, a));
+        std::snprintf(msg, sizeof(msg), "① %s 30 프레임 — 소리 %u %llu(6) · 쌍 %llu(3) · 다른 번개 소리 %llu(0) · 걸림 %d",
+                      nm[w], unsigned(id), ds, de, dO, int(on));
+        Check(ds == 6 && de == 3 && dO == 0 && on, msg);
+    }
+    // ② 에너지볼트로 죽으면 그 자리에 점 그림 130 한 번 — 대조: 살려 두면 0
+    for (const bool kill : { true, false }) {
+        nox::CSyncHost srv; mk(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        start(srv, ms, out, 24, 1);
+        walk(srv, ms, out, 3, { b });
+        out.clear();
+        if (kill) srv->DebugSetHealth(Sid(srv, b), 1);
+        walk(srv, ms, out, 5, kill ? none : std::vector<std::string>{ b });
+        std::vector<std::pair<int, int>> at;
+        const int n = fx(out, a, nox::Op::FX_YELLOW_SPARKS, &at);
+        std::snprintf(msg, sizeof(msg), "② 에너지볼트 죽임 %d — 그림 130 %d · 자리 %d,%d · 셈 %llu · b 체력 %u",
+                      int(kill), n, n ? at[0].first : -1, n ? at[0].second : -1, srv->lightningEv(0), unsigned(srv->HealthOf(Sid(srv, b))));
+        if (kill) Check(n == 1 && at[0].first == 1100 && at[0].second == 1000 && srv->lightningEv(0) == 1, msg);
+        else Check(n == 0 && srv->lightningEv(0) == 0, msg);
+    }
+    // ③ 연쇄 번개(세기 2) 두 조각이 둘 다 죽이면 점 그림 129 둘 — 맞은 자리마다 · 대조: 살려 두면 0
+    for (const bool kill : { true, false }) {
+        nox::CSyncHost srv; mk(srv);
+        srv.DebugEnterGame(c, 1153, false, nox::CharClass::Warrior);
+        srv->DebugMoveTo(Sid(srv, c), 1200, 1000);                      // b 너머 — b 에서 100(둘레 ×0.95 안)
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        start(srv, ms, out, 43, 2);
+        walk(srv, ms, out, 3, { b, c });
+        out.clear();
+        if (kill) { srv->DebugSetHealth(Sid(srv, b), 1); srv->DebugSetHealth(Sid(srv, c), 1); }
+        walk(srv, ms, out, 5, kill ? none : std::vector<std::string>{ b, c });
+        std::vector<std::pair<int, int>> at;
+        const int n = fx(out, a, nox::Op::FX_BLUE_SPARKS, &at);
+        bool atB = false, atC = false;
+        for (const auto& q : at) {
+            if (q.first == 1100 && q.second == 1000) atB = true;
+            if (q.first == 1200 && q.second == 1000) atC = true;
+        }
+        std::snprintf(msg, sizeof(msg), "③ 연쇄 번개 죽임 %d — 그림 129 %d · b 자리 %d · c 자리 %d · 셈 %llu · 체력 b %u c %u",
+                      int(kill), n, int(atB), int(atC), srv->lightningEv(2), unsigned(srv->HealthOf(Sid(srv, b))), unsigned(srv->HealthOf(Sid(srv, c))));
+        if (kill) Check(n == 2 && atB && atC && srv->lightningEv(2) == 2, msg);
+        else Check(n == 0 && srv->lightningEv(2) == 0, msg);
+    }
+    // ④ 마나가 말라 끊기는 틱 — 연쇄 번개는 소리 78 이 없고(`GAME4_3.c:371~373` 의 return 1 이 소리 앞) ·
+    //    에너지볼트는 소리 32 가 난다(`GAME4_2.c:10997~11004` 소리가 `:11011` 끊김 앞) — 두 방향을 같은 틀로.
+    //    마나 1 을 넣는 때를 열 칸 밀어 끊기는 틱이 1/3초 칸에 한 번은 걸리게 한다.
+    //    연쇄 번개는 머리의 「이전 마나 0」(`:8634` 꼴)이 먼저 끊어 끝 검사까지 안 온다 → 끝 검사는 「마나 0 · 이전 마나 남음」
+    //    (같은 프레임 앞에서 마나가 빠진 때 — `DebugManaSub` 가 그 꼴을 만든다)으로 따로 본다(w = 2)
+    for (int w = 0; w < 3; ++w) {
+        const uint8_t sp = w == 0 ? 24 : 43;
+        const int ev = w == 0 ? 1 : 3;
+        int ended = 0, endRang = 0, rangBefore = 0, endHit = 0;
+        for (int k = 0; k < 10; ++k) {
+            nox::CSyncHost srv; mk(srv);
+            std::vector<nox::OutPacket> out; uint32_t ms = 0;
+            start(srv, ms, out, sp, 1);
+            walk(srv, ms, out, 3 + static_cast<uint32_t>(k), { b });
+            if (w == 2) srv->DebugManaSub(Sid(srv, a), 1000);
+            else srv->DebugSetMana(Sid(srv, a), 1);
+            for (int g = 0; g < 600 && srv->DebugDurActive(sp, Sid(srv, a)); ++g) {
+                srv->DebugSetHealth(Sid(srv, b), 150);
+                const unsigned long long e0 = srv->lightningEv(ev);
+                ms += 33; srv.Tick(ms, out);
+                const bool on = srv->DebugDurActive(sp, Sid(srv, a));
+                if (srv->lightningEv(ev) != e0) { if (on) ++rangBefore; else ++endRang; }
+                if (!on) ++ended;
+                if (!on && srv->HealthOf(Sid(srv, b)) < 150) ++endHit;     // 끊기는 틱에도 맞혔나 = 끝 검사에서 끊김(머리면 안 맞힘)
+            }
+        }
+        std::snprintf(msg, sizeof(msg), "④ %s 마나 마름%s — 끊김 %d(10) · 끊기는 틱의 소리 쌍 %d(%s) · 그 앞 소리 쌍 %d · 끊기는 틱에 맞힘 %d(%s)",
+                      nm[w == 0 ? 0 : 1], w == 2 ? "(끝 검사)" : "", ended, endRang, w == 0 ? "1 이상" : "0", rangBefore,
+                      endHit, w == 1 ? "0 — 머리에서 끊김" : "10 — 끝 검사에서 끊김");
+        Check(ended == 10 && (w == 0 ? endRang >= 1 : endRang == 0) && endHit == (w == 1 ? 0 : 10), msg);
+    }
+    // ⑤ 충전 지팡이 갈래도 소리 78 — 30 프레임 쌍 셋 · 지팡이 갈래인지는 자세 22(마나 갈래는 10) · 충전 최대 200 / 우리 몫 갈래 충전 최대 0
+    //   (마나를 0 으로 박아 가르지 않는다 — `DebugSetMana` 는 이전 마나까지 0 으로 박아 머리의 「이전 마나 0」 검사에서 끊긴다)
+    for (const int cmax : { 200, 0 }) {
+        nox::CSyncHost srv; mk(srv);
+        std::vector<nox::Server::WorldStatic> st;
+        nox::Server::WorldStatic wd;
+        wd.netCode = 900; wd.type = 651; wd.x = 1000; wd.y = 1000;
+        wd.weight = 20; wd.useFn = nox::UseFn::WandCast;
+        wd.wandSpell = 43;
+        wd.chargesMax = static_cast<decltype(wd.chargesMax)>(cmax);
+        wd.charges = static_cast<decltype(wd.charges)>(cmax);
+        st.push_back(wd);
+        srv->SetWorldStatics(st);
+        { std::vector<nox::OutPacket> o; const std::vector<uint8_t> g2 = CodePacket(nox::Op::TRY_GET, 900); srv.OnPacket(a, g2.data(), g2.size(), o); }
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        start(srv, ms, out, 43, 1);
+        walk(srv, ms, out, 5, { b });
+        const unsigned long long e0 = srv->lightningEv(3);
+        walk(srv, ms, out, 30, { b });
+        const unsigned long long de = srv->lightningEv(3) - e0;
+        const bool on = srv->DebugDurActive(43, Sid(srv, a));
+        const int st22 = srv->DebugStateOf(Sid(srv, a));
+        std::snprintf(msg, sizeof(msg), "⑤ 지팡이(충전 최대 %d) 30 프레임 — 쌍 %llu(3) · 걸림 %d · 자세 %d(22)", cmax, de, int(on), st22);
+        Check(de == 3 && on && st22 == 22, msg);
+    }
+
+    // ⑥~⑧ 몬스터 시전자 — 리치(1342 · 주인 없음 1000,1000) · a 는 앞 100 · 프레임 하나씩 걷는다(`TestC11` 꼴)
+    auto run = [](nox::CSyncHost& srv, uint32_t& ms, int n, std::vector<nox::OutPacket>* keep, bool hold, int64_t holdId) {
+        for (int g = 0; g < n; ++g) {
+            if (hold) srv->DebugSetHealth(holdId, 150);
+            const uint32_t f = srv->frame();
+            for (int h = 0; h < 100 && srv->frame() == f; ++h) {
+                ms += 5; std::vector<nox::OutPacket> o; srv.Tick(ms, o);
+                if (keep) keep->insert(keep->end(), o.begin(), o.end());
+            }
+        }
+    };
+    auto mkLich = [&](nox::CSyncHost& srv) {
+        nox::Gamedata g;
+        g.Parse("EnergyBoltDamage = 1.3, 1.6, 2.0, 2.3, 2.6;\nLightningDamage = 1.5;\nLightningRange = 240;\nLightningSearchTime = 30;\n");
+        srv->SetGamedata(g);
+        srv->SetSpellDef(43, 0, 0x42340033u, { 1, 2 });
+        srv->SetSpellDef(24, 0, 0x42340033u, { 3, 4 });
+        srv.DebugEnterGame(a, 1154, false, nox::CharClass::Warrior);
+        srv->DebugTeleport(Sid(srv, a), 1100.0f, 1000.0f);
+        srv->DebugSpawnPet(1342, 1000, 1000, Sid(srv, std::string()));
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        srv->DebugSetFrame(1000);
+        srv->DebugSetPetCastNextAll(0, 1000000);                 // 두뇌가 다른 주문을 끼워 넣지 않게
+    };
+    // ⑥ 30 프레임 소리 쌍 셋(소리 여섯) · 대상이 죽으면 점 그림 한 번(24 = 130 · 43 = 129)
+    for (int w = 0; w < 2; ++w) {
+        const uint8_t sp = w == 0 ? 24 : 43;
+        const uint16_t id = w == 0 ? 32 : 78;
+        const int evS = w == 0 ? 1 : 3, evF = w == 0 ? 0 : 2;
+        const nox::Op op = w == 0 ? nox::Op::FX_YELLOW_SPARKS : nox::Op::FX_BLUE_SPARKS;
+        nox::CSyncHost srv; mkLich(srv);
+        uint32_t ms = 0;
+        const uint16_t ln = srv->DebugPetNet(0);
+        const bool cast = srv->DebugPetCastNow(0, sp, nox::Target{ Sid(srv, a), -1 });
+        const unsigned long long s0 = snd(srv, id), e0 = srv->lightningEv(evS);
+        run(srv, ms, 30, nullptr, true, Sid(srv, a));
+        const unsigned long long ds = snd(srv, id) - s0, de = srv->lightningEv(evS) - e0;
+        const bool on = srv->DebugPetDurActive(sp, ln);
+        std::vector<nox::OutPacket> keep;
+        srv->DebugSetHealth(Sid(srv, a), 1);
+        run(srv, ms, 5, &keep, false, 0);
+        std::vector<std::pair<int, int>> at;
+        const int n = fx(keep, a, op, &at);
+        std::snprintf(msg, sizeof(msg), "⑥ 리치 %s — 받음 %d · 30 프레임 뒤 걸림 %d · 소리 %u %llu(6) · 쌍 %llu(3) · 죽은 뒤 그림 %d(1) · 자리 %d,%d · 셈 %llu",
+                      nm[w], int(cast), int(on), unsigned(id), ds, de, n, n ? at[0].first : -1, n ? at[0].second : -1, srv->lightningEv(evF));
+        Check(cast && on && ds == 6 && de == 3 && n == 1 && at[0].first == 1100 && at[0].second == 1000 && srv->lightningEv(evF) == 1, msg);
+    }
+    // ⑦ 사람 시전자 — 곰(1365 · 주인 없음 · a 앞 180)의 몸이 NO_SPELL_TARGET 이면 안 고른다 · 대조: 비트 없는 같은 곰은 깎인다 · b 는 사거리 밖
+    // ⑧ 몬스터 시전자 — 리치가 a 에게 건 뒤 a 를 멀리 빼면 둘레의 a 것 곰(리치 앞 150)을 고르나 · 같은 대조
+    for (int who = 0; who < 2; ++who) for (int w = 0; w < 2; ++w) for (const bool noSpell : { true, false }) {
+        const uint8_t sp = w == 0 ? 24 : 43;
+        const int ev = w == 0 ? 4 : 5;
+        nox::CSyncHost srv;
+        nox::Server::PhysBody body;
+        body.shape = 2; body.r = 10.0f; body.cls = 0x2;
+        body.subclass = nox::Server::MonsterClassBitsOf(noSpell ? "MEDIUM_MONSTER+NO_SPELL_TARGET" : "MEDIUM_MONSTER");
+        size_t bear = 0;
+        int hp0 = 0, hp1 = 0;
+        bool cast = true;
+        if (who == 0) {
+            mk(srv);
+            srv->SetTypeBody(1365, body);
+            srv->DebugMoveTo(Sid(srv, b), 3000, 3000);
+            srv->DebugSpawnPet(1365, 1180, 1000, Sid(srv, std::string()));
+            std::vector<nox::OutPacket> out; uint32_t ms = 0;
+            start(srv, ms, out, sp, 1);
+            hp0 = srv->DebugPetHealth(bear);
+            walk(srv, ms, out, 10, none);
+            hp1 = srv->DebugPetHealth(bear);
+        } else {
+            mkLich(srv);
+            srv->SetTypeBody(1365, body);
+            srv->DebugSpawnPet(1365, 1150, 1000, Sid(srv, a));          // a 것 — 주인 없는 리치의 적
+            bear = 1;
+            uint32_t ms = 0;
+            cast = srv->DebugPetCastNow(0, sp, nox::Target{ Sid(srv, a), -1 });
+            srv->DebugTeleport(Sid(srv, a), 3000.0f, 3000.0f);
+            hp0 = srv->DebugPetHealth(bear);
+            run(srv, ms, 10, nullptr, false, 0);
+            hp1 = srv->DebugPetHealth(bear);
+        }
+        std::snprintf(msg, sizeof(msg), "%s %s 곰 NO_SPELL_TARGET %d — 받음 %d · 곰 체력 %d → %d · 거름 %llu",
+                      who == 0 ? "⑦ 사람" : "⑧ 리치", nm[w], int(noSpell), int(cast), hp0, hp1, srv->lightningEv(ev));
+        if (noSpell) Check(cast && hp0 > 0 && hp1 == hp0 && srv->lightningEv(ev) >= 1, msg);
+        else Check(cast && hp1 < hp0 && srv->lightningEv(ev) == 0, msg);
+    }
+    std::printf("  11-22 — 번개 셋: 1/3초 소리(32·78 · 30 프레임 쌍 셋) · 죽은 대상 점 그림(130 한 번 · 129 조각마다 · 대조 살림) · "
+                "마나 말라 끊기는 틱(볼트 소리 남 · 사슬 소리 없음) · 지팡이 갈래 소리 · 리치 시전자 같은 줄 · NO_SPELL_TARGET 곰 거름(사람·리치 · 대조 비트 없음)\n");
+}
+
 // ★ 11-20 트레일러 전사 2 — 수리검·차크람(던지기 `GAME4_3.c:4327~4419` · 날기 `updateChakramInMotion_53DCC0` · 맞기 `collideChakram_4EAF00`)
 void TestChakram1120() {
     using CE = nox::ChakramEv;
@@ -42430,6 +42687,7 @@ int main() {
     TestChakram1120();
     TestZombie1120();
     TestScorch1122();                 // ★ 11-22 그을음 일곱 자리
+    TestLightningFx1122();            // ★ 11-22 번개 셋(그림 130·129 · 소리 32·78 · NO_SPELL_TARGET)
     TestConnectZeroTail();
     TestReconnectAfterClose();
     TestSessionIds();

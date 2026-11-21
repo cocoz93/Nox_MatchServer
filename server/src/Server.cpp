@@ -8309,6 +8309,7 @@ int Server::DurDrainMana(DurSpell& d) {
 // spellEnergyBoltSetTarget_52EC60(`GAME4_2.c:10981`) — 둘레 안에서 **가장 가까운** 하나를 고른다.
 //   거른다: 죽음·부서짐(0x8020) · 자기 · **적이 아닌 것** · **앞쪽이 아닌 것**(TestTwoPointsAndDirection) ·
 //   상호작용 못 하는 것(CanInteract = 볼 수 있고 벽에 안 가림).
+//   ★ 11-22 — 몬스터 SUBCLASS 0x8000(NO_SPELL_TARGET)도 거른다(`GAME4_2.c:11057` · `PetNoSpellTarget`)
 Target Server::EnergyBoltSearch(const Session& caster, float range) const {
     const float range2 = range * range;
     float best = range2;
@@ -8333,6 +8334,7 @@ Target Server::EnergyBoltSearch(const Session& caster, float range) const {
         const Creature& c = pets_[k];
         if (c.health == 0) continue;
         if (!OwnersEnemy(caster.sessionId, false, c.owner, (c.owner == kNoSession))) continue;
+        if (PetNoSpellTarget(c)) { ++lightningEv_[4]; continue; }   // ★ 11-22 `:11057` 몬스터 + 0x8000
         const float ox = static_cast<float>(c.x), oy = static_cast<float>(c.y);
         if (!(TestTwoPointsAndDirection(static_cast<float>(caster.posX), static_cast<float>(caster.posY),
                                         caster.facingPrev, ox, oy) & 1)) continue;
@@ -8346,6 +8348,29 @@ Target Server::EnergyBoltSearch(const Session& caster, float range) const {
         found = t;
     }
     return found;
+}
+
+// ★ 11-22 번개 둘의 대상 거르기 — 몬스터(클래스 & 2)면서 SUBCLASS 0x8000(NO_SPELL_TARGET · thing.bin 은 GreenFrog 등)이면 안 고른다
+//   (`spellEnergyBoltSetTarget_52EC60` `GAME4_2.c:11057` · `lightningCanAttackCheck_52FF10` `GAME4_3.c:407`)
+bool Server::PetNoSpellTarget(const Creature& k) const {
+    const auto tb = gt_->typeBodies.find(k.type);
+    return tb != gt_->typeBodies.end() && (tb->second.cls & 0x2) && (tb->second.subclass & 0x8000);
+}
+
+// ★ 11-22 에너지볼트가 한 틱 맞힌 뒤(`spellEnergyBoltTick_52E850` `GAME4_2.c:10992~11004` — 사람·몬스터 시전자가 같은 줄을 지난다)
+//   ① 대상이 죽음·사라짐(+16 & 0x8020)이면 그 자리에 점 그림 130(`FX_YELLOW_SPARKS`) — 피해 **뒤**에 본다(이번 한 방으로 죽은 것)
+//   ② 1/3초마다(`gameFrame % (FPS/3)` — 30 프레임에 10 마다) 소리 32 를 시전자·대상에 하나씩 — 마나 0 끊김(`:11011`)보다 앞이라 끊기는 틱에도 난다
+//   기준 프레임은 `durFrame_`(끝 검사와 같은 값 — `DurEnergyBoltTick` 머리 주석)
+void Server::EnergyBoltAfterHit(const Target& caster, const Target& tgt) {
+    if (TargetDeadOrGone(tgt)) {
+        float x = 0, y = 0;
+        if (TargetXY(tgt, x, y)) { SendPointFx(static_cast<uint8_t>(Op::FX_YELLOW_SPARKS), x, y); ++lightningEv_[0]; }
+    }
+    if (durFrame_ % (kServerTickRate / 3) == 0) {
+        PlaySoundOnTarget(32, caster);
+        PlaySoundOnTarget(32, tgt);
+        ++lightningEv_[1];
+    }
 }
 
 // ★ 11-21 사양(원본 밖) — 「맞히면 마나 회복」(사용자 11-21 「좋아」 — 번개·에너지 볼트 같은 규칙) · 몬스터를 맞힌 틱마다 시전자 마나 +1.
@@ -8386,12 +8411,13 @@ int Server::DurEnergyBoltCreate(DurSpell& d) {
 //   고르기: 지금 대상이 아직 앞쪽·사거리 안·볼 수 있으면 그대로, 아니면 둘레에서 다시 고른다
 //   피해: `EnergyBoltDamage[세기-1]` + 소수 이월 · 종류 **17(공중 전기)** · 대상이 바뀌면 옛 빔을 끄고 새 빔을 켠다
 //   시전자는 자세 10 · **틱마다 마나 1**
+//   ★ 11-22 맞힌 뒤 `EnergyBoltAfterHit` — 죽음·사라짐이면 점 그림 130 · 1/3초마다 소리 32 를 시전자·대상에(`:10993~11004`)
 int Server::DurEnergyBoltTick(DurSpell& d) {
     // ★ 09-29 B7 — 몬스터 시전자(`52E850` 의 +16 이 몬스터인 갈래 · `GAME4_2.c:10911~10997`)
     //   달리기(8)면 끊김 · **시전 자리(+28)에서 5 넘게 움직였으면 끊김**(`sub_4FEA70` — 몬스터만) · 만든 뒤 2틱 넘겨 맞았으면 끊김 ·
     //   지금 대상이 살았고·앞쪽·사거리 안·보이면 그대로 · 아니면 둘레에서 다시 · 없으면 빔만 끄고 이어 감 ·
     //   피해 = `EnergyBoltDamage[세기-1]` + 이월 · 종류 17 · 때린 것 = 그 몬스터 · 마나·자세는 사람만(몬스터는 없음)
-    //   ⚠ 1/3초마다 소리 32(시전자·대상)·죽은 대상 점 효과 130 은 사람 쪽에도 아직 없음(미결) · `LightningSearchTime` 은 11-21 에 넣음
+    //   ★ 11-22 죽은 대상 점 그림 130 · 1/3초마다 소리 32(시전자·대상) — 사람 쪽과 같이 `EnergyBoltAfterHit` · `LightningSearchTime` 은 11-21 에 넣음
     if (d.casterPet != 0) {
         const int ki = PetIndexByNet(d.casterPet);
         if (ki < 0) return 1;
@@ -8435,6 +8461,7 @@ int Server::DurEnergyBoltTick(DurSpell& d) {
         const HitterRef hitter = HitterMonster(k);
         const Target tgt = d.target;
         HurtTarget(tgt, dmg, kOwner, 17, &src, hitter);  // `k` 는 여기서부터 안 쓴다(목록이 당겨질 수 있다)
+        EnergyBoltAfterHit(self, tgt);                     // ★ 11-22 `:10993~11004` 그림 130 · 소리 32
         d.field36 = tgt;
         ++castStat_[static_cast<size_t>(CastStat::BeamHit)];
         // 맞혔다 — 끝을 미룬다(`:11006`). ⚠ 시험 없음 — 비홀더는 뇌가 40프레임 안에 다시 걸어(11-21 탐침 「받음 +1 · 시전 +1」) 미루기 유무가 안 갈린다
@@ -8475,6 +8502,7 @@ int Server::DurEnergyBoltTick(DurSpell& d) {
     }
     // ★ 4-c3b1 — 때린 것 = 시전자(a2 · a3 = 0 · `GAME4_2.c:10990`)
     HurtTarget(d.target, dmg, d.caster, 17, nullptr, HitterBySession(d.caster));   // 종류 17 = 공중 전기(방어를 안 탄다)
+    EnergyBoltAfterHit(Target{ d.caster, -1 }, d.target);   // ★ 11-22 `:10993~11004` 그림 130 · 소리 32(마나 0 끊김 앞)
     BeamManaOnHit(caster, d.target, 0);                   // ★ 11-21 트레일러 작업 — 맞히면 마나 +1
     d.field36 = d.target;
     PlayerSetState(caster, 10, frame_);                      // 시전 자세
@@ -8492,6 +8520,7 @@ int Server::DurEnergyBoltTick(DurSpell& d) {
 // lightningCanAttackCheck_52FF10(`GAME4_3.c:389`) — `from` 둘레에서 **가장 가까운** 하나.
 //   거른다: 주인의 적이 아닌 것 · 죽음·부서짐 · `from` 자신 · 주인 자신 · **이미 고른 것** ·
 //   상호작용 못 하는 것(CanInteract). ⚠ 에너지볼트와 달리 **앞쪽 검사가 없다**.
+//   ★ 11-22 — 몬스터 SUBCLASS 0x8000(NO_SPELL_TARGET)도 거른다(`GAME4_3.c:407` · `PetNoSpellTarget`)
 Target Server::LightningSearch(const Session& owner, const Target& from, float range,
                                const std::vector<Target>& taken) const {
     float fx = 0, fy = 0;
@@ -8524,6 +8553,7 @@ Target Server::LightningSearch(const Session& owner, const Target& from, float r
         const Creature& cr = pets_[k];
         if (cr.health == 0) continue;
         if (!OwnersEnemy(owner.sessionId, false, cr.owner, (cr.owner == kNoSession))) continue;
+        if (PetNoSpellTarget(cr)) { ++lightningEv_[5]; continue; }   // ★ 11-22 `:407` 몬스터 + 0x8000
         consider(Target{ kNoSession, static_cast<int>(k) }, static_cast<float>(cr.x), static_cast<float>(cr.y));
     }
     return found;
@@ -8558,6 +8588,8 @@ int Server::DurChainLightningCreate(DurSpell& d) {
 //     ④ 세기>3 : **둘째**(②) 둘레 ×0.85 · ⑤ 세기>4 : **셋째**(③) 둘레 ×0.80
 //   빔 조각: (시전자→①) · (①→②) · (①→③) · (②나 ③→④) · (③이나 ②→⑤). 조각마다 `9e` 갈래 3
 //   피해: `LightningDamage`(아레나 1.5) + 소수 이월 · 종류 **17** · 조각마다 **같은 값**
+//   ★ 11-22 조각마다 피해 뒤 대상이 죽음·사라짐이면 점 그림 129(`FX_BLUE_SPARKS` `GAME4_3.c:336~339`) ·
+//     1/3초마다 소리 78(시전자·첫 대상 `:377~380`) — 지팡이·마나 갈래를 무사히 지난 틱만
 int Server::DurChainLightningTick(DurSpell& d) {
     if (d.casterPet != 0) return DurChainLightningTickPet(d);   // ★ 11-21 C11-a — 몬스터 시전자(원본은 한 함수 · 갈래는 아래 함수 머리)
     auto c = sessions_.find(d.caster);
@@ -8621,6 +8653,10 @@ int Server::DurChainLightningTick(DurSpell& d) {
         }
         if (dmg > 0) HurtTarget(sub.target, dmg, d.caster, 17, nullptr, HitterBySession(d.caster));   // ★ 4-c3b1 시전자(`GAME4_3.c:333` a3 = 0)
         if (dmg > 0) BeamManaOnHit(caster, sub.target, 1);  // ★ 11-21 트레일러 작업 — 맞힌 몹 하나당 마나 +1
+        if (TargetDeadOrGone(sub.target)) {                   // ★ 11-22 `:336~339` — 피해와 따로(피해 0 인 틱도 본다)
+            float fx = 0, fy = 0;
+            if (TargetXY(sub.target, fx, fy)) { SendPointFx(static_cast<uint8_t>(Op::FX_BLUE_SPARKS), fx, fy); ++lightningEv_[2]; }
+        }
     }
     for (size_t i = d.sub108.size(); i < prev.size(); ++i)     // 남은 옛 빔은 끈다
         if (!prev[i].target.none()) NetStopRaySpell(prev[i], prev[i].target);
@@ -8630,6 +8666,14 @@ int Server::DurChainLightningTick(DurSpell& d) {
     //   정답지는 충전·마나를 깎은 **뒤**에 미루지만, 그 사이 갈래는 끊기(1)거나 여기와 같은 0 이라 앞에 둬도 같다
     //   (우리 몫 갈래 `chargesMax == 0` 의 `return 0` 도 미룬 뒤가 되게). 기준 = `durFrame_`(에너지볼트 머리 주석)
     d.frame68 = durFrame_ + static_cast<uint32_t>(BalanceFloat("LightningSearchTime"));
+
+    // ★ 11-22 1/3초마다 소리 78 — 시전자·첫 대상(`GAME4_3.c:377~380`) · 지팡이·마나 갈래를 무사히 지난 틱만(끊기는 `return 1` 앞에는 없다)
+    auto ring = [&]() {
+        if (durFrame_ % (kServerTickRate / 3) != 0) return;
+        PlaySoundOnTarget(78, Target{ d.caster, -1 });
+        PlaySoundOnTarget(78, t[0]);
+        ++lightningEv_[3];
+    };
 
     // ★ 묶음 5-g — **완드를 들었으면 마나 대신 충전을 쓴다**(`GAME4_3.c:346~372`).
     //   자세도 다르다 — 완드면 **22(집중)**, 마나면 **10(시전)**.
@@ -8646,11 +8690,13 @@ int Server::DurChainLightningTick(DurSpell& d) {
         } else {
             PlayerSetState(caster, 22, frame_);
         }
+        ring();
         return 0;                                             // 마나는 안 쓴다
     }
     PlayerSetState(caster, 10, frame_);
     PlayerManaSub(caster, 1);
     if (caster.manaPrev == 0) return 1;
+    ring();
     return 0;
 }
 
@@ -8658,7 +8704,7 @@ int Server::DurChainLightningTick(DurSpell& d) {
 //   둘레(중심 cx,cy · 반지름 r) 안 · 주인 몬스터의 적(`unitIsEnemyTo_5330C0` = `CreatureEnemyTo`) · 죽음·사라짐(0x8020) 아님 ·
 //   `from` 자신·주인 자신 아님 · 이미 고른 것 아님 · `from` 이 볼 수 있음(`unitCanInteractWith_5370E0(source, …)`) · `from` 과 가장 가까운 것.
 //   가장 가까운 거리의 처음 값은 원본처럼 늘 `LightningRange`²(둘레만 ×0.95 등으로 줄어든다)
-//   ⚠ 「몬스터면서 서브클래스 0x8000」 거르기(`:407`)는 안 옮김 — 사람 판 `LightningSearch` 에도 없다
+//   ★ 11-22 「몬스터면서 서브클래스 0x8000(NO_SPELL_TARGET)」 거르기(`:407`) — 적 검사 바로 뒤(원본 차례) · 사람 판 `LightningSearch` 도 같이
 Target Server::LightningSearchPet(const Creature& k, const Target& from, float cx, float cy, float r, float best2,
                                   const std::vector<Target>& taken) const {
     float fx = 0, fy = 0;
@@ -8676,6 +8722,7 @@ Target Server::LightningSearchPet(const Creature& k, const Target& from, float c
     auto consider = [&](const Target& t, float tx, float ty) {
         if (t.sessionId == from.sessionId && t.pet == from.pet) return;
         if (!CreatureEnemyTo(k, t)) return;                              // 주인 자신은 여기서 빠진다(같은 크리처면 적 아님)
+        if (t.pet >= 0 && PetNoSpellTarget(pets_[static_cast<size_t>(t.pet)])) { ++lightningEv_[5]; return; }   // ★ 11-22 `:407`
         if (TargetDeadOrGone(t)) return;
         for (const auto& q : taken) if (q.sessionId == t.sessionId && q.pet == t.pet) return;
         const float ox = tx - cx, oy = ty - cy;
@@ -8703,8 +8750,8 @@ Target Server::LightningSearchPet(const Creature& k, const Target& from, float c
 //   첫 대상 — 시전 자리 둘레 `LightningRange` 안에서 몬스터와 가장 가까운 적(`:170~173`) · 사람만 보는 「커서 아래 대상」 갈래(`:164~169`)는 없음
 //   튀기·빔 조각·피해(`LightningDamage` + 이월 · 종류 17 · 때린 것 = 몬스터 `:332~335`)는 사람 판과 같은 차례 · 마나·지팡이·자세(`:346~376`)는 사람만
 //   첫 조각의 시작은 몬스터 — `fromUnit` 을 비워 두고 빔은 시전자 번호(casterPet)로 보낸다(몬스터 색인은 목록이 당겨지면 바뀐다)
-//   ⚠ 안 옮긴 것(사람 판에도 없음) — 죽은 대상 점 효과 129(`:337~339`) · 1/3초마다 소리 78(`:377~380`) ·
-//     세기 4·5 의 셋째 대상 자리 고르기는 사람 판 꼴 그대로(몬스터 세기는 2~3 이라 안 탄다)
+//   ★ 11-22 죽은 대상 점 그림 129(`:336~339`) · 1/3초마다 소리 78(`:377~380` — 마나·지팡이 갈래가 없어 늘 닿는다) — 사람 판과 같이
+//   ⚠ 세기 4·5 의 셋째 대상 자리 고르기는 사람 판 꼴 그대로(몬스터 세기는 2~3 이라 안 탄다)
 int Server::DurChainLightningTickPet(DurSpell& d) {
     const int ki = PetIndexByNet(d.casterPet);
     if (ki < 0) return 1;
@@ -8779,9 +8826,18 @@ int Server::DurChainLightningTickPet(DurSpell& d) {
             HurtTarget(sub.target, dmg, kOwner, 17, &src, hitter);
             ++castStat_[static_cast<size_t>(CastStat::ChainHit)];
         }
+        if (TargetDeadOrGone(sub.target)) {                   // ★ 11-22 `:336~339`
+            float fx = 0, fy = 0;
+            if (TargetXY(sub.target, fx, fy)) { SendPointFx(static_cast<uint8_t>(Op::FX_BLUE_SPARKS), fx, fy); ++lightningEv_[2]; }
+        }
     }
     for (size_t i = d.sub108.size(); i < prev.size(); ++i)
         if (!prev[i].target.none()) NetStopRaySpell(prev[i], prev[i].target);
+    if (durFrame_ % (kServerTickRate / 3) == 0) {             // ★ 11-22 `:377~380` 1/3초마다 소리 78 — 몬스터·첫 대상
+        PlaySoundOnTarget(78, self);
+        PlaySoundOnTarget(78, t[0]);
+        ++lightningEv_[3];
+    }
     d.frame68 = durFrame_ + static_cast<uint32_t>(BalanceFloat("LightningSearchTime"));   // `:382~383` — 맞히는 동안 계속
     return 0;
 }
@@ -9676,6 +9732,21 @@ void Server::SendTeleportFx(float ox, float oy, float nx, float ny) {
     };
     one(ox, oy);
     one(nx, ny);
+}
+
+// ★ 11-22 `nox_xxx_netSendPointFx_522FF0(op, 자리)` — `<op> <x u16> <y u16>` 다섯 바이트를 그 자리 둘레에 한 번(위 `SendTeleportFx` 의 한 칸과 같은 꼴)
+void Server::SendPointFx(uint8_t op, float x, float y) {
+    const uint16_t ix = static_cast<uint16_t>(static_cast<int>(x)), iy = static_cast<uint16_t>(static_cast<int>(y));
+    const uint8_t msg[5] = { op, static_cast<uint8_t>(ix), static_cast<uint8_t>(ix >> 8), static_cast<uint8_t>(iy), static_cast<uint8_t>(iy >> 8) };
+    SendFxAllCli(x, y, msg, sizeof(msg));
+}
+
+// ★ 11-22 `nox_xxx_aud_501960(id, 유닛, 0, 0)` — 그 유닛 자리에서 낸다. 사람이면 임자 = 그 사람 · 몬스터는 임자 없이 출처만(몬스터 듣기)
+//   (`ShieldReduceDamage` 의 소리 131 과 같은 꼴) · 자리를 못 읽으면(나간 사람) 안 낸다
+void Server::PlaySoundOnTarget(uint16_t id, const Target& t) {
+    float x = 0, y = 0;
+    if (!TargetXY(t, x, y)) return;
+    PlaySoundAt(id, x, y, 0, 0, t.sessionId, t);
 }
 
 // sub_52CBD0(`GAME4_2.c:9800`) — 표식 걸기(46~49). 칸 = **주문 − 46**.
@@ -15716,12 +15787,14 @@ double Server::CalcDistanceEdge(const Creature& k, const Target& t, float tx, fl
 
 // `spellEnergyBoltSetTarget_52EC60` 의 몬스터 시전자 판 — 둘레(번개 사거리) 안 · 자기 아님 · 살아 있음 · 적(`CreatureEnemyTo`) ·
 //   앞쪽(`TestTwoPointsAndDirection` — 몬스터 보는 쪽) · 볼 수 있음(`CanInteractFrom`) · 가장 가까운 것
+//   ★ 11-22 — 몬스터 SUBCLASS 0x8000(NO_SPELL_TARGET)도 거른다(`GAME4_2.c:11057` · `PetNoSpellTarget` · 사람 판과 같이)
 Target Server::EnergyBoltSearchPet(const Creature& k, float range) const {
     float best = range * range;
     Target found;
     const float kx = static_cast<float>(k.x), ky = static_cast<float>(k.y);
     auto consider = [&](const Target& t, float ox, float oy) {
         if (!CreatureEnemyTo(k, t) || TargetHealth(t) <= 0) return;
+        if (t.pet >= 0 && PetNoSpellTarget(pets_[static_cast<size_t>(t.pet)])) { ++lightningEv_[4]; return; }   // ★ 11-22 `:11057`
         if (!(TestTwoPointsAndDirection(kx, ky, k.facing, ox, oy) & 1)) return;
         if (!CanInteractFrom(k, t)) return;
         const float dx = ox - kx, dy = oy - ky, d2 = dx * dx + dy * dy;

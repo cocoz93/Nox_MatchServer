@@ -2527,6 +2527,7 @@ public:
     unsigned long long fistRoseGone() const { return fistRoseGone_; }   // ★ 11-22 주먹 되튀어 200 에 지움(`GAME4_3.c:6744`)
     unsigned long long scorchMade(int size) const { return (size >= 0 && size < 3) ? scorchMade_[size] : 0; }   // ★ 11-22 그을음 크기별(0·1·2)
     unsigned long long scorchNoType() const { return scorchNoType_; }   // ★ 11-22 그을음 — 종류를 못 찾아 못 놓음
+    unsigned long long lightningEv(int i) const { return (i >= 0 && i < 6) ? lightningEv_[i] : 0; }   // ★ 11-22 번개 셋 — 칸 뜻은 `lightningEv_`
     // 부활 무적 안 걸기(`--no-spawn-invuln`) — 화면 확인을 막는 무적을 우회한다
     void SetNoSpawnInvuln(bool v) { noSpawnInvuln_ = v; }
     unsigned long long spawnInvulnApplied() const { return spawnInvulnApplied_; }
@@ -5149,6 +5150,8 @@ private:
     int DurCharmTick(DurSpell& d);                                        // ★ 11-21 C6 charmCreatureFinish_5013E0
     void DurCharmEnd(DurSpell& d);                                        // ★ 11-21 C6 charmCreature2_501690
     void SendTeleportFx(float ox, float oy, float nx, float ny);          // netSendPointFx 137 두 번
+    void SendPointFx(uint8_t op, float x, float y);                       // ★ 11-22 netSendPointFx_522FF0 — `<op> <x u16> <y u16>` 한 번
+    void PlaySoundOnTarget(uint16_t id, const Target& t);                 // ★ 11-22 aud_501960(id, 유닛, 0, 0) — 그 유닛 자리 · 사람이면 임자 = 그 사람
     int DurBlinkCreate(DurSpell& d);                                      // spellBlink2_530310
     int DurBlinkTick(DurSpell& d);                                        // spellBlink1_530380
     // teleportToMB_4E7190 — 그 자리로 옮긴다(물리 자리·옛 자리칸 둘 다).
@@ -5177,6 +5180,8 @@ private:
         return true;
     }
     Target EnergyBoltSearch(const Session& caster, float range) const;                                   // spellEnergyBoltSetTarget_52EC60
+    bool PetNoSpellTarget(const Creature& k) const;                         // ★ 11-22 몬스터 + SUBCLASS 0x8000(NO_SPELL_TARGET) — 번개 둘이 안 고른다
+    void EnergyBoltAfterHit(const Target& caster, const Target& tgt);      // ★ 11-22 죽으면 점 그림 130 · 1/3초마다 소리 32 둘(`GAME4_2.c:10993~11004`)
     int DurEnergyBoltCreate(DurSpell& d);                                   // spellEnergyBoltStop_52E820
     int DurEnergyBoltTick(DurSpell& d);                                     // spellEnergyBoltTick_52E850
     // lightningCanAttackCheck_52FF10 — `from` 자리에서 둘레 안 **가장 가까운 적**. 이미 고른 것(`taken`)은 건너뛴다.
@@ -6610,6 +6615,9 @@ private:
     unsigned long long fistRoseGone_ = 0;        // ★ 11-22 주먹 — 닿은 뒤 되튀어 200 이상이라 지움
     unsigned long long scorchMade_[3] = {};      // ★ 11-22 그을음 — 크기 0·1·2 놓음
     unsigned long long scorchNoType_ = 0;        // ★ 11-22 그을음 — 종류 번호 0(맵 자료에 이름 없음)이라 못 놓음
+    // ★ 11-22 번개 셋 — [0] 에너지볼트 죽은 대상 점 그림 130 · [1] 에너지볼트 소리 32 쌍(시전자·대상) · [2] 연쇄 번개 죽은 대상 점 그림 129 ·
+    //   [3] 연쇄 번개 소리 78 쌍(시전자·첫 대상) · [4] 에너지볼트가 NO_SPELL_TARGET 적을 거름 · [5] 연쇄 번개가 거름(대상 고르기가 const 라 mutable)
+    mutable unsigned long long lightningEv_[6] = {};
     // ★ 부활 무적을 아예 안 거는 진단 스위치(`--no-spawn-invuln`).
     //   CLIENT_READY 되풀이(B-1b 미결) 때문에 무적이 안 풀려 화면 확인이 통째로 막힌다.
     //   그 원인과 **따로** 나머지를 진행하려는 우회로다. 기본 끔.
