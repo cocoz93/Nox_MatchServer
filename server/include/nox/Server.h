@@ -4261,6 +4261,10 @@ public:
     //   끝 프레임이 지나 풀림 · 건 사람이 닿음) / 밀기(남이 밀어 안 돎)
     enum class LockStat : uint8_t { Cast = 0, NoDoor, Already, DoorsLocked, Touch, TouchQuiet, Expired, OwnerTouch, SpinBlocked, Count };
     unsigned long long lockStat(LockStat k) const { return lockStat_[static_cast<size_t>(k)]; }
+    // ★ 11-21 W11 염동력(127) 갈래 — 시전(손 놓음 · 대상 없음 · 사람 아님 · 손 종류 없음) / 손 틱(커서로 옮김 · 선 막혀 그대로 ·
+    //   20초 · 임자 죽음 · 임자 세션 없음)
+    enum class KinStat : uint8_t { Cast = 0, NoTarget, NotPlayer, NoHandType, Moved, Blocked, EndAge, EndDead, GoneOwner, Count };
+    unsigned long long kinStat(KinStat k) const { return kinStat_[static_cast<size_t>(k)]; }
     int64_t DebugPropLockBy(uint16_t netCode) const { for (const auto& p : props_) if (p.netCode == netCode) return p.lockBy; return kNoSession; }
     size_t DebugMagicWallCount() const { return magicWalls_.size(); }
     int DebugWallTileAt(int gx, int gy) const {
@@ -4891,6 +4895,7 @@ private:
                                      //                 6 = 바깥으로 나가는 불꽃(FlameCleanse)
                                      //                 7 = 거미 낳는 자리(ArachnaphobiaUpdate)
                                      //                 8 = 달빛 빛(MoonglowUpdate — 임자의 커서를 따라간다 · ★ 11-21 W14)
+                                     //                 9 = 염동력 손(TelekinesisUpdate — 선이 통하면 임자의 커서로 · 20초 · ★ 11-21 W11)
         int lastZSent = -1000;   // 09-20 — 마지막으로 알린 높이(같으면 안 보낸다)
         bool landed = false;         // +16 비트 31 — 주먹이 한 번 땅에 닿았나(닿음 피해는 그 뒤에만)
         // ★ kind 6 — 바깥으로 나가는 불꽃(정화의 불꽃). 놓인 것 가운데 **처음으로 움직인다**.
@@ -5042,6 +5047,7 @@ private:
     int DurTagTick(DurSpell& d);                                           // ★ 11-21 W15 sub_530250 — 대상이 지워졌으면 끝(죽음은 안 끝남)
     void DurTagEnd(DurSpell& d);                                           // ★ 11-21 W15 sub_530270 — 시전자가 남아 있으면 `d2` 끄기
     void SendInterestingId(Session& s, uint16_t net, uint16_t type, uint8_t onOff, uint8_t kind);   // ★ 11-21 W15 MSG_INTERESTING_ID(0xD2) 7바이트
+    int CastTelekinesis(const Target& t, int lvl);                         // ★ 11-21 W11 castTelekinesis_52D330 — 사람 대상에 손 + 버프 24 20초
     int CastLock(Session& s);                                              // ★ 11-21 W12 castLock_52CE90 — 가장 가까운 문 + 그 둘레 문을 60초 잠금
     static bool MapIndexPosValid(float x, float y);                        // ★ 11-21 W14 sub_517590 = `ValidIndexPos`(`server/map.go:229`)
     bool UndeadKillerUpdate(const MissileObj& m, uint32_t frame);          // ★ 11-21 W6 updateUndeadKiller_53E190 — 거짓이면 지운다
@@ -5883,6 +5889,7 @@ private:
     unsigned long long wallMagicStat_[static_cast<size_t>(WallMagicStat::Count)] = {};     // ★ 11-21 W10 벽(132) 갈래
     unsigned long long moonStat_[static_cast<size_t>(MoonStat::Count)] = {};               // ★ 11-21 W14 달빛(54) 갈래
     unsigned long long tagStat_[static_cast<size_t>(TagStat::Count)] = {};                 // ★ 11-21 W15 꼬리표(116) 갈래
+    unsigned long long kinStat_[static_cast<size_t>(KinStat::Count)] = {};                 // ★ 11-21 W11 염동력(127) 갈래
     unsigned long long lockStat_[static_cast<size_t>(LockStat::Count)] = {};               // ★ 11-21 W12 잠그기(44) 갈래
     unsigned long long charmStat_[static_cast<size_t>(CharmStat::Count)] = {};             // ★ 11-21 C6 매혹 갈래
     uint32_t durFrame_ = 0;   // ★ 11-20 C2 — `SpellCastByPlayer` 가 지금 도는 걸음의 프레임(한 번에 여러 틱이면 frame_ 보다 작다 — 끝 프레임 견주기는 이 값으로)

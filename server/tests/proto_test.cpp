@@ -28296,6 +28296,175 @@ void TestLock1121() {
     std::printf("  11-21 W12 잠그기 — 150 안 가장 가까운(같으면 먼저 본) 선 통하는 문 · 둘레 문 전부 · 남은 막힘 글·소리·안 돎 · 건 사람은 밂 · 60초 끝에 닿으면 풀림 · 남이 이미면 거절\n");
 }
 
+// ── 11-21 트레일러 위저드 W11 — 염동력(127) · 시전 `castTelekinesis_52D330`(`GAME4_2.c:9934~9957`) · 손 틱 `updateTelekinesis_53D330`(`GAME4_3.c:6693~6718`) ─────
+//   ① 제게 — 손 하나(kind 9 · 종류 · 임자 · 내 자리) · 버프 24 세기 3 · 600프레임 · 켬 소리 1 · 끔 0
+//   ② 커서 따라감 · 선 막히면 그대로(벽 없는 대조군은 옮김) ③ 20초 — 600 은 남고 601 에 끔 소리 · 버프 24 끔
+//   ④ 임자 죽음 ⑤ 임자 나감(세션 지워짐 — 소리 없음) ⑥ 몬스터 대상 = 1 만 ⑦ 대상 없음 = 0 ⑧ 손 종류 없음 = 1 · 버프·끊기·소리 없음
+//   ⑨ 번개(24)·연쇄 번개(43) 끊기 ⑩ 남 b 에게 — 임자 b · b 자리 · b 커서
+void TestTelekinesis1121() {
+    using TK = nox::Server::KinStat;
+    const std::string a = "10.11.21.13:9523", b = "10.11.21.14:9524";
+    char msg[420];
+    auto dropped = [](const nox::CSyncHost& srv, uint16_t id) -> unsigned long long {
+        auto it = srv->soundsDroppedIds().find(id); return it == srv->soundsDroppedIds().end() ? 0 : it->second;
+    };
+    // 소리 번호는 시험 번호(켬 772 · 끔 773) — 정품 값은 thing.bin TelekinesisOn/Off
+    auto mk = [&](nox::CSyncHost& srv, bool handType, std::vector<nox::Server::WallTileIn> walls) {
+        srv->SetSpellDef(127, 20, 0x02000404u, { 7, 1, 7, 1 }, /*castSound=*/771, /*onSound=*/772, /*offSound=*/773);   // thing.bin SPELL_TELEKINESIS(깃발 02000404 · 음소 7 1 7 1)
+        if (handType) srv->SetNamedType("TelekinesisHand", 702);
+        if (!walls.empty()) srv->SetWallTiles(walls);
+        srv.DebugEnterGame(a, 884, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 885, false, nox::CharClass::Warrior);
+        { std::vector<nox::OutPacket> warm; srv.Tick(0, warm); }
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv->DebugMoveTo(Sid(srv, b), 1300, 1260);
+        srv->DebugAimAt(Sid(srv, a), 1000, 1000);
+        srv->DebugAimAt(Sid(srv, b), 1300, 1260);
+        std::vector<nox::OutPacket> z; srv.Tick(33, z);        // 자리(+56)를 정수 자리에 맞춘다(DebugMoveTo 는 정수 자리만)
+    };
+    auto tick = [](nox::CSyncHost& srv, std::vector<nox::OutPacket>& out, uint32_t& ms, int n) {
+        for (int t = 0; t < n; ++t) { ms += 33; srv.Tick(ms, out); }
+    };
+    auto handAt = [](nox::CSyncHost& srv, float& x, float& y) { return srv->PlacedCount() == 1 && srv->DebugPlacedXY(0, x, y); };
+    // ① ~ ⑤ 제게
+    for (int kase = 1; kase <= 5; ++kase) {
+        nox::CSyncHost srv; mk(srv, true, {});
+        std::vector<nox::OutPacket> out; uint32_t ms = 33;
+        const int64_t sa = Sid(srv, a);
+        const bool acc = srv->DebugSpellAcceptOn(sa, 127, 3, nox::Target{ sa, -1 }, 1000, 1000);
+        float x0 = 0, y0 = 0;
+        const bool one = handAt(srv, x0, y0);
+        const int pw = srv->DebugEnchantPower(sa, 24), left = srv->DebugEnchantDur(sa, 24);
+        const bool base = acc && one && srv->DebugPlacedKind(0) == 9 && srv->DebugPlacedType(0) == 702 && srv->DebugPlacedOwner(0) == sa &&
+                          x0 == 1000.0f && y0 == 1000.0f && srv->DebugHasEnchant(sa, 24) && dropped(srv, 772) == 1 && dropped(srv, 773) == 0 &&
+                          srv->kinStat(TK::Cast) == 1;
+        if (kase == 1) {
+            std::snprintf(msg, sizeof(msg), "W11 ① 제게 — 받음 %d · 손 %zu · 종류 %u · 임자 %d · 자리 %.0f,%.0f · 버프 24 세기 %d · 남은 %d(600) · 켬 %llu · 끔 %llu · 놓음 %llu",
+                          int(acc), srv->PlacedCount(), unsigned(srv->DebugPlacedType(0)), int(srv->DebugPlacedOwner(0) == sa), x0, y0, pw, left,
+                          dropped(srv, 772), dropped(srv, 773), srv->kinStat(TK::Cast));
+            Check(base && pw == 3 && left == 600, msg);
+        } else if (kase == 2) {
+            float x1 = 0, y1 = 0;
+            srv->DebugAimAt(sa, 1100, 1050); tick(srv, out, ms, 1); handAt(srv, x1, y1);
+            const unsigned long long mv = srv->kinStat(TK::Moved);
+            std::snprintf(msg, sizeof(msg), "W11 ② 커서 — 바탕 %d · 따라감 %.0f,%.0f · 옮김 %llu · 막힘 %llu",
+                          int(base), x1, y1, mv, srv->kinStat(TK::Blocked));
+            Check(base && x1 == 1100.0f && y1 == 1050.0f && mv == 1 && srv->kinStat(TK::Blocked) == 0, msg);
+        } else if (kase == 3) {
+            const uint32_t f0 = srv->frame();
+            srv->DebugPlacedBackdate(0, 600u - 2u);                      // 만든 지 598 프레임으로
+            const uint32_t created = f0 - (600u - 2u);
+            bool okSeq = true; int goneAt = -1; unsigned long long offAtGone = 0;
+            for (int t = 0; t < 5; ++t) {
+                tick(srv, out, ms, 1);
+                const uint32_t diff = srv->frame() - created;
+                const bool present = srv->PlacedCount() == 1;
+                if (present != (diff <= 600u)) okSeq = false;
+                if (!present && goneAt < 0) { goneAt = static_cast<int>(diff); offAtGone = dropped(srv, 773); }
+            }
+            std::snprintf(msg, sizeof(msg), "W11 ③ 20초 — 바탕 %d · 차례 맞음 %d · 지운 때 %d(601) · 끔 소리 %llu · 버프 24 %d · 20초 %llu · 죽음 %llu",
+                          int(base), int(okSeq), goneAt, offAtGone, int(srv->DebugHasEnchant(sa, 24)), srv->kinStat(TK::EndAge), srv->kinStat(TK::EndDead));
+            Check(base && okSeq && goneAt == 601 && offAtGone == 1 && dropped(srv, 773) == 1 && !srv->DebugHasEnchant(sa, 24) &&
+                  srv->kinStat(TK::EndAge) == 1 && srv->kinStat(TK::EndDead) == 0, msg);
+        } else if (kase == 4) {
+            srv->Damage(sa, 1000);
+            tick(srv, out, ms, 2);
+            std::snprintf(msg, sizeof(msg), "W11 ④ 임자 죽음 — 바탕 %d · 손 %zu · 끔 소리 %llu · 버프 24 %d · 죽음 %llu · 20초 %llu",
+                          int(base), srv->PlacedCount(), dropped(srv, 773), int(srv->DebugHasEnchant(sa, 24)), srv->kinStat(TK::EndDead), srv->kinStat(TK::EndAge));
+            Check(base && srv->PlacedCount() == 0 && dropped(srv, 773) == 1 && !srv->DebugHasEnchant(sa, 24) &&
+                  srv->kinStat(TK::EndDead) == 1 && srv->kinStat(TK::EndAge) == 0, msg);
+        } else {
+            srv->DebugKickPlayer(sa);
+            tick(srv, out, ms, 2);
+            std::snprintf(msg, sizeof(msg), "W11 ⑤ 임자 나감 — 바탕 %d · 손 %zu · 끔 소리 %llu · 임자 없음 %llu · 죽음 %llu · 20초 %llu",
+                          int(base), srv->PlacedCount(), dropped(srv, 773), srv->kinStat(TK::GoneOwner), srv->kinStat(TK::EndDead), srv->kinStat(TK::EndAge));
+            Check(base && srv->PlacedCount() == 0 && dropped(srv, 773) == 0 && srv->kinStat(TK::GoneOwner) == 1 &&
+                  srv->kinStat(TK::EndDead) == 0 && srv->kinStat(TK::EndAge) == 0, msg);
+        }
+    }
+    // ② 선 막힘 — 벽 칸 (43,47)(989~1012 · 1081~1104)이 (1000,1000)→(1000,1200) 을 막는다 · 대조군(벽 없음)은 옮김
+    for (const bool wall : { true, false }) {
+        nox::CSyncHost srv;
+        mk(srv, true, wall ? std::vector<nox::Server::WallTileIn>{ { 43, 47, 0, 0, false } } : std::vector<nox::Server::WallTileIn>{});
+        std::vector<nox::OutPacket> out; uint32_t ms = 33;
+        const int64_t sa = Sid(srv, a);
+        const bool acc = srv->DebugSpellAcceptOn(sa, 127, 3, nox::Target{ sa, -1 }, 1000, 1000);
+        srv->DebugAimAt(sa, 1000, 1200); tick(srv, out, ms, 1);
+        float x = 0, y = 0; handAt(srv, x, y);
+        std::snprintf(msg, sizeof(msg), "W11 ② 선 %s — 받음 %d · 손 %.0f,%.0f · 옮김 %llu · 막힘 %llu",
+                      wall ? "막힘" : "대조군", int(acc), x, y, srv->kinStat(TK::Moved), srv->kinStat(TK::Blocked));
+        if (wall) Check(acc && x == 1000.0f && y == 1000.0f && srv->kinStat(TK::Moved) == 0 && srv->kinStat(TK::Blocked) == 1, msg);
+        else      Check(acc && x == 1000.0f && y == 1200.0f && srv->kinStat(TK::Moved) == 1 && srv->kinStat(TK::Blocked) == 0, msg);
+    }
+    // ⑥ 몬스터 대상 — 1 만(손·버프·소리 없음)
+    {
+        nox::CSyncHost srv; mk(srv, true, {});
+        srv->SetTypeBody(1357, [] { nox::Server::PhysBody bb; bb.shape = 2; bb.r = 10.0f; bb.cls = 0x2; return bb; }());
+        const int64_t sa = Sid(srv, a);
+        srv->DebugSpawnPet(1357, 1100, 1000, Sid(srv, std::string()));
+        const bool acc = srv->DebugSpellAcceptOn(sa, 127, 3, nox::Target{ nox::kNoSession, 0 }, 1100, 1000);
+        std::snprintf(msg, sizeof(msg), "W11 ⑥ 몬스터 — 받음 %d · 손 %zu · 몬스터 버프 24 %d · 켬 소리 %llu · 사람 아님 %llu · 놓음 %llu",
+                      int(acc), srv->PlacedCount(), int(srv->DebugPetHasEnchant(0, 24)), dropped(srv, 772), srv->kinStat(TK::NotPlayer), srv->kinStat(TK::Cast));
+        Check(acc && srv->PlacedCount() == 0 && !srv->DebugPetHasEnchant(0, 24) && dropped(srv, 772) == 0 &&
+              srv->kinStat(TK::NotPlayer) == 1 && srv->kinStat(TK::Cast) == 0, msg);
+    }
+    // ⑦ 대상 없음 — 0
+    {
+        nox::CSyncHost srv; mk(srv, true, {});
+        const int64_t sa = Sid(srv, a);
+        const bool acc = srv->DebugSpellAcceptOn(sa, 127, 3, nox::Target{}, 1000, 1000);
+        std::snprintf(msg, sizeof(msg), "W11 ⑦ 대상 없음 — 받음 %d · 손 %zu · 대상 없음 %llu · 놓음 %llu",
+                      int(acc), srv->PlacedCount(), srv->kinStat(TK::NoTarget), srv->kinStat(TK::Cast));
+        Check(!acc && srv->PlacedCount() == 0 && srv->kinStat(TK::NoTarget) == 1 && srv->kinStat(TK::Cast) == 0, msg);
+    }
+    // ⑧ 손 종류 없음 — 1 이지만 버프·번개 끊기·소리 없음(`if (v7)` 안)
+    {
+        nox::CSyncHost srv; mk(srv, false, {});
+        std::vector<nox::OutPacket> out;
+        const int64_t sa = Sid(srv, a);
+        const bool pre = Captured(srv, out, srv->DebugDurNew(sa, 24, 0, 0, -1, false, nox::Target{})) && srv->DebugDurActive(24, sa);
+        const bool acc = srv->DebugSpellAcceptOn(sa, 127, 3, nox::Target{ sa, -1 }, 1000, 1000);
+        srv.TakeOut(out);
+        std::snprintf(msg, sizeof(msg), "W11 ⑧ 손 종류 없음 — 전제 %d · 받음 %d · 손 %zu · 버프 24 %d · 번개 남음 %d · 켬 소리 %llu · 종류 없음 %llu",
+                      int(pre), int(acc), srv->PlacedCount(), int(srv->DebugHasEnchant(sa, 24)), int(srv->DebugDurActive(24, sa)), dropped(srv, 772),
+                      srv->kinStat(TK::NoHandType));
+        Check(pre && acc && srv->PlacedCount() == 0 && !srv->DebugHasEnchant(sa, 24) && srv->DebugDurActive(24, sa) && dropped(srv, 772) == 0 &&
+              srv->kinStat(TK::NoHandType) == 1 && srv->kinStat(TK::Cast) == 0, msg);
+    }
+    // ⑨ 번개(24) · 연쇄 번개(43) 끊기 — 대상(여기선 제게)이 건 지속
+    for (const uint8_t ls : { uint8_t(24), uint8_t(43) }) {
+        nox::CSyncHost srv; mk(srv, true, {});
+        std::vector<nox::OutPacket> out;
+        const int64_t sa = Sid(srv, a);
+        const bool pre = Captured(srv, out, srv->DebugDurNew(sa, ls, 0, 0, -1, false, nox::Target{})) && srv->DebugDurActive(ls, sa);
+        const bool acc = srv->DebugSpellAcceptOn(sa, 127, 3, nox::Target{ sa, -1 }, 1000, 1000);
+        srv.TakeOut(out);
+        std::snprintf(msg, sizeof(msg), "W11 ⑨ %u 끊기 — 전제 %d · 받음 %d · 남음 %d", unsigned(ls), int(pre), int(acc), int(srv->DebugDurActive(ls, sa)));
+        Check(pre && acc && !srv->DebugDurActive(ls, sa), msg);
+    }
+    // ⑩ 남 b 에게 — 임자 b · b 자리 · 버프 b(a 아님) · b 커서를 따라감(a 커서 아님) · b 가 건 번개를 끊음(a 것은 그대로)
+    {
+        nox::CSyncHost srv; mk(srv, true, {});
+        std::vector<nox::OutPacket> out; uint32_t ms = 33;
+        const int64_t sa = Sid(srv, a), sb = Sid(srv, b);
+        const bool pre = Captured(srv, out, srv->DebugDurNew(sa, 24, 0, 0, -1, false, nox::Target{})) &&
+                         Captured(srv, out, srv->DebugDurNew(sb, 24, 0, 0, -1, false, nox::Target{}));
+        const bool acc = srv->DebugSpellAcceptOn(sa, 127, 3, nox::Target{ sb, -1 }, 1300, 1260);
+        srv.TakeOut(out);
+        float x0 = 0, y0 = 0; const bool one = handAt(srv, x0, y0);
+        srv->DebugAimAt(sa, 900, 900);
+        srv->DebugAimAt(sb, 1400, 1350);
+        tick(srv, out, ms, 1);
+        float x1 = 0, y1 = 0; handAt(srv, x1, y1);
+        std::snprintf(msg, sizeof(msg), "W11 ⑩ 남에게 — 전제 %d · 받음 %d · 손 %d · 임자 b %d · 자리 %.0f,%.0f · 버프 b %d · a %d · 따라감 %.0f,%.0f · 번개 a %d · b %d",
+                      int(pre), int(acc), int(one), int(srv->DebugPlacedOwner(0) == sb), x0, y0, int(srv->DebugHasEnchant(sb, 24)), int(srv->DebugHasEnchant(sa, 24)),
+                      x1, y1, int(srv->DebugDurActive(24, sa)), int(srv->DebugDurActive(24, sb)));
+        Check(pre && acc && one && srv->DebugPlacedOwner(0) == sb && x0 == 1300.0f && y0 == 1260.0f && srv->DebugHasEnchant(sb, 24) &&
+              !srv->DebugHasEnchant(sa, 24) && x1 == 1400.0f && y1 == 1350.0f && srv->DebugDurActive(24, sa) && !srv->DebugDurActive(24, sb), msg);
+    }
+    std::printf("  11-21 W11 염동력 — 사람 대상에 손(대상 자리 · 임자 대상) · 버프 24 20초 · 번개 둘 끊기 · 켬/끔 소리 · 선 통하면 커서로 · 20초·죽음·나감에 지움 · 몬스터는 1 만\n");
+}
+
 // ── 11-20 트레일러 전사 1-b — 수식 효과(modifier.bin `Server::ParseModEffects`) · 휘두를 때 위력 배수 · 맞힐 때 불·번개 ─────
 //   ① 진짜 복호본을 읽어 번호 차례·값(빠진 `;` 칸 Speed4 포함)을 본다
 //   ② 워리어 롱소드로 곰을 한 대 — 수식 없음 / 위력6(×1.2) / 불1(+3 폭발) / 번개4(+12 전기) / 불1인데 곰이 무적(관문)
@@ -41548,6 +41717,7 @@ int main() {
     TestMoonglow1121();
     TestTag1121();
     TestLock1121();
+    TestTelekinesis1121();
     TestModEffects1120();
     TestPickupAutoEquip();
     TestArmorEquip();

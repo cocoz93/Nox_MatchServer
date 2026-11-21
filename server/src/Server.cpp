@@ -7706,7 +7706,8 @@ bool Server::SpellAccept(uint8_t spell, Session& s, int64_t obj3, const SpellArg
                 fnc = DurNew(spell, s.sessionId, obj3, false, arg, lvl, f, 0) ? 1 : 0;
                 break;
             }
-            case 44: fnc = CastLock(s); break;                                                // ★ 11-21 W12 nox_xxx_castLock_52CE90 — 함수 갈래(머리 주석은 `CastLock`)
+            case 127: fnc = CastTelekinesis(targ, fl5); break;                                // ★ 11-21 W11 nox_xxx_castTelekinesis_52D330 — 함수 갈래(머리 주석은 `CastTelekinesis`)
+            case 44: fnc = CastLock(s); break;                                              // ★ 11-21 W12 nox_xxx_castLock_52CE90 — 함수 갈래(머리 주석은 `CastLock`)
             case 21: {                                                                         // ★ 11-21 W6 TurnUndead(언데드 쫓기) — 지속 · dt 70(`spells.go:252~253`)
                 DurFns f;                                                                      //   갱신 `531410` 은 0 만 돌려준다 — 없는 것과 같다
                 f.create = &Server::DurTurnUndeadCreate;
@@ -9242,6 +9243,34 @@ void Server::SendInterestingId(Session& s, uint16_t net, uint16_t type, uint8_t 
     const uint8_t msg[7] = { static_cast<uint8_t>(Op::INTERESTING_ID), static_cast<uint8_t>(net), static_cast<uint8_t>(net >> 8),
                              static_cast<uint8_t>(type), static_cast<uint8_t>(type >> 8), onOff, kind };
     EmitImportantRaw(s, msg, sizeof(msg));
+}
+
+// ★ 11-21 트레일러 위저드 W11 — 염동력(SPELL_TELEKINESIS 127). 원본 `spells.go:398` 함수 갈래 → `nox_xxx_castTelekinesis_52D330`(`GAME4_2.c:9934~9957`).
+//   대상(sa.Obj)이 없으면 0. 있으면 **늘 1** — 대상이 사람(클래스 4)일 때만 아래를 한다(몬스터는 1 만 돌려준다):
+//     · `TelekinesisHand`(thing.bin — NoDraw · 둥근 몸 10 · 무게 1 · 부딪힘 기본) 하나를 **대상 자리**(+56/+60)에 · 임자 = 대상
+//     · 대상에게 버프 24(ENCHANT_TELEKINESIS)를 20초 · 세기 lvl
+//     · 대상이 건 번개(24)·연쇄 번개(43) 지속을 끊는다(`spellCancelDurSpell_4FEB10`)
+//     · 켬 소리(spellGetAud44(127, 1) = onSound)를 대상 자리에
+//   ⚠ 손 종류를 못 찾으면(newObjectByTypeID nil) 버프·끊기·소리 없이 1 — 원본 그대로(`if (v7)` 안)
+//   손은 제 틱(`UpdatePlaced` kind 9)에서 임자의 커서로 옮겨 다니며 **부딪혀 물건을 민다**(COLLIDE = TelekinesisCollide = `nox_objectCollideDefault`).
+//   ⚠ 안 옮김 — 그 밀기. 우리 놓인 것(`PlacedObj`)에는 몸끼리 부딪혀 미는 물리가 없다(손은 자리만 따라간다)
+int Server::CastTelekinesis(const Target& t, int lvl) {
+    if (t.none()) { ++kinStat_[static_cast<size_t>(KinStat::NoTarget)]; return 0; }
+    auto it = (t.pet < 0) ? sessions_.find(t.sessionId) : sessions_.end();
+    if (it == sessions_.end()) { ++kinStat_[static_cast<size_t>(KinStat::NotPlayer)]; return 1; }   // +8 & 4 — 몬스터
+    Session& ts = it->second;
+    const float x = static_cast<float>(ts.posX), y = static_cast<float>(ts.posY);
+    if (!PlaceObject(NamedType("TelekinesisHand"), x, y, ts.sessionId, kPlacedNoLife, /*kind=*/9)) {
+        ++kinStat_[static_cast<size_t>(KinStat::NoHandType)];
+        return 1;
+    }
+    ApplyEnchant(t, 24, 20 * kServerTickRate, lvl);            // buffApplyTo_4FF380(대상, 24, 20 * FPS, a6)
+    DurCancelFor(24, ts.sessionId);                              // SPELL_LIGHTNING
+    DurCancelFor(43, ts.sessionId);                              // SPELL_CHAIN_LIGHTNING
+    const uint16_t snd = gt_->spellDefs[127].valid ? gt_->spellDefs[127].onSound : 0;
+    if (snd) PlaySoundAt(snd, x, y);
+    ++kinStat_[static_cast<size_t>(KinStat::Cast)];
+    return 1;
 }
 
 // ★ 11-21 트레일러 위저드 W12 — 잠그기(SPELL_LOCK 44). 원본 `spells.go` 함수 갈래 → `nox_xxx_castLock_52CE90`(`GAME4_2.c:9856~9884`).
@@ -16738,6 +16767,34 @@ void Server::UpdatePlaced() {
             const float cx = static_cast<float>(os.aimX), cy = static_cast<float>(os.aimY);
             if (MapIndexPosValid(cx, cy)) { o.x = cx; o.y = cy; ++moonStat_[static_cast<size_t>(MoonStat::Moved)]; }   // unitMove_4E7010
             else ++moonStat_[static_cast<size_t>(MoonStat::OffMap)];
+        }
+        // ── kind 9 — 염동력 손(updateTelekinesis_53D330 `GAME4_3.c:6693~6718`) ★ 11-21 W11 ──────────
+        //   임자(+508 — 늘 사람)가 죽었거나(+16 & 0x8000) 지워졌거나(& 0x20) 만든 지(+128) **20초**가 넘으면
+        //   끔 소리(spellGetAud44(127, 2) = offSound)를 임자 자리에 · 지우고 · 임자의 버프 24 를 끈다.
+        //   아니면 임자 자리 → 임자 커서(+2284/+2288) 선 추적(traceRay 5)이 통할 때만 그 커서로 옮긴다(unitMove_4E7010 = SetPos — 칸 검사 없음)
+        //   ⚠ 우리는 나가면 세션이 지워져 임자 자리·버프가 없다 — 그때는 지우기만(소리 없음 · GoneOwner)
+        if (o.kind == 9) {
+            auto oi = sessions_.find(o.owner);
+            if (o.owner == kNoSession || oi == sessions_.end()) {
+                ++kinStat_[static_cast<size_t>(KinStat::GoneOwner)];
+                DestroyPlaced(i);
+                continue;
+            }
+            Session& os = oi->second;
+            const bool dead = os.respawnAtFrame != 0;
+            if (dead || frame_ - o.createdFrame > 20u * static_cast<uint32_t>(kServerTickRate)) {
+                ++kinStat_[static_cast<size_t>(dead ? KinStat::EndDead : KinStat::EndAge)];
+                const uint16_t snd = gt_->spellDefs[127].valid ? gt_->spellDefs[127].offSound : 0;
+                if (snd) PlaySoundAt(snd, static_cast<float>(os.posX), static_cast<float>(os.posY));
+                const int64_t own = o.owner;
+                DestroyPlaced(i);
+                BuffOff(Target{ own, -1 }, 24);
+                continue;
+            }
+            const float sx = static_cast<float>(os.posX), sy = static_cast<float>(os.posY);
+            const float cx = static_cast<float>(os.aimX), cy = static_cast<float>(os.aimY);
+            if (MapTraceRay(sx, sy, cx, cy, 0x5)) { o.x = cx; o.y = cy; ++kinStat_[static_cast<size_t>(KinStat::Moved)]; }
+            else ++kinStat_[static_cast<size_t>(KinStat::Blocked)];
         }
         // ── kind 4 — 유성우 뿌리개(updateMeteorShower_53D5A0) ────────────────
         //   만든 뒤 **5초(150틱)** 동안 **4~8틱마다** 운석 하나를 무작위 자리에 떨군다.

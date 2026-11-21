@@ -250,6 +250,13 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                     srv.lockStat(LS::Touch), srv.lockStat(LS::TouchQuiet), srv.lockStat(LS::Expired), srv.lockStat(LS::OwnerTouch),
                     srv.lockStat(LS::SpinBlocked));
         }
+        {   // ★ 11-21 W11 — 염동력(127) 갈래 · 시험이 같은 칸을 센다(`TestTelekinesis1121`)
+            using TK = nox::Server::KinStat;
+            srv.Log("[염동력] 손 놓음 %llu · 대상 없음 %llu · 사람 아님 %llu · 손 종류 없음 %llu / 커서로 옮김 %llu · 선 막힘 %llu / 20초 %llu · 임자 죽음 %llu · 임자 없음 %llu\n",
+                    srv.kinStat(TK::Cast), srv.kinStat(TK::NoTarget), srv.kinStat(TK::NotPlayer), srv.kinStat(TK::NoHandType),
+                    srv.kinStat(TK::Moved), srv.kinStat(TK::Blocked), srv.kinStat(TK::EndAge), srv.kinStat(TK::EndDead),
+                    srv.kinStat(TK::GoneOwner));
+        }
         // ★ 10-01 — 클라 대체 무기 알림 `e0`(비움 · 가방에 없음 · 맞음 · 직업·힘 안 맞아 `e0 0 01` 되돌림)
         srv.Log("[대체무기] 비움 %llu · 없음 %llu · 맞음 %llu · 되돌림 %llu\n", srv.secondaryWeaponStat(0),
                     srv.secondaryWeaponStat(1), srv.secondaryWeaponStat(2), srv.secondaryWeaponStat(3));
