@@ -3775,6 +3775,8 @@ public:
     uint8_t DebugPlacedKind(size_t i) const { return i < placed_.size() ? placed_[i].kind : 0; }
     float DebugPlacedZ(size_t i) const { return i < placed_.size() ? placed_[i].z : 0.0f; }
     uint16_t DebugPlacedType(size_t i) const { return i < placed_.size() ? placed_[i].type : 0; }
+    int64_t DebugPlacedOwner(size_t i) const { return i < placed_.size() ? placed_[i].owner : kNoSession; }       // ★ 11-21 W14 +508
+    void DebugPlacedBackdate(size_t i, uint32_t frames) { if (i < placed_.size()) placed_[i].createdFrame -= frames; }   // ★ 11-21 W14 +128 를 앞당김(300초 시험)
     // 마지막으로 받은 피해 종류(+524) — 불꽃 1 · 독 5 처럼 **무엇에 맞았나**를 시험이 가른다
     uint8_t DebugLastDamageType(int64_t sessionId) const {
         auto it = sessions_.find(sessionId);
@@ -4244,6 +4246,11 @@ public:
     enum class WallMagicStat : uint8_t { NoCaster = 0, Blocked, NoDef, Start, NewCell, MergeCell, StopOut, StopMagic, StopSpecial, StopDoorSlot,
                                          SentAdd, SentRemove, SentRestore, Removed, Broken, Count };
     unsigned long long wallMagicStat(WallMagicStat k) const { return wallMagicStat_[static_cast<size_t>(k)]; }
+    // ★ 11-21 W14 달빛(54) 갈래 — 만들기(사람 — 빛 놓음 · 빛 종류 없음 · 몬스터 — 버프 15) / 빛 틱(옮김 · 커서가 맵 칸 밖이라 그대로 ·
+    //   임자 없음 지움 · 임자 나감·300초 지움) / 끝 함수(사람 · 몬스터). 세는 자리마다 하나(시험은 개수를 본다)
+    enum class MoonStat : uint8_t { Light = 0, NoLightType, Monster, Moved, OffMap, GoneOwner, GoneAge, EndLight, EndMonster, Count };
+    unsigned long long moonStat(MoonStat k) const { return moonStat_[static_cast<size_t>(k)]; }
+    void DebugSetImportantReady(int64_t sid, bool on) { auto it = sessions_.find(sid); if (it != sessions_.end()) it->second.importantReady = on; }   // ★ 11-21 W14 +3680 & 0x10
     size_t DebugMagicWallCount() const { return magicWalls_.size(); }
     int DebugWallTileAt(int gx, int gy) const {
         return (gx >= 0 && gx < 256 && gy >= 0 && gy < 256 && !wallTiles_.empty() && wallTiles_[gy * 256 + gx].present) ? wallTiles_[gy * 256 + gx].tile : -1;
@@ -4872,6 +4879,7 @@ private:
                                      //                 5 = 떨어지는 주먹(FistUpdate + FistCollide)
                                      //                 6 = 바깥으로 나가는 불꽃(FlameCleanse)
                                      //                 7 = 거미 낳는 자리(ArachnaphobiaUpdate)
+                                     //                 8 = 달빛 빛(MoonglowUpdate — 임자의 커서를 따라간다 · ★ 11-21 W14)
         int lastZSent = -1000;   // 09-20 — 마지막으로 알린 높이(같으면 안 보낸다)
         bool landed = false;         // +16 비트 31 — 주먹이 한 번 땅에 닿았나(닿음 피해는 그 뒤에만)
         // ★ kind 6 — 바깥으로 나가는 불꽃(정화의 불꽃). 놓인 것 가운데 **처음으로 움직인다**.
@@ -4950,13 +4958,17 @@ private:
         bool summonDone = false;         // +85
         // ★ 11-21 W6 언데드 쫓기(21) — +72 남은 죽임 양(`TurnUndeadKillPoints[세기 − 1]` · 빛 조각 43개가 나눠 깎는다 `GAME3_3.c:5565~5578`)
         int killPoints = 0;
+        // ★ 11-21 W14 달빛(54) — +72 빛 물체(`Moonglow`)의 번호(없으면 0 · 대상이 사람일 때만)
+        uint16_t moonglowNet = 0;
         DurFns fns;
         std::vector<DurSpell> sub108;    // +108 하위(연쇄 번개 조각 · 4-d)
     };
     bool DurNew(uint8_t spell, int64_t a2, int64_t obj3, bool u3Glyph, const SpellArg& arg, int lvl,
                 const DurFns& fns, uint32_t dt);                          // spellsDuration.New
     // ★ 09-29 B7 — 몬스터 시전(Server.cpp 「B7」 절)
-    bool MonsterDurNew(Creature& k, uint8_t spell, const Target& target, const DurFns& fns, uint32_t dt);
+    // ★ 11-21 W14 — `lvl`·`a2` 를 받는다(달빛이 몬스터에 닿으면 u2 = 그 몬스터 · 세기·처음 시전자는 사람 것) · 기본값이면 전과 같다
+    bool MonsterDurNew(Creature& k, uint8_t spell, const Target& target, const DurFns& fns, uint32_t dt,
+                       int lvl = -1, int64_t a2 = kNoSession);
     void DurCancelForPet(uint8_t spell, uint16_t net);
     bool MonsterCastPick(Creature& k, uint32_t mask, const Target& target, uint32_t& nextFrame, int lo, int hi, CastStat stat);
     void MonsterCast(Creature& k, uint8_t spell, const Target& target);                                   // `MonsterCast` object_monster.go:569
@@ -5009,6 +5021,9 @@ private:
     void DurFonEnd(DurSpell& d);                                           // ★ 11-20 C2 sub_52F1D0 — 그림 지우기
     int DurTurnUndeadCreate(DurSpell& d);                                  // ★ 11-21 W6 spellTurnUndeadCreate_531310 — 빛 조각 43
     void DurTurnUndeadEnd(DurSpell& d);                                    // ★ 11-21 W6 spellTurnUndeadDelete_531420 — 빛 조각 지우기
+    int DurMoonglowCreate(DurSpell& d);                                    // ★ 11-21 W14 spellCreateMoonglow_531A00 — 빛 물체 + 버프 1(몬스터면 15)
+    void DurMoonglowEnd(DurSpell& d);                                      // ★ 11-21 W14 sub_531AF0 — 빛 물체 지우기 + 버프 끔
+    static bool MapIndexPosValid(float x, float y);                        // ★ 11-21 W14 sub_517590 = `ValidIndexPos`(`server/map.go:229`)
     bool UndeadKillerUpdate(const MissileObj& m, uint32_t frame);          // ★ 11-21 W6 updateUndeadKiller_53E190 — 거짓이면 지운다
     bool UndeadKillerCollide(size_t i);                                    // ★ 11-21 W6 collideUndeadKiller_4EBD40 — 거짓이면 지운다
     int DurOvalShieldCreate(DurSpell& d);                                  // ★ 11-21 W7 sub_531490 — 버프 27 · 끝 프레임
@@ -5846,6 +5861,7 @@ private:
     unsigned long long ovalStat_[static_cast<size_t>(OvalStat::Count)] = {};               // ★ 11-21 W7 타원 방패 갈래
     unsigned long long teleStat_[static_cast<size_t>(TeleStat::Count)] = {};               // ★ 11-21 W9 자리 바꾸기·대상에게 순간이동 갈래
     unsigned long long wallMagicStat_[static_cast<size_t>(WallMagicStat::Count)] = {};     // ★ 11-21 W10 벽(132) 갈래
+    unsigned long long moonStat_[static_cast<size_t>(MoonStat::Count)] = {};               // ★ 11-21 W14 달빛(54) 갈래
     unsigned long long charmStat_[static_cast<size_t>(CharmStat::Count)] = {};             // ★ 11-21 C6 매혹 갈래
     uint32_t durFrame_ = 0;   // ★ 11-20 C2 — `SpellCastByPlayer` 가 지금 도는 걸음의 프레임(한 번에 여러 틱이면 frame_ 보다 작다 — 끝 프레임 견주기는 이 값으로)
     unsigned long long missilesGone_ = 0;     // 날아가는 것이 사라진 누계

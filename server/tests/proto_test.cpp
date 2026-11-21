@@ -27667,6 +27667,202 @@ void TestMagicWall1121() {
     std::printf("  11-21 W10 벽 — 7·11칸 모양 · 늦게 온 사람 3d · 끝 3e · 합침·멈춤 다섯 갈래 · 선 막힘 · 부수기 · 퀘스트 한 방 빠짐\n");
 }
 
+// ── 11-21 트레일러 위저드 W14 — 달빛(54) `spells.go:309~310` · 만들기 `GAME4_3.c:1564~1601` · 끝 `:1604~1620` · 빛 틱 `:6666~6690` ─────
+//   ① 제게(패킷 시전) — 빛 하나(kind 8 · 임자 a · 커서 자리) · 버프 1(길이 = MoonglowEnchantmentDuration · 세기 3) · 지속 54 남음(끝 프레임 없음)
+//      커서를 옮기면 따라감 · 맵 칸 표 밖(x 5910 · y 5910 · x −20 · y −20)이면 그대로 · 5900 은 안
+//      (−20 = 음수 갈래가 없으면 ÷85 + 2^23 이 반올림되어 칸 0 이 되는 값 — −40 은 갈래 없이도 밖이 나와 못 가른다)
+//   ② 준비 비트(+3680 & 0x10) 없음 — 2944,2944 에 놓음
+//   ③ 300초 — 9000 프레임까지 남고 넘으면 빛 지움 · 버프 1 끔 · 지속 기록은 남음
+//   ④ 다시 걸기 — 옛 빛 지우고 새 빛 하나 · 버프 켜짐 ⑤ 죽음 — 지속 끊김 → 끝 함수가 빛 지움 · 버프 끔
+//   ⑥ 남 b 에게 — 임자 = b · b 의 커서를 따라감 · a 가 죽어도 남음 ⑦ 나감(b) — 빛 지움 ⑧ 빛 종류 없음 — 물체·버프 없음 · 받음 거절
+//   ⑨ 몬스터 — 버프 15 를 걸고 곧바로 취소 → 다음 틱 끝 함수가 15 를 끔 · 빛 없음
+//   ⑪ 산 채로 끊김(`PlayerCancelSpells`) — 끝 함수가 빛 지우고 버프 1 끔(죽음·다시 걸기·나감은 다른 자리도 버프를 꺼서 못 가른다)
+void TestMoonglow1121() {
+    using MS = nox::Server::MoonStat;
+    const std::string a = "10.11.21.9:9519", b = "10.11.21.10:9520";
+    char msg[360];
+    const char* kGd = "MoonglowEnchantmentDuration = 316;\n";
+    auto mk = [&](nox::CSyncHost& srv, bool lightType) {
+        nox::Gamedata g;
+        g.Parse(kGd);
+        srv->SetGamedata(g);
+        srv->SetSpellDef(54, 0, 0x01000284u, { 1, 3 });                       // thing.bin SPELL_MOONGLOW(깃발 01000284 — 겨눔 0x4)
+        if (lightType) srv->SetNamedType("Moonglow", 701);
+        srv.DebugEnterGame(a, 882, false, nox::CharClass::Wizard);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+    };
+    auto lightAt = [&](nox::CSyncHost& srv, float& x, float& y) { return srv->PlacedCount() == 1 && srv->DebugPlacedXY(0, x, y); };
+    // ① ~ ⑤
+    for (int kase = 1; kase <= 6; ++kase) {
+        nox::CSyncHost srv; mk(srv, true);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.Tick(ms, out);
+        const int64_t sa = Sid(srv, a);
+        if (kase == 2) {
+            srv->DebugSetImportantReady(sa, false);
+            srv->DebugAimAt(sa, 1200, 1100);
+            const bool acc = srv->DebugSpellAcceptOn(sa, 54, 3, nox::Target{ sa, -1 }, 1200, 1100);
+            float x = 0, y = 0;
+            const bool one = lightAt(srv, x, y);
+            std::snprintf(msg, sizeof(msg), "W14 ② 준비 비트 없음 — 받음 %d · 빛 %zu · 자리 %.0f,%.0f(2944,2944)", int(acc), srv->PlacedCount(), x, y);
+            Check(acc && one && x == 2944.0f && y == 2944.0f, msg);
+            continue;
+        }
+        srv->DebugAimAt(sa, 1200, 1100);
+        srv.Tick(ms, out);
+        srv->DebugFillMana(sa);
+        CastAndWait(srv, a, 54, true, ms, out);
+        float x0 = 0, y0 = 0;
+        const bool one = lightAt(srv, x0, y0);
+        const uint16_t net0 = srv->DebugPlacedNetCode(0);
+        const bool base = one && srv->DebugPlacedKind(0) == 8 && srv->DebugPlacedType(0) == 701 && srv->DebugPlacedOwner(0) == sa &&
+                          x0 == 1200.0f && y0 == 1100.0f && srv->DebugHasEnchant(sa, 1) && srv->DebugDurActive(54, sa) &&
+                          srv->moonStat(MS::Light) == 1;
+        if (kase == 1) {
+            const int pw = srv->DebugEnchantPower(sa, 1), left = srv->DebugEnchantDur(sa, 1);
+            float x1 = 0, y1 = 0, x2 = 0, y2 = 0, x3 = 0, y3 = 0, x4 = 0, y4 = 0, x5 = 0, y5 = 0;
+            srv->DebugAimAt(sa, 1300, 1250); ms += 34; srv.Tick(ms, out); lightAt(srv, x1, y1);
+            const unsigned long long mv = srv->moonStat(MS::Moved);
+            srv->DebugAimAt(sa, 5910, 1250); ms += 34; srv.Tick(ms, out); lightAt(srv, x2, y2);
+            srv->DebugAimAt(sa, 1300, 5910); ms += 34; srv.Tick(ms, out); lightAt(srv, x3, y3);
+            srv->DebugAimAt(sa, -20, 1250);  ms += 34; srv.Tick(ms, out); lightAt(srv, x4, y4);
+            float x6 = 0, y6 = 0;
+            srv->DebugAimAt(sa, 1300, -20);  ms += 34; srv.Tick(ms, out); lightAt(srv, x6, y6);
+            const unsigned long long off = srv->moonStat(MS::OffMap);
+            srv->DebugAimAt(sa, 5900, 5900); ms += 34; srv.Tick(ms, out); lightAt(srv, x5, y5);
+            std::snprintf(msg, sizeof(msg), "W14 ① 제게 — 바탕 %d · 버프 1 세기 %d · 남은 %d(316 언저리) · 따라감 %.0f,%.0f · 맵 밖 셋 %.0f,%.0f / %.0f,%.0f / %.0f,%.0f(%llu틱) · 5900 %.0f,%.0f · 옮김 %llu",
+                          int(base), pw, left, x1, y1, x2, y2, x3, y3, x4, y4, off, x5, y5, mv);
+            Check(base && pw == 3 && left <= 316 && left >= 316 - 40 && x1 == 1300.0f && y1 == 1250.0f && mv >= 1 &&
+                  x2 == 1300.0f && y2 == 1250.0f && x3 == 1300.0f && y3 == 1250.0f && x4 == 1300.0f && y4 == 1250.0f && x6 == 1300.0f && y6 == 1250.0f && off == 4 &&
+                  x5 == 5900.0f && y5 == 5900.0f && srv->DebugDurActive(54, sa), msg);
+        } else if (kase == 3) {
+            const uint32_t f0 = srv->frame();
+            srv->DebugPlacedBackdate(0, 300u * 30u - 1u);                          // 만든 지 8999 프레임으로
+            const uint32_t created = f0 - (300u * 30u - 1u);
+            bool okSeq = true; int goneAt = -1;
+            for (int t = 0; t < 4; ++t) {
+                ms += 34; srv.Tick(ms, out);
+                const uint32_t diff = srv->frame() - created;
+                const bool present = srv->PlacedCount() == 1;
+                if (present != (diff <= 300u * 30u)) okSeq = false;
+                if (!present && goneAt < 0) goneAt = static_cast<int>(diff);
+            }
+            std::snprintf(msg, sizeof(msg), "W14 ③ 300초 — 바탕 %d · 차례 맞음 %d · 지운 때 %d(9001) · 버프 1 %d · 지속 54 %d · 300초 %llu · 끝 함수 %llu",
+                          int(base), int(okSeq), goneAt, int(srv->DebugHasEnchant(sa, 1)), int(srv->DebugDurActive(54, sa)),
+                          srv->moonStat(MS::GoneAge), srv->moonStat(MS::EndLight));
+            Check(base && okSeq && goneAt == 9001 && !srv->DebugHasEnchant(sa, 1) && srv->DebugDurActive(54, sa) &&
+                  srv->moonStat(MS::GoneAge) == 1 && srv->moonStat(MS::EndLight) == 0, msg);
+        } else if (kase == 4) {
+            srv->DebugAimAt(sa, 1500, 1500);
+            srv->DebugFillMana(sa);
+            CastAndWait(srv, a, 54, true, ms, out);
+            float x = 0, y = 0;
+            const bool one2 = lightAt(srv, x, y);
+            std::snprintf(msg, sizeof(msg), "W14 ④ 다시 걸기 — 바탕 %d · 빛 %zu · 새 번호 %d · 자리 %.0f,%.0f · 버프 1 %d · 놓음 %llu · 끝 함수 %llu",
+                          int(base), srv->PlacedCount(), int(one2 && srv->DebugPlacedNetCode(0) != net0), x, y, int(srv->DebugHasEnchant(sa, 1)),
+                          srv->moonStat(MS::Light), srv->moonStat(MS::EndLight));
+            Check(base && one2 && srv->DebugPlacedNetCode(0) != net0 && x == 1500.0f && y == 1500.0f && srv->DebugHasEnchant(sa, 1) &&
+                  srv->moonStat(MS::Light) == 2 && srv->moonStat(MS::EndLight) == 1 && srv->DebugDurActive(54, sa), msg);
+        } else if (kase == 6) {
+            srv->DebugPlayerCancelSpells(sa);
+            for (int t = 0; t < 2; ++t) { ms += 34; srv.Tick(ms, out); }
+            std::snprintf(msg, sizeof(msg), "W14 ⑪ 산 채로 끊김 — 바탕 %d · 빛 %zu · 버프 1 %d · 지속 54 %d · 끝 함수 %llu · 300초 %llu",
+                          int(base), srv->PlacedCount(), int(srv->DebugHasEnchant(sa, 1)), int(srv->DebugDurActive(54, sa)),
+                          srv->moonStat(MS::EndLight), srv->moonStat(MS::GoneAge));
+            Check(base && srv->PlacedCount() == 0 && !srv->DebugHasEnchant(sa, 1) && !srv->DebugDurActive(54, sa) &&
+                  srv->moonStat(MS::EndLight) == 1 && srv->moonStat(MS::GoneAge) == 0, msg);
+        } else {
+            srv->Damage(sa, 1000);
+            for (int t = 0; t < 3; ++t) { ms += 34; srv.Tick(ms, out); }
+            std::snprintf(msg, sizeof(msg), "W14 ⑤ 죽음 — 바탕 %d · 빛 %zu · 버프 1 %d · 지속 54 %d · 끝 함수 %llu · 300초 %llu",
+                          int(base), srv->PlacedCount(), int(srv->DebugHasEnchant(sa, 1)), int(srv->DebugDurActive(54, sa)),
+                          srv->moonStat(MS::EndLight), srv->moonStat(MS::GoneAge));
+            Check(base && srv->PlacedCount() == 0 && !srv->DebugHasEnchant(sa, 1) && !srv->DebugDurActive(54, sa) &&
+                  srv->moonStat(MS::EndLight) == 1 && srv->moonStat(MS::GoneAge) == 0, msg);
+        }
+    }
+    // ⑥ ⑦ 남 b 에게
+    for (const bool leave : { false, true }) {
+        nox::CSyncHost srv; mk(srv, true);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv.DebugEnterGame(b, 883, false, nox::CharClass::Warrior);
+        const int64_t sa = Sid(srv, a), sb = Sid(srv, b);
+        srv->DebugMoveTo(sb, 1100, 1000);
+        srv->DebugAimAt(sa, 1400, 1400);
+        srv->DebugAimAt(sb, 1600, 1300);
+        srv.Tick(ms, out);
+        const bool acc = srv->DebugSpellAcceptOn(sa, 54, 3, nox::Target{ sb, -1 }, 1100, 1000);
+        float x0 = 0, y0 = 0;
+        const bool one = lightAt(srv, x0, y0);
+        const bool base = acc && one && srv->DebugPlacedOwner(0) == sb && x0 == 1600.0f && y0 == 1300.0f && srv->DebugHasEnchant(sb, 1) &&
+                          !srv->DebugHasEnchant(sa, 1) && srv->DebugDurActive(54, sb) && !srv->DebugDurActive(54, sa);
+        if (!leave) {
+            srv->DebugAimAt(sb, 1700, 1350);
+            srv->Damage(sa, 1000);
+            for (int t = 0; t < 3; ++t) { ms += 34; srv.Tick(ms, out); }
+            float x = 0, y = 0;
+            const bool still = lightAt(srv, x, y);
+            std::snprintf(msg, sizeof(msg), "W14 ⑥ 남에게 — 바탕 %d · a 죽은 뒤 빛 %d · b 커서 따라감 %.0f,%.0f · 버프 b %d · 지속 54(b) %d",
+                          int(base), int(still), x, y, int(srv->DebugHasEnchant(sb, 1)), int(srv->DebugDurActive(54, sb)));
+            Check(base && still && x == 1700.0f && y == 1350.0f && srv->DebugHasEnchant(sb, 1) && srv->DebugDurActive(54, sb), msg);
+        } else {
+            srv->DebugLeave(sb);
+            for (int t = 0; t < 3; ++t) { ms += 34; srv.Tick(ms, out); }
+            std::snprintf(msg, sizeof(msg), "W14 ⑦ 나감 — 바탕 %d · 빛 %zu · 지속 54(b) %d · 나감·300초 %llu · 임자 없음 %llu · 끝 함수 %llu",
+                          int(base), srv->PlacedCount(), int(srv->DebugDurActive(54, sb)), srv->moonStat(MS::GoneAge),
+                          srv->moonStat(MS::GoneOwner), srv->moonStat(MS::EndLight));
+            //   틱 차례 — 지속 틱(시전자 b 나감 → 취소 깃발)이 먼저 · 같은 틱 빛 틱이 나감을 보고 지움(나감·300초 1) · 다음 틱 끝 함수(빛은 이미 없고 버프만 끔)
+            Check(base && srv->PlacedCount() == 0 && !srv->DebugDurActive(54, sb) && srv->moonStat(MS::GoneAge) == 1 &&
+                  srv->moonStat(MS::EndLight) == 1 && srv->moonStat(MS::GoneOwner) == 0, msg);
+        }
+    }
+    // ⑧ 빛 종류 없음
+    {
+        nox::CSyncHost srv; mk(srv, false);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.Tick(ms, out);
+        const int64_t sa = Sid(srv, a);
+        const bool acc = srv->DebugSpellAcceptOn(sa, 54, 3, nox::Target{ sa, -1 }, 1000, 1000);
+        ms += 34; srv.Tick(ms, out);
+        std::snprintf(msg, sizeof(msg), "W14 ⑧ 빛 종류 없음 — 받음 %d · 빛 %zu · 버프 1 %d · 지속 %zu · 종류 없음 %llu · 놓음 %llu",
+                      int(acc), srv->PlacedCount(), int(srv->DebugHasEnchant(sa, 1)), srv->DurCount(), srv->moonStat(MS::NoLightType), srv->moonStat(MS::Light));
+        Check(!acc && srv->PlacedCount() == 0 && !srv->DebugHasEnchant(sa, 1) && srv->DurCount() == 0 &&
+              srv->moonStat(MS::NoLightType) == 1 && srv->moonStat(MS::Light) == 0, msg);
+    }
+    // ⑨ 몬스터
+    {
+        nox::CSyncHost srv; mk(srv, true);
+        srv->SetTypeBody(1357, [] { nox::Server::PhysBody bb; bb.shape = 2; bb.r = 10.0f; bb.cls = 0x2; return bb; }());
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.Tick(ms, out);
+        const int64_t sa = Sid(srv, a);
+        srv->DebugSpawnPet(1357, 1100, 1000, Sid(srv, std::string()));
+        const bool acc = srv->DebugSpellAcceptOn(sa, 54, 2, nox::Target{ nox::kNoSession, 0 }, 1100, 1000);   // 세기 2(몬스터 세기 3 과 가르려고)
+        const bool on15 = srv->DebugPetHasEnchant(0, 15);
+        const int pw15 = srv->DebugPetEnchantPower(0, 15), left15 = srv->DebugPetEnchantDur(0, 15);
+        const unsigned long long endM0 = srv->moonStat(MS::EndMonster);
+        ms += 34; srv.Tick(ms, out);
+        std::snprintf(msg, sizeof(msg), "W14 ⑨ 몬스터 — 받음 %d · 15 켬 %d(세기 %d · 남은 %d) · 틱 뒤 15 %d · 빛 %zu · 버프 1 사람 %d · 지속 %zu · 몬스터 %llu · 끝 몬스터 %llu→%llu",
+                      int(acc), int(on15), pw15, left15, int(srv->DebugPetHasEnchant(0, 15)), srv->PlacedCount(), int(srv->DebugHasEnchant(sa, 1)), srv->DurCount(),
+                      srv->moonStat(MS::Monster), endM0, srv->moonStat(MS::EndMonster));
+        Check(!acc && on15 && pw15 == 2 && left15 <= 316 && left15 >= 316 - 40 && !srv->DebugPetHasEnchant(0, 15) && srv->PlacedCount() == 0 && !srv->DebugHasEnchant(sa, 1) && srv->DurCount() == 0 &&
+              srv->moonStat(MS::Monster) == 1 && endM0 == 0 && srv->moonStat(MS::EndMonster) == 1, msg);
+    }
+    // ⑩ thing.bin 에 Moonglow 가 있나(이름으로 찾는다)
+    {
+        nox::ThingDb tdb;
+        if (tdb.Load("C:\\Program Files\\GOG Galaxy\\Games\\Nox\\thing.bin")) {
+            const uint16_t w = tdb.WireByName("Moonglow");
+            std::snprintf(msg, sizeof(msg), "W14 ⑩ thing.bin Moonglow = %u", unsigned(w));
+            Check(w != 0, msg);
+        } else {
+            std::printf("  (W14 ⑩ thing.bin 대조 건너뜀)\n");
+        }
+    }
+    std::printf("  11-21 W14 달빛 — 커서 따라가는 빛 · 버프 1 · 맵 칸 밖 그대로 · 300초 · 다시 걸기·죽음·나감 · 남에게 · 몬스터는 15 한 틱\n");
+}
+
 // ── 11-20 트레일러 전사 1-b — 수식 효과(modifier.bin `Server::ParseModEffects`) · 휘두를 때 위력 배수 · 맞힐 때 불·번개 ─────
 //   ① 진짜 복호본을 읽어 번호 차례·값(빠진 `;` 칸 Speed4 포함)을 본다
 //   ② 워리어 롱소드로 곰을 한 대 — 수식 없음 / 위력6(×1.2) / 불1(+3 폭발) / 번개4(+12 전기) / 불1인데 곰이 무적(관문)
@@ -40916,6 +41112,7 @@ int main() {
     TestMonsterSelfSpells1121();
     TestMonsterTargetSpells1121();
     TestMagicWall1121();
+    TestMoonglow1121();
     TestModEffects1120();
     TestPickupAutoEquip();
     TestArmorEquip();

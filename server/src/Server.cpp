@@ -7663,6 +7663,18 @@ bool Server::SpellAccept(uint8_t spell, Session& s, int64_t obj3, const SpellArg
                 fnc = DurNew(spell, obj3, obj3, false, arg, lvl, f, 0) ? 1 : 0;
                 break;
             }
+            case 54: {                                                                         // ★ 11-21 W14 Moonglow(달빛) — 지속 · dt 0 · 틱 함수 없음(`spells.go:309~310`)
+                //   ⚠ 다른 지속 주문과 달리 u2(+16 Caster16) = **대상**(`obj5` = sa.Obj) · u1 = 시전자(a2) — 남에게 걸면 그 사람이 임자다
+                //   대상이 몬스터면 u2 = 그 몬스터(우리 `DurNew` 는 u2 가 사람뿐이라 몬스터 판 `MonsterDurNew` — 세기·처음 시전자는 사람 것)
+                DurFns f;
+                f.create = &Server::DurMoonglowCreate;
+                f.destroy = &Server::DurMoonglowEnd;
+                if (targ.pet >= 0 && static_cast<size_t>(targ.pet) < pets_.size())
+                    fnc = MonsterDurNew(pets_[static_cast<size_t>(targ.pet)], spell, targ, f, 0, lvl, s.sessionId) ? 1 : 0;
+                else
+                    fnc = DurNew(spell, s.sessionId, targ.sessionId, false, arg, lvl, f, 0) ? 1 : 0;
+                break;
+            }
             case 21: {                                                                         // ★ 11-21 W6 TurnUndead(언데드 쫓기) — 지속 · dt 70(`spells.go:252~253`)
                 DurFns f;                                                                      //   갱신 `531410` 은 0 만 돌려준다 — 없는 것과 같다
                 f.create = &Server::DurTurnUndeadCreate;
@@ -9070,6 +9082,73 @@ void Server::DurTurnUndeadEnd(DurSpell& d) {
         m.destroyed = true;                                     // 늦은 지우기(+16 & 0x20) — 날아가는 것 고리 머리·꼬리가 지운다
         ++turnUndeadStat_[static_cast<size_t>(TurnUndeadStat::GoneEnd)];
     }
+}
+
+// ★ 11-21 트레일러 위저드 W14 — 달빛(SPELL_MOONGLOW 54). 원본 `spells.go:309~310` → 지속(dt 0 · 틱 함수 없음 · 끝 `sub_531AF0`).
+//   끝 프레임이 없고 틱 함수도 없어 **지속 기록은 임자(= 대상)가 죽거나 · 같은 주문을 다시 걸거나 · 주문이 끊길 때까지** 남는다.
+//   빛 물체는 따로 제 틱(`updateMoonglow_53D270` — 아래 `UpdatePlaced` kind 8)에서 300초가 넘으면 지워진다(지속 기록은 그대로).
+//   ⚠ 버프 1 은 `MoonglowEnchantmentDuration` 이 지나면 저절로 꺼지지만 빛 물체는 남는다(버프가 빛을 끄지 않는다 — 원본 그대로)
+//
+// nox_xxx_spellCreateMoonglow_531A00(`GAME4_3.c:1564~1601`) — 시작.
+//   · 대상(+48)이 없거나 죽음·지워짐(0x8020)이면 1(끝)
+//   · 사람이 아니면 버프 15(LIGHT)를 `MoonglowEnchantmentDuration` · 세기(+8)로 걸고 1 — `New` 가 곧바로 취소해 다음 차례에 끝 함수가 15 를 끈다
+//   · 사람이면 `Moonglow`(thing.bin LIGHT) 하나를 **그 사람의 커서 자리**(+2284/+2288 — 준비 비트 +3680 & 0x10 이 없으면 2944,2944)에
+//     임자 = 그 사람으로 놓고 +72 에 담고 버프 1 · 0(이어 감) — 물체를 못 만들면 1
+int Server::DurMoonglowCreate(DurSpell& d) {
+    const int dur = static_cast<int16_t>(static_cast<int>(BalanceFloat("MoonglowEnchantmentDuration")));   // nox_float2int → short
+    const Target t = d.target;
+    if (t.pet >= 0) {
+        if (static_cast<size_t>(t.pet) >= pets_.size() || pets_[static_cast<size_t>(t.pet)].dead) return 1;
+        ApplyEnchant(t, 15, dur, d.level);                      // ENCHANT_LIGHT
+        ++moonStat_[static_cast<size_t>(MoonStat::Monster)];
+        return 1;
+    }
+    auto it = sessions_.find(t.sessionId);
+    if (t.sessionId == kNoSession || it == sessions_.end() || !it->second.inGame || it->second.respawnAtFrame != 0) return 1;
+    Session& ts = it->second;
+    float x = 2944.0f, y = 2944.0f;
+    if (ts.importantReady) { x = static_cast<float>(ts.aimX); y = static_cast<float>(ts.aimY); }
+    PlacedObj* o = PlaceObject(NamedType("Moonglow"), x, y, ts.sessionId, kPlacedNoLife, /*kind=*/8);
+    if (!o) { ++moonStat_[static_cast<size_t>(MoonStat::NoLightType)]; return 1; }
+    d.moonglowNet = o->netCode;
+    ApplyEnchant(t, 1, dur, d.level);                          // ENCHANT_MOONGLOW
+    ++moonStat_[static_cast<size_t>(MoonStat::Light)];
+    return 0;
+}
+
+// sub_531AF0(`GAME4_3.c:1604~1620`) — 끝. 대상이 사람이면 빛 물체를 지우고(+72 = 0) 버프 1 을 끄고 · 아니면 버프 15 를 끈다
+void Server::DurMoonglowEnd(DurSpell& d) {
+    const Target t = d.target;
+    if (t.none()) return;
+    if (t.pet >= 0) {
+        BuffOff(t, 15);
+        ++moonStat_[static_cast<size_t>(MoonStat::EndMonster)];
+        return;
+    }
+    if (d.moonglowNet != 0) {
+        for (size_t i = 0; i < placed_.size(); ++i) {
+            if (placed_[i].netCode != d.moonglowNet) continue;
+            DestroyPlaced(i);                                   // delayedDeleteObject_4E5CC0
+            break;
+        }
+    }
+    d.moonglowNet = 0;
+    BuffOff(t, 1);
+    ++moonStat_[static_cast<size_t>(MoonStat::EndLight)];
+}
+
+// sub_517590 = `ValidIndexPos`(`server/map.go:229~232`) — 칸 번호(`RoundCoord` ÷85 반올림 · 음수는 0 쪽으로 버림 `server/math.go:15~21`)가
+//   두 축 다 0 이상 칸 표 크기(70 · `server/map.go:52`) 아래
+bool Server::MapIndexPosValid(float x, float y) {
+    auto roundCoord = [](float v) -> int {
+        if (static_cast<double>(v) < 0.0) return static_cast<int>(static_cast<int32_t>(v));
+        const float t = static_cast<float>(static_cast<double>(v) / 85.0 + 8.388608e+06);
+        uint32_t bits = 0;
+        std::memcpy(&bits, &t, sizeof(bits));
+        return static_cast<int>(static_cast<int32_t>(bits & 0x7FFFFFu));
+    };
+    const int ix = roundCoord(x), iy = roundCoord(y);
+    return ix >= 0 && ix < 70 && iy >= 0 && iy < 70;
 }
 
 // ★ 11-21 W6 — 빛 조각 갱신 `nox_xxx_updateUndeadKiller_53E190`(`GAME4_3.c:7267~7276`)
@@ -15325,7 +15404,8 @@ bool Server::MonsterCastSpellNow(Creature& k, uint8_t spell, const Target& targe
 
 // `spellsDuration.New`(`spells_dur.go:88`)의 몬스터 시전자 판 — 시전자 = 그 몬스터(번호) · 자리(+28) = 몬스터 자리 · 같은 주문의 옛것은 끄고 ·
 //   취소 깃발 붙은 것을 치우고 · 머리에 넣고 · 켜는 소리(몬스터 자리) · 만들기 함수가 0 이 아니면 취소
-bool Server::MonsterDurNew(Creature& k, uint8_t spell, const Target& target, const DurFns& fns, uint32_t dt) {
+bool Server::MonsterDurNew(Creature& k, uint8_t spell, const Target& target, const DurFns& fns, uint32_t dt,
+                           int lvl, int64_t a2) {
     if (k.health == 0) return false;
     const uint16_t net = k.netCode;
     const float kx = static_cast<float>(k.x), ky = static_cast<float>(k.y);
@@ -15338,7 +15418,8 @@ bool Server::MonsterDurNew(Creature& k, uint8_t spell, const Target& target, con
     DurSpell d;
     d.id = ++durLastId_;
     d.spell = spell;
-    d.level = MonsterSpellPower(k);                          // ★ 11-21 `castSpellByUser_4FDD20` 세기(아레나 3)
+    d.level = lvl >= 0 ? lvl : MonsterSpellPower(k);         // ★ 11-21 `castSpellByUser_4FDD20` 세기(아레나 3) · W14 달빛이면 사람 세기
+    d.obj12 = a2;                                            // ★ 11-21 W14 +12 처음 시전자(달빛 — 그 사람 · 몬스터 시전이면 비어 있음)
     d.casterPet = net;
     d.posX = kx; d.posY = ky;
     d.target = target;
@@ -16471,6 +16552,29 @@ void Server::UpdatePlaced() {
                 DestroyPlaced(i);
                 continue;
             }
+        }
+        // ── kind 8 — 달빛 빛(updateMoonglow_53D270 `GAME4_3.c:6666~6690`) ★ 11-21 W14 ──────────
+        //   임자(+508)가 없으면 지운다. 임자(사람)가 지워졌거나(0x20 — 우리는 세션이 나감) 만든 지(+128) **300초**가 넘으면
+        //   지우고 그 사람의 버프 1 을 끈다. 아니면 그 사람의 커서 자리(+2284/+2288)로 옮긴다 — 그 자리가 맵 칸 표 안일 때만(`sub_517590`)
+        //   ⚠ 죽음(0x8000)은 안 본다 — 죽으면 지속 기록이 끊겨 끝 함수가 지운다
+        if (o.kind == 8) {
+            auto oi = sessions_.find(o.owner);
+            if (o.owner == kNoSession || oi == sessions_.end()) {
+                ++moonStat_[static_cast<size_t>(MoonStat::GoneOwner)];
+                DestroyPlaced(i);
+                continue;
+            }
+            Session& os = oi->second;
+            if (!os.inGame || frame_ - o.createdFrame > 300u * static_cast<uint32_t>(kServerTickRate)) {
+                ++moonStat_[static_cast<size_t>(MoonStat::GoneAge)];
+                const int64_t own = o.owner;
+                DestroyPlaced(i);
+                BuffOff(Target{ own, -1 }, 1);
+                continue;
+            }
+            const float cx = static_cast<float>(os.aimX), cy = static_cast<float>(os.aimY);
+            if (MapIndexPosValid(cx, cy)) { o.x = cx; o.y = cy; ++moonStat_[static_cast<size_t>(MoonStat::Moved)]; }   // unitMove_4E7010
+            else ++moonStat_[static_cast<size_t>(MoonStat::OffMap)];
         }
         // ── kind 4 — 유성우 뿌리개(updateMeteorShower_53D5A0) ────────────────
         //   만든 뒤 **5초(150틱)** 동안 **4~8틱마다** 운석 하나를 무작위 자리에 떨군다.

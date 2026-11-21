@@ -230,6 +230,13 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                     srv.wallMagicStat(WS::SentRemove), srv.wallMagicStat(WS::SentRestore), srv.wallMagicStat(WS::Removed),
                     srv.wallMagicStat(WS::Broken), srv.DebugMagicWallCount());
         }
+        {   // ★ 11-21 W14 — 달빛(54) 갈래 · 시험이 같은 칸을 센다(`TestMoonglow1121`)
+            using MS = nox::Server::MoonStat;
+            srv.Log("[달빛] 빛 놓음 %llu · 빛 종류 없음 %llu · 몬스터 %llu / 옮김 %llu틱 · 맵 밖 %llu틱 · 임자 없음 %llu · 나감·300초 %llu / 끝 사람 %llu · 끝 몬스터 %llu\n",
+                    srv.moonStat(MS::Light), srv.moonStat(MS::NoLightType), srv.moonStat(MS::Monster), srv.moonStat(MS::Moved),
+                    srv.moonStat(MS::OffMap), srv.moonStat(MS::GoneOwner), srv.moonStat(MS::GoneAge), srv.moonStat(MS::EndLight),
+                    srv.moonStat(MS::EndMonster));
+        }
         // ★ 10-01 — 클라 대체 무기 알림 `e0`(비움 · 가방에 없음 · 맞음 · 직업·힘 안 맞아 `e0 0 01` 되돌림)
         srv.Log("[대체무기] 비움 %llu · 없음 %llu · 맞음 %llu · 되돌림 %llu\n", srv.secondaryWeaponStat(0),
                     srv.secondaryWeaponStat(1), srv.secondaryWeaponStat(2), srv.secondaryWeaponStat(3));
