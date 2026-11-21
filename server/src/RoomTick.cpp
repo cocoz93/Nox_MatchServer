@@ -269,6 +269,9 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                     srv.pixieStat(PS::ReturnTele), srv.pixieStat(PS::OwnerMoved), srv.pixieStat(PS::WallBounce), srv.pixieStat(PS::Hit),
                     srv.pixieStat(PS::Reflect), srv.pixieStat(PS::Expired));
         }
+        // ★ 11-22 그을음(`MakeScorch`) 크기별 · 시험이 같은 칸을 센다(`TestScorch1122`)
+        srv.Log("[그을음] 작음 %llu · 중간 %llu · 큼 %llu · 종류 없음 %llu\n",
+                srv.scorchMade(0), srv.scorchMade(1), srv.scorchMade(2), srv.scorchNoType());
         // ★ 10-01 — 클라 대체 무기 알림 `e0`(비움 · 가방에 없음 · 맞음 · 직업·힘 안 맞아 `e0 0 01` 되돌림)
         srv.Log("[대체무기] 비움 %llu · 없음 %llu · 맞음 %llu · 되돌림 %llu\n", srv.secondaryWeaponStat(0),
                     srv.secondaryWeaponStat(1), srv.secondaryWeaponStat(2), srv.secondaryWeaponStat(3));

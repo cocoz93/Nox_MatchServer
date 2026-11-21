@@ -25911,8 +25911,9 @@ void TestCounterSpellCast1121() {
     RegSpell(srv, 27, 0);
     RegFireballTypes(srv);
     srv->SetCounterMissileType(695);
-    srv->SetSpellDef(13, 20, 0x09400430u, { 7, 8 }, /*castSound=*/42);     // thing.bin SPELL_COUNTERSPELL(누구나 0x1000000 · 겨눔 0x4 없음)
-    srv->SetSoundDefs({ nox::Server::SoundDefIn{ 42, 600, 0, 1, 0 } });      // 소리는 42 하나만 — 다른 소리는 버려져 soundsQueued 가 42 만 센다
+    // ★ 11-22 시전 소리를 42 에서 시험 번호 777 로 — 지워진 불덩이가 이제 터지며 소리 42 를 내서(`GAME3_3.c:4199` · 그을음 묶음) 시전 소리와 같은 번호면 둘이 섞인다
+    srv->SetSpellDef(13, 20, 0x09400430u, { 7, 8 }, /*castSound=*/777);    // thing.bin SPELL_COUNTERSPELL(누구나 0x1000000 · 겨눔 0x4 없음)
+    srv->SetSoundDefs({ nox::Server::SoundDefIn{ 777, 600, 0, 1, 0 } });     // 소리는 777 하나만 — 다른 소리는 버려져 soundsQueued 가 시전 소리만 센다(42 는 soundsDroppedIds 로 따로)
     srv.DebugEnterGame(a, 890, false, nox::CharClass::Wizard);
     srv.DebugEnterGame(b, 891, false, nox::CharClass::Wizard);
     srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
@@ -25926,9 +25927,11 @@ void TestCounterSpellCast1121() {
     srv->DebugFillMana(Sid(srv, a));
     CastAndWait(srv, a, 13, false, ms, out);
     char msg[320];
-    std::snprintf(msg, sizeof(msg), "W8 주문 깨기 시전 — 불덩이 앞 %zu · 뒤 %zu · 지운 것 %llu · 부름 %llu · 소리 42 %llu",
-                  m0, srv->missiles(), srv->counterMissiles(), srv->counterCasts(), srv->soundsQueued() - q0);
-    Check(m0 == 1 && srv->missiles() == 0 && srv->counterMissiles() == 1 && srv->counterCasts() == 1 && srv->soundsQueued() - q0 == 1, msg);
+    const auto& dropped = srv->soundsDroppedIds();
+    const unsigned long long s42 = dropped.count(42) ? dropped.at(42) : 0;
+    std::snprintf(msg, sizeof(msg), "W8 주문 깨기 시전 — 불덩이 앞 %zu · 뒤 %zu · 지운 것 %llu · 부름 %llu · 시전 소리 %llu · 불덩이 터짐 소리 42 %llu",
+                  m0, srv->missiles(), srv->counterMissiles(), srv->counterCasts(), srv->soundsQueued() - q0, s42);
+    Check(m0 == 1 && srv->missiles() == 0 && srv->counterMissiles() == 1 && srv->counterCasts() == 1 && srv->soundsQueued() - q0 == 1 && s42 == 1, msg);
     std::printf("  11-21 W8 주문 깨기 시전 — 시전자 둘레 · 남의 불덩이 지움 · 부름 한 번 · 소리 한 번\n");
 }
 
@@ -29601,6 +29604,287 @@ void TestZombie1120() {
     }
     std::printf("  11-20 — 좀비: 시체로 남음(SHORT 만) · 누워서 알아보기 · 누운 몸 맞음 기록 · 300~600 프레임 뒤 일어남(61·35 · 체력 가득) · 상대 없으면 그대로 · 곰 대조 · "
                 "불로 죽으면 죽어가기 끝에 사라짐(애니 15) · 누운 채 불이면 불똥 100 · 불 표시\n");
+}
+
+// ── 11-22 그을음 `sMakeScorch_537AF0`(`GAME4_3.c:3532~3570`) ─────────────
+// 크기 0·1·2 → `ScorchMarkFloorSmallA/MediumA/LargeB` · 썩는 시간 FPS × 10~20초(퀘스트 5~8) · 그 밖의 크기는 아무것도 안 함.
+// 부르는 일곱 자리 — 마법 화살 직격(0 · 맞은 것 자리 `GAME3_3.c:4074`) · 불덩이(2 · `:4200` + 소리 42 `:4199`) · 주먹 착지(2 · `GAME4_3.c:6729`) ·
+//   운석(2 · `:6833` + 소리 87 `:6831`) · 좀비 불타 사라짐(1 · `:9841`) · 죽음의 공 서로 지우기(1 · 지운 공 + 제 자리 `object_death_ball.go:37·43`) ·
+//   죽음 광선(1 · 커서 자리 + 시전 소리 `spell_death_ray.go:37~39`)
+static constexpr uint16_t kScorchS = 3101, kScorchM = 3102, kScorchL = 3103;   // 시험 번호(이름으로 찾으니 값은 무엇이든 된다)
+static void RegScorch(nox::CSyncHost& srv) {
+    srv->SetNamedType("ScorchMarkFloorSmallA", kScorchS);
+    srv->SetNamedType("ScorchMarkFloorMediumA", kScorchM);
+    srv->SetNamedType("ScorchMarkFloorLargeB", kScorchL);
+}
+// 놓인 것 가운데 그 종류의 수 · 첫 것의 자리
+static int ScorchCount(nox::CSyncHost& srv, uint16_t type, float* x = nullptr, float* y = nullptr) {
+    int n = 0;
+    for (size_t i = 0; i < srv->PlacedCount(); ++i) {
+        if (srv->DebugPlacedType(i) != type) continue;
+        if (n == 0 && x && y) srv->DebugPlacedXY(i, *x, *y);
+        ++n;
+    }
+    return n;
+}
+
+void TestScorch1122() {
+    const std::string a = "10.11.22.41:9741", b = "10.11.22.42:9742";
+    char msg[400];
+    auto closeTo = [](float x, float y, float wx, float wy, float tol) { return std::fabs(x - wx) <= tol && std::fabs(y - wy) <= tol; };
+
+    // ① 크기 셋 — 종류 · kind 0 · 임자 없음 · 자리 · 썩는 시간 FPS × 10~20초(두 끝 다 나온다) · 범위 밖 크기(3 · −1)는 아무것도 안 함
+    {
+        nox::CSyncHost srv; RegScorch(srv);
+        int typeBad = 0, otherBad = 0, secMin = 999, secMax = -1;
+        bool lifeOk = true;
+        for (int k = 0; k < 60; ++k) {
+            const size_t before = srv->PlacedCount();
+            srv->DebugMakeScorch(100.0f + static_cast<float>(k), 200.0f, k % 3);
+            if (srv->PlacedCount() != before + 1) { ++otherBad; continue; }
+            const uint16_t want = (k % 3 == 0) ? kScorchS : (k % 3 == 1) ? kScorchM : kScorchL;
+            if (srv->DebugPlacedType(before) != want) ++typeBad;
+            float x = 0, y = 0;
+            srv->DebugPlacedXY(before, x, y);
+            if (srv->DebugPlacedKind(before) != 0 || srv->DebugPlacedOwner(before) != nox::kNoSession || !closeTo(x, y, 100.0f + static_cast<float>(k), 200.0f, 0.01f)) ++otherBad;
+            const uint32_t life = srv->DebugPlacedLife(before);
+            if (life % 30u != 0u) lifeOk = false;
+            const int sec = static_cast<int>(life / 30u);
+            if (sec < secMin) secMin = sec;
+            if (sec > secMax) secMax = sec;
+        }
+        std::snprintf(msg, sizeof(msg), "그을음 ① 종류 틀림 %d · 그 밖 틀림 %d · 초 %d~%d(10~20) · 30 배수 %d · 셈 %llu/%llu/%llu",
+                      typeBad, otherBad, secMin, secMax, int(lifeOk), srv->scorchMade(0), srv->scorchMade(1), srv->scorchMade(2));
+        Check(typeBad == 0 && otherBad == 0 && lifeOk && secMin == 10 && secMax == 20 &&
+              srv->scorchMade(0) == 20 && srv->scorchMade(1) == 20 && srv->scorchMade(2) == 20, msg);
+        srv->DebugMakeScorch(0.0f, 0.0f, 3);
+        srv->DebugMakeScorch(0.0f, 0.0f, -1);
+        std::snprintf(msg, sizeof(msg), "그을음 ① 범위 밖 크기(3 · −1)가 무언가 놓았다 — 놓인 것 %zu(60) · 종류 없음 %llu", srv->PlacedCount(), srv->scorchNoType());
+        Check(srv->PlacedCount() == 60 && srv->scorchNoType() == 0, msg);
+    }
+    // ② 종류를 못 찾으면(맵 자료에 이름 없음) 안 놓고 따로 센다
+    {
+        nox::CSyncHost srv;
+        srv->DebugMakeScorch(10.0f, 10.0f, 1);
+        std::snprintf(msg, sizeof(msg), "그을음 ② 종류 없이 — 놓인 것 %zu · 셈 %llu · 종류 없음 %llu", srv->PlacedCount(), srv->scorchMade(1), srv->scorchNoType());
+        Check(srv->PlacedCount() == 0 && srv->scorchMade(1) == 0 && srv->scorchNoType() == 1, msg);
+    }
+    // ③ 퀘스트(게임 깃발 4096)면 FPS × 5~8초
+    {
+        nox::CSyncHost srv; RegScorch(srv);
+        srv.DebugEnterGame(a, 728);
+        srv->StartQuest(2, 5000, 5000, 100.0);
+        const size_t base = srv->PlacedCount();
+        int secMin = 999, secMax = -1;
+        for (int k = 0; k < 40; ++k) srv->DebugMakeScorch(100.0f, 100.0f, 0);
+        for (size_t i = base; i < srv->PlacedCount(); ++i) {
+            if (srv->DebugPlacedType(i) != kScorchS) continue;
+            const int sec = static_cast<int>(srv->DebugPlacedLife(i) / 30u);
+            if (sec < secMin) secMin = sec;
+            if (sec > secMax) secMax = sec;
+        }
+        std::snprintf(msg, sizeof(msg), "그을음 ③ 퀘스트 썩는 시간 %d~%d초 — 5~8 이어야 한다 · 놓음 %d", secMin, secMax, ScorchCount(srv, kScorchS));
+        Check(secMin == 5 && secMax == 8 && ScorchCount(srv, kScorchS) == 40, msg);
+    }
+    // ④ 마법 화살 직격 → 맞은 사람 자리에 작은 그을음 하나 · 대조: 아무도 안 맞고 3초에 터지면 그을음 없음
+    {
+        auto mkMm = [&](nox::CSyncHost& srv) {
+            nox::Gamedata g;
+            g.Parse("MagicMissileCount = 1, 2, 3, 4, 5;\n" "MagicMissileDamage = 8;\n" "MagicMissileSplashDamage = 23;\n" "MagicMissileRange = 15.0f;\n"
+                    "MagicMissilePushRange = 50.0f;\n" "MagicMissileForce = 20.0f;\n" "SummonDuration = 60, 210, 375;\n" "CounterspellRange = 600;\n");
+            srv->SetGamedata(g);
+            srv->SetProjType("MagicMissile", 704, 64, 0x20004400u, 0);
+            RegSpell(srv, 50);
+            RegScorch(srv);
+            srv.DebugEnterGame(a, 790, false, nox::CharClass::Wizard);
+            srv.DebugEnterGame(b, 791, false, nox::CharClass::Wizard);
+            srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+        };
+        for (int hitCase = 1; hitCase >= 0; --hitCase) {
+            nox::CSyncHost srv; mkMm(srv);
+            srv->DebugMoveTo(Sid(srv, b), hitCase ? 1150 : 3000, hitCase ? 1000 : 3000);
+            std::vector<nox::OutPacket> out; uint32_t ms = 0;
+            srv.Tick(ms, out); ms += 34; srv.Tick(ms, out);
+            srv->DebugSetFacing(Sid(srv, a), 0);
+            srv->DebugSpellAccept(Sid(srv, a), 50, 1); srv.TakeOut(out);
+            for (int t = 0; t < 100 && srv->missiles() > 0; ++t) { ms += 34; srv.Tick(ms, out); }
+            float x = 0, y = 0;
+            const int n = ScorchCount(srv, kScorchS, &x, &y);
+            std::snprintf(msg, sizeof(msg), "그을음 ④ 마법 화살 %s — 작은 그을음 %d · 자리 %.1f,%.1f · 셈 %llu/%llu/%llu", hitCase ? "직격" : "안 맞음",
+                          n, x, y, srv->scorchMade(0), srv->scorchMade(1), srv->scorchMade(2));
+            if (hitCase) Check(n == 1 && closeTo(x, y, 1150.0f, 1000.0f, 3.0f) && srv->scorchMade(0) == 1 && srv->scorchMade(1) == 0 && srv->scorchMade(2) == 0, msg);
+            else         Check(n == 0 && srv->missiles() == 0 && srv->scorchMade(0) == 0, msg);
+        }
+    }
+    // ⑤ 불덩이 → 터진 자리(불똥 그림 93 의 자리)에 큰 그을음 하나 · 소리 42 한 번
+    {
+        nox::CSyncHost srv;
+        RegSpell(srv, 27, 0);
+        RegFireballTypes(srv);
+        RegScorch(srv);
+        srv.DebugEnterGame(a, 760, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 761, false, nox::CharClass::Warrior);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv->DebugMoveTo(Sid(srv, b), 1300, 1000);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.Tick(ms, out);
+        AllMetalButPlayer(srv);
+        out.clear();
+        CastAndWait(srv, a, 27, false, ms, out);
+        for (int t = 0; t < 60 && srv->missiles() > 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        const auto toA = FlattenTo(out, a);
+        const auto* fx = FindMsg(toA, static_cast<uint8_t>(nox::Op::FX_SPARK_EXPLOSION));
+        float x = 0, y = 0;
+        const int n = ScorchCount(srv, kScorchL, &x, &y);
+        const float ex = fx && fx->size() == 6 ? static_cast<float>(static_cast<int16_t>((*fx)[1] | ((*fx)[2] << 8))) : -1.0f;
+        const float ey = fx && fx->size() == 6 ? static_cast<float>(static_cast<int16_t>((*fx)[3] | ((*fx)[4] << 8))) : -1.0f;
+        const auto& dropped = srv->soundsDroppedIds();
+        const unsigned long long s42 = dropped.count(42) ? dropped.at(42) : 0;
+        std::snprintf(msg, sizeof(msg), "그을음 ⑤ 불덩이 — 큰 그을음 %d · 자리 %.1f,%.1f · 불똥 그림 %.0f,%.0f · 소리 42 %llu · 셈 %llu/%llu/%llu",
+                      n, x, y, ex, ey, s42, srv->scorchMade(0), srv->scorchMade(1), srv->scorchMade(2));
+        Check(srv->missiles() == 0 && n == 1 && fx != nullptr && closeTo(x, y, ex, ey, 1.0f) && s42 == 1 &&
+              srv->scorchMade(0) == 0 && srv->scorchMade(1) == 0 && srv->scorchMade(2) == 1, msg);
+    }
+    // ⑥ 주먹 → 처음 닿을 때 주먹 자리에 큰 그을음 하나(되튀어 지워진 뒤에도 남는다)
+    {
+        nox::CSyncHost srv;
+        nox::Gamedata g;
+        g.Parse("FistOfVengeanceDamage = 50, 100, 200, 300, 400;\nFistSpeed = 10;\n" "SummonDuration = 60, 210, 375;\n");
+        srv->SetGamedata(g);
+        srv->SetNamedType("SmallFist", 920);
+        srv->SetNamedType("MediumFist", 921);
+        srv->SetNamedType("LargeFist", 922);
+        RegSpell(srv, 29, 0);
+        RegScorch(srv);
+        srv.DebugEnterGame(a, 780, false, nox::CharClass::Conjurer);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.Tick(ms, out); ms += 34; srv.Tick(ms, out);
+        srv->DebugAimAt(Sid(srv, a), 1300, 1000);
+        CastAndWait(srv, a, 29, false, ms, out);
+        const int before = ScorchCount(srv, kScorchL);
+        for (int t = 0; t < 100 && srv->fistRoseGone() == 0; ++t) { ms += 34; srv.Tick(ms, out); }
+        float x = 0, y = 0;
+        const int n = ScorchCount(srv, kScorchL, &x, &y);
+        std::snprintf(msg, sizeof(msg), "그을음 ⑥ 주먹 — 뜰 때 %d · 지워진 뒤 큰 그을음 %d · 자리 %.1f,%.1f · 착지 %llu · 셈 %llu/%llu/%llu",
+                      before, n, x, y, srv->fistLanded(), srv->scorchMade(0), srv->scorchMade(1), srv->scorchMade(2));
+        Check(before == 0 && n == 1 && closeTo(x, y, 1300.0f, 1000.0f, 1.0f) && srv->fistLanded() == 1 && srv->fistRoseGone() == 1 &&
+              srv->scorchMade(0) == 0 && srv->scorchMade(1) == 0 && srv->scorchMade(2) == 1, msg);
+    }
+    // ⑦ 운석 → 떨어진 자리에 큰 그을음 하나 · 소리 87 한 번(떠 있는 동안은 없음)
+    {
+        nox::CSyncHost srv;
+        nox::Gamedata g;
+        g.Parse("MeteorDamage = 45, 65, 85, 105, 125;\nMeteorSpeed = 8;\n" "SummonDuration = 60, 210, 375;\n");
+        srv->SetGamedata(g);
+        srv->SetNamedType("Meteor", 910);
+        srv->SetNamedType("MeteorShower", 911);
+        srv->SetNamedType("MeteorExplode", 912);
+        RegSpell(srv, 52, 0);
+        RegScorch(srv);
+        srv.DebugEnterGame(a, 770, false, nox::CharClass::Conjurer);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.Tick(ms, out); ms += 34; srv.Tick(ms, out);
+        srv->DebugAimAt(Sid(srv, a), 1300, 1000);
+        CastAndWait(srv, a, 52, false, ms, out);
+        for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
+        const auto& d0 = srv->soundsDroppedIds();
+        const unsigned long long s87a = d0.count(87) ? d0.at(87) : 0;
+        const int midAir = ScorchCount(srv, kScorchL);
+        for (int t = 0; t < 20; ++t) { ms += 34; srv.Tick(ms, out); }
+        const auto& d1 = srv->soundsDroppedIds();
+        const unsigned long long s87b = d1.count(87) ? d1.at(87) : 0;
+        float x = 0, y = 0;
+        const int n = ScorchCount(srv, kScorchL, &x, &y);
+        std::snprintf(msg, sizeof(msg), "그을음 ⑦ 운석 — 떠 있을 때 그을음 %d · 소리 87 %llu → 떨어진 뒤 그을음 %d · 자리 %.1f,%.1f · 소리 87 %llu · 셈 %llu/%llu/%llu",
+                      midAir, s87a, n, x, y, s87b, srv->scorchMade(0), srv->scorchMade(1), srv->scorchMade(2));
+        Check(midAir == 0 && s87a == 0 && n == 1 && closeTo(x, y, 1300.0f, 1000.0f, 1.0f) && s87b == 1 &&
+              srv->scorchMade(0) == 0 && srv->scorchMade(1) == 0 && srv->scorchMade(2) == 1, msg);
+    }
+    // ⑧ 좀비 — 불로 죽어 죽어가기 끝에 사라짐 · 누운 채 불 — 둘 다 그 자리에 중간 그을음 하나 · 대조: 칼로 죽어 누움은 없음
+    {
+        const int64_t none = nox::kNoSession;
+        for (int way = 0; way < 3; ++way) {
+            nox::CSyncHost srv; ZombieSetup(srv, a, 1360); RegScorch(srv);
+            srv->SetMonsterAnim(1360, 15, 10, 1, false);
+            std::vector<nox::OutPacket> o;
+            uint32_t ms = srv->DebugNowMs();
+            srv->DebugHurt(none, 0, 9999, Sid(srv, a), way == 0 ? 1 : 0); srv.TakeOut(o);   // 0: 불로 죽임 · 1·2: 칼로 죽임
+            for (int t = 0; t < 40; ++t) { ms += 34; srv.Tick(ms, o); }
+            if (way == 1) {
+                srv->DebugHurt(none, 0, 10, Sid(srv, a), 1); srv.TakeOut(o);                  // 누운 몸에 불
+                for (int t = 0; t < 5; ++t) { ms += 34; srv.Tick(ms, o); }
+            }
+            float x = 0, y = 0;
+            const int n = ScorchCount(srv, kScorchM, &x, &y);
+            static const char* const kWay[3] = { "불로 죽음", "누운 채 불", "칼로 죽어 누움(대조)" };
+            std::snprintf(msg, sizeof(msg), "그을음 ⑧ 좀비 %s — 중간 그을음 %d · 자리 %.1f,%.1f · 몬스터 %zu · 셈 %llu/%llu/%llu",
+                          kWay[way], n, x, y, srv->pets(), srv->scorchMade(0), srv->scorchMade(1), srv->scorchMade(2));
+            if (way < 2) Check(srv->pets() == 0 && n == 1 && closeTo(x, y, 1000.0f, 1000.0f, 1.0f) && srv->scorchMade(1) == 1 && srv->scorchMade(0) == 0 && srv->scorchMade(2) == 0, msg);
+            else         Check(srv->pets() == 1 && n == 0 && srv->scorchMade(1) == 0, msg);
+        }
+    }
+    // ⑨ 죽음의 공 둘이 서로 지우면 — 지운 공 자리 하나 + 찾은 공 제 자리 하나 = 중간 그을음 둘 · 대조: 혼자 날다 4초에 지워지면 없음
+    {
+        auto mkFon = [&](nox::CSyncHost& srv) {
+            nox::Gamedata g;
+            g.Parse("DeathBallCollideDamage = 255;\n" "DeathBallNearbyDamage = 100;\n" "DeathBallInRadius = 0.0f;\n"
+                    "DeathBallOutRadius = 50.0f;\n" "DeathBallCancelRange = 150.0f;\n" "SummonDuration = 60, 210, 375;\n");
+            srv->SetGamedata(g);
+            srv->SetProjType("DeathBall", 706, 150, 0x20004000u, 0);
+            srv->SetNamedType("ForceOfNatureCharge", 1224);
+            srv->SetSpellDef(31, 0, 0x4434003au, { 0, 8, 2, 6, 5, 4 });
+            RegScorch(srv);
+            srv.DebugEnterGame(a, 880, false, nox::CharClass::Conjurer);
+            srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+        };
+        for (int pair = 1; pair >= 0; --pair) {
+            nox::CSyncHost srv; mkFon(srv);
+            if (pair) { srv.DebugEnterGame(b, 881, false, nox::CharClass::Conjurer); srv->DebugMoveTo(Sid(srv, b), 1400, 1000); }
+            else srv->DebugMoveTo(Sid(srv, a), 3000, 3000);   // 혼자 — 벽 없는 넓은 곳에서 4초 날게(⑦ 과 같은 곳에서 쏘면 벽에 먼저 닿을 수 있다)
+            std::vector<nox::OutPacket> out; uint32_t ms = 0;
+            srv.Tick(ms, out); ms += 34; srv.Tick(ms, out);
+            srv->DebugSetFacing(Sid(srv, a), 0);
+            if (pair) srv->DebugSetFacing(Sid(srv, b), 128);
+            srv->DebugSpellAccept(Sid(srv, a), 31, 3);
+            if (pair) srv->DebugSpellAccept(Sid(srv, b), 31, 3);
+            srv.TakeOut(out);
+            int t = 0;
+            for (; t < 30 && srv->missiles() < static_cast<size_t>(pair ? 2 : 1); ++t) { ms += 34; srv.Tick(ms, out); }
+            const bool launched = srv->missiles() == static_cast<size_t>(pair ? 2 : 1);
+            for (t = 0; t < 200 && srv->missiles() > 0; ++t) { ms += 34; srv.Tick(ms, out); }
+            const int n = ScorchCount(srv, kScorchM);
+            std::snprintf(msg, sizeof(msg), "그을음 ⑨ 죽음의 공 %s — 놓음 %d · 남은 공 %zu · 중간 그을음 %d · 셈 %llu/%llu/%llu", pair ? "둘이 서로" : "혼자(대조)",
+                          int(launched), srv->missiles(), n, srv->scorchMade(0), srv->scorchMade(1), srv->scorchMade(2));
+            if (pair) Check(launched && srv->missiles() == 0 && n == 2 && srv->scorchMade(1) == 2 && srv->scorchMade(0) == 0 && srv->scorchMade(2) == 0, msg);
+            else      Check(launched && srv->missiles() == 0 && n == 0 && srv->scorchMade(1) == 0, msg);
+        }
+    }
+    // ⑩ 죽음 광선 → 커서 자리에 중간 그을음 하나 · 시전 소리(SPEL 16 칸) 한 번
+    {
+        nox::CSyncHost srv;
+        nox::Gamedata g;
+        g.Parse("DeathRayDamage = 100;\nDeathRayOutRadius = 15;\nDeathRayInRadius = 10;\n" "SummonDuration = 60, 210, 375;\n");
+        srv->SetGamedata(g);
+        srv->SetSpellDef(16, 0, 0x1000000, { 1, 2 }, /*castSound=*/777);
+        RegScorch(srv);
+        srv.DebugEnterGame(a, 840, false, nox::CharClass::Wizard);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.Tick(ms, out); ms += 34; srv.Tick(ms, out);
+        srv->DebugAimAt(Sid(srv, a), 1300, 1000);
+        CastAndWait(srv, a, 16, false, ms, out);
+        float x = 0, y = 0;
+        const int n = ScorchCount(srv, kScorchM, &x, &y);
+        const auto& dropped = srv->soundsDroppedIds();
+        const unsigned long long s777 = dropped.count(777) ? dropped.at(777) : 0;
+        std::snprintf(msg, sizeof(msg), "그을음 ⑩ 죽음 광선 — 중간 그을음 %d · 자리 %.1f,%.1f · 시전 소리 %llu · 셈 %llu/%llu/%llu",
+                      n, x, y, s777, srv->scorchMade(0), srv->scorchMade(1), srv->scorchMade(2));
+        Check(n == 1 && closeTo(x, y, 1300.0f, 1000.0f, 1.0f) && s777 == 1 && srv->scorchMade(1) == 1 && srv->scorchMade(0) == 0 && srv->scorchMade(2) == 0, msg);
+    }
+    std::printf("  11-22 — 그을음: 크기 셋(종류 · 10~20초 · 퀘스트 5~8초 · 범위 밖 · 종류 없음) · 마법 화살 직격(대조 안 맞음) · 불덩이 + 소리 42 · 주먹 · 운석 + 소리 87 · "
+                "좀비 불 두 길(대조 칼) · 죽음의 공 서로 지우기(대조 혼자) · 죽음 광선 + 시전 소리\n");
 }
 
 // ★ 11-20 트레일러 전사 2 — 수리검·차크람(던지기 `GAME4_3.c:4327~4419` · 날기 `updateChakramInMotion_53DCC0` · 맞기 `collideChakram_4EAF00`)
@@ -42145,6 +42429,7 @@ int main() {
     TestBowQuiver();
     TestChakram1120();
     TestZombie1120();
+    TestScorch1122();                 // ★ 11-22 그을음 일곱 자리
     TestConnectZeroTail();
     TestReconnectAfterClose();
     TestSessionIds();

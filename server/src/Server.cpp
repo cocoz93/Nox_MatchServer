@@ -1349,10 +1349,12 @@ void Server::RaiseZombie(Creature& k) {
 }
 
 // ★ 11-20 트레일러 전사 3-b — 좀비 불타 사라지기(`zombieBurnDelete_544CE0` `GAME4_3.c:9826~9843`) — 주인이 사람이면 `6d`(죽을 때 건너뛴 것) · 지울 표시
-//   ⚠ 안 옮김 — 솔로 처치 보상(`soloMonsterKillReward_4EE500` — 우리에게 없음) · 그을음(`sMakeScorch_537AF0` — 불덩이 쪽도 아직) · 미니맵 장부
+//   ★ 11-22 — 지울 표시 앞에 중간 그을음(`sMakeScorch_537AF0(자리, 1)` `:9841` · `MakeScorch`)
+//   ⚠ 안 옮김 — 솔로 처치 보상(`soloMonsterKillReward_4EE500` — 우리에게 없음) · 미니맵 장부
 void Server::ZombieBurnDelete(Creature& k) {
     if (k.removeMe) return;                                  // 지울 표시가 이미 섰으면 `6d` 를 또 안 보낸다
     ReportLoseCreature(k);
+    MakeScorch(static_cast<float>(k.x), static_cast<float>(k.y), 1);
     k.removeMe = true;                                       // `delayedDeleteObject_4E5CC0` — AI 돌기 뒤 `FlushDeadPets`
 }
 
@@ -8789,7 +8791,7 @@ int Server::DurChainLightningTickPet(DurSpell& d) {
 //   · 둘레 피해 : 바깥 `DeathRayOutRadius`(15) · 안쪽 `DeathRayInRadius`(10) ·
 //     피해 `DeathRayDamage`(아레나 100) · 종류 **16(죽음광선)**
 //   · 그림 : `94 <시전자 x u16> <y u16> <커서 x u16> <y u16>` **9바이트 선**(netSendRayFx_5232F0)
-//   ⚠ 아직 안 옮긴 것 — 그을음(sMakeScorch) · 소리
+//   · ★ 11-22 시전 소리(SPEL 16 칸) → 커서 자리 중간 그을음
 int Server::CastDeathRay(Session& caster, const SpellArg& arg) {
     const float cx = static_cast<float>(caster.posX), cy = static_cast<float>(caster.posY);
     if (!MapTraceRay(cx, cy, arg.x, arg.y, 9)) {
@@ -8811,6 +8813,10 @@ int Server::CastDeathRay(Session& caster, const SpellArg& arg) {
                             static_cast<uint8_t>(x2), static_cast<uint8_t>(x2 >> 8),
                             static_cast<uint8_t>(y2), static_cast<uint8_t>(y2 >> 8) };
     SendFxAllCli(arg.x, arg.y, fx, sizeof(fx));
+    // ★ 11-22 `spell_death_ray.go:37~39` — 시전 소리(SPEL 칸 · 낸 것 = a4 시전자) → 커서 자리에 중간 그을음
+    if (gt_->spellDefs[16].valid && gt_->spellDefs[16].castSound != 0)
+        PlaySoundAt(gt_->spellDefs[16].castSound, cx, cy, 0, 0, caster.sessionId, Target{ caster.sessionId, -1 });
+    MakeScorch(arg.x, arg.y, 1);
     return 1;
 }
 
@@ -9463,7 +9469,8 @@ bool Server::UndeadKillerCollide(size_t i) {
 //      하나라도 찾았으면 저도 지운다(지우기는 늦은 지우기라 아래 둘레 피해는 이 틱에도 간다)
 //   ② 만든 지 10 프레임이 넘었으면 둘레 피해 — 바깥 `DeathBallOutRadius`(50) · 안 `DeathBallInRadius`(0) · `DeathBallNearbyDamage`(100) · CRUSH(2) · who = 공
 //   ③ 4초(`SecToFrames(4)` = 120)가 넘었으면 지운다
-//   ⚠ 안 옮김 — 그을음(`sMakeScorch_537AF0`) · 둘레는 중심 거리(원본 `EachMissileInCircle` 은 칸 겹침)
+//   ★ 11-22 — 그을음(중간) — 지우는 다른 공 자리마다 · 찾았으면 제 자리(`:37·43` · `MakeScorch`)
+//   ⚠ 안 옮김 — 둘레는 중심 거리(원본 `EachMissileInCircle` 은 칸 겹침)
 bool Server::DeathBallUpdate(size_t i, uint32_t frame) {
     bool gone = false;
     if (frame % (kServerTickRate / 3u) != 0u) {
@@ -9486,10 +9493,14 @@ bool Server::DeathBallUpdate(size_t i, uint32_t frame) {
                                      static_cast<uint8_t>(x2), static_cast<uint8_t>(x2 >> 8), static_cast<uint8_t>(y2), static_cast<uint8_t>(y2 >> 8),
                                      10, 0 };
             SendFxAllCli(static_cast<float>(x1) + static_cast<float>(x2 - x1) * 0.5f, static_cast<float>(y1) + static_cast<float>(y2 - y1) * 0.5f, fx, sizeof(fx));
+            MakeScorch(o.posX, o.posY, 1);                     // ★ 11-22 `object_death_ball.go:37` — 지우는 그 공 자리에 중간 그을음(초록 번개 바로 뒤)
             o.destroyed = true;                                // 늦은 지우기 — UpdateMissiles 가 그 차례(또는 끝)에 지운다
             ++fonStat_[static_cast<size_t>(FonStat::BallCancel)];
         }
-        if (found) gone = true;
+        if (found) {
+            MakeScorch(missiles_[i].posX, missiles_[i].posY, 1);   // ★ 11-22 `:43` — 하나라도 찾았으면 제 자리에도 중간 그을음 뒤 지움
+            gone = true;
+        }
     }
     const MissileObj m = missiles_[i];                         // 둘레 피해가 무엇을 바꿔도 값이 안 흔들리게 떠 둔다
     const uint32_t df = frame - m.createdFrame;
@@ -16670,6 +16681,24 @@ Server::PlacedObj* Server::PlaceObject(uint16_t type, float x, float y, int64_t 
     return &placed_.back();
 }
 
+// ★ 11-22 그을음 `nox_xxx_sMakeScorch_537AF0`(`GAME4_3.c:3532~3570`) — 바닥에 탄 자국 오브젝트 하나를 놓고 썩는 시간을 단다.
+//   · 크기 0 → `ScorchMarkFloorSmallA` · 1 → `MediumA` · 2 → `LargeB`(`scorchInit_537BD0` `:3575~3577` · 이름 = `blob_587000` +276848·276872·276896).
+//     그 밖의 크기는 아무것도 안 한다(`:3549` `a2 != 2` 이면 return). 원본의 `randomInt(0, 0)` 은 늘 첫 칸이라 고르는 것이 없다
+//   · 썩는 시간 = FPS × (퀘스트(4096) 5~8 · 아니면 10~20)초(`:3561~3566` — 두 끝 다 든다). 몸이 없고(NO_COLLIDE+BELOW · CLASS SIMPLE) 갱신 함수도
+//     없어 놓인 것(`PlacedObj`) 의 kind 0(수명만)으로 둔다 — 운석 터짐 그림과 같은 꼴
+//   ⚠ 그을음은 늘 갱신에 실린다(놓인 것은 틱마다 보낸다). 몰아 쏘면 여럿이 한꺼번에 떠 있다(몇 개까지 가는지는 실측 없음) — 갱신이 넘치면
+//     뒤쪽(깃발·공)부터 잘리고 `updateDroppedObjs_` 가 센다
+void Server::MakeScorch(float x, float y, int size) {
+    static const char* const kName[3] = { "ScorchMarkFloorSmallA", "ScorchMarkFloorMediumA", "ScorchMarkFloorLargeB" };
+    if (size < 0 || size > 2) return;
+    const uint16_t type = NamedType(kName[size]);
+    if (type == 0) { ++scorchNoType_; return; }
+    const bool quest = questTotal_ > 0 || questStage_ > 0;
+    const uint32_t secs = quest ? 5u + NextRandom(4) : 10u + NextRandom(11);
+    if (PlaceObject(type, x, y, kNoSession, kServerTickRate * secs, /*kind=*/0) == nullptr) { ++scorchNoType_; return; }
+    ++scorchMade_[size];
+}
+
 void Server::DestroyPlaced(size_t i) {
     if (i >= placed_.size()) return;
     const uint16_t nc = placed_[i].netCode;
@@ -16748,7 +16777,7 @@ void Server::UpdatePlaced() {
         //     ② **닿은 뒤 되튀어 높이 200 이상이면 지운다**(`:6744`) — 전에는 이 갈래가 없어 되튄 주먹이 한 번 더 떨어지다
         //        3초 수명에 끊겼다(사람 판 「두 번 내려오다 끊김」). 255 에서 떨어져 닿는 속도 ≈18.8 × 되튐 0.9 → 최고 ≈286 이라 200 에 닿는다
         //     ③ 3초 수명(`:6747`) — 그대로
-        //   ⚠ 안 옮김 — 그을음(`sMakeScorch_537AF0(자리, 2)`) — 서버 어디에도 아직 없다(불덩이·운석도 같음)
+        //   ★ 11-22 — 처음 닿을 때 소리 48 바로 뒤 큰 그을음(`sMakeScorch_537AF0(자리, 2)` `:6729` · `MakeScorch`)
         if (o.kind == 5) {
             o.z += o.zVel;
             if (o.z >= 0.0f) {
@@ -16762,6 +16791,7 @@ void Server::UpdatePlaced() {
                 o.landed = true;
                 ++fistLanded_;
                 PlaySoundAt(48, o.x, o.y, 0, 0, o.owner);  // aud_501960(48, 주먹, 0, 0)
+                MakeScorch(o.x, o.y, 2);                    // ★ 11-22 `GAME4_3.c:6729` sMakeScorch(주먹 +56, 2) — 소리 바로 뒤 · 큰 그을음
                 const float r = o.radius;                   // +176 = 둘레 반지름(25·30·35)
                 for (const auto& p : { std::pair<float, float>{ o.x + r, o.y }, { o.x - r, o.y }, { o.x, o.y + r } }) {
                     const uint16_t ix = static_cast<uint16_t>(static_cast<int>(p.first)), iy = static_cast<uint16_t>(static_cast<int>(p.second));
@@ -17881,11 +17911,15 @@ int Server::CastFist(Session& caster, const SpellArg& arg, int lvl) {
 // meteorExplode_53D6E0(`GAME4_3.c:6540`) — 높이가 0 이하가 된 운석이 하는 일.
 //   · 그을음 · **화면 흔들기 10**(earthquakeSend) · `MeteorExplode` 그림 오브젝트 · 소리 87
 //   · 둘레 피해 : 바깥 **80** · 안쪽 **30** · 피해 = 갱신자료 첫 칸 · 종류 **7**(폭발)
-//   ⚠ 아직 안 옮긴 것 — 그을음 · 소리 · (09-29 Z1-A — 벽 피해는 `DamageUnitsAround` 끝이 한다 · who = 주인)
+//   · ★ 11-22 원본 차례(`:6830~6834`) — 소리 87 → 큰 그을음 → 흔들기 10 → 터짐 그림 → 둘레 피해
+//   · (09-29 Z1-A — 벽 피해는 `DamageUnitsAround` 끝이 한다 · who = 주인)
 void Server::MeteorExplode(PlacedObj& o) {
     const float x = o.x, y = o.y;
     const int dmg = o.damage;
     const int64_t owner = o.owner;
+    const int meteorPet = o.ownerNet ? PetIndexByNet(o.ownerNet) : -1;   // 몬스터가 놓은 운석이면 소리를 들을 출처는 그 몬스터(`GetOwnerUnit`)
+    PlaySoundAt(87, x, y, 0, 0, owner, meteorPet >= 0 ? PetTarget(pets_[static_cast<size_t>(meteorPet)]) : Target{});   // aud_501960(87 MeteorHit, 운석, 0, 0)
+    MakeScorch(x, y, 2);                                // sMakeScorch(운석 +56, 2)
     SendJiggle(x, y, 10);                               // earthquakeSend_4D9110(자리, 10)
     // ★ 09-27 S1 — v9 = who = 주인 사람(+72 지난 자리) · 주인이 사람이 아니면(없으면) 옛 방식(막기 없음)
     AttackSrc ws;
@@ -17959,7 +17993,8 @@ void Server::DamageUnitsAround(float cx, float cy, float r1, float r2, int dmg, 
 //   · 둘레 피해 : 바깥 **양 × 0.33333** · 안쪽 **15** · 같은 **양 >> 1** · 직접 맞은 것은 건너뜀
 //   · 불똥 그림 : `netSparkExplosionFx_5231B0` = **`93 <x u16> <y u16> <양 i8>` 6바이트**를 화면 안 모두에게
 //     ⚠ 옛 자리표시는 여기에 `85`(FireBoom)를 보냈다 — **짐작이었고, 정답지는 `93` 이다.**
-//   ⚠ 아직 안 옮긴 것 — 그을음(sMakeScorch) · 소리 42 · (09-29 Z1-A — 벽 피해는 `DamageUnitsAround` 끝 · who = 불덩이 — 유닛이 아니라 폭발 자리에서 잰다)
+//   · ★ 11-22 불똥 그림 뒤 소리 42 → 큰 그을음(`:4199~4200`)
+//   · (09-29 Z1-A — 벽 피해는 `DamageUnitsAround` 끝 · who = 불덩이 — 유닛이 아니라 폭발 자리에서 잰다)
 void Server::FireballExplode(MissileObj& m, const Target& hit) {
     const int amount = static_cast<int>(m.collideAmount);
     if (amount <= 0) return;
@@ -17988,6 +18023,12 @@ void Server::FireballExplode(MissileObj& m, const Target& hit) {
         static_cast<uint8_t>(amount),
     };
     SendFxAllCli(m.posX, m.posY, fx, sizeof(fx));
+    // ★ 11-22 `GAME3_3.c:4199` aud_501960(42 FireballExplode, 불덩이, 0, 0) — 낸 것은 불덩이라 사람 누구에게도 0xA7 이 아니다.
+    //   몬스터가 들을 출처는 불덩이의 임자(`GetOwnerUnit` — 사람이면 그 사람 · 몬스터가 쏜 것이면 그 몬스터)
+    //   ⚠ 몬스터 불덩이(`LaunchFireball` 몬스터 갈래)는 `ownerNet` 을 안 채워 그 몬스터를 못 짚는다 — 그때는 `owner`(부른 사람 · 맵 몬스터면 없음)로 간다
+    const int firePet = (m.owner == kNoSession && m.ownerNet != 0) ? PetIndexByNet(m.ownerNet) : -1;
+    PlaySoundAt(42, m.posX, m.posY, 0, 0, m.owner, firePet >= 0 ? PetTarget(pets_[static_cast<size_t>(firePet)]) : Target{});
+    MakeScorch(m.posX, m.posY, 2);                           // ★ 11-22 `:4200` sMakeScorch(불덩이 +56, 2) — 큰 그을음
 }
 
 // ★ 11-20 트레일러 위저드 W2 — `collideBoom_4E9770`(`GAME3_3.c:4029~4098`)의 **터지는 몫**. 벽 튕김 갈래(a2 없음 · a3 있음)는 UpdateMissiles 가 한다.
@@ -17997,7 +18038,8 @@ void Server::FireballExplode(MissileObj& m, const Target& hit) {
 //   · 둘레 피해 = 바깥 `MagicMissileRange`(15) · 안쪽 5 · `MagicMissileSplashDamage`(23) · 종류 7 · who = 화살 · **뺄 것 없음**(a7 = 0 — 직격 맞은 것도 또 받는다)
 //   · 밀기 = 둘레 `MagicMissilePushRange`(50) · 안쪽도 50(→ 둘레 안이면 줄지 않는다) · 힘 `MagicMissileForce`(20)
 //   · 소리 84 → 지움(부르는 쪽이 DestroyMissile)
-//   ⚠ 안 옮긴 것 — 퀘스트(게임 깃발 4096)에서 같은 편 사람끼리 지나가기 · 반전(`checkInversionEffect_4FA4F0` 든 물건 마법부여) · 그을음(sMakeScorch)
+//   · ★ 11-22 직격 바로 뒤 맞은 것 자리에 작은 그을음(`MakeScorch(…, 0)` · `:4074`)
+//   ⚠ 안 옮긴 것 — 퀘스트(게임 깃발 4096)에서 같은 편 사람끼리 지나가기 · 반전(`checkInversionEffect_4FA4F0` 든 물건 마법부여)
 void Server::MagicMissileBoom(MissileObj& m, const Target& hit) {
     const int16_t ex = static_cast<int16_t>(m.posX), ey = static_cast<int16_t>(m.posY);
     const uint8_t fx[5] = { static_cast<uint8_t>(Op::FX_LESSER_EXPLOSION),
@@ -18008,7 +18050,12 @@ void Server::MagicMissileBoom(MissileObj& m, const Target& hit) {
     src.byMonsterType = m.type;
     src.rootIsMonster = MissileRootIsMonster(m);
     src.missile = true;
-    if (!hit.none()) HurtTarget(hit, static_cast<int>(BalanceFloat("MagicMissileDamage")), m.owner, 7, &src, HitterMissile(m));
+    if (!hit.none()) {
+        float hx = 0.0f, hy = 0.0f;
+        const bool hasPos = TargetXY(hit, hx, hy);           // 피해 **전에** 잡는다 — 피해가 퀘스트 다음 무리를 부르면 `pets_` 가 옮겨 앉는다
+        HurtTarget(hit, static_cast<int>(BalanceFloat("MagicMissileDamage")), m.owner, 7, &src, HitterMissile(m));
+        if (hasPos) MakeScorch(hx, hy, 0);                   // ★ 11-22 `GAME3_3.c:4074` sMakeScorch(맞은 것 +56, 0) — 직격 바로 뒤 · 맞은 것 자리에 작은 그을음
+    }
     WallHitter fw;                                           // 둘레 끝의 벽 피해 who = 화살(MISSILE — 방향 없음 · 재질은 그 종류)
     fw.present = true; fw.x = m.posX; fw.y = m.posY; fw.material = MaterialOfWire(m.type);
     fw.src = m.owner;

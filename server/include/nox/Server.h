@@ -2525,6 +2525,8 @@ public:
     unsigned long long fistNoLos()   const { return fistNoLos_; }
     unsigned long long fistLanded()   const { return fistLanded_; }     // ★ 11-22 주먹 처음 닿음(소리 48 · 연기 셋)
     unsigned long long fistRoseGone() const { return fistRoseGone_; }   // ★ 11-22 주먹 되튀어 200 에 지움(`GAME4_3.c:6744`)
+    unsigned long long scorchMade(int size) const { return (size >= 0 && size < 3) ? scorchMade_[size] : 0; }   // ★ 11-22 그을음 크기별(0·1·2)
+    unsigned long long scorchNoType() const { return scorchNoType_; }   // ★ 11-22 그을음 — 종류를 못 찾아 못 놓음
     // 부활 무적 안 걸기(`--no-spawn-invuln`) — 화면 확인을 막는 무적을 우회한다
     void SetNoSpawnInvuln(bool v) { noSpawnInvuln_ = v; }
     unsigned long long spawnInvulnApplied() const { return spawnInvulnApplied_; }
@@ -3781,6 +3783,8 @@ public:
     float DebugPlacedZ(size_t i) const { return i < placed_.size() ? placed_[i].z : 0.0f; }
     void DebugSetPlacedZ(size_t i, float z, float zVel) { if (i < placed_.size()) { placed_[i].z = z; placed_[i].zVel = zVel; } }   // ★ 11-22 시험 — 주먹 되튐을 끄고 3초 수명 갈래만 보기
     uint16_t DebugPlacedType(size_t i) const { return i < placed_.size() ? placed_[i].type : 0; }
+    uint32_t DebugPlacedLife(size_t i) const { return i < placed_.size() ? placed_[i].life : 0; }                 // ★ 11-22 그을음 썩는 시간(남은 프레임)
+    void DebugMakeScorch(float x, float y, int size) { MakeScorch(x, y, size); }                                   // ★ 11-22 그을음 갈래 시험
     int64_t DebugPlacedOwner(size_t i) const { return i < placed_.size() ? placed_[i].owner : kNoSession; }       // ★ 11-21 W14 +508
     void DebugPlacedBackdate(size_t i, uint32_t frames) { if (i < placed_.size()) placed_[i].createdFrame -= frames; }   // ★ 11-21 W14 +128 를 앞당김(300초 시험)
     // 마지막으로 받은 피해 종류(+524) — 불꽃 1 · 독 5 처럼 **무엇에 맞았나**를 시험이 가른다
@@ -5103,6 +5107,8 @@ private:
     // 놓은 것을 가리킨다. 못 놓았으면 nullptr. ⚠ 돌려준 포인터는 **다음 PlaceObject 까지만** 쓸 것(벡터가 옮겨 앉는다).
     PlacedObj* PlaceObject(uint16_t type, float x, float y, int64_t owner, uint32_t life, uint8_t kind,
                            uint8_t dmgAmount = 0, uint8_t dmgType = 0, float radius = 0.0f);
+    // ★ 11-22 그을음 `sMakeScorch_537AF0`(`GAME4_3.c:3532~3570`) — 크기 0 작음 · 1 중간 · 2 큼(`ScorchMarkFloorSmallA/MediumA/LargeB`)
+    void MakeScorch(float x, float y, int size);
     void UpdatePlaced();                                                      // 놓인 것들의 주기 함수 + 수명
     void DestroyPlaced(size_t i);
     int CastToxicCloud(Session& caster, const SpellArg& arg);               // castToxicCloud_52DB60
@@ -6602,6 +6608,8 @@ private:
     unsigned long long fistNoLos_ = 0;           // 주먹 — 커서 자리가 안 보인다
     unsigned long long fistLanded_ = 0;          // ★ 11-22 주먹 — 처음 땅에 닿음
     unsigned long long fistRoseGone_ = 0;        // ★ 11-22 주먹 — 닿은 뒤 되튀어 200 이상이라 지움
+    unsigned long long scorchMade_[3] = {};      // ★ 11-22 그을음 — 크기 0·1·2 놓음
+    unsigned long long scorchNoType_ = 0;        // ★ 11-22 그을음 — 종류 번호 0(맵 자료에 이름 없음)이라 못 놓음
     // ★ 부활 무적을 아예 안 거는 진단 스위치(`--no-spawn-invuln`).
     //   CLIENT_READY 되풀이(B-1b 미결) 때문에 무적이 안 풀려 화면 확인이 통째로 막힌다.
     //   그 원인과 **따로** 나머지를 진행하려는 우회로다. 기본 끔.

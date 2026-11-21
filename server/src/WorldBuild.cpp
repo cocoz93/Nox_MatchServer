@@ -134,7 +134,8 @@ std::shared_ptr<const nox::Server::GameTables> BuildGameTables(const GameFiles& 
                                 "ManaBombCharge",       // ★ 11-20 W3 과부하 모으기 그림(`GAME4_3.c:1095`)
                                 "ForceOfNatureCharge",       // ★ 11-20 C2 자연의 힘 모으기 그림(`GAME4_2.c:11195`)
                                 "Moonglow",                  // ★ 11-21 W14 달빛 빛(`GAME4_3.c:1584` newObjectByTypeID)
-                                "TelekinesisHand" }) {       // ★ 11-21 W11 염동력 손(`GAME4_2.c:9943` newObjectByTypeID)
+                                "TelekinesisHand",           // ★ 11-21 W11 염동력 손(`GAME4_2.c:9943` newObjectByTypeID)
+                                "ScorchMarkFloorSmallA", "ScorchMarkFloorMediumA", "ScorchMarkFloorLargeB" }) {   // ★ 11-22 그을음(`scorchInit_537BD0` — 이름은 `blob_587000` +276848·276872·276896)
             const uint16_t w = tdb.WireByName(nm);
             srv.SetNamedType(nm, w);
             srv.Log("[종류] %s = %u%s\n", nm, static_cast<unsigned>(w), w ? "" : " ⚠ 못 찾음");
