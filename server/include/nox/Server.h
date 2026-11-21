@@ -404,6 +404,14 @@ enum class CastStat : uint8_t {
     FlyWall,         //   몸 앞이 벽이라 안 만듦(정답지 `mapTraceRay` 거짓)
     FlyHit,          //   대상에 닿아 효과 함수가 1
     FlyLost,         //   대상에 닿았는데 효과 없음(처음 시전자[2]·주인[0]이 지워짐 · 효과 함수 0)
+    PickInvert,      // ★ 11-22 감사 14 거꾸로 주문을 고름(`mobCastInversion_5408D0` · 0x8000000 · 대상 = 자기)
+    MonCounter,      //   몬스터 반주문(13)을 받아들임
+    MonInvert,       //   몬스터 반전(38)이 주인을 바꾼 날아가는 것(하나마다)
+    MonFlame,        //   몬스터 정화 불꽃(10) 하나
+    MonFlameTooMany, //   제 불꽃이 남아 있어 거절
+    InvertedFlyHit,  //   몬스터 반전이 뒤집은 **사람 날림**이 닿아 효과 함수가 참(obj3 = 그 몬스터)
+    InvertedFlyLost, //   ―― 닿았는데 효과 없음(그 몬스터가 지워짐 · 효과 함수 0 · 아래 지속 갈래)
+    InvertedFlyDur,  //   ―― obj3 를 지속 주문 주인으로 쓰는 갈래라 몬스터 주인을 못 담아 효과 없음(⚠ 안 옮김)
     Count
 };
 constexpr size_t kCastStatCount = static_cast<size_t>(CastStat::Count);
@@ -774,6 +782,7 @@ struct Creature {
     std::vector<std::pair<uint8_t, uint32_t>> spells;
     int spellLevel = 3;
     uint32_t castNextBuff = 0, castNextReact = 0, castNextOffense = 0, castNextEscape = 0;
+    uint32_t castNextInvert = 0;   // ★ 11-22 감사 14 — +1452 거꾸로 주문(반주문 13·반전 38) · 쉬는 때 +1448 0 ~ +1450 FPS/2(`unit_monster.go:147~148`)
 };
 
 // 깃발 하나.
@@ -2138,8 +2147,8 @@ public:
     size_t DebugPetSpellCount(size_t i) const { return i < pets_.size() ? pets_[i].spells.size() : 0; }
     bool DebugPetHasSpell(size_t i, uint8_t sp) const { return i < pets_.size() && MonsterHasSpell(pets_[i], sp); }
     void DebugSetPetCastNext(size_t i, uint32_t f) { if (i < pets_.size()) { pets_[i].castNextOffense = f; pets_[i].castNextEscape = f; } }
-    // ★ 11-21 C11-b — 고르기 넷(공격·달아남·제 몸·되받기)의 쉬는 때를 한꺼번에(시험이 손으로 건 주문만 보게)
-    void DebugSetPetCastNextAll(size_t i, uint32_t f) { if (i < pets_.size()) { pets_[i].castNextOffense = pets_[i].castNextEscape = pets_[i].castNextBuff = pets_[i].castNextReact = f; } }
+    // ★ 11-21 C11-b — 고르기 넷(공격·달아남·제 몸·되받기)의 쉬는 때를 한꺼번에(시험이 손으로 건 주문만 보게) · ★ 11-22 감사 14 거꾸로 주문(+1452)도
+    void DebugSetPetCastNextAll(size_t i, uint32_t f) { if (i < pets_.size()) { pets_[i].castNextOffense = pets_[i].castNextEscape = pets_[i].castNextBuff = pets_[i].castNextReact = pets_[i].castNextInvert = f; } }
     uint32_t DebugPetCastNextOffense(size_t i) const { return i < pets_.size() ? pets_[i].castNextOffense : 0; }
     uint32_t DebugPetCastNextEscape(size_t i) const { return i < pets_.size() ? pets_[i].castNextEscape : 0; }
     // 몬스터가 연 지속 주문(주문 번호 · 시전자 번호)이 있나 · 그 대상
@@ -2154,6 +2163,14 @@ public:
         TargetXY(t, x, y);
         return MonsterCastSpellNow(pets_[i], sp, t, x, y);
     }
+    // ★ 11-22 감사 14 — 거꾸로 주문 고르기 한 번(`mobCastInversion_5408D0` 곧장) · 그 쉬는 때 · 사람이 날리는 주문 하나(`createSpellFly_4FDDA0` 사람 판)
+    bool DebugPetInversionPick(size_t i) { return i < pets_.size() && MonsterCastInversionPick(pets_[i]); }
+    void DebugSetPetCastNextInvert(size_t i, uint32_t f) { if (i < pets_.size()) pets_[i].castNextInvert = f; }
+    uint32_t DebugPetCastNextInvert(size_t i) const { return i < pets_.size() ? pets_[i].castNextInvert : 0; }
+    bool DebugCreateSpellFly(int64_t sid, const Target& t, uint8_t spell) { auto it = sessions_.find(sid); return it != sessions_.end() && CreateSpellFly(it->second, t, spell); }
+    uint8_t DebugPetSpellAt(size_t i, size_t n) const { return (i < pets_.size() && n < pets_[i].spells.size()) ? pets_[i].spells[n].first : 0; }   // 주문 칸 차례
+    void DebugAddPetSpell(size_t i, uint8_t sp, uint32_t mask) { if (i < pets_.size()) pets_[i].spells.push_back({ sp, mask }); }
+    int DebugAITargetPet(size_t i, int j) const { return (i < pets_.size() && j >= 0 && j < Creature::kAIStackMax) ? pets_[i].aiStack[j].targetPet : -1; }
     uint16_t DebugPetNet(size_t i) const { return i < pets_.size() ? pets_[i].netCode : 0; }
     uint16_t DebugPetType(size_t i) const { return i < pets_.size() ? pets_[i].type : 0; }   // ★ 11-20 C1
     int64_t DebugPetOwner(size_t i) const { return i < pets_.size() ? pets_[i].owner : kNoSession; }   // ★ 11-20 C1
@@ -2544,7 +2561,7 @@ public:
     unsigned long long drainStat(DrainStat k) const { return drainStat_[static_cast<size_t>(k)]; }
     // ★ 11-22 시전 소리(`spellGetAud44(spell, 0)`) — 판 끝 로그 `[시전 소리]` · 시험 `TestCastSound1122` 가 같은 칸을 센다
     //   사람 밀기·당기기(시전자) · 사람 운석(커서 자리) · 사람 날림 주문(시전자) · 몬스터 밀기(그 몬스터) · 몬스터 운석(대상 자리). 소리가 정의에 있어 낸 때만
-    enum class CastSndStat : uint8_t { PushPull = 0, Meteor, Fly, MonPush, MonMeteor, Count };
+    enum class CastSndStat : uint8_t { PushPull = 0, Meteor, Fly, MonPush, MonMeteor, MonInvert, MonFlame, Count };   // ★ 11-22 감사 14 몬스터 반전·불꽃
     unsigned long long castSndStat(CastSndStat k) const { return castSndStat_[static_cast<size_t>(k)]; }
     // 부활 무적 안 걸기(`--no-spawn-invuln`) — 화면 확인을 막는 무적을 우회한다
     void SetNoSpawnInvuln(bool v) { noSpawnInvuln_ = v; }
@@ -3828,6 +3845,9 @@ public:
     // ★ 09-23 nine-defects 2-a3 — 반주문에 지워지는 날아가는 것(thing.bin 서브클래스 `MISSILE_COUNTERSPELL`)의 종류.
     //   main 이 thing.bin 에서 넣고, 시험은 손으로 넣는다. Estate 기준 `Magic`·불덩이 셋·`Pixie` 다(`--dump-thing` 실측)
     void SetCounterMissileType(uint16_t wire) { GtMut().counterMissileTypes.insert(wire); }
+    // ★ 11-22 감사 14 — 서브클래스 `MAGIC`(정답지 `MissileMagic`) 날아가는 것 — 거꾸로 주문 고르기(`unitIsMagicMissile_540B60`)·몬스터 반전(`changeOwner_52BE40`)이 본다
+    void SetMissileMagicType(uint16_t wire) { GtMut().missileMagicTypes.insert(wire); }
+    size_t MissileMagicTypeCount() const { return gt_->missileMagicTypes.size(); }
     // ★ 2-a4 — 주문 쓰는 몬스터 종류(monster.bin `CAN_CAST_SPELLS`). main 이 `kMonstersCanCastSpells` 이름을 와이어 번호로 바꿔 넣는다
     void SetCastingMonsterType(uint16_t wire) { GtMut().castingMonsterTypes.insert(wire); }
     unsigned long long warcryCastsBroken() const { return warcryCastsBroken_; }    // ★ 2-a4 — 함성이 끊은 남의 시전
@@ -4866,6 +4886,9 @@ private:
         //   via 가 거짓이면 obj4 = 시전자(`castSpellByUser` 는 셋 다 시전자). 지금은 실수(33)의 몬스터 밀기 기점만 쓴다
         bool via = false;
         float viaX = 0, viaY = 0;
+        // ★ 11-22 감사 14 — obj3 가 **몬스터**(그 번호)일 때. 사람이 쏜 날림을 몬스터 반전(38)이 뒤집으면 갱신 짐 [0] = 그 몬스터라
+        //   닿을 때 `spellAccept(ud[3], ud[2] = 처음 시전자, ud[0] = 그 몬스터, …)`(`GAME3_3.c:3999~4003`). 이때 obj3 인자는 `kNoSession`
+        int obj3Pet = -1;
     };
     bool SpellByBookInsert(Session& s, const uint32_t spells[5], int count, uint32_t gap, bool targetSelf);
     void SpellCastByBook(uint32_t frame);
@@ -5080,6 +5103,10 @@ private:
     // ★ 11-21 C11-c — 몬스터가 남을 겨눠 날리는 주문(혼란 12 · 실수 33 · 독 60 · 느림 72 — 머리 주석은 `Server.cpp`)
     bool MonsterCreateSpellFly(Creature& k, Target target, uint8_t spell);                   // createSpellFly_4FDDA0 몬스터 판
     int MonsterFlyAccept(uint8_t spell, int64_t obj3, const Target& targ, int lvl, float viaX, float viaY);   // spellAccept 의 그 넷 갈래(시전자 = 몬스터 · via = 날아간 것 자리)
+    // ★ 11-22 감사 14 — 거꾸로 주문 고르기 · 몬스터 반전 · 몬스터 정화 불꽃(머리 주석은 `Server.cpp`)
+    bool MonsterCastInversionPick(Creature& k);                                              // mobCastInversion_5408D0
+    int MonsterCastInversion(Creature& k);                                                   // sub_52BEB0 몬스터 판
+    int MonsterCastCleansingFlame(Creature& k, uint8_t spell, int lvl);                      // spellCastCleansingFlame_52D5C0 몬스터 판
     Target EnergyBoltSearchPet(const Creature& k, float range) const;
     // ★ 10-02 — 원본 거리 `nox_xxx_calcDistance_4E6C00` — 중심 거리 − 두 몸 크기(머리 주석은 `Server.cpp`)
     double CalcDistanceEdge(const Creature& k, const Target& t, float tx, float ty) const;
@@ -5168,6 +5195,7 @@ private:
     void MeteorExplode(PlacedObj& o);                                       // meteorExplode_53D6E0
     int CastFist(Session& caster, const SpellArg& arg, int lvl);            // castFist_52D3C0
     int CastCleansingFlame(uint8_t spell, Session& caster, int lvl);        // spellCastCleansingFlame_52D5C0
+    int CleansingFlameBurst(uint8_t spell, float cx, float cy, float bodyR, int64_t owner, uint16_t ownerNet, int lvl);   // ★ 11-22 감사 14 — 위 함수의 불꽃 48 몸통(만든 수)
     int CastArachnaphobia(Session& caster, const SpellArg& arg);            // spellArachna_52DC80
     int CastPixieSwarm(uint8_t spell, Session& caster, int lvl);            // castPixies_540440
     int CastMagicMissile(uint8_t spell, Session& caster, int lvl);          // ★ 11-20 W2 spellMissiles.Cast(`spell_missiles.go:26`)
@@ -5530,6 +5558,7 @@ private:
     void PlayerSetPos(Session& s, double x, double y);
     void WarcryShout(Session& s);   // ★ 2-a2 — 외침 효과(땅울림 · 몬스터 기절)
     int CastCounterSpell(Session& caster);   // ★ 2-a3 — castCounterSpell_52BBB0
+    int CounterSpellAt(float cx, float cy, const Target& self);   // ★ 11-22 감사 14 — 위 함수의 몸통(가운데·빼는 것 = a4 — 사람·몬스터 같이)
     unsigned long long warcryCastsBroken_ = 0, warcryNullMon_ = 0;
     unsigned long long warcryPeer_[kWarcryPeerCount] = {};   // ★ 09-24 H3
     unsigned long long enchantSentAnti_ = 0;                  // ★ 09-24 H3
@@ -6376,6 +6405,7 @@ public:   // ★ 10-12 작업 7e-2 — 표 묶음과 같이 쓰기 입구는 바
         std::vector<uint16_t> monsterSnd[18];
         uint16_t newPlayerWire = 0;
         std::set<uint16_t> counterMissileTypes;
+        std::set<uint16_t> missileMagicTypes;     // ★ 11-22 감사 14 — MISSILE + 서브클래스 MAGIC(Magic·MagicMissile·Pixie)
         std::set<uint16_t> castingMonsterTypes;   // ★ 2-a4
         std::vector<SoundDef> soundDefs;          // 색인 = 소리 번호(0 은 NULL)
         uint16_t abilSoundUse[6] = {0, 0, 0, 0, 0, 0};

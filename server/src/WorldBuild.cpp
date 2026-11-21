@@ -976,6 +976,16 @@ std::shared_ptr<const nox::Server::GameTables> BuildGameTables(const GameFiles& 
             srv.SetCounterMissileType(w);
             if (srv.CounterMissileTypeCount() <= 8) { mis += " "; mis += t2->name; }
         }
+        // ★ 11-22 감사 14 — 서브클래스 `MAGIC`(정답지 `MissileMagic`) — 거꾸로 주문 고르기(`unitIsMagicMissile_540B60`)·몬스터 반전이 본다.
+        //   thing.bin 실물은 Pixie·MagicMissile·Magic 셋(`SUBCLASS = MISSILE_COUNTERSPELL+MAGIC` — 11-22 글자열 실측)
+        std::string mag;
+        for (uint16_t w = 1; w <= tdb.Count(); ++w) {
+            const nox::ThingInfo* t2 = tdb.ByWire(w);
+            if (!t2 || !hasTok(t2->classRaw, "MISSILE") || !hasTok(t2->subclassRaw, "MAGIC")) continue;
+            srv.SetMissileMagicType(w);
+            mag += " "; mag += t2->name;
+        }
+        srv.Log("[반전] MAGIC 날아가는 것 %zu종 —%s\n", srv.MissileMagicTypeCount(), mag.c_str());
         std::string spells;
         int nSp = 0;
         for (int id = 1; id < nox::kSpellCount; ++id) {

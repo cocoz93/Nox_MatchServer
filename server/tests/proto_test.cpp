@@ -31285,6 +31285,307 @@ void TestDeathBallDoor1122() {
     std::printf("  11-22 감사 13 — 자연의 힘 공 문: 세로 문 −x(지난 자리로 · 소리 283) · 대각 문 −y · 비껴감 · GATE 안 닿음 · 조각은 문 안 봄 · 닫힌 문(벽 칸)도 문 튕김\n");
 }
 
+// ★ 11-22 감사 14 — 몬스터 자동 주문(큰 악마 `GAME5.c:4282~4291` 13·74·10 · 0x8000000 거꾸로 주문 — 리치 13·38 · 녹색 마법사·성게 주술사 38)
+//   주문 깃발은 진짜 thing.bin SPEL(`nox_datadump --spells` — 10 42000430 · 13 09400430 · 38 09400410 · 74 242000b5)
+//   ① 고르기(`mobCastInversion_5408D0`) — 그 몬스터를 겨눈 MAGIC 이 둘레 120(InversionRange 240 × 0.5) 안 · 경계 두 쪽 · 남을 겨눔 · MAGIC 아닌 종류 ·
+//      쉬는 때 · 시전 중 · 0x8000000 주문 없음 · 주문 못 쓰는 몬스터(STATUS 0x20 없음)
+//   ①-2 두뇌 — 틱을 돌리면 스스로 고르고 시전까지 간다 · 반주문(29)에 걸리면 안 고른다
+//   ② 몬스터 반주문 13 · ③ 몬스터 반전 38 · ④ 큰 악마 기절 74 날림 · ⑤ 큰 악마 정화 불꽃 10 · ⑥ 큰 악마 주문 칸 차례
+void TestMonsterAutoSpells1122() {
+    const std::string a = "10.11.22.61:9731", b = "10.11.22.62:9732";
+    using CS = nox::CastStat;
+    using SS = nox::Server::CastSndStat;
+    char msg[600];
+    auto run = [](nox::CSyncHost& srv, uint32_t& ms, int n, std::vector<nox::OutPacket>* keep = nullptr) {
+        for (int t = 0; t < n; ++t) {
+            const uint32_t f = srv->frame();
+            for (int g = 0; g < 100 && srv->frame() == f; ++g) { ms += 5; std::vector<nox::OutPacket> o; srv.Tick(ms, o); if (keep) keep->insert(keep->end(), o.begin(), o.end()); }
+        }
+    };
+    auto heard = [](const std::vector<nox::OutPacket>& out, const std::string& who, uint16_t id) {
+        int n = 0;
+        for (const auto& x : FlattenTo(out, who))
+            if (x.size() == 4 && (x[0] == static_cast<uint8_t>(nox::Op::AUDIO_EVENT) || x[0] == static_cast<uint8_t>(nox::Op::AUDIO_PLAYER_EVENT)) &&
+                (static_cast<uint16_t>(x[2] | (x[3] << 8)) & 0x3ff) == id) ++n;
+        return n;
+    };
+    const uint16_t invSnd = nox::SoundByName("InversionCast");
+    // 몬스터 0 = 시험할 몬스터(1000,1000 · 몸 20) · 몬스터 1 = 이웃 녹색 마법사(1000,1200 · 몸 12) · a 위저드(1300,1000) · b 컨저러 멀리
+    //   시전 소리(지어낸 번호) = 300 + 주문 번호 · magicSub = Magic 을 MAGIC 서브클래스로 올리나
+    auto mk = [&](nox::CSyncHost& srv, uint16_t type, bool magicSub = true, const std::string& petOwner = std::string()) {
+        nox::Gamedata g;
+        g.Parse("InversionRange = 240.0f;\nCounterspellRange = 600;\nConfuseEnchantDuration = 150;\nStunEnchantDuration = 60;\nSlowEnchantDuration = 210;\n");
+        srv->SetGamedata(g);
+        srv->SetSpellDef(10, 0, 0x42000430u, { 8, 7, 6, 1 }, 310);
+        srv->SetSpellDef(13, 0, 0x09400430u, { 7, 8 }, 313);
+        srv->SetSpellDef(38, 0, 0x09400410u, { 0, 2 }, 338);
+        srv->SetSpellDef(74, 0, 0x242000b5u, { 0, 7 }, 374);
+        srv->SetSpellDef(12, 0, 0x222000b5u, { 5, 3, 5 }, 312);
+        srv->SetSpellDef(72, 0, 0x262000b5u | 0x40000u, { 7, 7, 7 });   // 느림 — ⚠ 시험용 CAN_COUNTER(0x40000) 덧붙임(반주문이 끄는 버프 4 의 주문)
+        {
+            std::vector<nox::Server::SoundDefIn> sd;
+            for (uint16_t id : { uint16_t(310), uint16_t(313), uint16_t(338), uint16_t(374), uint16_t(312), invSnd }) {
+                nox::Server::SoundDefIn d; d.id = id; d.samples = 1; d.maxDist = 600;
+                if (id == 313) d.flags = 1;                            // 몬스터가 듣는 소리(`EventObj` — 낸 것이 유닛일 때만 기록)
+                sd.push_back(d);
+            }
+            srv->SetSoundDefs(sd);
+        }
+        srv->SetMagicType(1237, 50, 10.0f, 0x4000);                    // ⭕ thing.bin Magic SPEED 50 · MASS 10 · FLAGS AIRBORNE
+        srv->SetCounterMissileType(1237);                              // MISSILE_COUNTERSPELL(반주문이 지움)
+        if (magicSub) srv->SetMissileMagicType(1237);                  // MAGIC(거꾸로 주문·반전)
+        static const char* const kFl[8] = { "SmallFlameCleanse", "MediumFlameCleanse", "FlameCleanse", "LargeFlameCleanse",
+                                             "SmallBlueFlameCleanse", "MediumBlueFlameCleanse", "BlueFlameCleanse", "LargeBlueFlameCleanse" };
+        for (int i = 0; i < 8; ++i) srv->SetNamedType(kFl[i], static_cast<uint16_t>(930 + i));
+        srv->SetMonsterAnim(type, 7, 8, 2, false);
+        srv->SetMonsterAnim(1335, 7, 8, 2, false);
+        nox::Server::PhysBody body; body.shape = 2; body.r = 20.0f; body.cls = 0x2;
+        srv->SetTypeBody(type, body);
+        if (type != 1335) { nox::Server::PhysBody b2 = body; b2.r = 12.0f; srv->SetTypeBody(1335, b2); }
+        srv.DebugEnterGame(a, 772, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 773, false, nox::CharClass::Conjurer);
+        srv->DebugTeleport(Sid(srv, a), 1300.0f, 1000.0f);
+        srv->DebugTeleport(Sid(srv, b), 3000.0f, 3000.0f);
+        srv->DebugSpawnPet(type, 1000, 1000, Sid(srv, petOwner));
+        srv->DebugSpawnPet(1335, 1000, 1200, Sid(srv, std::string()));
+        std::vector<nox::OutPacket> o;
+        srv.Tick(0, o);
+        srv->DebugSetFrame(1000);
+        srv->DebugSetPetCastNextAll(0, 0xFFFFFF00u);                  // 손으로 건 주문만 보게(거꾸로 주문 +1452 도)
+        srv->DebugSetPetCastNextAll(1, 0xFFFFFF00u);
+    };
+    const nox::Target self0{ nox::kNoSession, 0 }, pet1{ nox::kNoSession, 1 };
+    Check(invSnd == 64, "감사 14 — InversionCast 소리 번호가 64 가 아니다(`sound.go` 이름 표 차례)");
+    {   // ① 고르기 관문 — 리치(13·38 이 0x8000000)
+        nox::CSyncHost srv; mk(srv, 1342);
+        const int64_t as = Sid(srv, a);
+        srv->DebugSetPetCastNextInvert(0, 0);
+        const bool p0 = srv->DebugPetInversionPick(0);                                        // 날아가는 것 없음
+        const bool made = srv->DebugCreateSpellFly(as, self0, 12);
+        const bool p1 = srv->DebugPetInversionPick(0);                                        // 만든 자리(1314) — 둘레 120 밖
+        srv->DebugSetMissileXY(0, 1120.5f, 1000.0f);
+        const bool p2 = srv->DebugPetInversionPick(0);                                        // 경계 바로 밖
+        srv->DebugSetMissileXY(0, 1120.0f, 1000.0f);
+        const uint32_t f = srv->frame();
+        const bool p3 = srv->DebugPetInversionPick(0);                                        // 경계(거리² = 둘레²) — 고름
+        const int si = srv->DebugAIStackInd(0);
+        const int top = srv->DebugAIAction(0, si);
+        const uint32_t sp = srv->DebugAIArgU32(0, si);
+        const int tp = srv->DebugAITargetPet(0, si);
+        const int64_t ts = srv->DebugAITargetSession(0, si);
+        const uint32_t nx = srv->DebugPetCastNextInvert(0);
+        srv->DebugSetPetCastNextInvert(0, 0);
+        const bool p4 = srv->DebugPetInversionPick(0);                                        // 시전 중(맨 위 18)
+        std::snprintf(msg, sizeof(msg), "감사 14 ① 고르기 — 없음 %d · 밖 %d(만듦 %d) · 경계 밖 %d · 경계 %d · 맨 위 %d 주문 %u 대상 %d/%lld · 쉬는 때 +%u · 시전 중 %d · 고름 %llu",
+                      int(p0), int(p1), int(made), int(p2), int(p3), top, sp, tp, static_cast<long long>(ts), nx - f, int(p4), srv->castStat(CS::PickInvert));
+        Check(!p0 && made && !p1 && !p2 && p3 && top == 18 && (sp == 13 || sp == 38) && tp == 0 && ts == nox::kNoSession &&
+              nx >= f && nx <= f + nox::kServerTickRate / 2 && !p4 && srv->castStat(CS::PickInvert) == 1, msg);
+    }
+    {   // ①-b 남을 겨눔 · 쉬는 때
+        nox::CSyncHost srv; mk(srv, 1342);
+        const int64_t as = Sid(srv, a);
+        srv->DebugCreateSpellFly(as, pet1, 12);
+        srv->DebugSetMissileXY(0, 1050.0f, 1000.0f);
+        srv->DebugSetPetCastNextInvert(0, 0);
+        const bool q0 = srv->DebugPetInversionPick(0);                                        // 이웃을 겨눈 것만 — 안 고름
+        srv->DebugCreateSpellFly(as, self0, 12);
+        srv->DebugSetMissileXY(1, 1050.0f, 1000.0f);
+        srv->DebugSetPetCastNextInvert(0, srv->frame() + 1);
+        const bool q1 = srv->DebugPetInversionPick(0);                                        // 쉬는 때 — 안 고름
+        srv->DebugSetPetCastNextInvert(0, srv->frame());
+        const bool q2 = srv->DebugPetInversionPick(0);                                        // 지금 = 쉬는 때 — 고름
+        std::snprintf(msg, sizeof(msg), "감사 14 ①-b — 남을 겨눔 %d · 쉬는 때 %d · 때 됨 %d", int(q0), int(q1), int(q2));
+        Check(!q0 && !q1 && q2, msg);
+    }
+    {   // ①-c MAGIC 이 아닌 종류 · 0x8000000 주문 없음(Beholder 24·4) · 주문 못 쓰는 몬스터(좀비 — 주문 칸을 손으로 넣어도)
+        bool r[3] = {};
+        const uint16_t types[3] = { 1342, 1382, 1360 };
+        for (int c = 0; c < 3; ++c) {
+            nox::CSyncHost srv; mk(srv, types[c], c != 0);
+            if (c == 2) srv->DebugAddPetSpell(0, 13, 0x08000000u);
+            srv->DebugCreateSpellFly(Sid(srv, a), self0, 12);
+            srv->DebugSetMissileXY(0, 1050.0f, 1000.0f);
+            srv->DebugSetPetCastNextInvert(0, 0);
+            r[c] = srv->DebugPetInversionPick(0);
+        }
+        std::snprintf(msg, sizeof(msg), "감사 14 ①-c — MAGIC 아님 %d · 0x8000000 없음 %d · 좀비(STATUS %x) %d", int(r[0]), int(r[1]), unsigned(nox::MonsterBrainOf(1360).status), int(r[2]));
+        Check(!r[0] && !r[1] && !r[2] && !(nox::MonsterBrainOf(1360).status & 0x20), msg);
+    }
+    // ①-2 두뇌 — 틱을 돌리면 스스로 고르고(16프레임에 한 번) 쏘기 칸에서 시전(반주문이면 날아가는 것을 지우고 · 반전이면 주인을 바꾼다) · 반주문(29)이면 안 고른다
+    for (const bool anti : { false, true }) {
+        nox::CSyncHost srv; uint32_t ms = 0; mk(srv, 1342);
+        srv->DebugSetPetCastNextInvert(0, 0);
+        if (anti) srv->DebugApplyEnchantPet(0, 29, 0, 1);
+        srv->DebugCreateSpellFly(Sid(srv, a), self0, 12);
+        srv->DebugSetMissileXY(0, 1110.0f, 1000.0f);
+        int t = 0;
+        for (; t < 20 && srv->castStat(CS::PickInvert) == 0; ++t) run(srv, ms, 1);
+        int t2 = 0;
+        for (; t2 < 40 && srv->castStat(CS::Cast) == 0; ++t2) run(srv, ms, 1);
+        const unsigned long long done = srv->castStat(CS::MonCounter) + srv->castSndStat(SS::MonInvert);
+        std::snprintf(msg, sizeof(msg), "감사 14 ①-2 두뇌(반주문 %d) — 고름 %llu(%d틱) · 시전 %llu(%d틱) · 반주문 %llu 반전 %llu · 안옮김 %llu",
+                      int(anti), srv->castStat(CS::PickInvert), t, srv->castStat(CS::Cast), t2, srv->castStat(CS::MonCounter), srv->castSndStat(SS::MonInvert),
+                      srv->castStat(CS::NotPorted));
+        if (anti) Check(srv->castStat(CS::PickInvert) == 0 && srv->castStat(CS::Cast) == 0, msg);
+        else Check(srv->castStat(CS::PickInvert) == 1 && t <= 17 && srv->castStat(CS::Cast) == 1 && done == 1 && srv->castStat(CS::NotPorted) == 0, msg);
+    }
+    {   // ② 몬스터 반주문 13 — 둘레 600 의 날아가는 것 지움 · a·이웃의 느림(4) 끔 · 제 몸 느림은 그대로(a4 빼기) · 시전 소리(그 몬스터)
+        nox::CSyncHost srv; uint32_t ms = 0; mk(srv, 1342);
+        const int64_t as = Sid(srv, a);
+        srv->DebugCreateSpellFly(as, self0, 12);
+        srv->DebugApplyEnchant(as, 4, 300, 1);
+        srv->DebugApplyEnchantPet(0, 4, 300, 1);
+        srv->DebugApplyEnchantPet(1, 4, 300, 1);
+        const unsigned long long cc = srv->counterCasts();
+        const size_t l0 = srv->DebugListenCount();
+        const bool ok = srv->DebugPetCastNow(0, 13, self0);
+        const size_t l1 = srv->DebugListenCount();
+        std::vector<nox::OutPacket> keep;
+        run(srv, ms, 1, &keep);
+        const int snd = heard(keep, a, 313);
+        std::snprintf(msg, sizeof(msg), "감사 14 ② 반주문 — 받음 %d(%llu) · 날아가는 것 %zu · a 느림 %d · 제 몸 %d · 이웃 %d · 부름 +%llu · 셈 %llu · 소리 %d(몬스터 들을 거리 +%zu) · 안옮김 %llu",
+                      int(ok), srv->castStat(CS::Accepted), srv->MissileCount(), int(srv->DebugHasEnchant(as, 4)), int(srv->DebugPetHasEnchant(0, 4)),
+                      int(srv->DebugPetHasEnchant(1, 4)), srv->counterCasts() - cc, srv->castStat(CS::MonCounter), snd, l1 - l0, srv->castStat(CS::NotPorted));
+        Check(ok && srv->castStat(CS::Accepted) == 1 && srv->MissileCount() == 0 && !srv->DebugHasEnchant(as, 4) && srv->DebugPetHasEnchant(0, 4) &&
+              !srv->DebugPetHasEnchant(1, 4) && srv->counterCasts() == cc + 1 && srv->castStat(CS::MonCounter) == 1 && snd == 1 && l1 == l0 + 1 &&
+              srv->castStat(CS::NotPorted) == 0, msg);
+    }
+    {   // ③ 몬스터 반전 38 — [0] a→나(200) · [1] 이웃→나(150) · [2] a→이웃(50 · 남을 겨눔) · [3] a→나(240.5 · 둘레 밖)
+        nox::CSyncHost srv; uint32_t ms = 0; mk(srv, 1342);
+        const int64_t as = Sid(srv, a);
+        const uint16_t kn = srv->DebugPetNet(0);
+        srv->DebugCreateSpellFly(as, self0, 12);   srv->DebugSetMissileXY(0, 1200.0f, 1000.0f);
+        srv->DebugPetCastNow(1, 12, self0);        srv->DebugSetMissileXY(1, 1000.0f, 1150.0f);
+        srv->DebugCreateSpellFly(as, pet1, 12);    srv->DebugSetMissileXY(2, 1050.0f, 1000.0f);
+        srv->DebugCreateSpellFly(as, self0, 12);   srv->DebugSetMissileXY(3, 1240.5f, 1000.0f);
+        srv->DebugSetFrame(srv->frame() + 10);                         // 만든 프레임과 갈라 둬야 「수명 새로」가 보인다
+        const uint32_t f = srv->frame();
+        const bool ok = srv->DebugPetCastNow(0, 38, self0);
+        const auto& ml = srv->missileList();
+        const bool m0 = ml.size() == 4 && ml[0].ud1.sessionId == as && ml[0].ud1.pet == -1 && ml[0].ud0 == nox::kNoSession && ml[0].owner == nox::kNoSession &&
+                        ml[0].ownerNet == kn && ml[0].ownerPet == 0 && ml[0].fromPet == 0 && ml[0].createdFrame == f;
+        const bool m1 = ml.size() == 4 && ml[1].ud1.sessionId == nox::kNoSession && ml[1].ud1.pet == 1 && ml[1].ownerNet == kn && ml[1].ownerPet == 0 &&
+                        ml[1].createdFrame == f && ml[1].casterNet == srv->DebugPetNet(1);
+        const bool m2 = ml.size() == 4 && ml[2].ud1.pet == 1 && ml[2].owner == as && ml[2].ownerNet == 0;
+        const bool m3 = ml.size() == 4 && ml[3].ud1.pet == 0 && ml[3].owner == as && ml[3].ownerNet == 0;
+        std::vector<nox::OutPacket> keep;
+        run(srv, ms, 1, &keep);
+        const int sInv = heard(keep, a, invSnd), sCast = heard(keep, a, 338);
+        const unsigned long long inv = srv->castStat(CS::MonInvert);
+        int t = 0;
+        for (; t < 80 && !(srv->DebugHasEnchant(as, 3) && srv->castStat(CS::FlyHit) >= 1); ++t) run(srv, ms, 1);
+        std::snprintf(msg, sizeof(msg), "감사 14 ③ 반전 — 받음 %d · [0] %d [1] %d [2] %d [3] %d · 바꿈 %llu · 소리 반전 %d 시전 %d(셈 %llu) · %d틱 뒤 a 혼란 %d(뒤집힌 맞힘 %llu 헛것 %llu) · 몬스터 날림 맞힘 %llu · 이웃 혼란 %d",
+                      int(ok), int(m0), int(m1), int(m2), int(m3), inv, sInv, sCast, srv->castSndStat(SS::MonInvert), t, int(srv->DebugHasEnchant(as, 3)),
+                      srv->castStat(CS::InvertedFlyHit), srv->castStat(CS::InvertedFlyLost), srv->castStat(CS::FlyHit), int(srv->DebugPetHasEnchant(1, 3)));
+        Check(ok && m0 && m1 && m2 && m3 && inv == 2 && sInv == 2 && sCast == 1 && srv->castSndStat(SS::MonInvert) == 1 &&
+              srv->DebugHasEnchant(as, 3) && srv->castStat(CS::InvertedFlyHit) == 1 && srv->castStat(CS::InvertedFlyLost) == 0 &&
+              srv->castStat(CS::FlyHit) == 1 && srv->DebugPetHasEnchant(1, 3), msg);
+    }
+    // ③-b 뒤집힌 사람 날림 — ① 그 몬스터가 닿기 전에 지워지면 효과 없음(obj3 nil) · ② obj3 를 지속 주문 주인으로 쓰는 방패(51)는 몬스터 주인을 못 담아 셈만
+    for (int c = 0; c < 2; ++c) {
+        nox::CSyncHost srv; uint32_t ms = 0; mk(srv, 1342);
+        srv->SetSpellDef(51, 0, 0x12500214u, { 0, 3 });               // ⭕ thing.bin SPELL_SHIELD 12500214(0x4 — 날림)
+        const int64_t as = Sid(srv, a);
+        srv->DebugCreateSpellFly(as, self0, c == 0 ? 12 : 51);
+        srv->DebugSetMissileXY(0, 1200.0f, 1000.0f);
+        srv->DebugPetCastNow(0, 38, self0);
+        if (c == 0) srv->DebugRemovePetNow(0);                          // 시체가 아니라 지움(+16 & 0x20) — 죽은 몬스터는 아직 주인이다
+        int t = 0;
+        for (; t < 80 && srv->MissileCount() > 0; ++t) run(srv, ms, 1);
+        std::snprintf(msg, sizeof(msg), "감사 14 ③-b(%s) — %d틱 · 남은 날림 %zu · 뒤집힌 맞힘 %llu 헛것 %llu 지속 %llu · a 혼란 %d 방패 %d",
+                      c == 0 ? "몬스터 지워짐" : "방패", t, srv->MissileCount(), srv->castStat(CS::InvertedFlyHit), srv->castStat(CS::InvertedFlyLost),
+                      srv->castStat(CS::InvertedFlyDur), int(srv->DebugHasEnchant(as, 3)), int(srv->DebugHasEnchant(as, 26)));
+        Check(srv->MissileCount() == 0 && srv->castStat(CS::InvertedFlyHit) == 0 && srv->castStat(CS::InvertedFlyLost) == 1 &&
+              srv->castStat(CS::InvertedFlyDur) == (c == 0 ? 0u : 1u) && !srv->DebugHasEnchant(as, 3) && !srv->DebugHasEnchant(as, 26), msg);
+    }
+    for (int c = 0; c < 2; ++c) {   // ③-c ① MAGIC 아닌 종류는 그대로 ② 부른 리치(주인 b)가 뒤집은 혼란 — a 혼란 · 도운 사람 기록 없음
+        nox::CSyncHost srv; uint32_t ms = 0; mk(srv, 1342, c == 1, c == 1 ? b : std::string());
+        const int64_t as = Sid(srv, a);
+        srv->DebugCreateSpellFly(as, self0, 12);
+        srv->DebugSetMissileXY(0, 1200.0f, 1000.0f);
+        srv->DebugPetCastNow(0, 38, self0);
+        const bool keepOwner = srv->MissileCount() == 1 && srv->missileList()[0].owner == as && srv->missileList()[0].ownerNet == 0;
+        int t = 0;
+        for (; t < 80 && srv->MissileCount() > 0; ++t) run(srv, ms, 1);
+        std::snprintf(msg, sizeof(msg), "감사 14 ③-c(%s) — 바꿈 %llu · 주인 그대로 %d · %d틱 · a 혼란 %d · 뒤집힌 맞힘 %llu · 도운 사람 %d",
+                      c == 0 ? "MAGIC 아님" : "부른 리치", srv->castStat(CS::MonInvert), int(keepOwner), t, int(srv->DebugHasEnchant(as, 3)),
+                      srv->castStat(CS::InvertedFlyHit), int(srv->DebugAssistSet(as)));
+        if (c == 0) Check(srv->castStat(CS::MonInvert) == 0 && keepOwner && srv->castStat(CS::InvertedFlyHit) == 0, msg);
+        else Check(srv->castStat(CS::MonInvert) == 1 && !keepOwner && srv->DebugHasEnchant(as, 3) && srv->castStat(CS::InvertedFlyHit) == 1 &&
+                   !srv->DebugAssistSet(as), msg);
+    }
+    {   // ④ 큰 악마 기절 74 — 날림(Magic · 몸 20 + 4 앞) → a(위저드)에 닿으면 붙잡힘(5) StunEnchantDuration
+        nox::CSyncHost srv; uint32_t ms = 0; mk(srv, 1347);
+        const int64_t as = Sid(srv, a);
+        srv->DebugSetPetFacing(0, nox::DirFromVec(1.0, 0.0));
+        const bool ok = srv->DebugPetCastNow(0, 74, nox::Target{ as, -1 });
+        const size_t made = srv->MissileCount();
+        const uint8_t msp = made ? srv->missileList()[0].spell : 0;
+        float mx = 0, my = 0; srv->DebugMissileXY(0, mx, my);
+        std::vector<nox::OutPacket> keep;
+        run(srv, ms, 1, &keep);
+        const int snd = heard(keep, a, 374);
+        int t = 1;
+        for (; t < 120 && srv->MissileCount() > 0; ++t) run(srv, ms, 1);
+        const int dur = srv->DebugEnchantDur(as, 5);
+        std::snprintf(msg, sizeof(msg), "감사 14 ④ 기절 — 받음 %d · 만듦 %zu(주문 %u · 자리 %.2f,%.2f) · 소리 %d · %d틱 · 맞힘 %llu 헛것 %llu · 붙잡힘 %d(지속 %d) · 느림 %d · 안옮김 %llu",
+                      int(ok), made, unsigned(msp), mx, my, snd, t, srv->castStat(CS::FlyHit), srv->castStat(CS::FlyLost), int(srv->DebugHasEnchant(as, 5)), dur,
+                      int(srv->DebugHasEnchant(as, 4)), srv->castStat(CS::NotPorted));
+        Check(ok && made == 1 && msp == 74 && std::fabs(mx - 1024.0f) < 0.01f && std::fabs(my - 1000.0f) < 0.01f && snd == 1 && t < 120 &&
+              srv->castStat(CS::FlyHit) == 1 && srv->DebugHasEnchant(as, 5) && dur > 0 && dur <= 60 && !srv->DebugHasEnchant(as, 4) &&
+              srv->castStat(CS::NotPorted) == 0, msg);
+    }
+    {   // ⑤ 큰 악마 정화 불꽃 10 — 온라인 세기 4 → 48 다 만듦(벽 없음) · 거리 = 불꽃 반지름(6·8) + 몸 20 + 4 · 임자 없음 · 번호 = 그 악마 · 소리 · 남았으면 거절
+        nox::CSyncHost srv; uint32_t ms = 0; mk(srv, 1347);
+        const int64_t as = Sid(srv, a);
+        const uint16_t kn = srv->DebugPetNet(0);
+        const size_t p0 = srv->PlacedCount();
+        const bool ok = srv->DebugPetCastNow(0, 10, nox::Target{ as, -1 });
+        int mine = 0, bad = 0;
+        float dmin = 1e9f, dmax = 0.0f;
+        for (size_t k = p0; k < srv->PlacedCount(); ++k) {
+            if (srv->DebugPlacedKind(k) != 6) continue;
+            ++mine;
+            if (srv->DebugPlacedOwnerNet(k) != kn || srv->DebugPlacedOwner(k) != nox::kNoSession) ++bad;
+            float px = 0, py = 0; srv->DebugPlacedXY(k, px, py);
+            const float d = std::sqrt((px - 1000.0f) * (px - 1000.0f) + (py - 1000.0f) * (py - 1000.0f));
+            dmin = std::min(dmin, d); dmax = std::max(dmax, d);
+        }
+        std::vector<nox::OutPacket> keep;
+        run(srv, ms, 1, &keep);
+        const int snd = heard(keep, a, 310);
+        const size_t n1 = srv->PlacedCount();
+        const bool again = srv->DebugPetCastNow(0, 10, nox::Target{ as, -1 });
+        std::snprintf(msg, sizeof(msg), "감사 14 ⑤ 정화 불꽃 — 받음 %d(%llu) · 불꽃 %d(셈 %llu) · 임자·번호 틀림 %d · 거리 %.2f~%.2f · 소리 %d(셈 %llu) · 다시 %d(거절 %llu · 늘어남 %zu) · 안옮김 %llu",
+                      int(ok), srv->castStat(CS::Accepted), mine, srv->castStat(CS::MonFlame), bad, dmin, dmax, snd, srv->castSndStat(SS::MonFlame),
+                      int(again), srv->castStat(CS::MonFlameTooMany), srv->PlacedCount() - n1, srv->castStat(CS::NotPorted));
+        Check(ok && srv->castStat(CS::Accepted) == 1 && mine == 48 && srv->castStat(CS::MonFlame) == 48 && bad == 0 && dmin > 29.99f && dmax < 32.01f &&
+              snd == 1 && srv->castSndStat(SS::MonFlame) == 1 && !again && srv->castStat(CS::MonFlameTooMany) == 1 && srv->PlacedCount() == n1 &&
+              srv->castStat(CS::NotPorted) == 0, msg);
+    }
+    {   // ⑤-2 부른 큰 악마(주인 a)의 불꽃 — 임자 a · 번호 그 악마 · a 의 정화 불꽃 거절 셈에 안 든다(원본 +516 은 제 목록만)
+        nox::CSyncHost srv; mk(srv, 1347, true, a);
+        const int64_t as = Sid(srv, a);
+        srv->DebugPetCastNow(0, 10, nox::Target{ as, -1 });
+        int ownA = 0;
+        for (size_t k = 0; k < srv->PlacedCount(); ++k) if (srv->DebugPlacedKind(k) == 6 && srv->DebugPlacedOwner(k) == as && srv->DebugPlacedOwnerNet(k) == srv->DebugPetNet(0)) ++ownA;
+        const size_t before = srv->PlacedCount();
+        const bool pa = srv->DebugSpellAccept(as, 10, 3);
+        const size_t after = srv->PlacedCount();
+        const bool pa2 = srv->DebugSpellAccept(as, 10, 3);            // 이제 a 제 불꽃이 남았다 — 거절
+        std::snprintf(msg, sizeof(msg), "감사 14 ⑤-2 부른 악마 불꽃 — 임자 a %d · a 시전 %d(%zu → %zu) · a 다시 %d", ownA, int(pa), before, after, int(pa2));
+        Check(ownA == 48 && pa && after == before + 48 && !pa2, msg);
+    }
+    {   // ⑥ 큰 악마 주문 칸 차례 — 작은 번호부터(원본 칸 표 차례 · 공격 목록 = [10, 27])
+        nox::CSyncHost srv; mk(srv, 1347);
+        std::snprintf(msg, sizeof(msg), "감사 14 ⑥ 큰 악마 차례 — %u %u %u %u %u(%zu개)", unsigned(srv->DebugPetSpellAt(0, 0)), unsigned(srv->DebugPetSpellAt(0, 1)),
+                      unsigned(srv->DebugPetSpellAt(0, 2)), unsigned(srv->DebugPetSpellAt(0, 3)), unsigned(srv->DebugPetSpellAt(0, 4)), srv->DebugPetSpellCount(0));
+        Check(srv->DebugPetSpellCount(0) == 5 && srv->DebugPetSpellAt(0, 0) == 10 && srv->DebugPetSpellAt(0, 1) == 13 && srv->DebugPetSpellAt(0, 2) == 27 &&
+              srv->DebugPetSpellAt(0, 3) == 39 && srv->DebugPetSpellAt(0, 4) == 74 && srv->DebugPetSpellMask(0, 10) == 0x40000000u &&
+              srv->DebugPetSpellMask(0, 13) == 0x08000000u && srv->DebugPetSpellMask(0, 74) == 0x20000000u, msg);
+    }
+}
+
 // ★ 11-20 트레일러 전사 2 — 수리검·차크람(던지기 `GAME4_3.c:4327~4419` · 날기 `updateChakramInMotion_53DCC0` · 맞기 `collideChakram_4EAF00`)
 void TestChakram1120() {
     using CE = nox::ChakramEv;
@@ -43836,6 +44137,7 @@ int main() {
     TestCastSound1122();              // ★ 11-22 시전 소리(밀기·당기기 · 운석 · 날림 주문 — 사람·몬스터)
     TestDeathBallFragment1122();      // ★ 11-22 감사 12 죽음의 공 조각(반주문이 공을 지울 때 셋 · 둘레 · 닿음 · 장애물 · 벽 · 수명)
     TestDeathBallDoor1122();          // ★ 11-22 감사 13 자연의 힘 공 문(문 방향으로 되튐 · 소리 283 · 비껴감 · GATE · 조각은 안 봄)
+    TestMonsterAutoSpells1122();      // ★ 11-22 감사 14 몬스터 자동 주문(거꾸로 주문 고르기 · 반주문 · 반전 · 기절 날림 · 정화 불꽃 · 큰 악마 차례)
     TestConnectZeroTail();
     TestReconnectAfterClose();
     TestSessionIds();

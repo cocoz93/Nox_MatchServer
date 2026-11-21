@@ -298,9 +298,10 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
         }
         {
             using CS = nox::Server::CastSndStat;  // ★ 11-22 시전 소리(spellGetAud44(spell, 0))
-            srv.Log("[시전 소리] 밀기·당기기 %llu · 운석 %llu · 날림 주문 %llu · 몬스터 밀기 %llu · 몬스터 운석 %llu\n",
+            srv.Log("[시전 소리] 밀기·당기기 %llu · 운석 %llu · 날림 주문 %llu · 몬스터 밀기 %llu · 몬스터 운석 %llu · 몬스터 반전 %llu · 몬스터 불꽃 %llu\n",
                     srv.castSndStat(CS::PushPull), srv.castSndStat(CS::Meteor), srv.castSndStat(CS::Fly),
-                    srv.castSndStat(CS::MonPush), srv.castSndStat(CS::MonMeteor));
+                    srv.castSndStat(CS::MonPush), srv.castSndStat(CS::MonMeteor),
+                    srv.castSndStat(CS::MonInvert), srv.castSndStat(CS::MonFlame));   // ★ 11-22 감사 14
         }
         {
             using FS = nox::Server::FonStat;      // ★ 11-22 감사 12 — 자연의 힘 공과 그 조각(반주문이 공을 지울 때 셋)
@@ -322,12 +323,15 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                     srv.hearStat(HS::WallQuiet), srv.hearStat(HS::Heard), srv.hearStat(HS::ReactGo), srv.hearStat(HS::ReactLook), srv.hearStat(HS::ReactSkip),
                     srv.hearStat(HS::Cond59), srv.hearStat(HS::Cond69));
         using CS = nox::CastStat;    // ★ 09-29 B7 — 몬스터 주문
-        srv.Log("[몬스터주문] 고름 공격 %llu · 달아남 %llu · 제몸 %llu · 되받기 %llu · 가까워 점멸 %llu · 시전소리 %llu · 시전 %llu(반주문 %llu) · 받음 %llu · 안옮김 %llu · 빔맞힘 %llu · 움직여끊김 %llu · 사슬맞힘 %llu · 사슬끊김 %llu · 날림 %llu(벽 %llu) · 날림맞힘 %llu · 날림헛것 %llu\n",
+        srv.Log("[몬스터주문] 고름 공격 %llu · 달아남 %llu · 제몸 %llu · 되받기 %llu · 가까워 점멸 %llu · 시전소리 %llu · 시전 %llu(반주문 %llu) · 받음 %llu · 안옮김 %llu · 빔맞힘 %llu · 움직여끊김 %llu · 사슬맞힘 %llu · 사슬끊김 %llu · 날림 %llu(벽 %llu) · 날림맞힘 %llu · 날림헛것 %llu · 거꾸로 고름 %llu · 반주문 %llu · 반전 바꿈 %llu · 불꽃 %llu(남아 거절 %llu) · 뒤집힌 사람 날림 맞힘 %llu(헛것 %llu · 지속 주인 못 담음 %llu)\n",
                     srv.castStat(CS::PickOffense), srv.castStat(CS::PickEscape), srv.castStat(CS::PickBuff), srv.castStat(CS::PickReact), srv.castStat(CS::BlinkNear),
                     srv.castStat(CS::InitSound), srv.castStat(CS::Cast), srv.castStat(CS::CastAnti), srv.castStat(CS::Accepted), srv.castStat(CS::NotPorted),
                     srv.castStat(CS::BeamHit), srv.castStat(CS::BeamMoved),
                     srv.castStat(CS::ChainHit), srv.castStat(CS::ChainMoved),    // ★ 11-21 C11-a 몬스터 사슬 번개
-                    srv.castStat(CS::FlyMade), srv.castStat(CS::FlyWall), srv.castStat(CS::FlyHit), srv.castStat(CS::FlyLost));   // ★ 11-21 C11-c 날아가는 주문
+                    srv.castStat(CS::FlyMade), srv.castStat(CS::FlyWall), srv.castStat(CS::FlyHit), srv.castStat(CS::FlyLost),    // ★ 11-21 C11-c 날아가는 주문
+                    srv.castStat(CS::PickInvert), srv.castStat(CS::MonCounter), srv.castStat(CS::MonInvert),                     // ★ 11-22 감사 14
+                    srv.castStat(CS::MonFlame), srv.castStat(CS::MonFlameTooMany),
+                    srv.castStat(CS::InvertedFlyHit), srv.castStat(CS::InvertedFlyLost), srv.castStat(CS::InvertedFlyDur));
     }
     // ★ 09-29 Z1-A — 벽 피해 갈래: 벽없음(홀수칸·문·부서짐 포함) · 안부서지는벽(소리만) · 깎음 · 부서짐 · 부서짐 알림(받는 사람별)
     srv.Log("[벽피해] 벽없음 %llu · 안부서지는벽 %llu · 깎음 %llu · 부서짐 %llu · 알림 %llu\n",

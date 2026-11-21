@@ -7605,8 +7605,23 @@ bool Server::CastSpellByUser(uint8_t spell, int lvl, Session& s, const SpellArg&
 
 // spellAccept(spells.go:193~420)
 bool Server::SpellAccept(uint8_t spell, Session& s, int64_t obj3, const SpellArg& arg, int lvl) {
-    if (spell == 0 || spell >= 137 || (obj3 == kNoSession)) return false;   // spellID 0 · obj3 == nil(날아가는 것의 주인이 사라짐)
+    if (spell == 0 || spell >= 137 || (obj3 == kNoSession && arg.obj3Pet < 0)) return false;   // spellID 0 · obj3 == nil(날아가는 것의 주인이 사라짐)
     if (!gt_->spellDefs[spell].valid) return false;
+    // ★ 11-22 감사 14 — obj3 가 몬스터(`arg.obj3Pet` · 몬스터 반전이 뒤집은 사람 날림)면 obj3 를 **버프 출처·도운 사람 기록으로만** 쓰는 갈래는
+    //   `kNoSession` 으로 그대로 돈다 — 도운 사람 기록(`sub_4E7540`)은 둘 다 사람일 때만이라 몬스터 obj3 는 기록이 없다(`MonsterFlyAccept` 와 같은 뜻).
+    //   시전자 a2 를 쓰는 갈래(독 풀기 14 · 작은 치유 41)는 a2 = 처음 시전자(그 사람) 그대로.
+    //   ⚠ obj3 를 **지속 주문 주인**으로 쓰는 날림 주문(방패 51 · 달빛 54 · 뒤바꿈 115 · 꼬리표 116 · 표식 이동 122~126 등)은 우리 지속 주문 주인이
+    //   세션뿐이라 몬스터를 못 담는다 — 세고 효과 없이 끝낸다(안 옮김)
+    if (arg.obj3Pet >= 0) {
+        switch (spell) {
+            case 1: case 3: case 12: case 14: case 15: case 17: case 26: case 32: case 33: case 36: case 37: case 39: case 40: case 41:
+            case 42: case 55: case 60: case 61: case 62: case 64: case 70: case 71: case 72: case 74: case 127: case 130: case 131:
+                break;
+            default:
+                ++castStat_[static_cast<size_t>(CastStat::InvertedFlyDur)];
+                return false;
+        }
+    }
     const uint32_t fl = gt_->spellDefs[spell].flags;
     // Unk8(0x80) — 대상이 있는데 유닛이 아니면 거절 · 지금 대상은 사람·소환수(유닛)뿐
     // gameCaptureMagic_4FDC10 — CTF 에서 깃발 든 사람에게 CANT_HOLD_CROWN 주문 → 0 · 소리 PermanentFizzle(10)
@@ -15483,6 +15498,7 @@ int Server::GolemStrike(Creature& k, const MeleeStrikeInfo& si, int dmg) {
 //     +548 은 행동을 바꾼 프레임(`Field137` — 우리 `aiActionFrame`) · +36 은 번호)
 //   · 맨 위 아래에 61(방해 금지)이 있으면 끝 · 죽었으면 끝 · 협동 커서 갈래는 안 옮김(멀티 아님)
 //   · 혼란(버프 3)이고 36 이 없으면 62(3)·36 · 거꾸로 주문(`5408D0` — B7)은 늘 0 으로 본다
+//     ✖ 11-22 감사 14 — 「늘 0」은 옛 말 — 반주문(29)에 안 걸렸으면 `MonsterCastInversionPick` 을 부르고 참이면 끝(`:1323` — 나머지가 그 if 안 · `:1547`)
 //   · 두려움(버프 11)·움직일 수 있음·24 없음 → 62(11)·24(제 자리) · 소리 칸 11 → 끝
 //   · 후퇴 — 체력 자료가 있고 움직일 수 있고 막힌 지 3초 넘고 24·6·14 가 없을 때, 체력 비율 ≤ 후퇴 비율(ARENA 전부 0)이거나
 //     주문 몬스터(STATUS 0x20)가 반주문(29)에 걸렸으면 → 공격 행동 빼기 · 68 · 6(협동의 소환수면 14) · 소리 칸 12 → 끝
@@ -15501,6 +15517,7 @@ void Server::MonsterBrain(Creature& k) {
         AIPush(k, 36);
         ++brainStat_[static_cast<size_t>(BrainStat::Confused)];
     }
+    if (!k.buffs.Has(29) && MonsterCastInversionPick(k)) return;               // ★ 11-22 감사 14 `:1323`
     if (k.buffs.Has(11) && moving && !AIHasAction(k, 24)) {                     // `:1324~1341`
         if (AIPush(k, 62)) k.aiStack[k.aiStackInd].argU32 = 11;
         if (AIPush(k, 24)) { k.aiStack[k.aiStackInd].argX = static_cast<float>(k.x); k.aiStack[k.aiStackInd].argY = static_cast<float>(k.y); k.aiStack[k.aiStackInd].argU32 = 0; }
@@ -15913,6 +15930,39 @@ bool Server::MonsterCastPick(Creature& k, uint32_t mask, const Target& target, u
     return true;
 }
 
+// ★ 11-22 감사 14 — 거꾸로 주문 고르기(`nox_xxx_mobCastInversion_5408D0` `GAME4_3.c:8370~8422`) — 두뇌가 혼란 갈래 뒤에 부르고 참이면 나머지를 건너뛴다(`GAME5.c:1323`)
+//   관문 — 켜짐(+16 & 0x1000000 — 우리 몬스터는 끄는 갈래가 없어 늘 켜짐) · 주문 가능(STATUS 0x20 · `534300`) · 쉬는 때(+1452) 지남 · 시전 중(맨 위 18~20 · `sub_5408A0`) 아님
+//   · 그 몬스터 자리 둘레 InversionRange × 0.5(`getMissilesInCircle_518170` — 중심 거리² ≤ 둘레²) 안에 **그 몬스터를 겨눈**(갱신 짐 [1] · +748+4)
+//     MISSILE+MissileMagic(`unitIsMagicMissile_540B60` — 우리 `missileMagicTypes`)이 하나라도 있어야
+//   · 깃발 0x8000000 이고 몬스터가 쓸 수 있는(0x10) 주문(1~136 · 칸 차례 = `k.spells` 넣은 차례) 중 무작위 하나 → `monsterCast(나, 주문, 나)` ·
+//     쉬는 때 = 지금 + randomInt(+1448 0, +1450 FPS/2)(`unit_monster.go:147~148` — 원본이 이 둘을 바꾸는 몬스터는 성게 주술사뿐이고 같은 값 `GAME5.c:4317~4318`)
+bool Server::MonsterCastInversionPick(Creature& k) {
+    if (!(MonsterBrainOf(k.type).status & 0x20)) return false;
+    if (frame_ < k.castNextInvert) return false;
+    const uint8_t top = k.aiStack[k.aiStackInd].action;
+    if (top >= 18 && top <= 20) return false;
+    const Target self = PetTarget(k);
+    if (self.pet < 0) return false;
+    const float r = static_cast<float>(BalanceFloat("InversionRange") * 0.5);
+    const float kx = static_cast<float>(k.x), ky = static_cast<float>(k.y);
+    bool aimed = false;
+    for (const auto& m : missiles_) {
+        if (gt_->missileMagicTypes.find(m.type) == gt_->missileMagicTypes.end()) continue;
+        if (m.ud1.sessionId != kNoSession || m.ud1.pet != self.pet) continue;
+        const float dx = m.posX - kx, dy = m.posY - ky;
+        if (dx * dx + dy * dy <= r * r) { aimed = true; break; }
+    }
+    if (!aimed) return false;
+    std::vector<uint8_t> list;
+    for (const auto& sf : k.spells) if ((sf.second & 0x08000000u) && (SpellFlags(sf.first) & 0x10)) list.push_back(sf.first);
+    if (list.empty()) return false;
+    const uint8_t sp = list[NextRandom(static_cast<uint32_t>(list.size()))];
+    MonsterCast(k, sp, self);
+    k.castNextInvert = frame_ + NextRandom(static_cast<uint32_t>(kServerTickRate / 2) + 1u);
+    ++castStat_[static_cast<size_t>(CastStat::PickInvert)];
+    return true;
+}
+
 // `MonsterCast`(`server/object_monster.go:569~590`) — 61(안 끊김) · 지속 주문(깃발 0x2)이면 41(0.5~2초)·20 · 아니면 18 ·
 //   대상이 자기가 아니고 도망(24) 중이 아니면 [겨눔(0x4)이 아니면 26 바라보기 · 47 사선 막힘] · 49(쏘기 사거리 +212) · 40(또는) · 7(대상 자리)
 //   → 「멀거나 사선이 막혔으면 다가가고, 닿으면 바라보고, 바라보면 시전」
@@ -15964,6 +16014,7 @@ void Server::MonsterActionCast(Creature& k, int a2) {
 //   ★ 11-21 C11-a 사슬 번개(43) = 지속(30) · 그 밖은 안 옮김
 //   ★ 11-21 C11-b 투명 39 · 충격 71 · 밀기 66 · 운석 52 · 픽시 떼 58 · 마법 화살 50 = 효과 함수(아래 switch) — 위 「그 밖」은 이 여섯을 뺀 것
 //   ✖ 11-21 C11-c — 「날아가는 주문 — 우리 몬스터에 없음」은 옛 말 — 혼란 12 · 실수 33 · 독 60 · 느림 72 는 `MonsterCreateSpellFly` 로 날린다
+//   ★ 11-22 감사 14 — 기절 74 도 날린다(닿으면 `CastStun`) · 반주문 13 · 반전 38 · 정화 불꽃 10 = 효과 함수(아래 switch)
 bool Server::MonsterCastSpellNow(Creature& k, uint8_t spell, const Target& target, float x, float y) {
     ++castStat_[static_cast<size_t>(CastStat::Cast)];
     NoteShot(k, spell == 27 ? "주문27화염구" : spell == 24 ? "주문24번개" : spell == 4 ? "주문4점멸" : "주문" + std::to_string(spell));   // ★ 11-20 트레일러 작업
@@ -15980,7 +16031,7 @@ bool Server::MonsterCastSpellNow(Creature& k, uint8_t spell, const Target& targe
     //   (그 밖은 날려도 닿은 뒤 할 일이 없어 「안 옮김」으로 센다)
     if ((fl & 0x4) && !toSelf) {
         switch (spell) {
-            case 12: case 33: case 60: case 72:              // 혼란 · 실수 · 독 · 느림(`MonsterFlyAccept`)
+            case 12: case 33: case 60: case 72: case 74:     // 혼란 · 실수 · 독 · 느림 · ★ 11-22 감사 14 기절(`MonsterFlyAccept`)
                 MonsterCreateSpellFly(k, target, spell);
                 ++castStat_[static_cast<size_t>(CastStat::Accepted)];
                 return true;
@@ -16032,6 +16083,13 @@ bool Server::MonsterCastSpellNow(Creature& k, uint8_t spell, const Target& targe
             case 52: fnc = MonsterCastMeteor(k, x, y, fl5); break;   // castMeteor_52D9D0
             case 58: fnc = MonsterCastPixieSwarm(k, spell, fl5); break;   // castPixies_540440
             case 50: fnc = MonsterCastMagicMissile(k, spell, fl5); break;   // spellMissiles.Cast(`spell_missiles.go:26`)
+            // ★ 11-22 감사 14 — 반주문 13 = 가운데·빼는 것이 그 몬스터(a4) · 반전 38 · 정화 불꽃 10(온라인이면 세기 4 로 못 박는다)
+            case 13:
+                fnc = CounterSpellAt(static_cast<float>(k.x), static_cast<float>(k.y), self);   // castCounterSpell_52BBB0
+                ++castStat_[static_cast<size_t>(CastStat::MonCounter)];
+                break;
+            case 38: fnc = MonsterCastInversion(k); break;                                    // sub_52BEB0
+            case 10: fnc = MonsterCastCleansingFlame(k, spell, fl5); break;                   // spellCastCleansingFlame_52D5C0
             default: break;
         }
         if (fnc >= 0) {
@@ -17509,17 +17567,20 @@ void Server::SpawnCreature(uint16_t type, float x, float y, int64_t owner) {
     //   ⚠ 옮긴 것은 화염구뿐 — 나머지는 시전이 「안 옮김」(CastStat::NotPorted)으로 빠진다 ·
     //     +2036 = 1(자동 주문을 걸었다는 표시 — 다시 읽을 때 또 거는 데 씀 `GAME4_2.c:8275`)은 안 옮김(Beholder 와 같음)
     //   ✖ 11-21 C11-b — 「화염구뿐」은 옛 말 — 39 투명(달아날 때 제 몸)도 옮겼다(`MonsterCastSpellNow` 39 갈래) · 남은 「안 옮김」은 13·74·10
+    //   ✖ 11-22 감사 14 — 13·74·10 도 옮겼다(거꾸로 주문 고르기 `MonsterCastInversionPick` · 기절 날림 · 정화 불꽃) ·
+    //     넣는 차례를 아래 넷처럼 **작은 번호부터**로 바꿨다 — 원본은 칸 표를 1 부터 훑어 목록을 만든다(공격 목록 = [10, 27])
     if (type == 1347) {
-        k.spells.push_back({ 13, 0x08000000u });
-        k.spells.push_back({ 74, 0x20000000u });
-        k.spells.push_back({ 27, 0x40000000u });
         k.spells.push_back({ 10, 0x40000000u });
+        k.spells.push_back({ 13, 0x08000000u });
+        k.spells.push_back({ 27, 0x40000000u });
         k.spells.push_back({ 39, 0x80000000u });
+        k.spells.push_back({ 74, 0x20000000u });
         k.spellLevel = 3;
     }
     // ★ 11-21 트레일러 컨저러 C11-a — 주문 쓰는 넷(`GAME5.c:4211~4333` — 칸 = (자리 − 1488) / 4) · 원본은 주문 칸 표를 작은 번호부터
     //   훑어 목록을 만드므로(`MonsterCastPick` 이 넣은 차례로 훑는다) **작은 번호부터** 넣는다
     //   ⚠ 안 옮긴 것 — 반주문 깃발(0x8000000 · 13·38)은 넣지만 우리 두뇌에 그 고르기가 없어 안 쓰인다(큰 악마와 같음) ·
+    //     ✖ 11-22 감사 14 — 바로 위 줄은 옛 말 — 고르기(`MonsterCastInversionPick`)를 옮겨 13·38 이 쓰인다 ·
     //     성게 주술사만 원본이 쉬는 때 넷(+1448 0~0.5초 · +1464 되받기 3~5초 · +1472 공격 0~3초 · +1480 달아날 때 1~3초)을 적는데
     //     우리는 고르기 갈래별 상수(모든 몬스터 같음) ·
     //     +2036 = 1 은 Beholder 와 같이 안 옮김
@@ -18203,6 +18264,7 @@ bool Server::MonsterCreateSpellFly(Creature& k, Target target, uint8_t spell) {
 //   · obj3 = 갱신 짐 [0] — 몬스터면 `kNoSession`(도운 사람 기록 `sub_4E7540` 은 둘 다 사람일 때만) · 되받아쳐 사람이 됐으면 그 사람
 //   · 머리 거르기(`:211~217`) — 0x80(대상이 유닛 아님)은 우리 대상이 늘 유닛 · 깃발 든 사람 거절(0x80000)은 이 넷의 실물 깃발에 없다
 //   · 돌림값 −1 = 이 넷이 아님(부르는 쪽이 날리기 전에 이미 거른다)
+//   ★ 11-22 감사 14 — 기절 74(큰 악마 되받기)를 더해 다섯 — 사람 판 74 갈래와 같은 `CastStun`
 int Server::MonsterFlyAccept(uint8_t spell, int64_t obj3, const Target& targ, int lvl, float viaX, float viaY) {
     const int fl5 = lvl > 5 ? 5 : lvl;
     switch (spell) {
@@ -18214,6 +18276,7 @@ int Server::MonsterFlyAccept(uint8_t spell, int64_t obj3, const Target& targ, in
             c.durOpt = "SlowEnchantDuration"; c.orig = obj3; c.offensive = true;
             return CastBuffSpell(spell, 4, fl5, targ, c);
         }
+        case 74: return CastStun(obj3, targ, fl5);                           // nox_xxx_castStun_52C2C0 — ★ 11-22 감사 14
         default: return -1;
     }
 }
@@ -18258,6 +18321,20 @@ void Server::PlacedCollide(PlacedObj& o) {
 //     시작점→그 자리 선 추적(65)이 막히면 그 불꽃은 **안 만든다**
 //   · 속도 = 방향 × 4 · 수명 = 지금 + 무작위(3초, 6초)
 int Server::CastCleansingFlame(uint8_t spell, Session& caster, int lvl) {
+    // ★ 이 사람의 불꽃이 하나라도 남아 있으면 **거절**한다(글 `plyrspel.c:TooManySpells`)
+    //   ★ 11-22 감사 14 — 부른 몬스터의 불꽃은 그 몬스터 것(`ownerNet` — 원본 +516 은 제 목록만 센다 · C11-b 운석과 같음)
+    for (const auto& p : placed_) {
+        if (p.kind == 6 && p.owner == caster.sessionId && p.ownerNet == 0) {
+            SendPriMsg(caster, "plyrspel.c:TooManySpells");
+            return 0;
+        }
+    }
+    CleansingFlameBurst(spell, static_cast<float>(caster.posX), static_cast<float>(caster.posY), static_cast<float>(kBodyRadius), caster.sessionId, 0, lvl);
+    return 1;
+}
+
+// ★ 11-22 감사 14 — 위 함수의 불꽃 48 몸통(사람·몬스터 같이) — bodyR = 시전자 몸 반지름(+176) · 임자 owner · 몬스터가 놓으면 그 번호 ownerNet · 만든 수를 돌려준다
+int Server::CleansingFlameBurst(uint8_t spell, float cx, float cy, float bodyR, int64_t owner, uint16_t ownerNet, int lvl) {
     const bool quest = (questTotal_ > 0 || questStage_ > 0);
     if (!quest) lvl = 4;                                     // gameFlags(2048) 밖 = 온라인
     // 표 열 칸 — 0~4 붉은 · 5~9 파란. 정답지 셈은 `2487756 + 4×((주문 != 10 ? 5 : 0) + v8)` = 칸 (off + v8 − 1)
@@ -18269,27 +18346,22 @@ int Server::CastCleansingFlame(uint8_t spell, Session& caster, int lvl) {
     static const uint8_t kAmount[10] = { 1, 1, 2, 3, 4, 3, 3, 6, 9, 12 };
     const int off = (spell != 10) ? 5 : 0;
     const bool manaFlame = (off == 5);
-    // ★ 이 사람의 불꽃이 하나라도 남아 있으면 **거절**한다(글 `plyrspel.c:TooManySpells`)
-    for (const auto& p : placed_) {
-        if (p.kind == 6 && p.owner == caster.sessionId) {
-            SendPriMsg(caster, "plyrspel.c:TooManySpells");
-            return 0;
-        }
-    }
-    const float cx = static_cast<float>(caster.posX), cy = static_cast<float>(caster.posY);
+    int made = 0;
     for (int n = 0; n < 48; ++n) {
         const int v8 = lvl - static_cast<int>(NextRandom(2));   // randomInt(0,1)
         if (v8 < 1) continue;
         const int idx = off + v8 - 1;
         if (idx < 0 || idx >= 10) continue;
         const int dir = static_cast<int>(NextRandom(256));
-        const float dist = kRadius[idx] + static_cast<float>(kBodyRadius) + 4.0f;
+        const float dist = kRadius[idx] + bodyR + 4.0f;
         const float fx = cx + dist * DirVecX(dir);
         const float fy = cy + dist * DirVecY(dir);
         if (!MapTraceRay(cx, cy, fx, fy, 65)) continue;
-        PlacedObj* fo = PlaceObject(NamedType(kName[idx]), fx, fy, caster.sessionId, kPlacedNoLife, /*kind=*/6,
+        PlacedObj* fo = PlaceObject(NamedType(kName[idx]), fx, fy, owner, kPlacedNoLife, /*kind=*/6,
                                     kAmount[idx], /*dmgType=*/1, kRadius[idx]);
         if (!fo) continue;
+        ++made;
+        fo->ownerNet = ownerNet;
         fo->collideFn = manaFlame ? 1 : 0;
         fo->velX = DirVecX(dir) * 4.0f;
         fo->velY = DirVecY(dir) * 4.0f;
@@ -18298,6 +18370,26 @@ int Server::CastCleansingFlame(uint8_t spell, Session& caster, int lvl) {
         fo->expireFrame = frame_ + 3u * static_cast<uint32_t>(kServerTickRate)
                         + NextRandom(3u * static_cast<uint32_t>(kServerTickRate) + 1u);   // randomInt(3×FPS, 6×FPS)
     }
+    return made;
+}
+
+// ★ 11-22 감사 14 — 정화 불꽃 몬스터 판(`spellCastCleansingFlame_52D5C0` `GAME4_2.c:10043~10145` — 큰 악마 10 공격 · 몬스터는 `castSpell(u, u, u)` 라 a2 = a4 = 그 몬스터)
+//   · 그 몬스터의 불꽃(+516 제 목록 · 우리 `ownerNet`)이 남았으면 0 — 글(`netPriMsgToPlayer_4DA2C0`)은 사람에게만 가는 함수라 말없이(C11-b 운석과 같음)
+//   · 거리의 시전자 몸 = 그 종류 몸 반지름(+176 · 없으면 사람 몸) · 임자 = 그 몬스터의 주인 · 번호 = 그 몬스터(C11-b 셋과 같음)
+//   · 끝에 시전 소리(`:10142~10143` `spellGetAud44(a1, 0)` → 그 몬스터) — ⚠ 사람 판에는 이 소리가 없다(감사 밖 · 안 고침)
+int Server::MonsterCastCleansingFlame(Creature& k, uint8_t spell, int lvl) {
+    for (const auto& p : placed_) {
+        if (p.kind == 6 && p.ownerNet == k.netCode) {
+            ++castStat_[static_cast<size_t>(CastStat::MonFlameTooMany)];
+            return 0;
+        }
+    }
+    const auto tb = gt_->typeBodies.find(k.type);
+    const float bodyR = tb != gt_->typeBodies.end() ? tb->second.r : static_cast<float>(kBodyRadius);
+    const float kx = static_cast<float>(k.x), ky = static_cast<float>(k.y);
+    const Target self = PetTarget(k);
+    castStat_[static_cast<size_t>(CastStat::MonFlame)] += static_cast<unsigned long long>(CleansingFlameBurst(spell, kx, ky, bodyR, k.owner, k.netCode, lvl));
+    PlayCastSound(spell, kx, ky, kNoSession, self, CastSndStat::MonFlame);
     return 1;
 }
 
@@ -18583,6 +18675,35 @@ void Server::MissileChangeOwner(MissileObj& m, int64_t own, uint32_t frame) {
         m.owner = own;
         m.createdFrame = frame;
     }
+}
+
+// ★ 11-22 감사 14 — 반전 몬스터 판(`sub_52BEB0` `GAME4_2.c:9295~9304` · `changeOwner_52BE40` `spell_counter.go:82~98`) — 몬스터는 `castSpell(u, u, u)` 라 a3 = a4 = 그 몬스터
+//   그 몬스터 자리 둘레 InversionRange(중심 거리² ≤ 둘레²) 안 MISSILE+MissileMagic(`missileMagicTypes`) 중 대상(짐 [1])이 **그 몬스터**인 것마다 —
+//   대상 = 옛 주인(사람이면 그 사람 · 몬스터면 그 몬스터) · 주인 = 그 몬스터(임자 = 그 몬스터의 주인 · 번호 · 제 몸 거르기) · 만든 프레임(+128) = 지금 ·
+//   그 몬스터 자리에서 InversionCast 소리(`SoundInversionCast` — 바꾼 것마다) · 끝에 반전 시전 소리(`spellGetAud44(38, 0)` → 그 몬스터) · 늘 1
+//   ⚠ 자리바꾸기(SWAP 115) 갈래(`cspellRemoveSpell`)는 사람 판과 같이 안 옮김 — 우리 날리는 주문에 115 가 없다
+int Server::MonsterCastInversion(Creature& k) {
+    const Target self = PetTarget(k);
+    const float kx = static_cast<float>(k.x), ky = static_cast<float>(k.y);
+    const float r = static_cast<float>(BalanceFloat("InversionRange"));
+    if (self.pet >= 0) {
+        const uint16_t snd = SoundByName("InversionCast");
+        for (auto& m : missiles_) {
+            if (gt_->missileMagicTypes.find(m.type) == gt_->missileMagicTypes.end()) continue;
+            const float dx = kx - m.posX, dy = ky - m.posY;
+            if (dx * dx + dy * dy > r * r) continue;
+            if (m.ud1.sessionId != kNoSession || m.ud1.pet != self.pet) continue;
+            m.ud1 = (m.ownerNet != 0) ? Target{ kNoSession, m.ownerPet } : Target{ m.ud0, -1 };   // 옛 주인 — 지워진 몬스터면 −1 = 대상 없음
+            m.ud0 = m.owner = k.owner;
+            m.ownerNet = k.netCode;
+            m.ownerPet = m.fromPet = self.pet;
+            m.createdFrame = frame_;
+            PlaySoundAt(snd, kx, ky, 0, 0, kNoSession, self);
+            ++castStat_[static_cast<size_t>(CastStat::MonInvert)];
+        }
+    }
+    PlayCastSound(38, kx, ky, kNoSession, self, CastSndStat::MonInvert);
+    return 1;
 }
 
 // ★ 자리표시 효과 — 옛 시전 자리에 있던 투사체(27·24·43)·소환(75~87)을 그대로 옮겨 둔다. 4-c·4-d·4-f 에서 걷어낸다.
@@ -19987,7 +20108,11 @@ void Server::UpdateMissiles(uint32_t frame) {
                                 SpellArg arg;
                                 arg.obj = HitTargetOf(hk, hSessionId, hIdx);
                                 arg.via = true; arg.viaX = m.posX; arg.viaY = m.posY;   // ★ 11-22 obj4 = 날아가는 것(실수의 몬스터 밀기 기점)
-                                SpellAccept(m.spell, casterIt->second, m.ud0, arg, m.level);   // (ud[3], ud[2], ud[0], 날아가는 것, 대상)
+                                // ★ 11-22 감사 14 — 주인([0])이 몬스터면(몬스터 반전 38 이 뒤집음) obj3 = 그 몬스터 · 지워졌으면(번호 없음) obj3 nil 이라 효과 없음
+                                const bool inv = (m.ownerNet != 0);
+                                if (inv) arg.obj3Pet = m.ownerPet;
+                                const bool ok = SpellAccept(m.spell, casterIt->second, inv ? kNoSession : m.ud0, arg, m.level);   // (ud[3], ud[2], ud[0], 날아가는 것, 대상)
+                                if (inv) ++castStat_[static_cast<size_t>(ok ? CastStat::InvertedFlyHit : CastStat::InvertedFlyLost)];
                             }
                             }
                             DestroyMissile(i);
@@ -21464,10 +21589,14 @@ void Server::WarcryBreakCasts(Session& s, double dist) {
 //      한 오브젝트에서 하나라도 끄면 그 자리에 FX(0x87) 한 번
 //   ④ 반주문(13) 시전 소리를 시전자 자리에서
 int Server::CastCounterSpell(Session& caster) {
+    return CounterSpellAt(static_cast<float>(caster.posX), static_cast<float>(caster.posY), Target{ caster.sessionId, -1 });
+}
+
+// ★ 11-22 감사 14 — 위 반주문의 몸통 — 가운데(cx, cy)·빼는 것(self)이 a4(사람이면 그 사람 · 몬스터가 걸면 그 몬스터 — `castSpell(u, u, u)`)
+int Server::CounterSpellAt(float cx, float cy, const Target& self) {
     ++counterCasts_;
     const double r = BalanceFloat("CounterspellRange");
     const double r2 = r * r;
-    const float cx = static_cast<float>(caster.posX), cy = static_cast<float>(caster.posY);
     auto fx = [&](float px, float py) {                      // netSendPointFx_522FF0(MSG_FX_COUNTERSPELL_EXPLOSION)
         const uint16_t ix = static_cast<uint16_t>(static_cast<int>(px)), iy = static_cast<uint16_t>(static_cast<int>(py));
         const uint8_t msg[5] = { static_cast<uint8_t>(Op::FX_COUNTERSPELL_EXPLOSION),
@@ -21536,16 +21665,16 @@ int Server::CastCounterSpell(Session& caster) {
     };
     for (auto& kv : sessions_) {
         Session& o = kv.second;
-        if (&o == &caster || !o.inGame || o.respawnAtFrame != 0) continue;   // a4 빼고 · 0x8020
+        if ((self.sessionId != kNoSession && o.sessionId == self.sessionId) || !o.inGame || o.respawnAtFrame != 0) continue;   // a4 빼고 · 0x8020
         if (!inRange(o.posX, o.posY)) continue;
         strip(Target{ o.sessionId, -1 }, static_cast<float>(o.posX), static_cast<float>(o.posY));
     }
     for (size_t k = 0; k < pets_.size(); ++k) {
-        if (pets_[k].health == 0 || !inRange(pets_[k].x, pets_[k].y)) continue;
+        if (pets_[k].health == 0 || (self.sessionId == kNoSession && self.pet == static_cast<int>(k)) || !inRange(pets_[k].x, pets_[k].y)) continue;   // ★ 11-22 감사 14 몬스터 a4 빼고
         strip(Target{ kNoSession, static_cast<int>(k) }, static_cast<float>(pets_[k].x), static_cast<float>(pets_[k].y));
     }
     // ④ 시전 소리
-    if (gt_->spellDefs[13].valid && gt_->spellDefs[13].castSound != 0) PlaySoundAt(gt_->spellDefs[13].castSound, cx, cy, 0, 0, kNoSession, Target{ caster.sessionId, -1 });
+    if (gt_->spellDefs[13].valid && gt_->spellDefs[13].castSound != 0) PlaySoundAt(gt_->spellDefs[13].castSound, cx, cy, 0, 0, kNoSession, self);
     return 1;
 }
 
