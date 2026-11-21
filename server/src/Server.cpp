@@ -1782,7 +1782,7 @@ bool Server::HurtTarget(const Target& t, int dmg,
         // ★ 마법 방패(26) — 정답지 `damageDefaultProc` LABEL_137 자리.
         //   독(5)은 안 막고, 죽음(15)을 자기가 자기에게 건 것도 안 막는다.
         if (s.buffs.Has(26) && dtype != 5 && !(dtype == 15 && by == s.sessionId)) {
-            ShieldReduceDamage(Target{ s.sessionId, -1 }, hp, dtype, src);
+            ShieldReduceDamage(Target{ s.sessionId, -1 }, hp, dtype, src, attacker);
             if (hp == 0) { ++damageStops_["마법방패"]; return false; }    // 막았다 — 아예 안 맞은 것이 된다(`:7325~7326` 0)
         }
         // +520 마지막으로 때린 것(`GAME3_2.c:7229~7233`) — a3 가 있으면 그것(주인 = a2), 없으면 a2. 사슬의 사람 = `by`(소환수면 주인)
@@ -9593,12 +9593,54 @@ void Server::ShieldDrain(const Target& t, int amount) {
     else DurCancel(*found);
 }
 
+// ★ 11-22 netSendShieldFx_523670(`GAME4_2.c:3890~3907`) — `{ 0x80, 넷코드 u16, 방향 }` 를 맞은 이 자리에서 둘레 모두에게(`netSendFxAllCli`).
+//   방향 = 9칸 행(`math_509EA0` = `kDirRow` · x + 3y + 4) — 클라가 그 칸의 `SphericalShield*` 그림을 고른다(`GAME3.c:5514~5541`)
+//   · 출처(정답지 v40 = a3 있으면 a3 · 없으면 a2 — `GAME3_2.c:7318~7321`)가 있으면 「맞은 이 − 출처」 벡터의 방향(`math_509ED0`)
+//   · 출처가 없으면 맞은 이가 바라보는 쪽(+124 — 사람 `facingPrev` · 몬스터 `facing`)
+//   우리 출처 = `AttackSrc` 자리(투사체·때린 이의 자리 — 부르는 자리가 채운다) → 없으면 때린 이(`attacker`) 자리.
+//   ⚠ 정답지는 a3 의 **지금 자리(+56)** 다 — 근접에서 a3 = 든 무기면 그 물건의 +56 인데, 든 물건의 자리를 주인 따라 옮기는 줄을
+//     못 찾았고 우리는 든 물건 자리를 따로 갖지 않는다 → 때린 이 자리로 둔다(방향 칸만 갈릴 수 있다 · 화면 확인 줄)
+//   넷코드 = `netGetUnitCodeServ_578AC0` — 사람·몬스터는 제 넷코드 그대로(`server/object.go:58~75` — 0x8000 은 붙박이·클라 유지 물건만)
+void Server::SendShieldFx(const Target& t, const AttackSrc* src, const Target& attacker) {
+    float ux = 0, uy = 0;
+    if (!TargetXY(t, ux, uy)) return;
+    uint16_t code = 0;
+    uint8_t facing = 0;
+    if (t.sessionId != kNoSession) {
+        const auto si = sessions_.find(t.sessionId);
+        if (si == sessions_.end()) return;
+        code = si->second.netCode;
+        facing = si->second.facingPrev;
+    } else if (t.pet >= 0 && static_cast<size_t>(t.pet) < pets_.size()) {
+        const Creature& k = pets_[static_cast<size_t>(t.pet)];
+        code = k.netCode;
+        facing = k.facing;
+    } else {
+        return;
+    }
+    float sx = 0, sy = 0;
+    uint8_t dir = 0;
+    if (src) {
+        sx = src->x; sy = src->y;
+        dir = DirFromVec(ux - sx, uy - sy);
+        ++shieldFx_[0];
+    } else if (!attacker.none() && TargetXY(attacker, sx, sy)) {
+        dir = DirFromVec(ux - sx, uy - sy);
+        ++shieldFx_[1];
+    } else {
+        dir = facing;
+        ++shieldFx_[2];
+    }
+    const uint8_t msg[4] = { static_cast<uint8_t>(Op::FX_SHIELD), static_cast<uint8_t>(code), static_cast<uint8_t>(code >> 8), kDirRow[dir] };
+    SendFxAllCli(ux, uy, msg, sizeof(msg));
+}
+
 // unitShieldReduceDamage_52F710(`:11588`) — 맞는 순간 끼어든다.
 //   · 남은 체력이 **피해보다 크면** : 피해를 **반**으로(0 이면 1) 줄이고 그만큼 주머니에서 뺀다
 //   · 죽을 만큼이면 : 체력을 **2** 로 두고 피해를 **0** 으로(= 아예 안 맞음) · 주머니를 통째로 비운다
 //     ⚠ 단, **워리어가 방패를 올린 채 앞에서** 맞으면 피해를 **1** 로 남긴다(체력은 그대로 깎인다)
-//   ⚠ 아직 안 옮긴 것 — 소리 131 · 방패 그림(netSendShieldFx_523670)
-void Server::ShieldReduceDamage(const Target& t, int& dmg, uint8_t dtype, const AttackSrc* src) {
+//   ★ 11-22 소리 131(10-b) 뒤 방패 그림(`netSendShieldFx_523670` — `SendShieldFx`) · 둘 다 피해 갈래 앞이라 막든 깎든 늘 난다
+void Server::ShieldReduceDamage(const Target& t, int& dmg, uint8_t dtype, const AttackSrc* src, const Target& attacker) {
     (void)dtype;
     // 10-b PlaySound 131 ShieldRepelled — GAME4_2.c:11593 rings it first thing
     if ((t.sessionId != kNoSession)) {
@@ -9609,6 +9651,7 @@ void Server::ShieldReduceDamage(const Target& t, int& dmg, uint8_t dtype, const 
         const Creature& k = pets_[static_cast<size_t>(t.pet)];
         PlaySoundAt(131, static_cast<float>(k.x), static_cast<float>(k.y), 0, 0, kNoSession, t);
     }
+    SendShieldFx(t, src, attacker);                         // ★ 11-22 `:11594~11598`
     const int hp = TargetHealth(t);
     if (hp > dmg) {
         int half = dmg / 2;

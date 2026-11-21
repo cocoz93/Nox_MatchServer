@@ -275,6 +275,8 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
         // ★ 11-22 번개 셋 — 죽은 대상 점 그림(130·129) · 1/3초 소리 쌍(32·78) · NO_SPELL_TARGET 거름 · 시험이 같은 칸을 센다(`TestLightningFx1122`)
         srv.Log("[번개] 볼트 죽음 그림 %llu · 볼트 소리 쌍 %llu · 사슬 죽음 그림 %llu · 사슬 소리 쌍 %llu · 주문 대상 아님 거름 볼트 %llu · 사슬 %llu\n",
                 srv.lightningEv(0), srv.lightningEv(1), srv.lightningEv(2), srv.lightningEv(3), srv.lightningEv(4), srv.lightningEv(5));
+        // ★ 11-22 방패 그림 — 방향 출처 셋(`SendShieldFx`) · 시험이 같은 칸을 센다(`TestShieldFx1122`)
+        srv.Log("[방패 그림] 때린 것 자리 %llu · 때린 이 자리 %llu · 바라보는 쪽 %llu\n", srv.shieldFx(0), srv.shieldFx(1), srv.shieldFx(2));
         // ★ 10-01 — 클라 대체 무기 알림 `e0`(비움 · 가방에 없음 · 맞음 · 직업·힘 안 맞아 `e0 0 01` 되돌림)
         srv.Log("[대체무기] 비움 %llu · 없음 %llu · 맞음 %llu · 되돌림 %llu\n", srv.secondaryWeaponStat(0),
                     srv.secondaryWeaponStat(1), srv.secondaryWeaponStat(2), srv.secondaryWeaponStat(3));

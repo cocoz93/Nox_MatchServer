@@ -2527,7 +2527,8 @@ public:
     unsigned long long fistRoseGone() const { return fistRoseGone_; }   // ★ 11-22 주먹 되튀어 200 에 지움(`GAME4_3.c:6744`)
     unsigned long long scorchMade(int size) const { return (size >= 0 && size < 3) ? scorchMade_[size] : 0; }   // ★ 11-22 그을음 크기별(0·1·2)
     unsigned long long scorchNoType() const { return scorchNoType_; }   // ★ 11-22 그을음 — 종류를 못 찾아 못 놓음
-    unsigned long long lightningEv(int i) const { return (i >= 0 && i < 6) ? lightningEv_[i] : 0; }   // ★ 11-22 번개 셋 — 칸 뜻은 `lightningEv_`
+    unsigned long long lightningEv(int i) const { return (i >= 0 && i < 6) ? lightningEv_[i] : 0; }
+    unsigned long long shieldFx(int i) const { return (i >= 0 && i < 3) ? shieldFx_[i] : 0; }   // ★ 11-22 방패 그림 — 칸 뜻은 `shieldFx_`   // ★ 11-22 번개 셋 — 칸 뜻은 `lightningEv_`
     // 부활 무적 안 걸기(`--no-spawn-invuln`) — 화면 확인을 막는 무적을 우회한다
     void SetNoSpawnInvuln(bool v) { noSpawnInvuln_ = v; }
     unsigned long long spawnInvulnApplied() const { return spawnInvulnApplied_; }
@@ -5164,7 +5165,10 @@ private:
     // unitShield_52F690 — 방패 주머니에서 `amount` 를 뺀다. 다 쓰면 그 주문을 취소한다.
     void ShieldDrain(const Target& t, int amount);
     // unitShieldReduceDamage_52F710 — 맞을 때 끼어들어 피해를 깎는다. 0 이 되면 아예 안 맞은 것이 된다.
-    void ShieldReduceDamage(const Target& t, int& dmg, uint8_t dtype, const AttackSrc* src);
+    //   `attacker` = 정답지 a2(때린 이 — `DamageAttacker`) · 방패 그림 방향의 두 번째 출처(a3 가 없을 때)
+    void ShieldReduceDamage(const Target& t, int& dmg, uint8_t dtype, const AttackSrc* src, const Target& attacker);
+    // ★ 11-22 netSendShieldFx_523670(`GAME4_2.c:3890`) — 0x80 FX_SHIELD 넷 바이트(넷코드 · 9칸 방향)
+    void SendShieldFx(const Target& t, const AttackSrc* src, const Target& attacker);
     // ── 묶음 4-d 지속 공격 ──
     // 대상의 자리. 없으면 false — 사람과 소환수를 한 자리에서 가른다.
     bool TargetXY(const Target& t, float& x, float& y) const {
@@ -6618,6 +6622,8 @@ private:
     // ★ 11-22 번개 셋 — [0] 에너지볼트 죽은 대상 점 그림 130 · [1] 에너지볼트 소리 32 쌍(시전자·대상) · [2] 연쇄 번개 죽은 대상 점 그림 129 ·
     //   [3] 연쇄 번개 소리 78 쌍(시전자·첫 대상) · [4] 에너지볼트가 NO_SPELL_TARGET 적을 거름 · [5] 연쇄 번개가 거름(대상 고르기가 const 라 mutable)
     mutable unsigned long long lightningEv_[6] = {};
+    // ★ 11-22 방패 그림(`SendShieldFx`) 방향을 어디서 셌나 — [0] 때린 것(`AttackSrc` 자리) · [1] 때린 이(a2 · 출처 없음) · [2] 맞은 이 바라보는 쪽(+124 · 둘 다 없음)
+    unsigned long long shieldFx_[3] = {};
     // ★ 부활 무적을 아예 안 거는 진단 스위치(`--no-spawn-invuln`).
     //   CLIENT_READY 되풀이(B-1b 미결) 때문에 무적이 안 풀려 화면 확인이 통째로 막힌다.
     //   그 원인과 **따로** 나머지를 진행하려는 우회로다. 기본 끔.

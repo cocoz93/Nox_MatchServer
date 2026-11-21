@@ -30144,6 +30144,87 @@ void TestLightningFx1122() {
                 "마나 말라 끊기는 틱(볼트 소리 남 · 사슬 소리 없음) · 지팡이 갈래 소리 · 리치 시전자 같은 줄 · NO_SPELL_TARGET 곰 거름(사람·리치 · 대조 비트 없음)\n");
 }
 
+// ── 11-22 방패 그림 — 마법 방패(26)가 깎일 때 0x80 FX_SHIELD ─────────────────────────────
+// `unitShieldReduceDamage_52F710`(`GAME4_2.c:11593~11598`) — 소리 131 뒤 `netSendShieldFx_523670`(`:3890~3907`):
+//   `{ 0x80, 넷코드 u16, 9칸 행 }` · 행 = x + 3y + 4(`math_509EA0`) — 「맞은 이 − 출처」 방향 · 출처 없으면 맞은 이 +124
+//   출처 = a3(때린 것) 있으면 그것 · 없으면 a2(때린 이)(`GAME3_2.c:7318~7321`)
+//   기대값은 칸 뜻으로 손으로 적는다 — 동(+x) 3·4·5 의 5 · 서 3 · 북(−y) 1 · 남(+y) 7
+void TestShieldFx1122() {
+    const std::string a = "10.11.22.61:9761", b = "10.11.22.62:9762";
+    char msg[300];
+    // 맞은 이 a(넷코드 1161) 앞으로 간 방패 그림 — 넷코드 · 칸
+    auto shields = [](const std::vector<nox::OutPacket>& out, const std::string& to, std::vector<std::pair<int, int>>& got) {
+        for (const auto& m : FlattenTo(out, to))
+            if (m.size() == 4 && m[0] == static_cast<uint8_t>(nox::Op::FX_SHIELD)) got.push_back({ m[1] | (m[2] << 8), m[3] });
+    };
+    auto snd131 = [](nox::CSyncHost& srv) -> unsigned long long {
+        const auto& m = srv->soundsDroppedIds();
+        const auto it = m.find(131);
+        return it == m.end() ? 0ull : it->second;
+    };
+    auto mk = [&](nox::CSyncHost& srv, uint32_t& ms, std::vector<nox::OutPacket>& out, bool shield) {
+        nox::Gamedata g;
+        g.Parse("ShieldDuration = 0, 0, 0, 0, 0;\nShieldHealth = 20, 35, 50, 75, 100;\n" "SummonDuration = 60, 210, 375;\n");
+        srv->SetGamedata(g);
+        srv->SetSpellDef(51, 0, 0x1000000, { 1, 2 });
+        srv.DebugEnterGame(a, 1161, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 1162, false, nox::CharClass::Wizard);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv->DebugMoveTo(Sid(srv, b), 1300, 1000);
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        if (shield) {
+            CastAndWait(srv, a, 51, /*onSelf=*/true, ms, out);
+            Check(srv->DebugHasEnchant(Sid(srv, a), 26), "방패가 안 걸렸다(시험 전제)");
+        }
+        out.clear();
+    };
+    struct Case { const char* name; int bx, by; bool byB; bool withSrc; float sx, sy; int facing; uint8_t dtype; int dmg; bool shield; int want; int slot; };
+    const Case cs[] = {
+        // 이름                          b 자리      때린 이 b  출처   출처 자리       바라봄  종류 피해  방패  칸   셈 칸
+        { "① 때린 이 동쪽 → 서(3)",     1300, 1000, true,  false, 0, 0,          -1,   1,  10,   true,  3,  1 },
+        { "② 때린 이 북쪽 → 남(7)",     1000,  700, true,  false, 0, 0,          -1,   1,  10,   true,  7,  1 },
+        { "③ 출처 남쪽이 때린 이보다 먼저 → 북(1)", 1300, 1000, true, true, 1000, 1300, -1, 1, 10, true, 1, 0 },
+        { "④ 둘 다 없음 · 바라봄 0 → 5",  1300, 1000, false, false, 0, 0,           0,   1,  10,   true,  5,  2 },
+        { "⑤ 둘 다 없음 · 바라봄 128 → 3", 1300, 1000, false, false, 0, 0,        128,   1,  10,   true,  3,  2 },
+        { "⑥ 죽을 만큼(체력 2 로 막음)도 그림", 1300, 1000, true, false, 0, 0,     -1,   1,  9999, true,  3,  1 },
+        { "⑦ 독(5)은 방패를 안 거쳐 그림 없음", 1300, 1000, true, false, 0, 0,     -1,   5,  10,   true, -1, -1 },
+        { "⑧ 방패 없으면 그림 없음",     1300, 1000, true,  false, 0, 0,          -1,   1,  10,   false, -1, -1 },
+    };
+    for (const Case& c : cs) {
+        nox::CSyncHost srv;
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        mk(srv, ms, out, c.shield);
+        srv->DebugTeleport(Sid(srv, b), static_cast<float>(c.bx), static_cast<float>(c.by));   // `DebugMoveTo` 는 다음 틱에야 자리에 옮겨진다
+        if (c.facing >= 0) srv->DebugSetFacing(Sid(srv, a), static_cast<uint8_t>(c.facing));
+        nox::Server::AttackSrc src;
+        src.x = c.sx; src.y = c.sy; src.missile = true;
+        const unsigned long long s0 = snd131(srv);
+        unsigned long long f0[3];
+        for (int i = 0; i < 3; ++i) f0[i] = srv->shieldFx(i);
+        srv->DebugHurt(Sid(srv, a), -1, c.dmg, c.byB ? Sid(srv, b) : nox::kNoSession, c.dtype, c.withSrc ? &src : nullptr);
+        srv.TakeOut(out);
+        std::vector<std::pair<int, int>> toA, toB;
+        shields(out, a, toA);
+        shields(out, b, toB);
+        unsigned long long df[3];
+        for (int i = 0; i < 3; ++i) df[i] = srv->shieldFx(i) - f0[i];
+        const unsigned long long ds = snd131(srv) - s0;
+        std::snprintf(msg, sizeof(msg), "%s — a 앞 %zu · b 앞 %zu · 넷코드 %d · 칸 %d(%d) · 셈 %llu/%llu/%llu · 소리 131 %llu · a 체력 %u",
+                      c.name, toA.size(), toB.size(), toA.empty() ? -1 : toA[0].first, toA.empty() ? -1 : toA[0].second, c.want,
+                      df[0], df[1], df[2], ds, unsigned(srv->HealthOf(Sid(srv, a))));
+        if (c.want < 0) {
+            Check(toA.empty() && toB.empty() && df[0] + df[1] + df[2] == 0 && ds == 0, msg);
+        } else {
+            const bool slotOk = df[c.slot] == 1 && df[0] + df[1] + df[2] == 1;
+            const bool bOk = toB.size() == 1 && toB[0] == toA[0];          // 둘레 모두에게 같은 것
+            Check(toA.size() == 1 && toA[0].first == 1161 && toA[0].second == c.want && bOk && slotOk && ds == 1, msg);
+        }
+    }
+    std::printf("  11-22 — 방패 그림 0x80: 넷코드 · 9칸(때린 이 동→서 3 · 북→남 7 · 출처 먼저 → 북 1 · 바라봄 0→5 · 128→3) · "
+                "죽을 만큼도 · 독·방패 없음은 0 · 둘레 모두 · 소리 131 한 번\n");
+}
+
 // ★ 11-20 트레일러 전사 2 — 수리검·차크람(던지기 `GAME4_3.c:4327~4419` · 날기 `updateChakramInMotion_53DCC0` · 맞기 `collideChakram_4EAF00`)
 void TestChakram1120() {
     using CE = nox::ChakramEv;
@@ -42688,6 +42769,7 @@ int main() {
     TestZombie1120();
     TestScorch1122();                 // ★ 11-22 그을음 일곱 자리
     TestLightningFx1122();            // ★ 11-22 번개 셋(그림 130·129 · 소리 32·78 · NO_SPELL_TARGET)
+    TestShieldFx1122();               // ★ 11-22 방패 그림 0x80(넷코드 · 9칸 방향 출처 셋)
     TestConnectZeroTail();
     TestReconnectAfterClose();
     TestSessionIds();
