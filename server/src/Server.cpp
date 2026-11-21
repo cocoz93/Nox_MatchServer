@@ -1627,6 +1627,9 @@ bool Server::HurtTarget(const Target& t, int dmg,
     if (t.none()) return false;
     // ⚠ 정답지는 0 피해도 피해 함수를 끝까지 부르고 대개 참이다(맵 불 짝수 프레임 — 위 1-d). 우리는 여기서 멈추므로 참으로 둔다
     if (dmg <= 0) return true;
+    // ★ 11-20 사양(원본 밖) — 「캐릭터 공격력 2배」(사용자 11-20 · 11-21 실제 게임에도). 사람이 몬스터(소환수 포함)를 때린 피해만(근접·던지기·불 수식 모두 여기를 지난다) ·
+    //   사람끼리 · 몬스터가 때린 것 · 소환수가 때린 것(byPet)은 그대로. 롱소드 ≈38 → 76 = 좀비 1대 · 독 좀비 2대(원본 표 계산)
+    if (t.pet >= 0 && by != kNoSession && sessions_.count(by) && !(src && src->byPet >= 0)) dmg *= kPlayerVsMonsterDamageMult;
     // 진단 임프(`--debug-own-pet`)는 맞지 않는다 — 판정 사진을 찍기 전에 몬스터에게 죽었다(09-13, 갱신에 프레임 1920~2010 만 실림 — 약 3초).
     if (debugOwnPetNetCode_ != 0 && !debugPetWild_ && t.pet >= 0 &&
         pets_[static_cast<size_t>(t.pet)].netCode == debugOwnPetNetCode_) return true;   // 진단 — 무적처럼 참
@@ -2044,6 +2047,7 @@ void Server::ResetWorldFromMap() {
     audioEvents_.clear();
     freshStatics_.clear();
     votes_.clear();
+    SpawnMapMobs();   // ★ 11-19 트레일러 작업 — 트레일러: 판을 다시 열어도 몬스터가 다시 선다
 }
 
 // ★ 10-01 R3 — **다시 열 때 사람 몫** — 원본 판끝 10초 뒤 `server_A2` 의 가방 비우기·기본 장비(`game.go:826~829` `playerMakeDefItems_4EF7D0(u,1,0)`)
@@ -5678,6 +5682,7 @@ bool Server::MapTraceRayTile(int gx, int gy, float x1, float y1, float x2, float
     // GetWallAtGrid(Flag1 없음)은 칸 짝홀((x+y)&1)이 홀이면 벽이 없다고 본다(`server/wall.go:238`)
     if (!(flags & 0x1) && ((gx + gy) & 1)) return false;
     const WallTile& w = wallTiles_[gy * 256 + gx];
+    if (beamSkipMagicWall_ && IsMagicWallTile(w.tile)) return false;   // ★ 11-21 트레일러 작업 — 사람 번개 검사 중엔 마법 벽을 안 본다(`BeamCanInteract`)
     // ★ 9-a — **깃발 8(0x80)로 쏜 추적은 「통과」 비밀벽을 안 본다**(`server/wall.go:1080`) —
     //   마디 깃발 **2** 가 그 표다. 우리 추적 깃발은 `MapTraceFlag<N>` = 비트 `1 << (N−1)` 이다
     if ((flags & 0x80) && w.secret >= 0 && static_cast<size_t>(w.secret) < secretWalls_.size() &&
@@ -7272,7 +7277,8 @@ int Server::CheckPlrCantCastSpell(const Session& s, uint8_t spell, bool glyph) c
     }
     if (s.buffs.Has(29)) return 14;                        // LABEL_9 — 반마법(ANTI_MAGIC 29) 버프면 14(4-a4)
     const bool quest = (questTotal_ > 0 || questStage_ > 0);
-    if (!quest && (spell == 111 || spell == 112 || spell == 113 || spell == 114)) return 10;   // sub_4D7100 — 퀘스트 전용 소환
+    // ★ 11-20·11-21 사양(원본 밖) — kArenaQuestSummons 면 이 넷을 아레나에서도 부른다(사용자 11-20 「예외로 두자」 · 11-21 「실제 게임 돌 때도」)
+    if (!kArenaQuestSummons && !quest && (spell == 111 || spell == 112 || spell == 113 || spell == 114)) return 10;   // sub_4D7100 — 퀘스트 전용 소환
     // ★ 11-20 트레일러 컨저러 C2 — `case 31`(`GAME4.c:2797~2802`) — 제 죽음의 공(`unitIsUnitTT_4E7C80` = `CountSubOfType` · 종류 = DeathBall
     //   `spells.go:100`)이 하나라도 있으면 3 · 시전 자체를 안 받는다
     if (spell == 31) {
@@ -8062,14 +8068,24 @@ int Server::DurChannelLife(DurSpell& d) {
     if (TargetManaMax(d.target) == TargetManaCur(d.target)) return 1;                   // 대상 마나가 가득 — 더 줄 것이 없다
     if (TargetHealth(Target{ d.caster, -1 }) <= 1) return 1;                            // 시전자가 더 못 버틴다
     const float coeff = static_cast<float>(BalanceFloatInd("ChannelLifeCoeff", d.level - 1));
-    const float v = d.field72 + coeff;
-    const int give = static_cast<int>(v);                   // nox_float2int
-    d.field72 = v - static_cast<float>(give);               // 소수 이월
-    if ((d.target.sessionId != kNoSession)) {
-        auto it = sessions_.find(d.target.sessionId);
-        if (it != sessions_.end()) PlayerManaAdd(it->second, give);
+    // ★ 11-21 사양(원본 밖) — 변환 kChannelLifeMult(5)배(사용자 11-21 「나머지는 니 권장대로」 · 「실제 게임 돌 때도」).
+    //   왜 5 = 원본은 틱마다 체력 1 → 마나 1(아레나 세기 3 = 1.0)이라 초당 30 · 300 을 바꾸는 데 10초 — 한 컷엔 길다.
+    //   5배면 2초(구슬이 눈에 보이게 줄고 찬다) · 10배(1초)는 너무 빨라 안 읽힌다.
+    //   한 틱에 원래 틱 다섯 번 몫을 돈다 — 원래 끝 조건(시전자 체력 1 · 대상 마나 가득)을 매번 다시 봐서 체력 1 아래로 안 간다
+    const int mult = kChannelLifeMult;
+    const int hp0 = TargetHealth(Target{ d.caster, -1 });
+    int n = 0;
+    for (; n < mult && hp0 - n > 1 && (n == 0 || TargetManaCur(d.target) < TargetManaMax(d.target)); ++n) {
+        const float v = d.field72 + coeff;
+        const int give = static_cast<int>(v);               // nox_float2int
+        d.field72 = v - static_cast<float>(give);           // 소수 이월
+        if ((d.target.sessionId != kNoSession)) {
+            auto it = sessions_.find(d.target.sessionId);
+            if (it != sessions_.end()) PlayerManaAdd(it->second, give);
+        }
     }
-    Damage(d.caster, 1, kNoSession, nullptr, /*ignoreInvuln=*/true);            // unitDamageClear(시전자, 1)
+    Damage(d.caster, n, kNoSession, nullptr, /*ignoreInvuln=*/true);            // unitDamageClear(시전자, 1) — 원본은 1 · 우리는 돈 몫 n
+    ++channelLifeTick_; channelLifeHp_ += static_cast<unsigned long long>(n);
     return 0;                                               // 이어 간다
 }
 
@@ -8303,7 +8319,7 @@ Target Server::EnergyBoltSearch(const Session& caster, float range) const {
         const float ox = static_cast<float>(o.posX), oy = static_cast<float>(o.posY);
         if (!(TestTwoPointsAndDirection(static_cast<float>(caster.posX), static_cast<float>(caster.posY),
                                         caster.facingPrev, ox, oy) & 1)) continue;   // 앞쪽만
-        if (!CanInteract(caster, Target{ o.sessionId, -1 })) continue;
+        if (!BeamCanInteract(caster, Target{ o.sessionId, -1 }, 0)) continue;   // ★ 11-21 트레일러 작업 — 마법 벽 너머도(원래 CanInteract)
         const float dx = ox - static_cast<float>(caster.posX);
         const float dy = oy - static_cast<float>(caster.posY);
         const float d2 = dx * dx + dy * dy;
@@ -8319,7 +8335,7 @@ Target Server::EnergyBoltSearch(const Session& caster, float range) const {
         if (!(TestTwoPointsAndDirection(static_cast<float>(caster.posX), static_cast<float>(caster.posY),
                                         caster.facingPrev, ox, oy) & 1)) continue;
         const Target t{ kNoSession, static_cast<int>(k) };
-        if (!CanInteract(caster, t)) continue;
+        if (!BeamCanInteract(caster, t, 0)) continue;   // ★ 11-21 트레일러 작업 — 마법 벽 너머도(원래 CanInteract)
         const float dx = ox - static_cast<float>(caster.posX);
         const float dy = oy - static_cast<float>(caster.posY);
         const float d2 = dx * dx + dy * dy;
@@ -8328,6 +8344,29 @@ Target Server::EnergyBoltSearch(const Session& caster, float range) const {
         found = t;
     }
     return found;
+}
+
+// ★ 11-21 사양(원본 밖) — 「맞히면 마나 회복」(사용자 11-21 「좋아」 — 번개·에너지 볼트 같은 규칙) · 몬스터를 맞힌 틱마다 시전자 마나 +1.
+//   왜 1 = 두 빔 모두 틱마다 마나 1 을 쓴다(아래 `PlayerManaSub(caster, 1)`) — 한 마리면 쓰는 만큼 차 그대로 · 번개가 둘·셋을 맞히면 초당 +30~+60.
+//   사람(대전)을 맞힌 것은 안 준다 — 몬스터(`t.pet >= 0`)만. which = 0 에너지 볼트(24) · 1 번개(43)
+void Server::BeamManaOnHit(Session& caster, const Target& t, int which) {
+    if (t.pet < 0 || which < 0 || which > 1) return;
+    const int before = caster.mana;
+    PlayerManaAdd(caster, kBeamManaPerHit);
+    ++beamManaHit_[which];
+    beamManaGain_[which] += static_cast<unsigned long long>(caster.mana - before);
+}
+
+// ★ 11-21 사양(원본 밖) — `CanInteract` 를 마법 벽을 뺀 채로 부른다(사용자 11-21 「응 번개만으로 하자」).
+//   왜 이 자리 = 원본 `unitCanInteractWith_5370E0` 의 벽 시야추적이 마법 벽도 진짜 벽 칸으로 본다(`DurWallCreate` 가 벽 칸에 세운다) —
+//   그 칸만 건너뛰면 사람 빔이 벽 너머를 고르고, 진짜 벽·문·그늘 장애물은 그대로 가린다.
+//   세기 = 뺀 채로 보이는데 빼지 않으면 가렸던 검사만(한 번 더 부르는 값은 보일 때만 낸다)
+bool Server::BeamCanInteract(const Session& caster, const Target& t, int which) const {
+    beamSkipMagicWall_ = true;
+    const bool ok = CanInteract(caster, t);
+    beamSkipMagicWall_ = false;
+    if (ok && which >= 0 && which <= 1 && !CanInteract(caster, t)) ++beamWallPass_[which];
+    return ok;
 }
 
 // spellEnergyBoltStop_52E820(`GAME4_2.c:10630`) — 켤 때 **연쇄 번개(43)를 끄고** 점 효과 130 을 낸다. 0 = 살려 둔다
@@ -8417,7 +8456,7 @@ int Server::DurEnergyBoltTick(DurSpell& d) {
                 && ((TestTwoPointsAndDirection(static_cast<float>(caster.posX), static_cast<float>(caster.posY),
                                                caster.facingPrev, tx, ty) & 1) != 0)
                 && (std::sqrt(dx * dx + dy * dy) <= range)
-                && CanInteract(caster, d.target);
+                && BeamCanInteract(caster, d.target, 0);   // ★ 11-21 트레일러 작업 — 마법 벽 너머도(원래 CanInteract)
         }
     }
     if (!keep) d.target = EnergyBoltSearch(caster, range);
@@ -8434,6 +8473,7 @@ int Server::DurEnergyBoltTick(DurSpell& d) {
     }
     // ★ 4-c3b1 — 때린 것 = 시전자(a2 · a3 = 0 · `GAME4_2.c:10990`)
     HurtTarget(d.target, dmg, d.caster, 17, nullptr, HitterBySession(d.caster));   // 종류 17 = 공중 전기(방어를 안 탄다)
+    BeamManaOnHit(caster, d.target, 0);                   // ★ 11-21 트레일러 작업 — 맞히면 마나 +1
     d.field36 = d.target;
     PlayerSetState(caster, 10, frame_);                      // 시전 자세
     d.frame68 = durFrame_ + static_cast<uint32_t>(BalanceFloat("LightningSearchTime"));   // 맞혔다 — 끝을 미룬다(`:11006` · 마나 깎기 앞)
@@ -8465,7 +8505,7 @@ Target Server::LightningSearch(const Session& owner, const Target& from, float r
         if (t.sessionId == from.sessionId && t.pet == from.pet) return;
         if ((t.sessionId != kNoSession) && t.sessionId == owner.sessionId) return;
         if (already(t)) return;
-        if (!CanInteract(owner, t)) return;
+        if (!BeamCanInteract(owner, t, 1)) return;   // ★ 11-21 트레일러 작업 — 마법 벽 너머도(원래 CanInteract)
         const float dx = tx - fx, dy = ty - fy;
         const float d2 = dx * dx + dy * dy;
         if (d2 >= best) return;
@@ -8578,6 +8618,7 @@ int Server::DurChainLightningTick(DurSpell& d) {
             NetStartRaySpell(sub);
         }
         if (dmg > 0) HurtTarget(sub.target, dmg, d.caster, 17, nullptr, HitterBySession(d.caster));   // ★ 4-c3b1 시전자(`GAME4_3.c:333` a3 = 0)
+        if (dmg > 0) BeamManaOnHit(caster, sub.target, 1);  // ★ 11-21 트레일러 작업 — 맞힌 몹 하나당 마나 +1
     }
     for (size_t i = d.sub108.size(); i < prev.size(); ++i)     // 남은 옛 빔은 끈다
         if (!prev[i].target.none()) NetStopRaySpell(prev[i], prev[i].target);
@@ -10853,6 +10894,7 @@ bool Server::SpawnCreatureMissile(Creature& k, const char* name, float tx, float
 ) {
     const ProjTypeInfo* pt = ProjType(name);
     if (!pt || pt->type == 0) return false;                  // 종류를 모르면 안 만든다(지어내지 않는다)
+    NoteShot(k, name);                                   // ★ 11-20 트레일러 작업
     const double dx = tx - k.x, dy = ty - k.y;
     const uint8_t dir = DirFromVec(dx, dy);
     MissileObj m;
@@ -15511,6 +15553,7 @@ void Server::MonsterActionCast(Creature& k, int a2) {
 //   ✖ 11-21 C11-c — 「날아가는 주문 — 우리 몬스터에 없음」은 옛 말 — 혼란 12 · 실수 33 · 독 60 · 느림 72 는 `MonsterCreateSpellFly` 로 날린다
 bool Server::MonsterCastSpellNow(Creature& k, uint8_t spell, const Target& target, float x, float y) {
     ++castStat_[static_cast<size_t>(CastStat::Cast)];
+    NoteShot(k, spell == 27 ? "주문27화염구" : spell == 24 ? "주문24번개" : spell == 4 ? "주문4점멸" : "주문" + std::to_string(spell));   // ★ 11-20 트레일러 작업
     if ((x != 0.0f || y != 0.0f) && (x != static_cast<float>(k.x) || y != static_cast<float>(k.y))) k.facingWant = DirFromVec(x - k.x, y - k.y);   // 제 자리면 안 돌림
     const uint32_t fl = SpellFlags(spell);
     const Target self = PetTarget(k);
@@ -17034,9 +17077,161 @@ void Server::SpawnCreature(uint16_t type, float x, float y, int64_t owner) {
             k.spells.push_back({ 66, 0x80000000u });                 // +1752 밀기 달아날 때
             k.spellLevel = 2;
             break;
+        case 1327:                                                   // Wizard ★ 11-20 트레일러 작업
+        // ★ 11-20 트레일러 작업 — 트레일러 시전자 둘(`GAME5.c:4232~4243` Wizard · `:4254~4267` Lich · 세기 3).
+        //   정답지 공격 주문은 Wizard 27·50·43·24 · Lich 27·43·24 — 그중 **옮긴 화염구 27 · 전기 광선 24 만** 싣는다
+        //   (안 옮긴 주문을 고르면 시전 동작만 하고 아무것도 안 나간다 — 화면이 비어 보여서). Wizard 달아날 때 점멸 4 는 원본대로
+        //   ★ 11-21 P1 — Lich 는 C11-a 커밋(위 1342 갈래 · 원본 목록 전부)으로 올라가 이 갈래에서 뺐다
+            k.spells.push_back({ 27, 0x40000000u });
+            k.spells.push_back({ 24, 0x40000000u });
+            if (!(questTotal_ > 0 || questStage_ > 0)) k.spells.push_back({ 4, 0x80000000u });
+            k.spellLevel = 3;
+            break;
         default: break;
     }
     pets_.push_back(k);
+}
+
+// ★ 11-19 트레일러 작업 — 트레일러: 자리 목록의 몬스터를 띄운다 · 덧붙인 것이 기댈 자리(맵 파일 몬스터 자리)에서 벽 너머면 기댈 자리에
+void Server::SpawnMapMobs() {
+    // ★ 11-20 트레일러 작업 — 용암(바닥 6) 거르기. 사용자 「몹이 있긴 한 거야?」 → 사람 없이도 좀비 33 · Lich 1 이 용암에서 타 죽어 있었다
+    //   (`[닿음·바닥] 용암 피해(소환수)` 13,371 · 근접 악마 자리는 불에 안 타는 몹 자리라 용암 위가 있다). 불 면역(아종 0x400)·떠 있는(0x4000) 몹만 용암에 둔다 ·
+    //   아니면 기댈 자리(맵 몬스터 자리)로 · 거기도 용암이면 안 띄운다
+    auto lava = [&](float x, float y) { return mt_->floorGrid.TileAt(x, y, mt_->floorEdges).tile == 6; };
+    std::map<std::string, int> skipped, moved;
+    for (const MapMob& t : mapMobs_) {
+        const bool open = (t.x == t.ax && t.y == t.ay) || MapTraceRay(t.ax, t.ay, t.x, t.y, 0x5);
+        float x = open ? t.x : t.ax, y = open ? t.y : t.ay;
+        const auto tb = gt_->typeBodies.find(t.type);
+        const bool lavaOk = tb != gt_->typeBodies.end() && ((tb->second.flags & 0x4000) || (tb->second.subclass & 0x400));
+        const MonsterStats* m = FindMonster(t.type);
+        const std::string nm = m ? m->name : std::to_string(t.type);
+        if (!lavaOk && lava(x, y)) {
+            if (lava(t.ax, t.ay)) { ++skipped[nm]; continue; }
+            x = t.ax; y = t.ay; ++moved[nm];
+        }
+        // ★ 11-20 트레일러 작업 — 사용자 「몹이 너무 많긴 한데 1/4 정도만 줄여 보자」 — 기본 무리(좀비·독 좀비)만 넷 중 하나를 뺀다 · 특수 몹은 그대로
+        if ((t.type == 1360 || t.type == 1361 || t.type == 1314) && ++crowdSeen_ % 4 == 0) { ++crowdCut_; continue; }
+        // ★ 11-20 트레일러 작업 — 사용자 「임프 빼고」(작고 날아서 박쥐로 읽힘 · 근접 장면 방해) — 맵 원래 Imp 자리도 안 띄운다
+        if (t.type == 1328) { ++skipped["Imp(뺌)"]; continue; }
+        SpawnCreature(t.type, x, y, kNoSession);
+    }
+    std::string a, b;
+    for (const auto& kv : moved) a += " " + kv.first + "x" + std::to_string(kv.second);
+    for (const auto& kv : skipped) b += " " + kv.first + "x" + std::to_string(kv.second);
+    Log("[몬스터 용암] 기댈 자리로 옮김%s · 안 띄움%s · 무리 1/4 뺌 %d/%d\n", a.empty() ? " 0" : a.c_str(), b.empty() ? " 0" : b.c_str(), crowdCut_, crowdSeen_);
+    if (startZone_) SpawnStartZone();
+}
+
+// ★ 11-20 트레일러 작업 — 「안 보이는 데서 마법이 날아온다」 계측. 사람이 아닌 몬스터가 쏘거나 시전한 순간, 가장 가까운 사람(관전 아님)과 견준다.
+//   화면 밖 = 가로 512 · 세로 384 넘음(클라 1024×768) · 막힘 = 쏜 자리 → 사람 자리 MapTraceVision 거짓. 화면 밖·막힘이면 앞 40 건은 한 줄씩 남긴다
+void Server::NoteShot(const Creature& k, const std::string& what) {
+    if (k.owner != kNoSession) return;
+    const Session* best = nullptr;
+    double bd = 1e18;
+    for (const auto& kv : sessions_) {
+        const Session& s = kv.second;
+        if (!s.inGame || s.observer) continue;
+        const double d = std::hypot(s.posX - k.x, s.posY - k.y);
+        if (d < bd) { bd = d; best = &s; }
+    }
+    if (!best) return;
+    const MonsterStats* m = FindMonster(k.type);
+    auto& c = shotStat_[std::string(m ? m->name : std::to_string(k.type)) + "/" + what];
+    const double dx = k.x - best->posX, dy = k.y - best->posY;
+    const bool off = std::fabs(dx) > 512.0 || std::fabs(dy) > 384.0;
+    const bool blocked = !MapTraceVision(static_cast<float>(k.x), static_cast<float>(k.y), static_cast<float>(best->posX), static_cast<float>(best->posY));
+    ++c[0];
+    if (off) ++c[1];
+    if (blocked) ++c[2];
+    if ((off || blocked) && shotLogged_ < 40) {
+        ++shotLogged_;
+        Log("[원거리 한 건] %s/%s 쏜 자리 (%.0f,%.0f) · 사람 (%.0f,%.0f) · 거리 %.0f%s%s\n", m ? m->name : "?", what.c_str(), k.x, k.y,
+            best->posX, best->posY, bd, off ? " · 화면 밖" : "", blocked ? " · 시야선 막힘" : "");
+    }
+}
+
+// ★ 11-20 트레일러 작업 — 시작 구역 무리. 사용자 「한 맵(시작맵)에 넣으라니까 왜 그렇게 했어?」 — 맵 몬스터 자리 56곳은 시작 지점에서 940 넘게 떨어져 있고
+//   그 근처는 전부 좀비로 바꾼 근접 악마 자리라 시작 구역엔 좀비만 보였다. 그래서 시작 지점에서 **걸어서 닿는 칸**(40 간격 · 바닥 있음 · 용암 아님 · 벽 선 추적 통과)을
+//   너비 우선으로 길 거리 3,600 까지 펴고, 그 순서대로 앞 무리와 220 넘게 떨어진 칸마다 무리 하나 —
+//   좀비 다섯(Z Z V Z V · 반지름 45) + 4 무리마다 Wizard·Lich 번갈아 · 4 무리마다 EmberDemon · 가장 먼 무리에 Demon 하나(6 무리마다 Imp 둘은 사용자 「임프 빼고」로 뺌)
+void Server::SpawnStartZone() {
+    constexpr float kStep = 40.0f;
+    constexpr int kN = 160;                                        // 0 ~ 6,400
+    constexpr int kMaxSteps = 90;                                  // 길 거리 3,600
+    auto walk = [&](float x, float y) {
+        const auto hit = mt_->floorGrid.TileAt(x, y, mt_->floorEdges);
+        return (hit.why == FloorGrid::Why::Side || hit.why == FloorGrid::Why::Edge) && hit.tile != 6;
+    };
+    const int sx = static_cast<int>(startZoneX_ / kStep), sy = static_cast<int>(startZoneY_ / kStep);
+    if (sx < 0 || sy < 0 || sx >= kN || sy >= kN) return;
+    std::vector<int> dist(static_cast<size_t>(kN * kN), -1);
+    std::vector<int> order;
+    dist[static_cast<size_t>(sy * kN + sx)] = 0;
+    order.push_back(sy * kN + sx);
+    for (size_t q = 0; q < order.size(); ++q) {
+        const int cx = order[q] % kN, cy = order[q] / kN, cd = dist[static_cast<size_t>(order[q])];
+        if (cd >= kMaxSteps) continue;
+        static const int kD[4][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
+        for (const auto& dd : kD) {
+            const int nx = cx + dd[0], ny = cy + dd[1];
+            if (nx < 0 || ny < 0 || nx >= kN || ny >= kN || dist[static_cast<size_t>(ny * kN + nx)] >= 0) continue;
+            const float ax = (cx + 0.5f) * kStep, ay = (cy + 0.5f) * kStep, bx = (nx + 0.5f) * kStep, by = (ny + 0.5f) * kStep;
+            if (!walk(bx, by) || !MapTraceRay(ax, ay, bx, by, 0x5)) continue;
+            dist[static_cast<size_t>(ny * kN + nx)] = cd + 1;
+            order.push_back(ny * kN + nx);
+        }
+    }
+    std::vector<std::pair<float, float>> packs;
+    for (const int cell : order) {
+        const float px = (cell % kN + 0.5f) * kStep, py = (cell / kN + 0.5f) * kStep;
+        // ★ 11-21 — 300 → 700 · 사용자 「처음 시작하자마자 준비할 시간은 줘야 하지 않나 · 안 나가면 몬스터가 안 오는 거리로」.
+        //   왜 700 = 무리 반지름 45 를 빼도 가장 가까운 몹이 655 — 알아보는 거리(아레나 250 · `UpdateSight`)의 두 배 넘고
+        //   들리는 거리 기본 600(`Server.h` 소리조각 주석 · 원본 표 기준)보다 멀다. 300 일 때는 가장 가까운 몹이 255 라 바로 붙었다
+        if (std::hypot(px - startZoneX_, py - startZoneY_) < 700.0f) continue;   // 나오자마자 둘러싸이지 않게
+        bool far = true;
+        for (const auto& p : packs) if (std::hypot(px - p.first, py - p.second) < 220.0f) { far = false; break; }
+        if (far) packs.push_back({ px, py });
+    }
+    // ★ 11-20 — 사용자 「해골·해골로드 그래도 넣어줘」 — 고리 다섯 중 좀비 하나를 Skeleton(1314)으로 · 3 무리마다 SkeletonLord(1315) 하나
+    static const uint16_t kRingWarrior[] = { 1360, 1314, 1361, 1360, 1361 };
+    // ★ 11-20 트레일러 작업 — 위저드 판(Wiz10b · 종류 1) — 고리 다섯 = 해골 셋 · 좀비 · 독 좀비 · 4 무리마다 Lich(번개 쏘는 언데드 시전자) ·
+    //   2 무리마다 SkeletonLord · 불씨 악마·큰 악마는 안 넣음(언데드 판 · 맵 제 몹에도 악마 없음)
+    static const uint16_t kRingWizard[] = { 1314, 1360, 1314, 1361, 1314 };
+    const bool wiz = (startZoneKind_ == 1);
+    const uint16_t* kRing = wiz ? kRingWizard : kRingWarrior;
+    std::map<std::string, int> made;
+    const int cutBefore = crowdCut_, seenBefore = crowdSeen_;
+    auto put = [&](uint16_t t, float x, float y) {
+        if ((t == 1360 || t == 1361 || t == 1314) && ++crowdSeen_ % 4 == 0) { ++crowdCut_; return; }   // ★ 11-20 — 무리 1/4 빼기(SpawnMapMobs 와 같은 셈)
+        SpawnCreature(t, x, y, kNoSession);
+        const MonsterStats* m = FindMonster(t);
+        ++made[m ? m->name : std::to_string(t)];
+    };
+    size_t casters = 0;
+    for (size_t i = 0; i < packs.size(); ++i) {
+        const float cx = packs[i].first, cy = packs[i].second;
+        for (int j = 0; j < 5; ++j) {
+            const double a = (j * 72.0 + static_cast<double>(i) * 20.0) * 0.0174532925;
+            float x = cx + 45.0f * static_cast<float>(std::cos(a)), y = cy + 45.0f * static_cast<float>(std::sin(a));
+            if (!walk(x, y) || !MapTraceRay(cx, cy, x, y, 0x5)) { x = cx; y = cy; }
+            put(kRing[j], x, y);
+        }
+        if (wiz) {
+            if (i % 4 == 1) { put(1342, cx, cy); ++casters; }
+            if (i % 2 == 0) put(1315, cx, cy);
+            continue;
+        }
+        if (i % 4 == 1) put((casters++ % 2 == 0) ? 1327 : 1342, cx, cy);
+        if (i % 4 == 3) put(1337, cx, cy);
+        if (i % 3 == 2) put(1315, cx, cy);
+        if (i + 1 == packs.size()) put(1347, cx, cy);
+    }
+    std::string who;
+    for (const auto& kv : made) who += " " + kv.first + "x" + std::to_string(kv.second);
+    Log("[시작 구역] 시작 (%.0f,%.0f) · 닿는 칸 %zu · 무리 %zu · 끝 무리 (%.0f,%.0f) —%s · 무리 1/4 뺌 %d/%d\n", startZoneX_, startZoneY_, order.size(), packs.size(),
+        packs.empty() ? 0.0f : packs.back().first, packs.empty() ? 0.0f : packs.back().second, who.c_str(),
+        crowdCut_ - cutBefore, crowdSeen_ - seenBefore);
 }
 
 // spellArachna_52DC80(`GAME4_2.c:10327`) — 시전자→커서 선 추적(5)이 통하면 그 자리에
@@ -17680,6 +17875,20 @@ void Server::MonsterDeadFn(size_t idx) {
         const uint8_t fx[5] = { static_cast<uint8_t>(Op::FX_SMOKE_BLAST),
                                 static_cast<uint8_t>(ex), static_cast<uint8_t>(ex >> 8), static_cast<uint8_t>(ey), static_cast<uint8_t>(ey >> 8) };
         SendFxAllCli(gx, gy, fx, sizeof(fx));
+        return;
+    }
+    else if (k.type == 1314 || k.type == 1315) {
+        // ★ 11-20 트레일러 작업 — SkeletonDead(`sub_54A310`) · SkeletonLordDead(`sub_54A750`) `GAME5.c:3095~3242` — 둘 다 뼈 흩기(`sub_54A4C0` `:3152~3226`):
+        //   소리 356(그 해골 · `:3173`) → 점 효과 138 = FX_SMOKE_BLAST(`:3175`) → Skull 하나 + 뼛조각 5~10(멀티 · 2~5초 뒤 썩음 · 둘레 20 · 높이 10~35 · 힘 5~25)
+        //   떨어뜨림(칼·방패 `sub_54A390`)은 협동(2048)에서만이라 멀티는 없다. ⚠ Skull·뼛조각 오브젝트는 아직 안 옮겼다 — 소리·연기만.
+        //   몸은 STATUS DESTROY_WHEN_DEAD 라 죽음 시작에서 이미 지울 표시(`removeMe`)가 서 있다
+        const float sx = static_cast<float>(k.x), sy = static_cast<float>(k.y);
+        const int16_t px = static_cast<int16_t>(sx), py = static_cast<int16_t>(sy);
+        const uint8_t smoke[5] = { static_cast<uint8_t>(Op::FX_SMOKE_BLAST), static_cast<uint8_t>(px), static_cast<uint8_t>(px >> 8),
+                                   static_cast<uint8_t>(py), static_cast<uint8_t>(py >> 8) };
+        PlaySoundAt(356, sx, sy, 0, 0, kNoSession, PetTarget(pets_[idx]));
+        SendFxAllCli(sx, sy, smoke, sizeof(smoke));
+        ++skeletonDeadFn_;
         return;
     }
     else { ++deadFnStat_[2]; return; }
@@ -19579,6 +19788,7 @@ void Server::GiveTestItems() {
         if (o.testItemsFrom == 0) o.testItemsFrom = frame_ + 2 * kServerTickRate;
         if (frame_ < o.testItemsFrom) continue;
         o.testItemsGiven = true;
+        std::map<uint16_t, uint16_t> firstNc;   // ★ 11-20 트레일러 작업 — 종류 → 이번에 넣은 첫 번호(기본 장비 롱소드와 가르려고)
         for (uint16_t type : giveItems_) {
             const auto it = gt_->itemTemplate.find(type);
             if (it == gt_->itemTemplate.end()) { ++testItemsNoTemplate_; continue; }
@@ -19588,13 +19798,31 @@ void Server::GiveTestItems() {
             c.type = type;
             c.equipped = false;
             c.decayExempt = DecayExempt::None;
+            if (const auto gm = testGiveMods_.find(type); gm != testGiveMods_.end()) for (int m = 0; m < 4; ++m) c.mods[m] = gm->second[m];   // ★ 11-19 트레일러 작업
             const uint8_t pk[9] = { static_cast<uint8_t>(Op::REPORT_MODIFIABLE_PICKUP), static_cast<uint8_t>(c.netCode), static_cast<uint8_t>(c.netCode >> 8),
                                     static_cast<uint8_t>(type), static_cast<uint8_t>(type >> 8), c.mods[0], c.mods[1], c.mods[2], c.mods[3] };
             EmitSeq(o, pk, sizeof(pk));
             if (c.chargesMax != 0) SendCharges(o, c);
             o.inventory.push_back(c);
+            firstNc.emplace(type, c.netCode);
             ++testItemsGiven_;
         }
+        // ★ 11-20 트레일러 작업 — 사용자 「그냥 다 입혀 줘」 — 사람이 입기를 누른 것과 같은 함수(직업·힘 관문 · 같은 부위 벗기 · 알림)로 입힌다.
+        //   불 롱소드를 들면 기본 롱소드는 내려놓아 가방에 남고 · 강철 방패는 나무 방패를 벗긴다(같은 부위). V(대체 무기) =
+        //   서버가 `e0 <번호2> 00` 을 보내면 클라가 그 물건을 대체 무기로 적는다(`sub_467750` · 저장 파일 읽기 `GAME1_1.c:1267` 와 같은 꼴)
+        int wore = 0, wearFail = 0;
+        if (const auto f = firstNc.find(testWield_); testWield_ && f != firstNc.end()) (PlayerEquipWeapon(o, f->second, false) ? wore : wearFail)++;
+        for (uint16_t t : testWear_)
+            if (const auto f = firstNc.find(t); f != firstNc.end()) (PlayerEquipArmor(o, f->second, false) ? wore : wearFail)++;
+        bool altSet = false;
+        if (const auto f = firstNc.find(testAltWeapon_); testAltWeapon_ && f != firstNc.end()) {
+            const uint8_t msg[4] = { static_cast<uint8_t>(Op::REPORT_SECONDARY_WEAPON), static_cast<uint8_t>(f->second), static_cast<uint8_t>(f->second >> 8), 0 };
+            EmitSeq(o, msg, sizeof(msg));
+            o.secondaryWeapon = f->second;
+            altSet = true;
+        }
+        testWore_ += wore; testWearFail_ += wearFail;
+        Log("[입힘] %s 입음 %d · 못 입음 %d · V 칸 %s\n", AddrText(o.sessionId), wore, wearFail, altSet ? "있음" : "없음");
         Log("[시험물건] %s 가방에 %zu개 넣음(틀 없음 %llu)\n", AddrText(o.sessionId), giveItems_.size(), testItemsNoTemplate_);
         std::fflush(stdout);
     }
@@ -22057,6 +22285,21 @@ void Server::RunTick(int ticks) {
         debugSpellDone_ = true;
     }
 
+    // ★ 11-21 트레일러 작업 P1 — 사용자 결정 3 「아예 다 도감 차 있는 걸로」 — 컨저러가 들어오면 진단 옵션 없이도 안내서 1~40 전부
+    //   (아레나엔 안내서 두루마리가 없어 매혹(9)·소환이 막힌다 · 줄 때마다 소리 227 — 들어온 뒤 60틱에 한 번이라 촬영 전에 끝남 ·
+    //   이 뒤의 진단 블록은 `guideLvl[1]` 이 차 있어 건너뛴다)
+    for (auto& kv : sessions_) {
+        Session& s = kv.second;
+        if (!s.inGame || s.charClass != CharClass::Conjurer) continue;
+        if (s.debugGuideAt == 0) { s.debugGuideAt = frame_ + 60; continue; }
+        if (frame_ < s.debugGuideAt || s.guideLvl[1] != 0) continue;
+        int sent = 0, have = 0;
+        for (uint8_t g = 1; g <= 40; ++g) sent += GuideAward(s, g, false) ? 1 : 0;
+        for (uint8_t g = 1; g <= 40; ++g) have += (s.guideLvl[g] != 0) ? 1 : 0;
+        Log("[안내서] 프레임 %u 에 %s 컨저러 안내서 1~40 — 보냄 %d · 가진 칸 %d / 40\n", frame_, AddrText(s.sessionId), sent, have);
+        std::fflush(stdout);
+    }
+
     // ★ 진단 — 컨저러에게 박쥐·흰거미 둘·거미 안내서(`--debug-conjurer-guides`, 09-24 사람 판).
     //   정답지에서 안내서는 맵 두루마리 줍기(`GAME4_3.c:8104~8120`)나 저장 캐릭터 읽기(`GAME1_1.c:1543~1568`)로만 온다 —
     //   우리는 둘 다 없어 컨저러가 부를 짐승이 없다. 들어온 것을 본 뒤 60틱 뒤에 1 Bat · 7 AlbinoSpider · 8 SmallAlbinoSpider · 24 Spider
@@ -22949,6 +23192,7 @@ void Server::RunTick(int ticks) {
                       /*playerFrame=*/k.animFrame == 255 ? -1 : static_cast<int>(k.animFrame),
                       static_cast<uint8_t>(animIdx));
             ++monsterAnimSent_[animIdx & 0x0F];
+            ++sentByType_[k.type];   // ★ 11-20 트레일러 작업
             Relativize(e, k.netCode, static_cast<int>(k.x), static_cast<int>(k.y),
                        baseX, baseY);
             m.objects.push_back(e);

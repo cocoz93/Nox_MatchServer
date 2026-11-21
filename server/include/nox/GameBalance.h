@@ -479,6 +479,15 @@ constexpr double kEnergyBoltPerFrame[5] = { 1.3, 1.6, 2.0, 2.3, 2.6 };
 constexpr double kLightningPerFrame     = 1.5;
 constexpr double kLightningRange        = 240.0;   // ⭕ gamedata `LightningRange`
 
+// ★ 11-21 이 서버의 사양(정품 값 아님 · 사용자 11-20 「캐릭터 공격력 2배」 · 11-21 「실제 게임 돌 때도 이렇게」).
+//   시험은 이 값으로 기대값을 셈한다 — 사양을 바꾸면 여기 하나를 고치고 그 값을 보는 시험이 따라온다
+constexpr int kPlayerVsMonsterDamageMult = 2;       // 사람이 몬스터(소환수 포함)를 때린 피해 × 2 — 롱소드 ≈38 → 76 = 좀비 한 대(원본 표 계산)
+constexpr int kBeamManaPerHit = 1;                  // 에너지 볼트(24)·번개(43)가 몬스터를 맞힌 틱마다 마나 + 이 값(맞힌 몬스터 하나당) —
+                                                    //   두 빔이 틱마다 쓰는 마나 1 과 같아 한 마리면 쓰는 만큼 차고, 번개가 여럿 맞히면 남는다
+constexpr bool kArenaQuestSummons = true;          // 큰 악마(111)·리치(112)·녹색 마법사(113)·성게 주술사(114)를 아레나에서도 부른다(원본은 퀘스트 전용 ·
+                                                    //   사용자 11-20 「예외로 두자 · 커스텀 느낌」 · 11-21 「예외로 두지」)
+constexpr int kChannelLifeMult = 5;                 // 생명 전환(8) 빠르기 × 이 값 — 원본은 틱마다 체력 1 → 마나 1(초당 30) · 300 을 바꾸는 데 10초 → 2초
+
 
 // ── 속도 ─────────────────────────────────────────────────────────
 //
@@ -645,6 +654,8 @@ constexpr MonsterStats kMonsters[] = {
     { "Lich",               1342,   300,    0,    0.0,    55,   0,  0,  nullptr,       200.0,  0,  0, 1.3, 120000 },   // 리치 · 모드 구분 없음
     { "WizardGreen",        1335,   160,    0,    0.0,    80,   0,  0,  nullptr,       200.0,  0,  0, 1.2,  95000 },   // 녹색 마법사(113 「드라이어드」 자리 · 이름표 39)
     { "UrchinShaman",       1340,    30,    0,    0.0,    80,   0,  0,  nullptr,       200.0,  0,  0, 1.3,  40000 },   // 성게 주술사 · ARENA 30·80·1.3(SOLO 40·70·1.4)
+    // ★ 11-20 트레일러 작업 — 트레일러 전사 맵 시전자 둘 ⭕ `nox_datadump monster.bin --out`(근접·발사체 이름 NULL — 공격은 자동 주문뿐) · Lich·해골 둘 줄은 11-21 C7·C11-a 커밋으로 올라감
+    { "Wizard",             1327,   100,    0,    0.0,    50,   0,  0,  nullptr,       200.0,  0,  0, 1.3,  80000 },   // HEALTH 100
 };
 
 // ★ 09-23 nine-defects 2-a4 — monster.bin `STATUS` 에 **`CAN_CAST_SPELLS`** 가 있는 몬스터(정답지 `MonStatusCanCastSpells` 0x20 ·
@@ -735,6 +746,7 @@ inline MonsterBrainInfo MonsterBrainOf(uint16_t wire) {
         case 1342: return { 0x28, 0.0f, 0.4f, 65.0f };   // Lich — CAN_CAST_SPELLS+CAN_DODGE · ARENA 후퇴 0(SOLO 0.2) · 회복 0.4 · 도망 거리 65
         case 1335: return { 0x28, 0.25f, 0.5f, 0.0f };   // WizardGreen — 후퇴 0.25(모드 구분 없음 — 멀티에서도 물러난다) · 회복 0.5
         case 1340: return { 0x28, 0.25f, 0.5f, 65.0f };  // UrchinShaman — 후퇴 0.25(모드 구분 없음) · 회복 0.5 · 도망 거리 65
+        case 1327: return { 0x28, 0.2f, 0.5f, 65.0f };   // Wizard ★ 11-20 트레일러 작업 — CAN_CAST_SPELLS+CAN_DODGE · 후퇴 0.2(모드 구분 없음) · 회복 0.5 · 도망 거리 65
         default:   return {};
     }
 }
@@ -786,6 +798,7 @@ inline MonsterMoveSound MonsterMoveSoundOf(uint16_t wire) {
         case 1342: return { 0, 4 };   // Lich
         case 1335: return { 0, 4 };   // WizardGreen
         case 1340: return { 0, 4 };   // UrchinShaman
+        case 1327: return { 0, 4 };   // Wizard ★ 11-20 트레일러 작업
         default:   return {};
     }
 }
@@ -807,6 +820,7 @@ inline int MonsterMissileFrameOf(uint16_t wire) {
         case 1342: return 4;   // Lich
         case 1335: return 4;   // WizardGreen
         case 1340: return 4;   // UrchinShaman
+        case 1327: return 4;   // Wizard ★ 11-20 트레일러 작업
         default:   return 0;   // 나머지는 파일 값 0
     }
 }
@@ -852,6 +866,7 @@ inline int MonsterMeleeFrameOf(uint16_t wire) {
         case 1352: return 4;   // SpittingSpider
         case 1331: return 5;   // Wasp
         case 1342: return 4;   // Lich ★ 11-21 C11-a — 근접 함수 NULL · 사거리 0 이라 값만(도깨비불·녹색 마법사·성게 주술사는 0)
+        case 1327: return 4;   // Wizard ★ 11-20 트레일러 작업(근접 NULL — 값만)
         default:   return 0;
     }
 }

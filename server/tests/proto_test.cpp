@@ -3283,6 +3283,7 @@ void TestDamageHandler() {
         Check(back >= 8 && back <= 9, "움찔이 RECOIL 8칸 뒤에 13 으로 안 돌아왔다");
     }
     // ⑤ 몬스터 — 불 면역은 종류 1 무시 · 종류 0 은 깎임 · 기계 골렘 피해 함수는 전기 두 배 · 내 소환수는 내가 쳐도 안 깎임
+    //   ★ 11-21 사양 — 사람이 때린 몬스터 피해 × kPlayerVsMonsterDamageMult(b 는 사람)
     {
         nox::CSyncHost srv;
         srv.DebugEnterGame(a, 728);
@@ -3299,11 +3300,11 @@ void TestDamageHandler() {
         srv->DebugHurt(Sid(srv, ""), 0, 10, Sid(srv, b), 1); srv.TakeOut(out);
         Check(srv->DebugPetHealth(0) == 100, "불 면역인데 종류 1 에 깎였다");
         srv->DebugHurt(Sid(srv, ""), 0, 10, Sid(srv, b), 0); srv.TakeOut(out);
-        Check(srv->DebugPetHealth(0) == 90, "종류 0 이 10 깎지 않았다(몬스터는 방어 없음)");
+        Check(srv->DebugPetHealth(0) == 100 - 10 * nox::kPlayerVsMonsterDamageMult, "종류 0 이 10 × 배수 깎지 않았다(몬스터는 방어 없음)");
         srv->DebugHurt(Sid(srv, ""), 0, 10, Sid(srv, b), 9); srv.TakeOut(out);
-        Check(srv->DebugPetHealth(0) == 70, "기계 골렘 피해 함수가 전기를 두 배로 안 했다");
+        Check(srv->DebugPetHealth(0) == 100 - 30 * nox::kPlayerVsMonsterDamageMult, "기계 골렘 피해 함수가 전기를 두 배로 안 했다");
         srv->DebugHurt(Sid(srv, ""), 0, 10, Sid(srv, a), 0); srv.TakeOut(out);
-        Check(srv->DebugPetHealth(0) == 70, "주인이 자기 소환수를 쳤는데 깎였다(편 거르기)");
+        Check(srv->DebugPetHealth(0) == 100 - 30 * nox::kPlayerVsMonsterDamageMult, "주인이 자기 소환수를 쳤는데 깎였다(편 거르기)");
     }
     // ⑥ 무적이면 안 깎인다(버프 23)
     {
@@ -5493,7 +5494,7 @@ void TestDamageBuffs() {
         s3->DebugApplyEnchantPet(0, 17, 0, 1);
         const uint16_t p0 = s3->DebugPetHealth(0);
         s3->DebugHurt(Sid(s3, std::string()), 0, 4, Sid(s3, b), 1); s3.TakeOut(o3);
-        Check(s3->DebugPetHealth(0) == p0 - 2, "소환수 불 보호(0.5)가 피해를 절반으로 안 줄였다");
+        Check(s3->DebugPetHealth(0) == p0 - 2 * nox::kPlayerVsMonsterDamageMult, "소환수 불 보호(0.5)가 피해를 절반으로 안 줄였다(4 × 배수 → 절반)");
     }
 
     // ⑥ 되받아치기 방패(27) 사람 — 앞쪽 종류 16 은 막고 `84` · 뒤쪽이면 맞음 · 앞쪽 투사체는 막음 · 앞쪽 칼(0)은 맞음
@@ -6117,7 +6118,7 @@ void TestReportFramework() {
         const auto toA7 = FlattenTo(out, a), toB7 = FlattenTo(out, b);
         const auto* da = petDelta(toA7);
         const auto* db = petDelta(toB7);
-        Check(da && db && delta(da) == -10 && delta(db) == -10, "소환수 피해 42(−10 · 소환수 번호)가 a·b 둘 다에게 안 갔다");
+        Check(da && db && delta(da) == -10 * nox::kPlayerVsMonsterDamageMult && delta(db) == -10 * nox::kPlayerVsMonsterDamageMult, "소환수 피해 42(−10 × 배수 · 소환수 번호)가 a·b 둘 다에게 안 갔다");
     }
     std::printf("  갱신 알림 정답지화 — 42 보는 사람별·2틱·음수만·합침·소환수 · 43 바뀔 때만 · 45 다음 틱·겹침 지움·워리어 없음 · +2184 dd/de/48 · 부활 기록\n");
 }
@@ -6238,6 +6239,48 @@ void TestHealSpells() {
     std::printf("  4-b5a — LesserHeal 15(기획값×배수 1.0)·자기 최대 마나 되돌림·남에게는 안 되돌림 · RestoreHealth·Wink 가득 · RestoreMana 가득 · 대상 없음 마나 되돌림\n");
 }
 
+// ★ 11-21 사양(원본 밖) — 생명 전환 kChannelLifeMult(5)배(사용자 11-21 「나머지는 니 권장대로」 · 「실제 게임 돌 때도」)
+//   ① 실물 계수(gamedata.bin ARENA 0.5·0.75·1·1.25·1.5 — 세기 3 = 1.0)로 10틱 — 체력 50·마나 50(원본이면 10·10)
+//   ② 체력 8 에서 — 1 에서 멈춘다(깎은 7 · 안 죽음)
+void TestChannelLifeMult1121() {
+    const std::string a = "10.11.21.31:9541";
+    const std::string b = "10.11.21.32:9542";
+    char msg[260];
+    struct Res { int lost = 0, gave = 0, hpEnd = 0; unsigned long long cnt = 0; };
+    auto run = [&](int startHp, int ticks) {
+        Res r;
+        nox::CSyncHost srv;
+        nox::Gamedata g;
+        g.Parse("ChannelLifeCoeff = 0.5, 0.75, 1, 1.25, 1.5;\n" "SummonDuration = 60, 210, 375;\n");
+        srv->SetGamedata(g);
+        srv->SetSpellDef(8, 10, 0x1000000, { 1, 2 });        // TestChannelLife 와 같음
+        srv.DebugEnterGame(a, 906, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 907, false, nox::CharClass::Wizard);
+        srv->DebugMoveTo(Sid(srv, b), 1100, 1000);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        srv.Tick(ms, out);
+        srv->DebugManaSub(Sid(srv, b), 150);                  // 대상 마나를 비운다(가득이면 곧바로 끝)
+        if (startHp > 0) srv->DebugSetHealth(Sid(srv, a), static_cast<uint16_t>(startHp));
+        uint16_t aHp = srv->HealthOf(Sid(srv, a)), bMana = srv->ManaOf(Sid(srv, b));
+        srv->DebugAimAt(Sid(srv, a), 1100, 1000);
+        CastAndWait(srv, a, 8, false, ms, out);
+        if (startHp <= 0) { aHp = srv->HealthOf(Sid(srv, a)); bMana = srv->ManaOf(Sid(srv, b)); }   // ① 은 시전 뒤부터 잰다
+        const unsigned long long hpCnt0 = srv->channelLifeHp_;
+        for (int t = 0; t < ticks; ++t) { ms += 34; srv.Tick(ms, out); }
+        r.lost = static_cast<int>(aHp) - static_cast<int>(srv->HealthOf(Sid(srv, a)));
+        r.gave = static_cast<int>(srv->ManaOf(Sid(srv, b))) - static_cast<int>(bMana);
+        r.hpEnd = srv->HealthOf(Sid(srv, a));
+        r.cnt = startHp > 0 ? srv->channelLifeHp_ : srv->channelLifeHp_ - hpCnt0;
+        return r;
+    };
+    const Res on = run(0, 10), low = run(8, 10);
+    std::snprintf(msg, sizeof(msg), "생명 전환 %d배 — 10틱: 체력 %d · 마나 %d · 센 체력 %llu | 체력 8 에서: 깎음 %d · 남음 %d · 마나 %d · 센 체력 %llu",
+                  nox::kChannelLifeMult, on.lost, on.gave, on.cnt, low.lost, low.hpEnd, low.gave, low.cnt);
+    std::printf("  (%s)\n", msg);
+    Check(on.lost == 10 * nox::kChannelLifeMult && on.gave == 10 * nox::kChannelLifeMult && on.cnt == 10ull * nox::kChannelLifeMult &&
+          low.lost == 7 && low.hpEnd == 1 && low.gave == 7 && low.cnt == 7, msg);
+}
+
 // ── 묶음 4-b5b(1) — 생명을 마나로 옮기는 주문(ChannelLife 8) ──────────────
 //
 // 정답지: spells.go:233 → duration.New(nil, sub_52F460, nil, 0) · sub_52F460(GAME4_2.c:11444)
@@ -6274,8 +6317,10 @@ void TestChannelLife() {
         for (int t = 0; t < 10; ++t) { ms += 34; srv.Tick(ms, out); }
         const int gaveMana = static_cast<int>(srv->ManaOf(Sid(srv, b))) - static_cast<int>(bMana);
         const int lostHp = static_cast<int>(aHp) - static_cast<int>(srv->HealthOf(Sid(srv, a)));
-        Check(lostHp >= 9 && lostHp <= 11, "시전자가 틱마다 1 씩 안 깎였다");
-        Check(gaveMana >= 4 && gaveMana <= 6, "대상 마나가 0.5/틱(이월 포함) 으로 안 찼다");
+        // ★ 11-21 사양 — 한 틱에 원본 틱 kChannelLifeMult 번 몫(원본 범위 9~11 · 4~6 을 배수만큼)
+        const int K = nox::kChannelLifeMult;
+        Check(lostHp >= 9 * K && lostHp <= 11 * K, "시전자가 틱마다 1 × 배수 씩 안 깎였다");
+        Check(gaveMana >= 4 * K && gaveMana <= 6 * K, "대상 마나가 0.5/틱 × 배수(이월 포함) 으로 안 찼다");
         Check(gaveMana < lostHp, "계수 0.5 인데 마나가 깎인 체력만큼 올랐다(이월을 안 쓴 것)");
     }
 
@@ -21788,6 +21833,9 @@ void TestPetDamageStops() {
     Check(srv->petCount() == 1, "맵 몬스터가 안 섰다(시험 전제)");
     const uint16_t hp0 = srv->DebugPetHealth(0);
     Check(hp0 > 0, "몬스터 체력이 0 이다(시험 전제)");
+    // ★ 11-21 — 공격력 배수(kPlayerVsMonsterDamageMult)면 ③ 에서 작은 거미(25)가 죽는다 · 죽는 갈래(`KillPet`)는 이름표가 없어 이 셈이 안 닫히므로 체력을 넉넉히
+    srv->DebugSetPetHealth(0, 1000);
+    const uint16_t hp0b = srv->DebugPetHealth(0);
 
     // ① **칸 밖** — 없는 자리를 때리면 그 이름으로 세야 한다.
     //   ★ 09-16 에 잡은 결함이 바로 이 자리로 샜다(장애물 색인이 소환수 색인으로).
@@ -21803,7 +21851,7 @@ void TestPetDamageStops() {
     mon.rootIsMonster = true;
     srv->DebugHurt(Sid(srv, std::string()), 0, 10, Sid(srv, std::string()), 3,&mon); srv.TakeOut(out);
     Check(count(srv, "편아님(소환수)") == 1, "맵 몬스터끼리 때렸는데 「편아님」으로 안 센다");
-    Check(srv->DebugPetHealth(0) == hp0, "적이 아닌데 체력이 깎였다");
+    Check(srv->DebugPetHealth(0) == hp0b, "적이 아닌데 체력이 깎였다");
 
     // 09-20 — **덫 화살**(주인 없음 · 뿌리가 몬스터 아님)은 맵 몬스터를 **때린다**
     const uint16_t hpTrap = srv->DebugPetHealth(0);
@@ -21813,7 +21861,7 @@ void TestPetDamageStops() {
     // ③ **깎임** — 사람이 때리면 들어간다. 여기까지 와야 셈이 닫힌다
     srv->DebugHurt(Sid(srv, std::string()), 0, 10, Sid(srv, a), 3); srv.TakeOut(out);
     Check(count(srv, "깎임(소환수)") == 2, "사람이 때렸는데 「깎임」이 2(덫 화살 + 사람)가 아니다");
-    Check(srv->DebugPetHealth(0) < hp0, "사람이 때렸는데 체력이 안 깎였다");
+    Check(srv->DebugPetHealth(0) < hp0b, "사람이 때렸는데 체력이 안 깎였다");
 
     // ④ **셈이 닫히나** — 부른 횟수 = 이탈구 합. 안 닫히면 아직 이름 없는 자리가 있다는 뜻이다
     unsigned long long petSum = 0;
@@ -24776,6 +24824,7 @@ void TestSummonGolems1120() {
     }
     // 큰 악마(111)는 퀘스트에서만(`sub_4D7100` `GAME3_2.c:3368~3369` — 게임 깃발 4096 이 아니면 111~114 는 코드 10) —
     //   아레나는 지속 주문조차 안 걸리고 · 퀘스트(웨이브는 멀리)면 나온다 + 자동 주문 다섯
+    //   ★ 11-21 사양 — kArenaQuestSummons 면 아레나도 퀘스트와 같다
     for (const bool quest : { false, true }) {
         nox::CSyncHost srv; mkSum(srv);
         if (quest) srv->StartQuest(2, 5000, 5000, 100.0);
@@ -24791,7 +24840,7 @@ void TestSummonGolems1120() {
         std::snprintf(msg, sizeof(msg), "C1 ② 큰 악마 소환(111) 퀘스트 %d — 시전 뒤 지속 %zu · 몬스터 %zu → %zu · 악마 칸 %d · 주문 %zu · 화염구 %d",
                       int(quest), durAfterCast, before, srv->pets(), demon, demon < 0 ? size_t(0) : srv->DebugPetSpellCount(size_t(demon)),
                       demon < 0 ? 0 : int(srv->DebugPetHasSpell(size_t(demon), 27)));
-        if (!quest) Check(durAfterCast == 0 && demon < 0 && srv->pets() == before, msg);
+        if (!quest && !nox::kArenaQuestSummons) Check(durAfterCast == 0 && demon < 0 && srv->pets() == before, msg);
         else        Check(durAfterCast == 1 && demon >= 0 && srv->DebugPetSpellCount(size_t(demon)) == 5 && srv->DebugPetHasSpell(size_t(demon), 27), msg);
     }
     // ③ 골렘 근접 — 골렘(맵 몬스터 · 동쪽을 봄) 1000,1000 · 몸 25 · 사거리 50 → 가장자리 거리 = 중심 − 35
@@ -25327,7 +25376,7 @@ void TestTurnUndead1121() {
               srv->turnUndeadStat(TS::GoneAge) == 0 && srv->DurCount() == 0, msg);
     }
     // ③ 닿음 — A(1100,1000 · 100) · B(1200,1000 · 200) 는 언데드 · C(1000,1100 · 50) 는 아님
-    //   0번이 A(20 프레임)를 죽이고 B(45)에 150 을 다 쓴다 · 252번(−5.6° — 수직 거리 19.6 < 몸 둘 20)이 50 프레임에 B 에 닿지만 양이 0 이라 그냥 사라진다
+    //   0번이 A(20 프레임)를 죽이고 B(45)에 150 을 다 쓴다(★ 11-21 사양 — 깎이는 건 150 × kPlayerVsMonsterDamageMult · 양은 150 그대로) · 252번(−5.6° — 수직 거리 19.6 < 몸 둘 20)이 50 프레임에 B 에 닿지만 양이 0 이라 그냥 사라진다
     {
         nox::CSyncHost srv; mk(srv);
         const std::vector<Pin> pins = { { 1100, 1000, 100 }, { 1200, 1000, 200 }, { 1000, 1100, 50 } };
@@ -25340,7 +25389,7 @@ void TestTurnUndead1121() {
                       unsigned(srv->DebugPetHealth(0)), int(srv->DebugPetDead(0)), unsigned(srv->DebugPetHealth(1)), unsigned(srv->DebugPetHealth(2)),
                       srv->DebugTurnUndeadPoints(), srv->turnUndeadStat(TS::HitKill), srv->turnUndeadStat(TS::HitSpent), srv->turnUndeadStat(TS::HitEmpty),
                       srv->turnUndeadStat(TS::HitCorpse), srv->missiles(), ha0, int(srv->HealthOf(Sid(srv, a))));
-        Check(srv->DebugPetHealth(0) == 0 && srv->DebugPetDead(0) && srv->DebugPetHealth(1) == 50 && srv->DebugPetHealth(2) == 50 &&
+        Check(srv->DebugPetHealth(0) == 0 && srv->DebugPetDead(0) && srv->DebugPetHealth(1) == std::max(0, 200 - 150 * nox::kPlayerVsMonsterDamageMult) && srv->DebugPetHealth(2) == 50 &&
               srv->DebugTurnUndeadPoints() == 0 && srv->turnUndeadStat(TS::HitKill) == 1 && srv->turnUndeadStat(TS::HitSpent) == 1 &&
               srv->turnUndeadStat(TS::HitEmpty) == 1 && srv->turnUndeadStat(TS::HitCorpse) >= 1 && srv->missiles() == 41 &&
               srv->HealthOf(Sid(srv, a)) == ha0, msg);
@@ -26777,7 +26826,7 @@ void TestCasterFourSummon1121() {
             for (int t = 0; t < 60; ++t) { ms += 34; srv.Tick(ms, out); }
             int idx = -1, n = 0;
             for (size_t i = 0; i < srv->pets(); ++i) if (srv->DebugPetType(i) == sc.type && srv->DebugPetOwner(i) == Sid(srv, a)) { idx = static_cast<int>(i); ++n; }
-            const bool allowed = !sc.questOnly || quest;
+            const bool allowed = !sc.questOnly || quest || nox::kArenaQuestSummons;   // ★ 11-21 사양 — 아레나도 부름
             if (!allowed) {
                 std::snprintf(msg, sizeof(msg), "C11-a ② 주문 %u 아레나 — 지속 %zu · 몬스터 %zu → %zu(거절이어야)", unsigned(sc.spell), durAfter, before, srv->pets());
                 Check(durAfter == 0 && n == 0 && srv->pets() == before, msg);
@@ -27429,6 +27478,114 @@ void TestMonsterTargetSpells1121() {
 //   ③ 길에 벽 — 보통 벽(방향 0 + 8 → 합침 5 · 그쪽 멈춤) · 부서지는 벽(멈춤) · 끝나면 합친 벽에 옛 값 `3d`(Go 그대로 합친 값 — 모양이 남는다)
 //   ③-2 비밀 벽에서 멈춤 · ④ 판 가장자리(x 256)에서 멈춤 · ⑤ 마법 벽·투명 벽 위에는 안 세움 · ⑥ 정의 없음 · ⑦ 선 막힘(알림 0·2)
 //   ⑧ 부수기 — 깎임(체력 정의 값) · 부서지면 `3e` · `3a` 없음 · 퀘스트 한 방은 마법 벽만 빠짐(보통 부서지는 벽이 대조군)
+// ★ 11-21 사양(원본 밖) — 사람이 쏜 에너지 볼트(24)·번개(43)는 **마법 벽 너머도** 맞힌다 ·
+//   **진짜 벽 너머는 그대로** 못 맞힌다(사용자 11-21 「응 번개만으로 하자」 · `BeamCanInteract`).
+//   벽 칸은 W10 ① 동쪽 세기 1 과 같은 일곱 칸 — 마법 벽은 주문(132)으로 세우고, 진짜 벽은 같은 칸에 정의 0 으로 깐다.
+//   전제 — 두 판 다 「보통 추적(0x9)으로 a → b 가 막힌다」를 먼저 본다(벽이 선 위에 없어서 맞은 것이 아니게)
+void TestBeamThroughMagicWall1121() {
+    const std::string a = "10.11.21.27:9537";   // 시전자(위저드)
+    const std::string b = "10.11.21.28:9538";   // 벽 너머 사람
+    char msg[300];
+    struct Cell { uint8_t x, y, dir; };
+    const Cell east1[] = { { 47, 43, 10 }, { 46, 44, 8 }, { 47, 45, 10 }, { 46, 46, 8 }, { 46, 42, 8 }, { 47, 41, 10 }, { 46, 40, 8 } };
+    struct Res { bool wallUp = false, blocked = false; int lost = 0; unsigned long long pass = 0; };
+    auto run = [&](bool magic, uint8_t spell) {
+        Res r;
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        nox::Gamedata g;
+        g.Parse("EnergyBoltDamage = 1.3, 1.6, 2.0, 2.3, 2.6;\nLightningDamage = 1.5;\nLightningRange = 240;\nLightningSearchTime = 30;\n"
+                "SummonDuration = 60, 210, 375;\n");
+        srv->SetGamedata(g);
+        srv->SetSpellDef(132, 30, 0x02300000u, { 0, 1, 2 });   // thing.bin SPELL_WALL(W10 시험과 같음)
+        srv->SetSpellDef(24, 0, 0x1000000, { 1, 2 });          // TestEnergyBolt 와 같음
+        RegSpell(srv, 43, 0);
+        std::vector<nox::Server::WallDefExtra> ex(4);
+        ex[0].health = 30; ex[1].health = 50; ex[1].field749 = 4;
+        srv->SetWallDefExtras(ex);
+        srv->SetMagicWallTiles(1, 2, 3);
+        std::vector<nox::Server::WallTileIn> cells;
+        if (!magic) for (const Cell& c : east1) cells.push_back(nox::Server::WallTileIn{ c.x, c.y, c.dir, 0, false });
+        cells.push_back(nox::Server::WallTileIn{ 200, 200, 0, 0, false });
+        srv->SetWallTiles(cells);
+        srv.DebugEnterGame(a, 904, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 905, false, nox::CharClass::Warrior);
+        srv->DebugSetScreenHalf(Sid(srv, a), 320, 240);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv->DebugMoveTo(Sid(srv, b), 1180, 1000);             // 벽 칸(x 46~47) 너머 · 빔 거리 240 안
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        if (magic) srv->DebugSpellAcceptOn(Sid(srv, a), 132, 1, nox::Target{}, 1100.0f, 1000.0f);
+        ms += 34; srv.Tick(ms, out);
+        r.wallUp = srv->DebugWallTileAt(47, 43) == (magic ? 1 : 0);
+        r.blocked = !srv->DebugTraceRayFlags(1000.0f, 1000.0f, 1180.0f, 1000.0f, 0x9);
+        const uint16_t hp0 = srv->HealthOf(Sid(srv, b));
+        CastAndWait(srv, a, spell, spell == 24, ms, out);
+        for (int t = 0; t < 5; ++t) { ms += 34; srv.Tick(ms, out); }
+        r.lost = static_cast<int>(hp0) - static_cast<int>(srv->HealthOf(Sid(srv, b)));
+        r.pass = srv->beamWallPass_[spell == 24 ? 0 : 1];
+        return r;
+    };
+    for (const uint8_t spell : { static_cast<uint8_t>(24), static_cast<uint8_t>(43) }) {
+        const Res m = run(true, spell), w = run(false, spell);
+        std::snprintf(msg, sizeof(msg), "번개 벽 너머 %u — 마법 벽: 섬 %d · 막힘 %d · 잃음 %d · 너머 검사 %llu | 진짜 벽: 섬 %d · 막힘 %d · 잃음 %d · 너머 검사 %llu",
+                      spell, m.wallUp ? 1 : 0, m.blocked ? 1 : 0, m.lost, m.pass, w.wallUp ? 1 : 0, w.blocked ? 1 : 0, w.lost, w.pass);
+        std::printf("  (%s)\n", msg);
+        Check(m.wallUp && m.blocked && m.lost > 0 && m.pass > 0 && w.wallUp && w.blocked && w.lost == 0 && w.pass == 0, msg);
+    }
+}
+
+// ★ 11-21 사양(원본 밖) — 에너지 볼트(24)·번개(43)가 **몬스터**를 맞힌 틱마다 시전자 마나 + kBeamManaPerHit · 사람을 맞힌 것은 안 준다.
+//   같은 판에서 대상만 바꿔(곰 · 워리어) 다섯 틱 — 두 판의 시전자 마나 차이 = 곰 판에서 맞힌 수 × kBeamManaPerHit · 사람 판은 맞힌 수 0
+void TestBeamManaOnHit1121() {
+    const std::string a = "10.11.21.33:9543";   // 시전자(위저드)
+    const std::string b = "10.11.21.34:9544";   // 사람 대상(워리어)
+    char msg[300];
+    struct Res { int mana = 0, lost = 0; unsigned long long hits = 0, gain = 0; };
+    auto run = [&](bool monster, uint8_t spell) {
+        Res r;
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        nox::Gamedata g;
+        g.Parse("EnergyBoltDamage = 1.3, 1.6, 2.0, 2.3, 2.6;\nLightningDamage = 1.5;\nLightningRange = 240;\nLightningSearchTime = 30;\n"
+                "SummonDuration = 60, 210, 375;\n");
+        srv->SetGamedata(g);
+        srv->SetSpellDef(24, 0, 0x1000000, { 1, 2 });          // TestEnergyBolt 와 같음
+        RegSpell(srv, 43, 0);
+        srv.DebugEnterGame(a, 908, false, nox::CharClass::Wizard);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+        if (monster) {
+            nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
+            srv->SetTypeBody(1365, body);
+            srv->DebugSpawnPet(1365, 1100.0f, 1000.0f, Sid(srv, std::string()));
+            srv->DebugSetPetHealth(0, 1000);
+        } else {
+            srv.DebugEnterGame(b, 909, false, nox::CharClass::Warrior);
+            srv->DebugMoveTo(Sid(srv, b), 1100, 1000);
+        }
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        CastAndWait(srv, a, spell, spell == 24, ms, out);
+        srv->DebugSetMana(Sid(srv, a), 50);                     // 가득이면 찬 양이 0 이라 가운데로
+        const int which = spell == 24 ? 0 : 1;
+        const unsigned long long h0 = srv->beamManaHit_[which], g0 = srv->beamManaGain_[which];
+        const int hp0 = monster ? srv->DebugPetHealth(0) : srv->HealthOf(Sid(srv, b));
+        for (int t = 0; t < 5; ++t) { ms += 34; srv.Tick(ms, out); }
+        r.mana = srv->ManaOf(Sid(srv, a));
+        r.lost = hp0 - (monster ? srv->DebugPetHealth(0) : srv->HealthOf(Sid(srv, b)));
+        r.hits = srv->beamManaHit_[which] - h0;
+        r.gain = srv->beamManaGain_[which] - g0;
+        return r;
+    };
+    for (const uint8_t spell : { static_cast<uint8_t>(24), static_cast<uint8_t>(43) }) {
+        const Res m = run(true, spell), p = run(false, spell);
+        std::snprintf(msg, sizeof(msg), "맞히면 마나 %u — 곰: 깎음 %d · 맞힘 %llu · 찬 마나 %llu · 시전자 마나 %d | 사람: 깎음 %d · 맞힘 %llu · 시전자 마나 %d",
+                      spell, m.lost, m.hits, m.gain, m.mana, p.lost, p.hits, p.mana);
+        std::printf("  (%s)\n", msg);
+        Check(m.lost > 0 && p.lost > 0 && m.hits > 0 && p.hits == 0 &&
+              m.gain == m.hits * static_cast<unsigned long long>(nox::kBeamManaPerHit) &&
+              m.mana - p.mana == static_cast<int>(m.hits) * nox::kBeamManaPerHit, msg);
+    }
+}
+
 void TestMagicWall1121() {
     const std::string a = "10.11.21.17:9527";   // 시전자(위저드)
     const std::string b = "10.11.21.18:9528";   // 늦게 온 사람
@@ -28534,13 +28691,14 @@ void TestModEffects1120() {
     const float f = static_cast<float>(static_cast<double>(nox::StrengthOnline(nox::CharClass::Warrior) - 30) * static_cast<double>(0.30f) + 9);
     const int base = static_cast<int>(static_cast<long long>(static_cast<double>(f) + 0.5));
     const int pow6 = static_cast<int>(static_cast<long long>(static_cast<double>(1.2f * f) + 0.5));
+    const int M = nox::kPlayerVsMonsterDamageMult;   // ★ 11-21 사양 — 곰은 몬스터라 원본 피해 × 배수
     const R r0 = fight(0xff, 0xff, 0xff, false), rp = fight(5, 0xff, 0xff, false), rf = fight(0xff, 64, 0xff, false),
             rl = fight(0xff, 0xff, 95, false), ri = fight(0xff, 64, 0xff, true);
-    std::snprintf(msg, sizeof(msg), "② 피해 — 없음 %d(%d) · 위력6 %d(%d) · 불1 %d(+3) · 번개4 %d(+12) · 불 효과 %llu·%llu · 번개 %llu · 배수 %llu · 불똥30 %d · 파란 불꽃 %d · 안 옮김 %llu",
-                  r0.lost, base, rp.lost, pow6, rf.lost, rl.lost, rf.fire, r0.fire, rl.ltn, rp.dm, rf.sparks30, rl.blue, rf.notPorted + rl.notPorted + rp.notPorted);
-    Check(r0.melees == 1 && r0.lost == base && rp.lost == pow6 && rp.dm == 1 && r0.dm == 0 &&
-          rf.lost == base + 3 && rf.fire == 1 && rf.sparks30 == 1 && rf.gate0 == 1 &&
-          rl.lost == base + 12 && rl.ltn == 1 && rl.blue == 1 && r0.fire == 0 && r0.gate0 == 0 &&
+    std::snprintf(msg, sizeof(msg), "② 피해 — 없음 %d(%d) · 위력6 %d(%d) · 불1 %d(%d) · 번개4 %d(%d) · 불 효과 %llu·%llu · 번개 %llu · 배수 %llu · 불똥30 %d · 파란 불꽃 %d · 안 옮김 %llu",
+                  r0.lost, M * base, rp.lost, M * pow6, rf.lost, M * (base + 3), rl.lost, M * (base + 12), rf.fire, r0.fire, rl.ltn, rp.dm, rf.sparks30, rl.blue, rf.notPorted + rl.notPorted + rp.notPorted);
+    Check(r0.melees == 1 && r0.lost == M * base && rp.lost == M * pow6 && rp.dm == 1 && r0.dm == 0 &&
+          rf.lost == M * (base + 3) && rf.fire == 1 && rf.sparks30 == 1 && rf.gate0 == 1 &&
+          rl.lost == M * (base + 12) && rl.ltn == 1 && rl.blue == 1 && r0.fire == 0 && r0.gate0 == 0 &&
           rf.notPorted + rl.notPorted + rp.notPorted == 0, msg);
     std::snprintf(msg, sizeof(msg), "② 무적 곰 — 깎임 %d(0) · 관문 막음 %llu(1) · 불 효과 %llu(0)", ri.lost, ri.gate2, ri.fire);
     Check(ri.lost == 0 && ri.gate2 == 1 && ri.fire == 0, msg);
@@ -28620,10 +28778,11 @@ void TestModEffects1120() {
         };
         const C4 b0 = hit(0xff, false), bv = hit(107, false), bp = hit(108, false), w0 = hit(0xff, true), wd = hit(99, true);
         const int expDrain = static_cast<int>(static_cast<long long>(static_cast<double>(0.9f) * static_cast<double>(wd.victimLost)));
-        std::snprintf(msg, sizeof(msg), "④ 이름 %s·%s·%s · 흡혈 워리어 +%d(+7 · 없음 +%d) · 곰 독 %d(1 · 없음 %d) · 위저드 깎임 %d · 마나 %d(없음 %d − %d) · 효과 %llu·%llu·%llu",
-                      nm(107), nm(108), nm(99), bv.hpGain, b0.hpGain, bp.poison, b0.poison, wd.victimLost, wd.victimMana, w0.victimMana, expDrain, bv.vamp, bp.pois, wd.drain);
+        const int expVamp = static_cast<int>(static_cast<double>(0.20f) * static_cast<double>(M * base));   // 곰 38 × 배수 × 0.20 버림(원본 7)
+        std::snprintf(msg, sizeof(msg), "④ 이름 %s·%s·%s · 흡혈 워리어 +%d(+%d · 없음 +%d) · 곰 독 %d(1 · 없음 %d) · 위저드 깎임 %d · 마나 %d(없음 %d − %d) · 효과 %llu·%llu·%llu",
+                      nm(107), nm(108), nm(99), bv.hpGain, expVamp, b0.hpGain, bp.poison, b0.poison, wd.victimLost, wd.victimMana, w0.victimMana, expDrain, bv.vamp, bp.pois, wd.drain);
         Check(effs[107].name == "Vampirism4" && effs[108].name == "Venom1" && effs[99].name == "ManaSteal4" &&
-              bv.hpGain == 7 && b0.hpGain == 0 && bp.poison == 1 && b0.poison == 0 &&
+              bv.hpGain == expVamp && b0.hpGain == 0 && bp.poison == 1 && b0.poison == 0 &&
               wd.victimLost > 0 && expDrain > 0 && wd.victimMana == w0.victimMana - expDrain && bv.vamp == 1 && bp.pois == 1 && wd.drain == 1, msg);
     }
     // ⑤ 1-e — 불 고리1(68 · 공격 효과 FireRingEffect 2) — 한 번 휘두르면 때린 이 자리에 정화 불꽃(놓인 것 종류 6)이 깔린다 · 파란 불 고리1(72)도
@@ -29358,7 +29517,8 @@ void TestChakram1120() {
     }
     const int strW = nox::StrengthOnline(nox::CharClass::Warrior);
     // calcBoltDamage_4EF1E0 float → +0.5 버림(`collideChakram_4EAF00` `:5052~5055`) — 최소 5 · 계수 0.31 · 힘 20
-    const int wantRC = static_cast<int>(static_cast<long long>(static_cast<double>(static_cast<float>((strW - 20) * static_cast<double>(0.31f) + 5.0)) + 0.5));
+    const int wantRC = nox::kPlayerVsMonsterDamageMult *   // ★ 11-21 사양 — 곰은 몬스터라 원본 식 × 배수
+        static_cast<int>(static_cast<long long>(static_cast<double>(static_cast<float>((strW - 20) * static_cast<double>(0.31f) + 5.0)) + 0.5));
     // ⑫ 2-c 차크람 맞고 받기 — 곰 하나(1150,1000) · 튕김 4 → 3 · 곰에서 되튀고 둘레에 딴 것이 없어 그대로 돌아와 주인에 닿으면 받는다
     //   (가방 · 빈손이라 듦 · 본인 `4c` · 소리 892 · 날아가는 것 지움)
     {
@@ -29823,7 +29983,7 @@ void TestBowQuiver() {
                       nm(149), nm(155), nm(64), nm(80), r0.dt, rr.dt, r0.speed, rp.speed, r0.lost, rf.lost, r0.bx, rk.bx, rp.ps, rf.fire, rk.rec);
         Check(effs.size() == 212 && effs[149].name == "Readiness2" && effs[155].name == "ProjectileSpeed4" &&
               r0.dt > 4 && rr.dt == r0.dt - 4 && r0.speed > 0.0f && rp.speed == 1.5f * r0.speed && rp.ps == 1 &&
-              r0.lost == 62 && rf.lost == 65 && rf.fire == 1 && r0.fire == 0 && rk.bx > r0.bx + 1.0 && rk.rec == 1 && r0.rec == 0, m);
+              r0.lost == 62 * nox::kPlayerVsMonsterDamageMult && rf.lost == (62 + 3) * nox::kPlayerVsMonsterDamageMult && rf.fire == 1 && r0.fire == 0 && rk.bx > r0.bx + 1.0 && rk.rec == 1 && r0.rec == 0, m);
     }
     std::printf("  09-29 — 활·석궁·화살통: 줍기(직업·합치기 250·저절로 듦·충전 알림·소리) · 들기(활부터·먼저 든 화살통 놓기) · 놓기(활이면 화살통도) ·"
                 " 쏘기(칸 5·칸 1 · 19/20 · 885/886 · 14→13) · 피해 62 · 쇠뇌살 뚫기 · 재장전 칸 · 빈 화살통 지움·바꿔 듦·NoQuiver · 벽·막힘·수명·쏜 이·장애물\n");
@@ -41714,6 +41874,9 @@ int main() {
     TestMonsterSelfSpells1121();
     TestMonsterTargetSpells1121();
     TestMagicWall1121();
+    TestBeamThroughMagicWall1121();   // ★ 11-21 사양 — 사람 빔은 마법 벽 너머도
+    TestBeamManaOnHit1121();          // ★ 11-21 사양 — 몬스터 맞히면 마나
+    TestChannelLifeMult1121();        // ★ 11-21 사양 — 생명 전환 5배
     TestMoonglow1121();
     TestTag1121();
     TestLock1121();

@@ -2103,6 +2103,11 @@ int BuildRoomWorld(nox::Server& srv, const RoomSettings& opt, const GameFiles& f
             return 1;
         }
         srv.AttachMap(map->tables, map->initial);
+        // ★ 11-19 트레일러 작업 — 시작 맵에 맵 파일 몬스터(와 시작 구역 무리)를 띄운다
+        srv.LoadMapMobs(mapPath, MapKeyOf(mapPath));
+        // ★ 11-20 트레일러 작업 — Wiz10b 시작 자리(3089,5230)는 닿는 칸 70 인 닫힌 방이라 무리가 하나뿐 → `--spawn-at` 을 주면 시작 구역 무리도 거기서 편다
+        if (spawnAtX >= 0 && spawnAtY >= 0 && srv.startZone_) { srv.startZoneX_ = static_cast<float>(spawnAtX); srv.startZoneY_ = static_cast<float>(spawnAtY); }
+        srv.SpawnMapMobs();
         for (const auto& line : map->log) srv.Log("%s\n", line.c_str());   // 원본을 차리며 찍은 진단 줄 — 옛 방 로그와 같은 줄
         out.mapFlagPos = map->mapFlagPos;
         // 맵 몫 사이에 끼어 있던 방 설정 셋 — 옛 자리처럼 thing.bin 을 읽었을 때만(셋 다 맵 몫의 `if (files.thingOk)` 안에 있었다)
@@ -2116,13 +2121,138 @@ int BuildRoomWorld(nox::Server& srv, const RoomSettings& opt, const GameFiles& f
                 std::set<uint16_t> giveWires;
                 for (const auto& nm : giveItemNames)
                     if (const uint16_t gw = tdb.WireByName(nm)) giveWires.insert(gw);
-                for (const auto& w2 : map->initial->statics) {
+                // ★ 11-19 트레일러 작업 — 트레일러 전사 장비: 시작 맵 바닥에 없는 종류는 서버가 뜰 때 읽은 **다른 맵** 바닥에서 틀을 뜨고,
+                //   수식 넷(위력 · 재질 · 첫째 부여 · 둘째 부여)을 고른 값으로 덮는다. 번호 = modifier.bin 을 읽는 차례
+                //   (위력·품질 0~11 → 재질 12~59 → 부여 60~ · `server/modifiers.go:400~420` 의 s.cnt) — 대조: UserColor1 = 179(0xb3)가 정품 녹음 값과 같다
+                //   칸 차례 = 평상복 색(`DefaultGearMods`)과 modifier.bin 색 칸으로 맞춤 — [0] EFFECTIVENESS · [1] MATERIAL · [2] PRIMARY · [3] SECONDARY
+                //   4단계 부여는 첫째 칸만 · 둘째 칸은 3단계까지(ALLOWED_POSITION) · 불(Fire)은 도끼·망치에 안 붙음(ALLOWED_WEAPONS)
+                // ★ 11-20 트레일러 작업 — 위저드 판 = 가방 목록에 위저드 물건(로브 · 모자 · 지팡이)이 있을 때 — 망토 색이 전사(은색)와 갈린다
+                bool wizGive = false;
+                for (const auto& g : giveItemNames)
+                    if (g == "WizardRobe" || g == "WizardHelm" || g == "StaffWooden" || g.find("Wand") != std::string::npos) wizGive = true;
+                auto testMods = [wizGive](const std::string& nm, uint8_t md[4]) {
+                    // ★ 11-20 트레일러 작업 — 위저드 옷(사용자 「B 망토로 가자」 — 로브 + 모자 + 망토 · 선명한 파랑 + 금 띠) — UserColorN = 178 + N
+                    //   로브 몸통(첫째) UserColor13 191 · 띠(둘째) UserColor11 189 / 모자 보석(첫째) 금 · 모자 뒤(둘째) 파랑 —
+                    //   금속은 재질을 안 덮는다(재질4 는 ALLOWED_ARMOR 에서 천 갑옷이 빠짐) / 망토 테두리 둘 금 · 가운데(품질 칸)는 비워 원래 파랑(50,50,200)
+                    if (wizGive) {
+                        if (nm == "WizardRobe")    { md[0] = 0xff; md[1] = 0xff; md[2] = 191; md[3] = 189; return true; }
+                        if (nm == "WizardHelm")    { md[0] = 0xff; md[1] = 0xff; md[2] = 189; md[3] = 191; return true; }
+                        // 첫 판(첫째·둘째 둘 다 금)은 게임에서 망토가 **거의 다 금색**이었다(아이콘과 다름 — 그림 속 넓은 칸이 테두리 칸) → 첫째를 파랑으로
+                        if (nm == "MedievalCloak") { md[0] = 0xff; md[1] = 0xff; md[2] = 191; md[3] = 189; return true; }
+                    }
+                    static const char* const kBlade[] = { "Sword", "Longsword", "GreatSword", "FanChakram", "RoundChakram" };
+                    static const char* const kBlunt[] = { "BattleAxe", "OgreAxe", "WarHammer", "MorningStar" };
+                    static const char* const kArmor[] = { "Breastplate", "PlateArms", "PlateLeggings", "OrnateHelm", "SteelHelm" };
+                    auto in = [&](const char* const* a, size_t n) { for (size_t i = 0; i < n; ++i) if (nm == a[i]) return true; return false; };
+                    // 11-19 사용자 「전부 은색으로」 — 재질 7(푸른 강철) → 재질 4(밝은 은색 220,220,225 · 번호 15) · 테두리는 불 막이 빨강으로 통일
+                    if (in(kBlade, 5))      { md[0] = 5;  md[1] = 15; md[2] = 67;  md[3] = 106; return true; }   // 위력6 · 재질4 · 불4 · 흡혈3
+                    if (in(kBlunt, 4))      { md[0] = 5;  md[1] = 15; md[2] = 83;  md[3] = 106; return true; }   // 위력6 · 재질4 · 충격4 · 흡혈3
+                    // 11-19 사용자 「붉은 무늬 말고 전부 은색」 — 테두리(첫째 부여 칸)를 UserColor8(209,209,209 · 번호 179+7 = 186)로.
+                    //   갑옷에 붙는 부여 중 흰·회색은 이것뿐(총명 흰색은 투구만 · 색 없는 부여는 검정일 수 있어 안 씀) · ALLOWED_ARMOR = ALL_ARMOR · 첫째·둘째 다 됨
+                    // 11-20 — 투구 둘은 둘째 칸을 광채1(Brilliance1 · 번호 112 · ALLOWED_ARMOR = ALL_HELM_ARMOR · PRIMARY+SECONDARY)로 —
+                    //   투구는 modifier.bin 에 둘째 부여 색 칸(SECONDARYENCHANTMENT = COLORn)이 없어 은색 겉모습은 그대로 · 빛만 켜진다(사람 확인)
+                    if (nm == "OrnateHelm" || nm == "SteelHelm") { md[0] = 11; md[1] = 15; md[2] = 186; md[3] = 112; return true; }
+                    if (in(kArmor, 5))      { md[0] = 11; md[1] = 15; md[2] = 186; md[3] = 126; return true; }   // 품질6 · 재질4 · 은테 · 번개막이3(이 다섯은 둘째 색 칸이 없어 안 보임)
+                    if (nm == "SteelShield"){ md[0] = 11; md[1] = 15; md[2] = 186; md[3] = 186; return true; }   // 무늬 두 쪽(COLOR4·5) 다 은색
+                    if (nm == "PlateBoots") { md[0] = 11; md[1] = 15; md[2] = 186; md[3] = 146; return true; }   // 품질6 · 재질4 · 은테 · 빠르기3(안 보임)
+                    if (nm == "MedievalCloak") { md[0] = 11; md[1] = 0xff; md[2] = 186; md[3] = 186; return true; }   // 천이라 재질 없음 — 가운데(품질 칸) 230,230,255 · 바깥·아래 테두리 209 은색
+                    return false;
+                };
+                std::vector<const MapOriginal*> floors{ map.get() };
+                for (const auto& om : maps.maps) if (om && om.get() != map.get()) floors.push_back(om.get());
+                for (const MapOriginal* fm : floors) {
+                for (const auto& w2 : fm->initial->statics) {
                     const uint16_t wire = w2.type;
                     if (!giveWires.count(wire) || giveTemplated.count(wire) ||
                         wire == nox::kItemStreetShirt || wire == nox::kItemStreetPants || wire == nox::kItemStreetSneakers ||
                         wire == nox::kItemWizardRobe || wire == nox::kItemWoodenShield || wire == nox::kItemLongsword) continue;
-                    srv.SetItemTemplate(wire, nox::Server::CarriedFromStatic(w2));
+                    nox::Session::Carried tc = nox::Server::CarriedFromStatic(w2);
+                    for (const auto& nm : giveItemNames) if (tdb.WireByName(nm) == wire) { testMods(nm, tc.mods); break; }
+                    srv.SetItemTemplate(wire, tc);
                     giveTemplated.insert(wire);
+                }
+                }
+                // ★ 11-19 트레일러 작업 — 사용자 「불 롱소드」 — 기본 장비 여섯(롱소드 등)은 틀이 위 `[기본장비]` 블록에 이미 있고 부활 장비가 같이 쓴다.
+                //   틀은 그대로 두고 가방에 넣을 때만 수식을 덮는다(`GiveTestItems` 의 testGiveMods_) — 아래 thing.bin 틀 뜨기가 덮어쓰지 않게 먼저 표시
+                for (const auto& nm : giveItemNames) {
+                    const uint16_t gw = tdb.WireByName(nm);
+                    if (gw != nox::kItemLongsword && gw != nox::kItemWoodenShield && gw != nox::kItemWizardRobe &&
+                        gw != nox::kItemStreetShirt && gw != nox::kItemStreetPants && gw != nox::kItemStreetSneakers) continue;
+                    uint8_t md[4] = { 0xff, 0xff, 0xff, 0xff };
+                    if (testMods(nm, md)) srv.TestSetGiveMods(gw, md);
+                    giveTemplated.insert(gw);
+                }
+                // ★ 11-20 트레일러 작업 — 사용자 「그냥 다 입혀 줘 — 불 칼 + V 에 차크람 · 나머지는 가방」 —
+                //   투구는 한 부위라 OrnateHelm 하나만(SteelHelm 은 가방) · 들 것 = 불 롱소드 · V = RoundChakram(되돌아오는 차크람 — FanChakram 은 표창)
+                {
+                    std::vector<uint16_t> wear;
+                    for (const char* nm : { "Breastplate", "PlateArms", "PlateLeggings", "PlateBoots", "OrnateHelm", "SteelShield", "MedievalCloak" })
+                        for (const auto& g : giveItemNames)
+                            if (g == nm) { if (const uint16_t w = tdb.WireByName(nm)) wear.push_back(w); break; }
+                    // ★ 11-20 트레일러 작업 — 위저드 판(가방에 지팡이) — 모자를 쓰고 · 화염구 지팡이를 들고 · V = 포스 지팡이. 로브 색은 화면 본 뒤(사용자 취향)
+                    // ★ 11-20 트레일러 작업 — 손·V 는 `--give-items` 에서 **먼저 적은 지팡이 둘**(이름에 Wand) — 무기를 바꿔 볼 때 목록 차례만 바꾸면 된다
+                    //   11-20 사용자 「무기는 그냥 지팡이」 — StaffWooden 도 손에 드는 지팡이로 센다 · 입는 것 = 로브 · 모자 · 망토(준 것만)
+                    std::vector<uint16_t> wands;
+                    for (const auto& g : giveItemNames)
+                        if (g.find("Wand") != std::string::npos || g == "StaffWooden") if (const uint16_t w = tdb.WireByName(g)) wands.push_back(w);
+                    if (wizGive) {
+                        std::vector<uint16_t> ww;
+                        for (const auto& g : giveItemNames)
+                            if (g == "WizardRobe" || g == "WizardHelm" || g == "MedievalCloak") { if (const uint16_t w = tdb.WireByName(g)) ww.push_back(w); }
+                        srv.TestSetAutoEquip(std::move(ww), wands.empty() ? 0 : wands[0], wands.size() > 1 ? wands[1] : 0);
+                    } else
+                    srv.TestSetAutoEquip(std::move(wear), nox::kItemLongsword, tdb.WireByName("RoundChakram"));
+                }
+                // ★ 11-19 트레일러 작업 — 어느 맵 바닥에도 없는 종류(중세 망토 등)는 위 `[기본장비]` 틀과 같은 규칙으로 thing.bin 에서 뜬다
+                for (const auto& nm : giveItemNames) {
+                    const uint16_t gw = tdb.WireByName(nm);
+                    const nox::ThingInfo* ti = gw ? tdb.ByWire(gw) : nullptr;
+                    if (!ti || giveTemplated.count(gw)) continue;
+                    nox::Session::Carried c;
+                    bool isW = false;
+                    c.equipBit = nox::EquipBitFor(nm.c_str(), &isW);
+                    if (c.equipBit == 0) continue;
+                    c.isWeapon = isW;
+                    c.modifiable = ti->classRaw.find("WEAPON") != std::string::npos || ti->classRaw.find("ARMOR") != std::string::npos ||
+                                   ti->classRaw.find("WAND") != std::string::npos;
+                    c.weight = static_cast<uint8_t>(ti->weight < 0 ? 0 : (ti->weight > 255 ? 255 : ti->weight));
+                    c.weaponClass = ti->classRaw.find("WEAPON") != std::string::npos || ti->classRaw.find("WAND") != std::string::npos;
+                    c.wandClass = ti->classRaw.find("WAND") != std::string::npos;
+                    if (c.weaponClass) c.subclass = nox::WeaponClassBitsOf(ti->subclassRaw);
+                    else if (ti->classRaw.find("ARMOR") != std::string::npos) c.subclass = nox::ParseArmorClass(ti->subclassRaw);
+                    c.dropFn = nox::DropFnOf(ti->dropFn);
+                    // ★ 11-20 트레일러 작업 — 위저드 판: 지팡이는 어느 맵 바닥에도 없어 여기서 뜬다 → 충전·쏘기 종류가 비면 휘두르기만 한다.
+                    //   맵 바닥 지팡이 읽기(위 묶음 5-e · W4)와 같은 갈래로 채운다
+                    if (c.wandClass) {
+                        c.useFn = nox::UseFnOf(ti->useHandler);
+                        if (c.useFn != nox::UseFn::None) c.useAmount = ti->useArg;
+                        if (c.useFn == nox::UseFn::WandCast) {
+                            int ch = 0; double rate = 0.0; char sp[64] = { 0 };
+                            if (std::sscanf(ti->useArgsRaw.c_str(), "%d %lf %63s", &ch, &rate, sp) == 3) {
+                                c.chargesMax = static_cast<uint8_t>(ch < 0 ? 0 : (ch > 255 ? 255 : ch));
+                                c.wandCooldown = nox::WandCooldownFrames(nox::kServerTickRate, rate);
+                                c.wandSpell = static_cast<uint8_t>(nox::SpellIdByName(sp));   // 11-20 — SPEL 순번이 아니라 이름표 번호(`b308790`)
+                            }
+                        }
+                        if (c.useFn == nox::UseFn::WandShot) {
+                            const nox::WandUseArgs wa = nox::ParseWandUse(ti->useArgsRaw);
+                            if (wa.got >= 3) {
+                                c.chargesMax = static_cast<uint8_t>(wa.charges < 0 ? 0 : (wa.charges > 255 ? 255 : wa.charges));
+                                c.wandShotType = tdb.WireByName(wa.proj);
+                                c.wandCooldown = nox::WandCooldownFrames(nox::kServerTickRate, wa.rate);
+                                if (wa.multi) c.wandFlags |= 1;
+                                if (wa.got >= 5) c.wandShotSound = nox::SoundByName(wa.sound);
+                            }
+                        }
+                        c.charges = c.chargesMax;
+                        c.weaponStats = static_cast<int8_t>(nox::WeaponStatsIndexByName(nm));
+                        srv.Log("[시험물건] %s 지팡이 — 쓰기 %d · 충전 %u · 주문 %u · 날릴 것 %u · 대기 %u\n", nm.c_str(), static_cast<int>(c.useFn),
+                                static_cast<unsigned>(c.chargesMax), static_cast<unsigned>(c.wandSpell), static_cast<unsigned>(c.wandShotType), static_cast<unsigned>(c.wandCooldown));
+                    }
+                    testMods(nm, c.mods);
+                    srv.SetItemTemplate(gw, c);
+                    giveTemplated.insert(gw);
+                    srv.Log("[시험물건] %s — 맵 바닥에 없어 thing.bin 으로 틀을 뜸(비트 %#x · 부위 %#x · 무게 %d)\n", nm.c_str(), (unsigned)c.equipBit, (unsigned)c.subclass, (int)c.weight);
                 }
             }
             if (!giveItemNames.empty()) {   // ★ 09-30 사람 판 시험용

@@ -5,9 +5,14 @@
 //   옛 인자 `srv` · `rr` 자리는 첫머리의 같은 이름 별칭(방의 게임 · 방 설정 · 방 멤버)이 받는다.
 //   진단 도우미 둘(`PrintAbilityBreakdown` · `AbilityFingerprint`)도 같이 옮겼다 — 이 두 함수만 쓴다
 #include <algorithm>
+#include <cctype>
+#include <cmath>
 #include <cstdio>
+#include <map>
 #include <string>
 
+#include "nox/GameBalance.h"
+#include "nox/MapFile.h"
 #include "nox/ModeRules.h"
 #include "nox/Opcode.h"
 #include "nox/RoomManager.h"
@@ -749,6 +754,22 @@ void nox::CRoom::TickDiagnostics(size_t made) {
             }
             srv.Log("%s\n", line.c_str());
         }
+        srv.Log("[몹 현황]%s\n", srv.MobCensus().c_str());
+        srv.Log("[원거리 누적]%s\n", srv.ShotCensus().c_str());
+        // ★ 11-20 트레일러 작업 — 위저드 판 지팡이 — 번개 지팡이(ForceWand)가 걸렸나(걸림 = 「충전 안 깎음」이 받아들여진 뒤에만 오른다)
+        {
+            using W = nox::Server::WandStat;
+            srv.Log("[지팡이] 쓰기 %llu · 날린 발 %llu · 대기 중 %llu · 다 씀 %llu · 휘두르기 %llu · 번개·오브 걸림 %llu\n",
+                    srv.wandStat(W::Use), srv.wandStat(W::Shot), srv.wandStat(W::Cooldown), srv.wandStat(W::Depleted),
+                    srv.wandStat(W::BashOn), srv.wandStat(W::CastKeepCharge));
+        }
+        srv.Log("[해골 죽은 뒤 함수] %llu\n", srv.skeletonDeadFn());
+        // ★ 11-21 트레일러 작업 — 맞히면 마나 — 갈래 둘을 따로 센다(한 곳만 세면 다른 갈래의 0 이 거짓말이 된다)
+        srv.Log("[번개 마나] 에너지 볼트 맞힘 %llu · 찬 마나 %llu | 번개 맞힘 %llu · 찬 마나 %llu\n",
+                srv.beamManaHit_[0], srv.beamManaGain_[0], srv.beamManaHit_[1], srv.beamManaGain_[1]);
+        srv.Log("[번개 벽 너머] 마법 벽을 빼서 보인 검사 — 에너지 볼트 %llu · 번개 %llu\n",
+                srv.beamWallPass_[0], srv.beamWallPass_[1]);
+        srv.Log("[생명 전환] 돈 틱 %llu · 깎은 체력 %llu(틱마다 5 까지)\n", srv.channelLifeTick_, srv.channelLifeHp_);
         srv.Log("[크리처] %zu마리(길 든 것 %zu) · 길 계산됨 %s(상태 %d) · 겨눈 덫 %zu"
                     " · 덫판정(통과 %llu·멂 %llu·방향 %llu·벽 %llu)"
                     " · **떠돌기(이음탐 %llu·막다른길 %llu)**"
@@ -887,6 +908,84 @@ nox::CRoom::CmdOutcome nox::CRoom::MapCommand(const Server::ChatCommand& c) {
         return CmdOutcome::MapChanged;
     }
     return CmdOutcome::MapList;
+}
+
+// ★ 11-19 트레일러 작업 — 트레일러: 맵 파일 몬스터 중 서버 능력치 표(kMonsters)에 있는 것을 원래 자리에 ·
+//   전사 맵(wiz07b)이면 자리마다 더 둔다 — 11-20 구성은 함수 안 주석(좀비 여섯 · 시전자 · 근접 악마 자리 → 좀비)
+//   (사용자 11-19 「Demon 은 너무 세다 — 줄이고 좀비같이 약한 것을 늘려」)
+//   목록만 채운다 — 띄우기는 ResetWorldFromMap(맵 바꾸기·판 다시 열기) 또는 부르는 쪽(SpawnMapMobs)
+size_t nox::Server::LoadMapMobs(const std::string& mapPath, const std::string& mapKey) {
+    mapMobs_.clear();
+    startZone_ = false;
+    crowdSeen_ = crowdCut_ = 0;
+    //   Z 1360 · V 1361 · M 1338 · E 1337 — Z V Z M Z E Z V Z Z Z V M Z E V
+    //   11-19 사용자 「데몬은 맵에 1,2마리」 — 돌림에서 데몬(1347)을 빼고(그 칸은 좀비) 아래에서 두 마리만 따로 둔다
+    // 11-20 사용자 「VileZombie·Zombie 를 기본몹으로 많이(핵앤슬래시)」 · 「EmberDemon 은 중간중간 너무 많지 않게」 · 「Lich·Wizard·Necromancer 넣을 만하면」 —
+    //   ① 자리마다 여섯(반지름 60 · 60° · 자리마다 30° 돌림) = 좀비 Z Z V 돌림(좀비 2 : 독 좀비 1)
+    //   ② 근접 악마(MeleeDemon 1338 · 죽으면 터짐) 자리는 좀비로 바꿔 둔다 · 불씨 악마(EmberDemon 1337)는 맵 제 자리 9 그대로
+    //   ③ 7 자리마다 하나(3·10·17…번째) 시전자 — Wizard 1327 · Lich 1342 번갈아 · 자리 서쪽 70. Necromancer 는 안 넣는다
+    //      (근접·발사체·자동 주문 셋 다 없음 — 정답지는 맵이 주문을 실어 줄 때만 싸운다 `GAME5.c:4211~4313` 목록에 없음)
+    //   ④ 11-20 사용자 「해골·해골로드 그래도 넣어줘」 — 돌림을 Z S V(좀비 · Skeleton 1314 · 독 좀비)로 · SkeletonLord(1315)는 시작 구역 무리에만(SpawnStartZone)
+    static const uint16_t kWarriorExtra[] = { 1360, 1314, 1361 };
+    const bool warrior = (mapKey == "wiz07b");
+    // ★ 11-20 트레일러 작업 — 사용자 「일단 Wiz10b 로 가 보자」(위저드 판) · 「위저드는 해골 ㅇㅋ」 — 맵 몬스터 189 는 이미 언데드가 많아(좀비 80 · 해골 군주 12 · 해골 4)
+    //   자리마다 더 두기(①)는 안 하고 시작 구역 무리만 해골 위주로(SpawnStartZone 종류 1)
+    const bool wizard = (mapKey == "wiz10b");
+    startZoneKind_ = wizard ? 1 : 0;
+    auto nameOf = [](uint16_t t) -> std::string {
+        for (const auto& ns : nox::kMonsters) if (ns.wireType == t) return ns.name;
+        return std::to_string(t);
+    };
+    std::vector<std::pair<float, float>> spotAt;
+    std::map<std::string, int> byType;
+    size_t objs = 0, spots = 0, rot = 0, casters = 0;
+    std::string casterAt;   // 시전자 자리(로그로 찾아가 보라고)
+    nox::MapFile mf;
+    if (mf.Load(mapPath)) {
+        const auto list = mf.ReadObjects();
+        objs = list.size();
+        for (const auto& o : list) {
+            if ((warrior || wizard) && !startZone_ && o.type == "PlayerStart") {   // 11-20 — 시작 구역 무리의 출발점(Wiz07B 는 하나 · 457,892)
+                startZone_ = true;
+                startZoneX_ = static_cast<float>(o.x); startZoneY_ = static_cast<float>(o.y);
+            }
+            for (const auto& ms : nox::kMonsters) {
+                if (o.type != ms.name) continue;
+                const uint16_t own = (warrior && ms.wireType == 1338) ? 1360 : ms.wireType;   // 근접 악마 자리 → 좀비
+                mapMobs_.push_back({ own, o.x, o.y, o.x, o.y });
+                ++byType[own == ms.wireType ? o.type : std::string("Zombie(MeleeDemon자리)")];
+                spotAt.push_back({ static_cast<float>(o.x), static_cast<float>(o.y) });
+                if (warrior) {
+                    for (int j = 0; j < 6; ++j) {
+                        const uint16_t t = kWarriorExtra[rot++ % (sizeof(kWarriorExtra) / sizeof(kWarriorExtra[0]))];
+                        const double a = (j + 0.5 * static_cast<double>(spots)) * 1.0471976;   // 60° 씩 · 자리마다 30° 돌림
+                        mapMobs_.push_back({ t, static_cast<float>(o.x + 60.0 * std::cos(a)), static_cast<float>(o.y + 60.0 * std::sin(a)), o.x, o.y });
+                        ++byType["+" + nameOf(t)];
+                    }
+                    if (spots % 7 == 3) {
+                        const uint16_t c = (casters++ % 2 == 0) ? 1327 : 1342;
+                        mapMobs_.push_back({ c, static_cast<float>(o.x) - 70.0f, static_cast<float>(o.y), o.x, o.y });
+                        casterAt += " " + nameOf(c) + "(" + std::to_string(static_cast<int>(o.x)) + "," + std::to_string(static_cast<int>(o.y)) + ")";
+                        ++byType["+" + nameOf(c)];
+                    }
+                }
+                ++spots;
+                break;
+            }
+        }
+    }
+    if (warrior && spots >= 3) {   // 데몬 둘 — 몬스터 자리 1/3 · 2/3 번째 곁(동쪽 70 · 벽 너머면 그 자리에)
+        const auto& at = spotAt;
+        for (const size_t k : { at.size() / 3, at.size() * 2 / 3 }) {
+            mapMobs_.push_back({ 1347, at[k].first + 70.0f, at[k].second, at[k].first, at[k].second });
+            ++byType["+Demon"];
+        }
+    }
+    if (!casterAt.empty()) Log("[시전자]%s\n", casterAt.c_str());
+    std::string who;
+    for (const auto& kv : byType) who += " " + kv.first + "x" + std::to_string(kv.second);
+    Log("[몬스터] 맵 %s · 오브젝트 %zu · 몬스터 자리 %zu · 띄울 것 %zu —%s\n", mapKey.c_str(), objs, spots, mapMobs_.size(), who.c_str());
+    return mapMobs_.size();
 }
 
 void nox::CRoom::HandleChatCommands() {

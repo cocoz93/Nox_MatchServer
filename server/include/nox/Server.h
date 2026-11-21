@@ -4633,6 +4633,25 @@ public:
     size_t acceptBodyLenLast() const { return acceptBodyLenLast_; }
     // 지금 불려 나와 있는 것의 수.
     size_t pets() const { return pets_.size(); }
+    // ★ 11-20 트레일러 작업 — 트레일러 「몹이 있긴 한 거야?」 — 종류별 살아 있음/시체 · 사람에게 갱신으로 실어 보낸 항목 수
+    std::string MobCensus() const {
+        std::map<uint16_t, int> alive, dead;
+        for (const Creature& k : pets_) { if (k.owner != kNoSession) continue; ++(k.dead ? dead : alive)[k.type]; }
+        std::string r;
+        std::map<uint16_t, bool> seen;
+        for (const auto& kv : alive) seen[kv.first] = true;
+        for (const auto& kv : dead) seen[kv.first] = true;
+        for (const auto& kv : sentByType_) seen[kv.first] = true;
+        for (const auto& kv : seen) {
+            const MonsterStats* m = FindMonster(kv.first);
+            const auto ai = alive.find(kv.first); const auto di = dead.find(kv.first); const auto si = sentByType_.find(kv.first);
+            char b[160];
+            std::snprintf(b, sizeof(b), " %s 살%d·시체%d·보냄%llu", m ? m->name : std::to_string(kv.first).c_str(),
+                          ai != alive.end() ? ai->second : 0, di != dead.end() ? di->second : 0, si != sentByType_.end() ? si->second : 0ull);
+            r += b;
+        }
+        return r;
+    }
     // 불려 나온 것이 죽은 횟수.
     unsigned long long petsKilled() const { return petsKilled_; }
     unsigned long long corpseStat(int i) const { return i >= 0 && i < 4 ? corpseStat_[i] : 0; }   // ★ 10-01 — 0 죽음 · 1 썩어 지움 · 2 즉시 지움 · 3 동시 시체 최대
@@ -6225,6 +6244,23 @@ private:
     void CountAttackTiming(const Creature& k, int kind, int frame);   // kind 0 근접(애니 1) · 1 쏘기(애니 3)
     unsigned long long brainStat_[kBrainStatCount] = {};          // ★ 09-29 B4
     unsigned long long animStat_[kAnimStatCount] = {};            // ★ 09-29 B5
+    mutable std::map<uint16_t, unsigned long long> sentByType_;   // ★ 11-20 트레일러 작업 — 종류별 갱신 항목 수
+    // ★ 11-20 트레일러 작업 — 사용자 「안 보이는 데서 마법이 날아온다」 — 크리처가 쏘거나 시전한 때마다 가장 가까운 사람과의 거리 ·
+    //   화면 밖(1024×768 → 가로 512 · 세로 384 넘음) · 시야선 막힘(MapTraceVision 거짓)을 종류별로 센다. 키 = "종류/무엇" · 값 = 전체·화면밖·막힘
+    std::map<std::string, std::array<unsigned long long, 3>> shotStat_;
+    int shotLogged_ = 0;
+    void NoteShot(const Creature& k, const std::string& what);
+public:
+    std::string ShotCensus() const {
+        std::string r;
+        for (const auto& kv : shotStat_) {
+            char b[160];
+            std::snprintf(b, sizeof(b), " %s 전체%llu·화면밖%llu·막힘%llu", kv.first.c_str(), kv.second[0], kv.second[1], kv.second[2]);
+            r += b;
+        }
+        return r.empty() ? std::string(" 0") : r;
+    }
+private:
     unsigned long long monsterAnimSent_[16] = {};                 // ★ 10-01 — 몬스터 갱신 항목에 실은 애니 번호(0~15)별 · 보는 사람마다 한 번씩
     unsigned long long summonOwnSent_[3] = {};                    // ★ 10-01 — 주인에게 보낸 소유 알림 0 `6c` 얻음 · 1 `dd` 총체력 · 2 `6d` 잃음
     unsigned long long secondaryWeaponStat_[4] = {};              // ★ 10-01 — 클라 `e0` 대체 무기 갈래 0 비움(번호 0) · 1 가방에 없음 · 2 맞음 · 3 직업·힘 안 맞아 되돌림
@@ -6375,6 +6411,38 @@ public:   // ★ 10-12 작업 7e-2 — 표 묶음과 같이 쓰기 입구는 바
     //   `USE_MAP` — 이름 · CRC 는 새 맵 표에서) → 사람마다 `af`·`b0` 게임 설정. 원작은 `af`·`b0` 를 다음 바퀴에 보낸다(`gameloop.go:647`) —
     //   클라는 `af` 로 모드 깃발을 통째로 바꾼다(`cdecode.c:2095` — 시각이 지난 `af` 보다 커야 받음 · 우리는 `USE_MAP` 과 같은 시각)
     void SwitchMap(std::shared_ptr<const MapTables> tables, std::shared_ptr<const MapState> initial, uint32_t gameFlags);
+    // ★ 11-19 트레일러 작업 — 트레일러: 띄울 몬스터 자리 목록(맵 파일 몬스터 + 덧붙임) · 세계를 맵 처음 상태로 돌릴 때(ResetWorldFromMap)마다 다시 띄운다
+    //   ax·ay = 기댈 자리(맵 파일의 몬스터 자리) — 덧붙인 자리가 거기서 벽 너머면 기댈 자리에 띄운다
+    struct MapMob { uint16_t type; float x, y, ax, ay; };
+    std::vector<MapMob> mapMobs_;
+    // ★ 11-20 트레일러 작업 — 사용자 「한 맵(시작맵)에 넣으라니까」 — 시작 지점(PlayerStart)에서 걸어서 닿는 길 위에 무리를 더 놓는다(SpawnMapMobs)
+    bool startZone_ = false;
+    int startZoneKind_ = 0;   // ★ 11-20 트레일러 작업 — 시작 구역 무리 종류(0 = 전사 Wiz07B · 1 = 위저드 Wiz10b 해골 위주)
+    int crowdSeen_ = 0, crowdCut_ = 0;   // ★ 11-20 — 좀비·독 좀비·해골 넷 중 하나 빼기(본 수 · 뺀 수)
+    unsigned long long skeletonDeadFn_ = 0;     // ★ 11-20 — 해골 죽은 뒤 함수(소리 356 · 연기) 부른 수(이 자리는 public 구역)
+    unsigned long long skeletonDeadFn() const { return skeletonDeadFn_; }
+    // ★ 11-21 트레일러 작업 — 맞히면 마나(`BeamManaOnHit`) · [0] 에너지 볼트(24) · [1] 번개(43) — 맞힌 수 · 실제로 찬 양(최대면 0)
+    unsigned long long beamManaHit_[2] = {}, beamManaGain_[2] = {};
+    void BeamManaOnHit(Session& caster, const Target& t, int which);
+    // ★ 11-21 트레일러 작업 — 사람이 쏜 에너지 볼트(24)·번개(43)는 마법 벽(Wall 132) 너머도 고른다(사용자 11-21 「응 번개만으로 하자」).
+    //   켜져 있는 동안만 `MapTraceRayTile` 이 마법 벽 칸을 안 본다 — 진짜 벽·몬스터가 쏜 빔·화염구 같은 날아가는 주문은 그대로
+    mutable bool beamSkipMagicWall_ = false;
+    mutable unsigned long long beamWallPass_[2] = {};   // [0] 에너지 볼트 · [1] 번개 — 마법 벽을 빼서 새로 보인 검사 수(빼지 않았으면 가렸다)
+    bool BeamCanInteract(const Session& caster, const Target& t, int which) const;
+    // ★ 11-21 트레일러 작업 — 생명 전환(8) kChannelLifeMult 배(`DurChannelLife`) — 돈 틱 · 깎은 체력(= 틱 × 5 면 다 돈 것)
+    unsigned long long channelLifeTick_ = 0, channelLifeHp_ = 0;
+    float startZoneX_ = 0.0f, startZoneY_ = 0.0f;
+    size_t LoadMapMobs(const std::string& mapPath, const std::string& mapKey);   // RoomTick.cpp — 목록만 채움 · 띄운 수
+    void SpawnMapMobs();
+    void SpawnStartZone();   // ★ 11-20 트레일러 작업
+    // ★ 11-19 트레일러 작업 — `--give-items` 로 넣을 때만 수식을 덮는다(기본 장비 롱소드처럼 틀을 부활 장비와 같이 쓰는 종류 — 틀은 그대로)
+    std::map<uint16_t, std::array<uint8_t, 4>> testGiveMods_;
+    void TestSetGiveMods(uint16_t wire, const uint8_t md[4]) { auto& a = testGiveMods_[wire]; for (int i = 0; i < 4; ++i) a[i] = md[i]; }
+    // ★ 11-20 트레일러 작업 — 사용자 「그냥 다 입혀 줘 — 불 칼 + V 에 차크람 · 나머지는 가방」 — 넣은 뒤 입을 갑옷 · 들 무기 · 대체 무기(V) 칸
+    std::vector<uint16_t> testWear_;
+    uint16_t testWield_ = 0, testAltWeapon_ = 0;
+    int testWore_ = 0, testWearFail_ = 0;
+    void TestSetAutoEquip(std::vector<uint16_t> wear, uint16_t wield, uint16_t alt) { testWear_ = std::move(wear); testWield_ = wield; testAltWeapon_ = alt; }
     // 다음 판 다시 열기(판 끝 `kRoundRestartTicks` 뒤)를 같은 맵 대신 이 맵으로 — 한 번 쓰면 비운다.
     //   방이 판을 열 때 대기 맵을 걸어 둔다(`Docs/ROOMS_DESIGN.md` 결정 1 「판 끝 A — 같은 연결로 대기 맵」)
     void SetNextRoundMap(std::shared_ptr<const MapTables> tables, std::shared_ptr<const MapState> initial, uint32_t gameFlags) {
