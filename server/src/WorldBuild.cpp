@@ -1902,6 +1902,16 @@ bool BuildMapOriginal(const GameFiles& files, std::shared_ptr<const nox::Server:
                 for (size_t k = 0; k < props.size() && k < 6; ++k)
                     srv.Log(" (%d,%d)", static_cast<int>(props[k].x), static_cast<int>(props[k].y));
                 srv.Log("\n");
+                // ★ 11-22 마나 흡수(22) 실물 — 마나 기둥 자리도 찍는다(앞 6개 · 잔량 · 편). `--spawn-at` 으로 그 곁에서 시작한다
+                {
+                    size_t nOb = 0;
+                    srv.Log("[마나석 자리] 앞 6개 —");
+                    for (const auto& p : props) {
+                        if (p.kind != nox::PropKind::Obelisk) continue;
+                        if (nOb++ < 6) srv.Log(" (%d,%d 잔량 %d 편 %d)", static_cast<int>(p.x), static_cast<int>(p.y), static_cast<int>(p.charge), static_cast<int>(p.team));
+                    }
+                    srv.Log(" · 모두 %zu\n", nOb);
+                }
                 // ★ 09-22 — **문 자리에 벽 칸이 있나.** 정답지 `Sub_57B500` 은 충돌에서 문을 무시하고(0x10 미설정)
                 //   추적에서는 열렸으면 통과시킨다. 그 갈래를 우리도 만들지 정하려고 **먼저 셌다.**
                 //   ⭕ Estate 실측 — 문 6개 중 **그 칸에 벽은 1개**, 둘레 한 칸까지는 6개.

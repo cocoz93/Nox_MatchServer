@@ -8205,7 +8205,9 @@ void Server::NetStartRaySpell(const DurSpell& d) {
     // 몬스터 빔은 전기 광선뿐(옮긴 것)
     // ✖ 11-21 C11-a — 이제 사슬 번개(43)와 그 조각(7)도 몬스터 빔이다
     if (petCaster && d.spell != 24 && d.spell != 43 && d.spell != 7) return;
-    uint16_t n2 = UnitNetCode(d.target);
+    // ★ 11-22 마나 흡수(22)가 마나 기둥을 물면 +48 = 기둥 — 번호는 IMMOBILE 이라 extent | 0x8000(`GetUnitNetCode` `server/object.go:58~74`) = `PropWireCode`
+    const bool propTgt = d.spell == 22 && d.drainProp >= 0 && static_cast<size_t>(d.drainProp) < props_.size();
+    uint16_t n2 = propTgt ? PropWireCode(props_[static_cast<size_t>(d.drainProp)]) : UnitNetCode(d.target);
     switch (d.spell) {
         case 43:
             for (const auto& sub : d.sub108) NetStartRaySpell(sub);
@@ -8222,7 +8224,7 @@ void Server::NetStartRaySpell(const DurSpell& d) {
             break;
         default: return;                                     // 빔 없는 주문
     }
-    if (d.target.none() || n2 == 0) return;                  // 정답지도 `result = +48` 이 있어야 보낸다
+    if ((d.target.none() && !propTgt) || n2 == 0) return;   // 정답지도 `result = +48` 이 있어야 보낸다
     const uint8_t msg[7] = { static_cast<uint8_t>(Op::FX_DURATION_SPELL), typ, val, static_cast<uint8_t>(n1), static_cast<uint8_t>(n1 >> 8),
                              static_cast<uint8_t>(n2), static_cast<uint8_t>(n2 >> 8) };
     for (auto& kv : sessions_) if (kv.second.inGame) EmitSeq(kv.second, msg, sizeof(msg));
@@ -8282,9 +8284,12 @@ int Server::DurGreaterHealTick(DurSpell& d) {
 // sub_52E610 + sub_52E660(`GAME4_2.c:10776`·10789) — 시전자 둘레 ManaDrainRange 에서 **빨 수 있는 것**을 고른다
 //   점수 = 무게 × 거리² 이고 **작은 쪽이 이긴다**. 사람은 무게 0.5 라 같은 거리면 마나 기둥(1.0)보다 **먼저 뽑힌다**
 //   거를 것: 자기 자신 · 죽음/지워짐 · 마나 0 · **적이 아님** · 같은 팀 · 관전 중 · 벽 뒤(선 추적 5)
-//   ⚠ 아직 안 옮긴 갈래 — 마나 기둥(클래스 0x400000·SUBCLASS 0x18, 무게 1.0)은 그 마나 웅덩이를 우리가 안 들고 있다(맵 오브젝트 묶음) ·
-//     소환수(+1440 & 0x20 마나 가진 몬스터)도 우리 소환수엔 마나가 없다(크리처 묶음)
-Target Server::DrainSearch(const Session& caster) const {
+//   ✖ 11-22 — 「마나 기둥(클래스 0x400000·SUBCLASS 0x18, 무게 1.0)은 그 마나 웅덩이를 우리가 안 들고 있다」는 옛말이다 — 09-22 에 잔량(`WorldProp::charge`)이 생겼다.
+//     이제 기둥(우리 `PropKind::Obelisk`)도 고른다(`:10807~10808` 무게 1.0 · `sub_52E7C0` `:10855~10857` 잔량 1 이상). 기둥은 적·팀·관전을 안 본다 —
+//     팀은 옮길 때 본다(`DrainApply`). 고르면 `prop` 에 `props_` 자리를 적고 돌려주는 Target 은 빈다(기둥은 사람도 몬스터도 아니다)
+//   ⚠ 아직 안 옮긴 갈래 — 소환수(+1440 & 0x20 마나 가진 몬스터)는 우리 소환수엔 마나가 없다(크리처 묶음)
+Target Server::DrainSearch(const Session& caster, int& prop) const {
+    prop = -1;
     const float range = static_cast<float>(BalanceFloat("ManaDrainRange"));
     const float range2 = range * range;
     float best = 1e+30f;
@@ -8307,15 +8312,54 @@ Target Server::DrainSearch(const Session& caster) const {
         best = score;
         found = Target{ o.sessionId, -1 };
     }
+    // ★ 11-22 마나 기둥 — 무게 1.0 이라 같은 거리면 사람(0.5)이 먼저다. 벽 가림은 사람과 같은 선 추적 5
+    for (size_t i = 0; i < props_.size(); ++i) {
+        const WorldProp& p = props_[i];
+        if (p.kind != PropKind::Obelisk || p.charge < 1) continue;   // sub_52E7C0 — 잔량(`**+748`)이 있어야
+        const float dx = static_cast<float>(caster.posX - p.x);
+        const float dy = static_cast<float>(caster.posY - p.y);
+        const float d2 = dx * dx + dy * dy;
+        if (d2 > range2) continue;
+        const float score = 1.0f * d2;                       // 기둥 무게 1.0
+        if (score >= best) continue;
+        if (!MapTraceRay(static_cast<float>(caster.posX), static_cast<float>(caster.posY),
+                         static_cast<float>(p.x), static_cast<float>(p.y), 0x5)) continue;
+        best = score;
+        found = Target{};
+        prop = static_cast<int>(i);
+    }
     return found;
 }
 
 // sub_52E450(`GAME4_2.c:10676`) — 실제로 빨아 옮긴다. 빨았으면 1
 //   시전자가 사람이고 **마나가 이미 가득이면 0** · 사람 대상은 min(대상 마나, 양) 만큼 · 시전자에게 그만큼 더한다
 //   ⚠ 퀘스트(4096)면 직업 마나 배수를 곱해 더한다 — 아레나는 그대로
-int Server::DrainApply(Session& caster, const Target& t, int amount) {
+//   ★ 11-22 마나 기둥(`:10693~10717`) — 기둥에 팀이 있고 시전자와 다르면 0 · min(잔량, 양) · 퀘스트가 아니면 잔량을 깎고
+//     `unitNeedSync` → 다음 그림 갱신이 `b3 <번호> <잔량>` 을 보낸다(`netSpriteUpdate_518AE0` `GAME4_1.c:4332~4335` · 깎일 때마다)
+//     ⚠ 기둥 팀은 맵 짐에서 안 읽는다(`ReadDoorXfer` 는 문만) — 지금은 늘 팀 없음이라 팀 거름이 안 걸린다
+int Server::DrainApply(Session& caster, const Target& t, int prop, int amount) {
     if (caster.mana >= caster.maxMana) return 0;
-    if ((t.sessionId == kNoSession)) return 0;                            // 마나 기둥·소환수 갈래는 아직(위 주석)
+    if (prop >= 0 && static_cast<size_t>(prop) < props_.size()) {
+        WorldProp& p = props_[static_cast<size_t>(prop)];
+        if (p.team != 0 && p.team != caster.team) {          // HasTeam(기둥) && !CompareTeams(기둥, 시전자)
+            ++drainStat_[static_cast<size_t>(DrainStat::TeamRefused)];
+            return 0;
+        }
+        const bool quest = (questTotal_ > 0 || questStage_ > 0);   // gameFlags 4096 — 퀘스트면 잔량을 안 깎는다
+        const int took = (static_cast<int>(p.charge) <= amount) ? static_cast<int>(p.charge) : amount;
+        if (!quest) p.charge = static_cast<uint8_t>(p.charge - took);
+        if (took <= 0) return 0;
+        if (!quest) {
+            const uint16_t onc = PropWireCode(p);
+            const uint8_t ob[4] = { static_cast<uint8_t>(Op::OBELISK_CHARGE), static_cast<uint8_t>(onc), static_cast<uint8_t>(onc >> 8), p.charge };
+            Broadcast(/*viaSeq=*/true, ob, sizeof(ob));
+        }
+        PlayerManaAdd(caster, took);
+        ++drainStat_[static_cast<size_t>(DrainStat::ObeliskPick)];
+        drainStat_[static_cast<size_t>(DrainStat::ObeliskMana)] += static_cast<unsigned long long>(took);
+        return 1;
+    }
+    if ((t.sessionId == kNoSession)) return 0;                            // 마나 기둥·소환수 갈래는 아직(위 주석) — ✖ 11-22 기둥은 바로 위에서 옮긴다
     auto it = sessions_.find(t.sessionId);
     if (it == sessions_.end() || !it->second.inGame) return 0;
     Session& tgt = it->second;
@@ -8337,31 +8381,46 @@ int Server::DurDrainMana(DurSpell& d) {
     if (!haveCaster) return 1;                               // 글리프 갈래는 시전자 없이도 도는데, 우리 DurNew 는 시전자를 요구한다(4-e 에서)
     Session& caster = c->second;
     if (d.flag20) {                                          // 글리프 — 한 방
-        const Target g = DrainSearch(caster);
+        int gp = -1;                                         // ★ 11-22 기둥이 뽑히면 `playerManaSub` 가 사람만 깎아(`GAME3_3.c:7508`) 아무 일 없다
+        const Target g = DrainSearch(caster, gp);            //   ⚠ 이 갈래는 우리 서버에서 안 닿는다 — 22 는 늘 `DurNew(…, false, …)`(글리프 아님)
         if ((g.sessionId != kNoSession)) {
             auto gi = sessions_.find(g.sessionId);
             if (gi != sessions_.end()) PlayerManaSub(gi->second, 50);
         }
         return 1;
     }
-    if (caster.mana >= caster.maxMana) return 1;             // 더 담을 데가 없다
+    ++drainStat_[static_cast<size_t>(DrainStat::Ran)];      // ★ 11-22 분모 — 이 줄을 지난 틱(아래 끝남 갈래 모두 포함)
+    if (caster.mana >= caster.maxMana) {                     // 더 담을 데가 없다
+        ++drainStat_[static_cast<size_t>(DrainStat::FullStop)];
+        return 1;
+    }
     if (TargetMovedFrom(Target{ d.caster, -1 }, d.posX, d.posY)) return 1;   // 시전자가 자리를 떴다
     if (TargetJustDamaged(Target{ d.caster, -1 })) return 1; // 맞으면 끊긴다
-    const Target found = DrainSearch(caster);
+    int prop = -1;
+    const Target found = DrainSearch(caster, prop);
     d.target = found;
-    if (found.none()) {                                      // 빨 것이 없다 — 켜 둔 빔이 있으면 끈다
-        if (!d.field36.none()) NetStopRaySpell(d, d.field36);
+    d.drainProp = prop;                                      // ★ 11-22 +48 이 마나 기둥이면 그 자리
+    const bool had36 = !d.field36.none() || d.drainProp36 >= 0;
+    if (found.none() && prop < 0) {                          // 빨 것이 없다 — 켜 둔 빔이 있으면 끈다
+        if (had36) NetStopRaySpell(d, d.field36, d.drainProp36);
         return 1;
     }
     const float v = d.field72 + static_cast<float>(BalanceFloatInd("ManaDrainCoeff", d.level - 1));
     const int take = static_cast<int>(v);
     d.field72 = v - static_cast<float>(take);                // 소수 이월
-    if (!(d.field36.sessionId == found.sessionId && d.field36.pet == found.pet)) {     // 대상이 바뀌었다 — 빔을 옮겨 단다
-        if (!d.field36.none()) NetStopRaySpell(d, d.field36);
+    if (!(d.field36.sessionId == found.sessionId && d.field36.pet == found.pet && d.drainProp36 == prop)) {     // 대상이 바뀌었다 — 빔을 옮겨 단다
+        if (had36) NetStopRaySpell(d, d.field36, d.drainProp36);
         NetStartRaySpell(d);
     }
-    DrainApply(caster, found, take);                         // ⚠ 빨린 소리 230/229 는 소리 묶음(반 초마다)
+    // ✖ 11-22 「빨린 소리 230/229 는 소리 묶음(반 초마다)」 — 이제 낸다(`:10666~10670`): 옮겼고 반 초 걸음이면 시전자 자리 230 · 빨린 쪽 자리 229
+    if (DrainApply(caster, found, prop, take) && (durFrame_ % (kServerTickRate / 2)) == 0) {
+        PlaySoundOnTarget(230, Target{ d.caster, -1 });
+        if (prop >= 0) PlaySoundAt(229, static_cast<float>(props_[static_cast<size_t>(prop)].x), static_cast<float>(props_[static_cast<size_t>(prop)].y));
+        else PlaySoundOnTarget(229, found);
+        ++drainStat_[static_cast<size_t>(DrainStat::SoundPair)];
+    }
     d.field36 = found;
+    d.drainProp36 = prop;
     return 0;
 }
 
@@ -18895,6 +18954,8 @@ void Server::DurCancel(DurSpell& d) {
         for (const auto& sub : d.sub108) if (!sub.target.none()) NetStopRaySpell(sub, sub.target);
     } else if (!d.target.none()) {
         NetStopRaySpell(d, d.target);
+    } else if (d.spell == 22 && d.drainProp >= 0) {        // ★ 11-22 마나 흡수가 기둥을 문 채 끝남 — 빔을 기둥에서 끈다(+48 = 기둥)
+        NetStopRaySpell(d, Target{}, d.drainProp);
     }
     d.flags88 |= 1;
 }
@@ -18944,7 +19005,7 @@ const Server::DurSpell* Server::DurFindByTarget(uint8_t spell, const Target& tar
 }
 
 // NetStopRaySpell(server/spells.go:458) — `9e <갈래> <값> <u1 번호2> <u2 번호2>` Packet1 모두
-void Server::NetStopRaySpell(const DurSpell& d, const Target& who) {
+void Server::NetStopRaySpell(const DurSpell& d, const Target& who, int whoProp) {
     auto c = sessions_.find(d.caster);
     const bool petCaster = d.casterPet != 0;                  // ★ 09-29 B7 — 몬스터 시전자(번호 그대로) — 빔은 전기 광선뿐
                                                              // ✖ 11-21 C11-a — 이제 사슬 번개(43)·조각(7)도
@@ -18957,10 +19018,13 @@ void Server::NetStopRaySpell(const DurSpell& d, const Target& who) {
         }
         return (t.pet >= 0 && static_cast<size_t>(t.pet) < pets_.size()) ? pets_[static_cast<size_t>(t.pet)].netCode : 0;
     };
-    if (who.none() || netOf(who) == 0) return;
+    // ★ 11-22 `whoProp` — 끌 빔의 끝이 마나 기둥이면 그 `props_` 자리(번호 = `PropWireCode` · 마나 흡수만 쓴다)
+    const bool propWho = whoProp >= 0 && static_cast<size_t>(whoProp) < props_.size();
+    const uint16_t whoNet = propWho ? PropWireCode(props_[static_cast<size_t>(whoProp)]) : netOf(who);
+    if ((who.none() && !propWho) || whoNet == 0) return;
     uint8_t typ = 0, val = 0;
     uint16_t n1 = !d.fromUnit.none() ? netOf(d.fromUnit) : (petCaster ? d.casterPet : c->second.netCode);
-    uint16_t n2 = netOf(who);
+    uint16_t n2 = whoNet;
     switch (d.spell) {
         case 43:                                             // 연쇄 번개 — 하위마다
             for (const auto& sub : d.sub108) NetStopRaySpell(sub, sub.target);

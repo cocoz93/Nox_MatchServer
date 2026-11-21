@@ -290,6 +290,12 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                     srv.fumbleStat(FS::Dropped), srv.fumbleStat(FS::BallSkip), srv.fumbleStat(FS::NpcNoBag),
                     srv.fumbleStat(FS::Pushed), srv.fumbleStat(FS::Bomber));
         }
+        {
+            using DS = nox::Server::DrainStat;    // ★ 11-22 마나 흡수(22) 마나 기둥 갈래 · 빨린 소리
+            srv.Log("[마나 흡수] 흡수 틱 %llu(마나 가득 차 끝 %llu) · 기둥에서 빪 %llu · 기둥에서 옮긴 마나 %llu · 기둥 팀 달라 못 빪 %llu · 빨린 소리 짝 %llu\n",
+                    srv.drainStat(DS::Ran), srv.drainStat(DS::FullStop),
+                    srv.drainStat(DS::ObeliskPick), srv.drainStat(DS::ObeliskMana), srv.drainStat(DS::TeamRefused), srv.drainStat(DS::SoundPair));
+        }
         // ★ 10-01 — 클라 대체 무기 알림 `e0`(비움 · 가방에 없음 · 맞음 · 직업·힘 안 맞아 `e0 0 01` 되돌림)
         srv.Log("[대체무기] 비움 %llu · 없음 %llu · 맞음 %llu · 되돌림 %llu\n", srv.secondaryWeaponStat(0),
                     srv.secondaryWeaponStat(1), srv.secondaryWeaponStat(2), srv.secondaryWeaponStat(3));

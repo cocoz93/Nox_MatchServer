@@ -2537,6 +2537,11 @@ public:
     //   몬스터: NPC(0x10 — 가방이 없어 떨굴 것 없음) · 밀기(힘 50) · 폭탄병(0x2000 — 아무것도 안 함). 세는 자리마다 하나
     enum class FumbleStat : uint8_t { Dropped = 0, BallSkip, NpcNoBag, Pushed, Bomber, Count };
     unsigned long long fumbleStat(FumbleStat k) const { return fumbleStat_[static_cast<size_t>(k)]; }
+    // ★ 11-22 마나 흡수(22) 마나 기둥 갈래 · 빨린 소리 — 판 끝 로그 `[마나 흡수]` · 시험 `TestDrainObelisk1122` 가 같은 칸을 센다
+    //   기둥에서 빪(틱) · 기둥에서 옮긴 마나 · 기둥 팀이 달라 못 빪 · 빨린 소리 짝(230 시전자 · 229 빨린 쪽 · 반 초마다)
+    //   분모 — 흡수 틱(사람 시전자 · 글리프 아님 갈래를 지난 틱) · 그중 시전자 마나가 가득 차 끝난 틱(0 이 「안 걸림」인지 「가득 차 바로 끝남」인지 가른다)
+    enum class DrainStat : uint8_t { ObeliskPick = 0, ObeliskMana, TeamRefused, SoundPair, Ran, FullStop, Count };
+    unsigned long long drainStat(DrainStat k) const { return drainStat_[static_cast<size_t>(k)]; }
     // 부활 무적 안 걸기(`--no-spawn-invuln`) — 화면 확인을 막는 무적을 우회한다
     void SetNoSpawnInvuln(bool v) { noSpawnInvuln_ = v; }
     unsigned long long spawnInvulnApplied() const { return spawnInvulnApplied_; }
@@ -5013,6 +5018,8 @@ private:
         // ★ 연쇄 번개 하위 조각의 **시작 쪽**(+16 Caster16 이 유닛인 경우). 사람이 아닐 수도 있어 Target 으로 둔다.
         //   비어 있으면 `caster`(사람 주소)를 쓴다.
         Target fromUnit;
+        // ★ 11-22 마나 흡수(22) — +48(`target`)·+36(`field36`)이 마나 기둥일 때 그 `props_` 자리(−1 = 기둥 아님 · 기둥이면 Target 쪽은 빈다)
+        int drainProp = -1, drainProp36 = -1;
         float pos2X = 0, pos2Y = 0;      // +52 Pos2(sa.Pos)
         uint32_t frame60 = 0;            // +60 만든 프레임
         uint32_t frame64 = 0;            // +64
@@ -5078,7 +5085,7 @@ private:
     void PlayerCancelSpells(int64_t obj);                       // playerCancelSpells_4FEAE0
     void CancelChannelSpells(int64_t obj);                      // cancelAllSpells_4FEE90
     const DurSpell* DurFindByTarget(uint8_t spell, const Target& target) const;                         // sub_4FF2D0
-    void NetStopRaySpell(const DurSpell& d, const Target& who);            // NetStopRaySpell
+    void NetStopRaySpell(const DurSpell& d, const Target& who, int whoProp = -1);   // NetStopRaySpell · whoProp = 끝이 마나 기둥이면 그 자리
     void SpellCastByPlayer(uint32_t frame);                                // spellCastByPlayer(틱)
     // ── 묶음 4-b5b 지속 회복·흡수 ──
     int DurChannelLife(DurSpell& d);                                       // sub_52F460
@@ -5675,8 +5682,8 @@ private:
     void PlayerSubGold(Session& s, uint32_t v);   // playerSubGold_4FA5D0
     void PoisonTick();                                                        // server.go:175~201 감쇠 + 피해
     int CastPoison(int64_t obj3, const Target& targ, int lvl);   // castPoison_52C720
-    Target DrainSearch(const Session& caster) const;                                                     // sub_52E610 + sub_52E660 고르기
-    int DrainApply(Session& caster, const Target& t, int amount);                                        // sub_52E450
+    Target DrainSearch(const Session& caster, int& prop) const;                                                     // sub_52E610 + sub_52E660 고르기
+    int DrainApply(Session& caster, const Target& t, int prop, int amount);                                        // sub_52E450
     int TargetMaxHealth(const Target& t) const;                                                          // unitGetMaxHP_4EE7A0
     bool CanInteract(const Session& obj, const Target& t) const;                                         // unitCanInteractWith_5370E0 = CanSee + 벽 시야추적
     bool TargetJustDamaged(const Target& t) const;                                                       // sub_4E6BD0 — 지난 1틱 안에 맞았나
@@ -6653,6 +6660,7 @@ private:
     unsigned long long shieldFx_[3] = {};
     unsigned long long wakeStat_[static_cast<size_t>(WakeStat::Count)] = {};   // ★ 11-22 순간이동 꼬리 — 칸 뜻은 `WakeStat`
     unsigned long long fumbleStat_[static_cast<size_t>(FumbleStat::Count)] = {};   // ★ 11-22 실수 — 칸 뜻은 `FumbleStat`
+    unsigned long long drainStat_[static_cast<size_t>(DrainStat::Count)] = {};     // ★ 11-22 마나 흡수 — 칸 뜻은 `DrainStat`
     // ★ 부활 무적을 아예 안 거는 진단 스위치(`--no-spawn-invuln`).
     //   CLIENT_READY 되풀이(B-1b 미결) 때문에 무적이 안 풀려 화면 확인이 통째로 막힌다.
     //   그 원인과 **따로** 나머지를 진행하려는 우회로다. 기본 끔.

@@ -30620,6 +30620,219 @@ void TestFumble1122() {
                 "공 든 사람은 셈만 · 켬 소리 늘 하나 · 몬스터가 날린 것도 덩어리 기점\n");
 }
 
+// ── 11-22 마나 흡수(22) — 마나 기둥에서도 빤다 · 빨린 소리 ─────────────────────────────────────
+//   `nox_xxx_spellDrainMana_52E210`(`GAME4_2.c:10568`) · 고르기 `sub_52E660`(`:10789`) · 옮기기 `sub_52E450`(`:10676`) · 잔량 알림 `netSpriteUpdate_518AE0`(`GAME4_1.c:4332`)
+//   차림 — a 위저드(1000,1000 · 팀 1 · 마나 60 덜어 둠) · b 같은 팀(기둥 곁 40 · 마나 가득 → 기둥이 회복도 주기도 안 함 · 적이 아니라 a 가 안 빤다) · 기둥(거리 100 · 정적 번호)
+//   갈래마다 개수: 고름(무게 · 잔량 · 벽 · 둘레) · 옮김(양 · 잔량 깎음 · 퀘스트 · 팀) · 알림 `b3` · 빔 켬/끔(번호 | 0x8000) · 소리 짝
+void TestDrainObelisk1122() {
+    const std::string a = "10.11.22.91:9791", b = "10.11.22.92:9792", c = "10.11.22.93:9793";
+    using DS = nox::Server::DrainStat;
+    constexpr uint16_t kOb = 600, kObWire = 0x8000 | 600;
+    const uint8_t k9e = static_cast<uint8_t>(nox::Op::FX_DURATION_SPELL), kB3 = static_cast<uint8_t>(nox::Op::OBELISK_CHARGE);
+    char msg[560];
+    struct Opt { double coeff = 1.0; int charge = 50; uint8_t obTeam = 0; int obX = 1100; bool wall = false; bool quest = false; bool full = false; };
+    auto mk = [&](nox::CSyncHost& srv, uint32_t& ms, std::vector<nox::OutPacket>& out, const Opt& o) {
+        nox::Gamedata g;
+        char gd[200];
+        std::snprintf(gd, sizeof(gd), "ManaDrainCoeff = %.1f, %.1f, %.1f, %.1f, %.1f;\nManaDrainRange = 300.0f;\n", o.coeff, o.coeff, o.coeff, o.coeff, o.coeff);
+        g.Parse(gd);
+        srv->SetGamedata(g);
+        srv->SetSpellDef(22, 10, 0x1000000, { 1, 2 });
+        {   // 빨린 소리 — 최대거리 80: b(기둥 곁 40)는 기둥 자리 229 는 듣고 a 자리(107) 230 은 못 듣는다
+            std::vector<nox::Server::SoundDefIn> sd;
+            for (const uint16_t id : { uint16_t(229), uint16_t(230) }) { nox::Server::SoundDefIn d; d.id = id; d.samples = 1; d.maxDist = 80; sd.push_back(d); }
+            srv->SetSoundDefs(sd);
+        }
+        srv.DebugEnterGame(a, 728, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 729, false, nox::CharClass::Wizard);
+        srv->DebugSetTeam(Sid(srv, a), 1);
+        srv->DebugSetTeam(Sid(srv, b), 1);
+        srv->DebugTeleport(Sid(srv, a), 1000.0f, 1000.0f);
+        srv->DebugTeleport(Sid(srv, b), static_cast<float>(o.obX), 1040.0f);
+        nox::Server::WorldProp ob;
+        ob.netCode = kOb; ob.staticLookup = true; ob.type = 121; ob.x = o.obX; ob.y = 1000;
+        ob.kind = nox::PropKind::Obelisk; ob.charge = static_cast<uint8_t>(o.charge); ob.team = o.obTeam;
+        srv->SetWorldProps({ ob });
+        if (o.wall) srv->SetWalls({ { 45, 43 } });                       // a 와 기둥 사이 칸(1035~1058 × 989~1012)
+        if (o.quest) srv->DebugSetQuestTotal(1);
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        if (!o.full) srv->DebugManaSub(Sid(srv, a), 60);
+        srv.TakeOut(out); out.clear();
+    };
+    struct Ray { int start = 0, stop = 0; uint16_t startN2 = 0, stopN2 = 0; };
+    auto rays = [&](const std::vector<nox::OutPacket>& out) {
+        Ray r;
+        for (const auto& m : FlattenTo(out, b)) {
+            if (m.size() != 7 || m[0] != k9e) continue;
+            const uint16_t n2 = static_cast<uint16_t>(m[5] | (m[6] << 8));
+            if (m[1] == 5) { ++r.start; r.startN2 = n2; }
+            if (m[1] == 12) { ++r.stop; r.stopN2 = n2; }
+        }
+        return r;
+    };
+    auto b3 = [&](const std::vector<nox::OutPacket>& out, int& last) {
+        int n = 0;
+        for (const auto& m : FlattenTo(out, b))
+            if (m.size() == 4 && m[0] == kB3 && static_cast<uint16_t>(m[1] | (m[2] << 8)) == kObWire) { ++n; last = m[3]; }
+        return n;
+    };
+    auto heard = [&](const std::vector<nox::OutPacket>& out, uint16_t id) {
+        int n = 0;
+        for (const auto& x : FlattenTo(out, b))
+            if (x.size() == 4 && x[0] == static_cast<uint8_t>(nox::Op::AUDIO_EVENT) && (static_cast<uint16_t>(x[2] | (x[3] << 8)) & 0x3ff) == id) ++n;
+        return n;
+    };
+    auto run = [&](nox::CSyncHost& srv, uint32_t& ms, std::vector<nox::OutPacket>& out, int frames) {   // 정확히 프레임 수만큼(34ms 걸음은 가끔 두 프레임)
+        for (int k = 0; k < frames; ++k) {
+            const uint32_t f0 = srv->DebugFrame();
+            while (srv->DebugFrame() == f0) { ms += 33; srv.Tick(ms, out); }
+        }
+        srv.TakeOut(out);
+    };
+
+    // ① 기둥에서 빤다 — 빔 `9e 05`(끝 = 기둥 번호 | 0x8000) · 30틱 동안 틱마다 잔량 −1 · 마나 +1 · 깎일 때마다 `b3` · 반 초마다 빨린 소리 짝(b 는 기둥 쪽 229 만 들음)
+    {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        mk(srv, ms, out, Opt{});
+        CastAndWait(srv, a, 22, false, ms, out);
+        srv.TakeOut(out);
+        const Ray r0 = rays(out);
+        const bool on = srv->DebugDurActive(22, Sid(srv, a));
+        out.clear();
+        const int m0 = srv->ManaOf(Sid(srv, a)), c0 = srv->DebugPropCharge(kOb), bm0 = srv->ManaOf(Sid(srv, b));
+        const unsigned long long mana0 = srv->drainStat(DS::ObeliskMana), pair0 = srv->drainStat(DS::SoundPair), ran0 = srv->drainStat(DS::Ran);
+        run(srv, ms, out, 30);
+        int last = -1;
+        const int nb3 = b3(out, last), h229 = heard(out, 229), h230 = heard(out, 230);
+        const int dm = srv->ManaOf(Sid(srv, a)) - m0, dc = c0 - srv->DebugPropCharge(kOb);
+        const unsigned long long dmana = srv->drainStat(DS::ObeliskMana) - mana0, dpair = srv->drainStat(DS::SoundPair) - pair0, dran = srv->drainStat(DS::Ran) - ran0;
+        std::snprintf(msg, sizeof(msg), "① 기둥 — 걸림 %d · 빔 켬 %d 끝 %#x(%#x) · 30틱: 마나 +%d · 잔량 −%d · 셈 +%llu · 흡수 틱 +%llu(30) · b3 %d 끝값 %d(잔량 %d) · 소리 짝 +%llu(2) · b 들음 229 %d(2) 230 %d(0) · b 마나 그대로 %d",
+                      on ? 1 : 0, r0.start, r0.startN2, kObWire, dm, dc, dmana, dran, nb3, last, srv->DebugPropCharge(kOb), dpair, h229, h230,
+                      srv->ManaOf(Sid(srv, b)) == bm0 ? 1 : 0);
+        Check(on && r0.start == 1 && r0.startN2 == kObWire && dm == 30 && dc == 30 && dmana == 30 && dran == 30 && nb3 == 30 && last == srv->DebugPropCharge(kOb) &&
+              dpair == 2 && h229 == 2 && h230 == 0 && srv->ManaOf(Sid(srv, b)) == bm0 && srv->drainStat(DS::FullStop) == 0, msg);
+    }
+    // ② 무게 — 적 c 가 130 이면 0.5 × 130² = 8,450 < 기둥 100² = 10,000 이라 c 를 빨고 · 150 이면 11,250 > 10,000 이라 기둥을 빤다
+    for (const int cy : { 1130, 1150 }) {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        mk(srv, ms, out, Opt{});
+        srv.DebugEnterGame(c, 730, false, nox::CharClass::Wizard);
+        srv->DebugSetTeam(Sid(srv, c), 2);
+        srv->DebugTeleport(Sid(srv, c), 1000.0f, static_cast<float>(cy));
+        ms += 34; srv.Tick(ms, out); srv.TakeOut(out); out.clear();
+        const int cm0 = srv->ManaOf(Sid(srv, c));
+        CastAndWait(srv, a, 22, false, ms, out);
+        run(srv, ms, out, 5);
+        const Ray r = rays(out);
+        const bool wantC = cy == 1130;
+        std::snprintf(msg, sizeof(msg), "② 무게 c 거리 %d — 빔 켬 %d 끝 %#x(%#x) · 기둥에서 빪 %llu · c 마나 %d→%d · 기대 %s",
+                      cy - 1000, r.start, r.startN2, wantC ? 730u : static_cast<unsigned>(kObWire), srv->drainStat(DS::ObeliskPick), cm0, srv->ManaOf(Sid(srv, c)),
+                      wantC ? "c" : "기둥");
+        Check(r.start == 1 && r.startN2 == (wantC ? 730 : kObWire) && (srv->drainStat(DS::ObeliskPick) > 0) == !wantC &&
+              (srv->ManaOf(Sid(srv, c)) < cm0) == wantC, msg);
+    }
+    // ③ 잔량 3 · 계수 5 — 셋만 빨고 0 → 다음 틱 빔을 기둥에서 한 번 끄고 끝(`b3` 한 번 · 끝값 0)
+    {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        Opt o; o.coeff = 5.0; o.charge = 3;
+        mk(srv, ms, out, o);
+        const int m0 = srv->ManaOf(Sid(srv, a));
+        CastAndWait(srv, a, 22, false, ms, out);
+        run(srv, ms, out, 10);
+        const Ray r = rays(out);
+        int last = -1;
+        const int nb3 = b3(out, last);
+        std::snprintf(msg, sizeof(msg), "③ 잔량 3 — 옮긴 마나 %llu(3) · 빪 %llu(1) · 잔량 %d(0) · a 마나 %d→%d(−10+3) · 빔 켬 %d 끔 %d 끝 %#x · 아직 걸림 %d · b3 %d 끝값 %d",
+                      srv->drainStat(DS::ObeliskMana), srv->drainStat(DS::ObeliskPick), srv->DebugPropCharge(kOb), m0, srv->ManaOf(Sid(srv, a)),
+                      r.start, r.stop, r.stopN2, srv->DebugDurActive(22, Sid(srv, a)) ? 1 : 0, nb3, last);
+        Check(srv->drainStat(DS::ObeliskMana) == 3 && srv->drainStat(DS::ObeliskPick) == 1 && srv->DebugPropCharge(kOb) == 0 &&
+              srv->ManaOf(Sid(srv, a)) == m0 - 10 + 3 && r.start == 1 && r.stop == 1 && r.stopN2 == kObWire &&
+              !srv->DebugDurActive(22, Sid(srv, a)) && nb3 == 1 && last == 0, msg);
+    }
+    // ④ 잔량 0 · 벽 뒤 · 둘레(300) 밖 — 안 고른다(빔 없음 · 바로 끝) / 대조 = 둘레 안 299
+    {
+        struct Cs { const char* name; Opt o; bool pick; };
+        Opt e; e.charge = 0;
+        Opt w; w.wall = true;
+        Opt far; far.obX = 1301;
+        Opt near; near.obX = 1299;
+        for (const Cs& cs : { Cs{ "잔량 0", e, false }, Cs{ "벽 뒤", w, false }, Cs{ "둘레 밖 301", far, false }, Cs{ "둘레 안 299", near, true } }) {
+            nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+            mk(srv, ms, out, cs.o);
+            const bool ray = srv->DebugTraceRay(1000.0f, 1000.0f, static_cast<float>(cs.o.obX), 1000.0f);
+            CastAndWait(srv, a, 22, false, ms, out);
+            run(srv, ms, out, 5);
+            const Ray r = rays(out);
+            std::snprintf(msg, sizeof(msg), "④ %s — 선 트임 %d · 빔 켬 %d · 기둥에서 빪 %llu · 걸림 %d · 기대 %s",
+                          cs.name, ray ? 1 : 0, r.start, srv->drainStat(DS::ObeliskPick), srv->DebugDurActive(22, Sid(srv, a)) ? 1 : 0, cs.pick ? "고름" : "안 고름");
+            const bool picked = r.start == 1 && srv->drainStat(DS::ObeliskPick) > 0 && srv->DebugDurActive(22, Sid(srv, a));
+            const bool none = r.start == 0 && srv->drainStat(DS::ObeliskPick) == 0 && !srv->DebugDurActive(22, Sid(srv, a));
+            Check((cs.o.wall ? !ray : ray) && (cs.pick ? picked : none), msg);
+        }
+    }
+    // ⑤ 팀 — 기둥 팀 2(a 는 1)면 빔은 켜지되 못 빤다(잔량 그대로 · 셈) / 팀 1 이면 빤다
+    for (const uint8_t team : { uint8_t(2), uint8_t(1) }) {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        Opt o; o.obTeam = team;
+        mk(srv, ms, out, o);
+        CastAndWait(srv, a, 22, false, ms, out);
+        run(srv, ms, out, 10);
+        const Ray r = rays(out);
+        const bool refused = team == 2;
+        std::snprintf(msg, sizeof(msg), "⑤ 기둥 팀 %u — 빔 켬 %d · 못 빪 %llu · 옮긴 마나 %llu · 잔량 %d · 기대 %s",
+                      team, r.start, srv->drainStat(DS::TeamRefused), srv->drainStat(DS::ObeliskMana), srv->DebugPropCharge(kOb), refused ? "못 빪" : "빪");
+        Check(r.start == 1 && (refused ? (srv->drainStat(DS::TeamRefused) > 0 && srv->drainStat(DS::ObeliskMana) == 0 && srv->DebugPropCharge(kOb) == 50)
+                                       : (srv->drainStat(DS::TeamRefused) == 0 && srv->drainStat(DS::ObeliskMana) > 0 && srv->DebugPropCharge(kOb) < 50)), msg);
+    }
+    // ⑥ 시전자가 자리를 뜨면 끝 — 빔을 기둥에서 한 번 끈다(+48 = 기둥 · `DurCancel`)
+    {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        mk(srv, ms, out, Opt{});
+        CastAndWait(srv, a, 22, false, ms, out);
+        run(srv, ms, out, 5);
+        srv.TakeOut(out); out.clear();
+        const bool on = srv->DebugDurActive(22, Sid(srv, a));
+        srv->DebugTeleport(Sid(srv, a), 1000.0f, 1010.0f);
+        run(srv, ms, out, 3);
+        const Ray r = rays(out);
+        std::snprintf(msg, sizeof(msg), "⑥ 자리 뜸 — 전 걸림 %d · 끔 %d(1) 끝 %#x(%#x) · 뒤 걸림 %d", on ? 1 : 0, r.stop, r.stopN2, kObWire,
+                      srv->DebugDurActive(22, Sid(srv, a)) ? 1 : 0);
+        Check(on && r.stop == 1 && r.stopN2 == kObWire && !srv->DebugDurActive(22, Sid(srv, a)), msg);
+    }
+    // ⑦ 퀘스트 — 빨아도 잔량을 안 깎고 `b3` 도 없다(마나는 온다)
+    {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        Opt o; o.quest = true;
+        mk(srv, ms, out, o);
+        const int m0 = srv->ManaOf(Sid(srv, a));
+        CastAndWait(srv, a, 22, false, ms, out);
+        run(srv, ms, out, 10);
+        int last = -1;
+        const int nb3 = b3(out, last);
+        std::snprintf(msg, sizeof(msg), "⑦ 퀘스트 — 빪 %llu · 잔량 %d(50) · b3 %d(0) · a 마나 %d→%d", srv->drainStat(DS::ObeliskPick), srv->DebugPropCharge(kOb), nb3,
+                      m0, srv->ManaOf(Sid(srv, a)));
+        Check(srv->drainStat(DS::ObeliskPick) > 0 && srv->DebugPropCharge(kOb) == 50 && nb3 == 0 && srv->ManaOf(Sid(srv, a)) > m0 - 10, msg);
+    }
+    // ⑧ 마나가 가득 차면 끝 — 가득 찬 채 시전(값 10)하면 10틱 빨아 다시 가득 → 다음 틱에 「가득 차 끝」 하나 · 흡수 틱 11 · 지속 주문 꺼짐
+    {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        Opt o; o.full = true;
+        mk(srv, ms, out, o);
+        const unsigned long long ran0 = srv->drainStat(DS::Ran), mana0 = srv->drainStat(DS::ObeliskMana);
+        CastAndWait(srv, a, 22, false, ms, out);
+        const int mAfterCast = srv->ManaOf(Sid(srv, a));
+        run(srv, ms, out, 30);
+        const unsigned long long dran = srv->drainStat(DS::Ran) - ran0, dmana = srv->drainStat(DS::ObeliskMana) - mana0;
+        const bool still = srv->DebugDurActive(22, Sid(srv, a));
+        std::snprintf(msg, sizeof(msg), "⑧ 가득 참 — 시전 뒤 마나 %d · 옮긴 마나 %llu · 흡수 틱 %llu · 가득 차 끝 %llu(1) · 아직 걸림 %d(0)",
+                      mAfterCast, dmana, dran, srv->drainStat(DS::FullStop), still ? 1 : 0);
+        Check(srv->drainStat(DS::FullStop) == 1 && dran == 11 && dmana == 10 && !still, msg);   // 10 = 시전 값(SetSpellDef 22 마나 10)
+    }
+    std::printf("  11-22 — 마나 흡수: 마나 기둥도 고름(무게 1.0 · 잔량 · 벽 · 둘레) · min(잔량, 양) · 퀘스트면 안 깎음 · 팀 다르면 못 빪 · 깎일 때마다 b3 · "
+                "빔 끝 = 기둥 번호 | 0x8000 · 자리 뜨면 기둥에서 끔 · 빨린 소리 짝 반 초마다 · 가득 차면 끝(분모 셈)\n");
+}
+
 // ★ 11-20 트레일러 전사 2 — 수리검·차크람(던지기 `GAME4_3.c:4327~4419` · 날기 `updateChakramInMotion_53DCC0` · 맞기 `collideChakram_4EAF00`)
 void TestChakram1120() {
     using CE = nox::ChakramEv;
@@ -43167,6 +43380,7 @@ int main() {
     TestShieldFx1122();               // ★ 11-22 방패 그림 0x80(넷코드 · 9칸 방향 출처 셋)
     TestTeleportWake1122();           // ★ 11-22 순간이동 꼬리(옛 자리 1초 · 밟으면 목적지로)
     TestFumble1122();                 // ★ 11-22 실수(사람 떨굼 · 몬스터 밀기 · NPC · 폭탄병 · 공)
+    TestDrainObelisk1122();           // ★ 11-22 마나 흡수(마나 기둥에서 빪 · 잔량 알림 · 빔 끝 · 빨린 소리)
     TestConnectZeroTail();
     TestReconnectAfterClose();
     TestSessionIds();
