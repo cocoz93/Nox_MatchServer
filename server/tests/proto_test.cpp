@@ -30992,6 +30992,166 @@ void TestCastSound1122() {
                 "사람 날림 주문(Magic 만들 때만) · 정의에 소리 없으면 안 냄\n");
 }
 
+// ── 11-22 감사 12 — 죽음의 공 조각(DeathBallFragment) ─────
+//   a(조각 주인)는 (600,600)에 비켜 서고, 조각은 (1000,1000)에서 +x(방향 0)로 낸다 — 조각엔 NO_COLLIDE_OWNER 가 없어 주인 몸에도 맞기 때문
+//   ① 반주문이 공을 지우면 조각 셋 — 공 자리 · 공 주인 · 종류 · 갈래 13 · 빠르기 250/32×2 · 속도 = 방향 × 빠르기 · 방향이 다 같지 않음 · 같은 반주문엔 안 지워짐
+//   ② 두 번째 반주문 — 조각도 MISSILE_COUNTERSPELL 이라 지워진다(조각이 조각을 안 낳음)
+//   ③ 수명 — 만든 뒤 61 프레임째 사라짐(2초 넘음)
+//   ④ 둘레 — 시작 곁 c(1050,1015)는 10 프레임 안이라 그대로 · 길에서 12 비켜 선 d(1250,1012)는 깎임 · 40 비켜 선 e(1250,1040)는 둘레(25) 밖이라 그대로 · 닿음 0
+//   ⑤ 닿음 — 길 위 b(1100,1000 — 6 프레임째 닿아 둘레 피해 전)가 깎이고 조각은 사라짐
+//   ⑥ 장애물 — 피해 없이 사라짐
+//   ⑦ 벽 — 튕기고(속도 바뀜) 안 사라짐 · 소리 37
+//   ⑧ 조각 종류 없음 — 반주문이 공을 지워도 조각 0 · 종류 없음 1
+void TestDeathBallFragment1122() {
+    const std::string a = "10.11.22.1:9711", b = "10.11.22.2:9712", c = "10.11.22.3:9713", d = "10.11.22.4:9714", e = "10.11.22.5:9715";
+    using FS = nox::Server::FonStat;
+    constexpr uint16_t kBall = 706, kFrag = 707;
+    const float kFragSpeed = 250.0f / 32.0f * 2.0f;                         // 15.625
+    char msg[500];
+    auto mk = [&](nox::CSyncHost& srv, bool fragType) {
+        nox::Gamedata g;
+        g.Parse("DeathBallCollideDamage = 255;\n" "DeathBallNearbyDamage = 100;\n" "DeathBallInRadius = 0.0f;\n"
+                "DeathBallOutRadius = 50.0f;\n" "DeathBallCancelRange = 150.0f;\n" "SummonDuration = 60, 210, 375;\n" "CounterspellRange = 600;\n");
+        srv->SetGamedata(g);
+        srv->SetProjType("DeathBall", kBall, 150, /*AIRBORNE+FLICKER*/ 0x20004000u, 0);
+        if (fragType) srv->SetProjType("DeathBallFragment", kFrag, 250, /*AIRBORNE+FLICKER*/ 0x20004000u, 0);   // thing.bin 실측 SPEED 250 · 번호는 시험용
+        srv->SetCounterMissileType(kBall);                                  // 둘 다 thing.bin SUBCLASS = MISSILE_COUNTERSPELL
+        srv->SetCounterMissileType(kFrag);
+        srv->SetNamedType("ForceOfNatureCharge", 1224);
+        srv->SetSpellDef(31, 0, 0x4434003au, { 0, 8, 2, 6, 5, 4 });
+        std::vector<nox::Server::SoundDefIn> sd;
+        { nox::Server::SoundDefIn sdi; sdi.id = 37; sdi.samples = 1; sdi.maxDist = 1000; sd.push_back(sdi); }
+        srv->SetSoundDefs(sd);
+        srv.DebugEnterGame(a, 890, false, nox::CharClass::Conjurer);
+        srv->DebugMoveTo(Sid(srv, a), 600, 600);
+    };
+    auto start = [&](nox::CSyncHost& srv, uint32_t& ms, std::vector<nox::OutPacket>& out) {
+        srv.Tick(ms, out);
+        ms += 33; srv.Tick(ms, out);
+        srv->DebugSetFacing(Sid(srv, a), 0);                                 // +x
+    };
+    auto heard = [](const std::vector<nox::OutPacket>& out, const std::string& who, uint16_t id) {
+        int n = 0;
+        for (const auto& x : FlattenTo(out, who))
+            if (x.size() == 4 && (x[0] == static_cast<uint8_t>(nox::Op::AUDIO_EVENT) || x[0] == static_cast<uint8_t>(nox::Op::AUDIO_PLAYER_EVENT)) &&
+                (static_cast<uint16_t>(x[2] | (x[3] << 8)) & 0x3ff) == id) ++n;
+        return n;
+    };
+    // 자연의 힘을 쏘고 공이 나올 때까지(최대 30틱)
+    auto launch = [&](nox::CSyncHost& srv, uint32_t& ms, std::vector<nox::OutPacket>& out) {
+        srv->DebugSpellAccept(Sid(srv, a), 31, 3); srv.TakeOut(out);
+        for (int t = 0; t < 30 && srv->missiles() == 0; ++t) { ms += 33; srv.Tick(ms, out); }
+        return srv->missiles() == 1;
+    };
+
+    // ①② 반주문 — 공 → 조각 셋 → 두 번째 반주문에 조각도 지워짐
+    {
+        nox::CSyncHost srv; mk(srv, true);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        const bool up = launch(srv, ms, out);
+        const float bx = up ? srv->missileList()[0].posX : 0.0f, by = up ? srv->missileList()[0].posY : 0.0f;
+        srv->DebugCastCounterSpell(Sid(srv, a)); srv.TakeOut(out);
+        int nOk = 0;                                                        // 종류·갈래·자리·주인·빠르기·속도가 다 맞는 조각 수
+        std::vector<int> dirs;
+        for (const auto& m : srv->missileList()) {
+            const float wantVx = nox::DirVecX(m.dir1) * kFragSpeed, wantVy = nox::DirVecY(m.dir1) * kFragSpeed;
+            if (m.type == kFrag && m.collideKind == 13 && m.posX == bx && m.posY == by && m.owner == Sid(srv, a) &&
+                std::fabs(m.speed - kFragSpeed) < 0.001f && std::fabs(m.velX - wantVx) < 0.001f && std::fabs(m.velY - wantVy) < 0.001f) ++nOk;
+            dirs.push_back(m.dir1);
+        }
+        const bool allSame = dirs.size() == 3 && dirs[0] == dirs[1] && dirs[1] == dirs[2];
+        std::snprintf(msg, sizeof(msg), "조각 ① 공 %d — 남은 것 %zu(3) · 맞는 조각 %d(3) · 방향 %d/%d/%d(다 같으면 안 됨) · 만듦 %llu(3) · 종류 없음 %llu(0)",
+                      int(up), srv->missiles(), nOk, dirs.size() > 0 ? dirs[0] : -1, dirs.size() > 1 ? dirs[1] : -1, dirs.size() > 2 ? dirs[2] : -1,
+                      srv->fonStat(FS::FragMade), srv->fonStat(FS::FragNoType));
+        Check(up && srv->missiles() == 3 && nOk == 3 && !allSame && srv->fonStat(FS::FragMade) == 3 && srv->fonStat(FS::FragNoType) == 0, msg);
+        srv->DebugCastCounterSpell(Sid(srv, a)); srv.TakeOut(out);
+        std::snprintf(msg, sizeof(msg), "조각 ② 두 번째 반주문 — 남은 것 %zu(0) · 만듦 %llu(3)", srv->missiles(), srv->fonStat(FS::FragMade));
+        Check(srv->missiles() == 0 && srv->fonStat(FS::FragMade) == 3, msg);
+    }
+    // ③ 수명 — 한 번에 한 틱만 돌게 33ms 씩
+    {
+        nox::CSyncHost srv; mk(srv, true);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        const uint32_t f0 = srv->DebugFrame();
+        const bool made = srv->DebugMakeFragment(Sid(srv, a), 1000, 1000, 0);
+        int t = 0;
+        for (; t < 200 && srv->missiles() > 0; ) { ms += 33; srv.Tick(ms, out); ++t; }
+        std::snprintf(msg, sizeof(msg), "조각 ③ 만듦 %d · %u 프레임째 사라짐(61) · 수명 %llu(1)", int(made), srv->DebugFrame() - f0, srv->fonStat(FS::FragAge));
+        Check(made && srv->DebugFrame() - f0 == 61 && srv->fonStat(FS::FragAge) == 1, msg);
+    }
+    // ④ 둘레
+    {
+        nox::CSyncHost srv; mk(srv, true);
+        srv.DebugEnterGame(c, 891, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(d, 892, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(e, 893, false, nox::CharClass::Wizard);
+        srv->DebugMoveTo(Sid(srv, c), 1050, 1015);
+        srv->DebugMoveTo(Sid(srv, d), 1250, 1012);
+        srv->DebugMoveTo(Sid(srv, e), 1250, 1040);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        const int hc0 = srv->HealthOf(Sid(srv, c)), hd0 = srv->HealthOf(Sid(srv, d)), he0 = srv->HealthOf(Sid(srv, e));
+        srv->DebugMakeFragment(Sid(srv, a), 1000, 1000, 0);
+        for (int t = 0; t < 30; ++t) { ms += 33; srv.Tick(ms, out); }
+        std::snprintf(msg, sizeof(msg), "조각 ④ 둘레 %llu · 닿음 %llu(0) · c 체력 %d → %d(그대로) · d 체력 %d → %d(깎임) · e 체력 %d → %d(그대로)",
+                      srv->fonStat(FS::FragNearby), srv->fonStat(FS::FragHit), hc0, int(srv->HealthOf(Sid(srv, c))),
+                      hd0, int(srv->HealthOf(Sid(srv, d))), he0, int(srv->HealthOf(Sid(srv, e))));
+        Check(srv->fonStat(FS::FragNearby) >= 1 && srv->fonStat(FS::FragHit) == 0 && srv->HealthOf(Sid(srv, c)) == hc0 &&
+              srv->HealthOf(Sid(srv, d)) < hd0 && srv->HealthOf(Sid(srv, e)) == he0, msg);
+    }
+    // ⑤ 닿음
+    {
+        nox::CSyncHost srv; mk(srv, true);
+        srv.DebugEnterGame(b, 894, false, nox::CharClass::Wizard);
+        srv->DebugMoveTo(Sid(srv, b), 1100, 1000);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        const int hb0 = srv->HealthOf(Sid(srv, b));
+        srv->DebugMakeFragment(Sid(srv, a), 1000, 1000, 0);
+        int t = 0;
+        for (; t < 20 && srv->missiles() > 0; ++t) { ms += 33; srv.Tick(ms, out); }
+        std::snprintf(msg, sizeof(msg), "조각 ⑤ 닿음 %llu(1) · 둘레 %llu(0) · b 체력 %d → %d · 남은 것 %zu(0) · %d틱", srv->fonStat(FS::FragHit), srv->fonStat(FS::FragNearby),
+                      hb0, int(srv->HealthOf(Sid(srv, b))), srv->missiles(), t);
+        Check(srv->fonStat(FS::FragHit) == 1 && srv->fonStat(FS::FragNearby) == 0 && srv->HealthOf(Sid(srv, b)) < hb0 && srv->missiles() == 0, msg);
+    }
+    // ⑥ 장애물
+    {
+        nox::CSyncHost srv; mk(srv, true);
+        nox::Server::PhysBody ob;                                           // 원(TestObstacleIsNotAPet 와 같음)
+        ob.shape = 2; ob.r = 20.0f; ob.x = 1100.0f; ob.y = 1000.0f;
+        srv->SetObstacles({ ob });
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        srv->DebugMakeFragment(Sid(srv, a), 1000, 1000, 0);
+        int t = 0;
+        for (; t < 20 && srv->missiles() > 0; ++t) { ms += 33; srv.Tick(ms, out); }
+        std::snprintf(msg, sizeof(msg), "조각 ⑥ 장애물 %llu(1) · 닿음 %llu(0) · 남은 것 %zu(0) · %d틱", srv->fonStat(FS::FragObstacle), srv->fonStat(FS::FragHit), srv->missiles(), t);
+        Check(srv->fonStat(FS::FragObstacle) == 1 && srv->fonStat(FS::FragHit) == 0 && srv->missiles() == 0, msg);
+    }
+    // ⑦ 벽 — 앞 칸(47,43 → x 1081~1103)
+    {
+        nox::CSyncHost srv; mk(srv, true);
+        srv->SetWalls({ { 47, 43 } });
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        srv->DebugMakeFragment(Sid(srv, a), 1000, 1000, 0);
+        int t = 0;
+        for (; t < 20 && srv->fonStat(FS::FragWall) == 0; ++t) { ms += 33; srv.Tick(ms, out); }
+        const auto& ml = srv->missileList();
+        std::snprintf(msg, sizeof(msg), "조각 ⑦ 벽 %llu · 남은 것 %zu(1) · 속도 %.3f,%.3f · 소리 37 %d · %d틱", srv->fonStat(FS::FragWall), ml.size(),
+                      ml.empty() ? 0.0 : ml[0].velX, ml.empty() ? 0.0 : ml[0].velY, heard(out, a, 37), t);
+        Check(srv->fonStat(FS::FragWall) >= 1 && ml.size() == 1 && std::fabs(ml[0].velX - kFragSpeed) > 0.01f && heard(out, a, 37) >= 1, msg);
+    }
+    // ⑧ 조각 종류 없음
+    {
+        nox::CSyncHost srv; mk(srv, false);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        const bool up = launch(srv, ms, out);
+        srv->DebugCastCounterSpell(Sid(srv, a)); srv.TakeOut(out);
+        std::snprintf(msg, sizeof(msg), "조각 ⑧ 종류 없음 — 공 %d · 남은 것 %zu(0) · 만듦 %llu(0) · 종류 없음 %llu(1)", int(up), srv->missiles(),
+                      srv->fonStat(FS::FragMade), srv->fonStat(FS::FragNoType));
+        Check(up && srv->missiles() == 0 && srv->fonStat(FS::FragMade) == 0 && srv->fonStat(FS::FragNoType) == 1, msg);
+    }
+    std::printf("  11-22 감사 12 — 죽음의 공 조각: 반주문이 공을 지우면 셋(자리·주인·빠르기·방향) · 조각도 반주문에 지워짐 · 수명 61 · 둘레 25(10 프레임 뒤) · "
+                "닿으면 피해 뒤 사라짐 · 장애물 · 벽 튕김·소리 37 · 종류 없음\n");
+}
+
 // ★ 11-20 트레일러 전사 2 — 수리검·차크람(던지기 `GAME4_3.c:4327~4419` · 날기 `updateChakramInMotion_53DCC0` · 맞기 `collideChakram_4EAF00`)
 void TestChakram1120() {
     using CE = nox::ChakramEv;
@@ -43541,6 +43701,7 @@ int main() {
     TestFumble1122();                 // ★ 11-22 실수(사람 떨굼 · 몬스터 밀기 · NPC · 폭탄병 · 공)
     TestDrainObelisk1122();           // ★ 11-22 마나 흡수(마나 기둥에서 빪 · 잔량 알림 · 빔 끝 · 빨린 소리)
     TestCastSound1122();              // ★ 11-22 시전 소리(밀기·당기기 · 운석 · 날림 주문 — 사람·몬스터)
+    TestDeathBallFragment1122();      // ★ 11-22 감사 12 죽음의 공 조각(반주문이 공을 지울 때 셋 · 둘레 · 닿음 · 장애물 · 벽 · 수명)
     TestConnectZeroTail();
     TestReconnectAfterClose();
     TestSessionIds();

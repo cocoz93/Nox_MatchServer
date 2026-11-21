@@ -3843,6 +3843,7 @@ public:
     int DebugCastCounterSpell(int64_t a) {
         auto i = sessions_.find(a); return i == sessions_.end() ? 0 : CastCounterSpell(i->second);
     }
+    bool DebugMakeFragment(int64_t owner, float x, float y, uint8_t dir);   // ★ 11-22 감사 12 — 공 없이 죽음의 공 조각 하나(방향을 정해서)
     void SetProjType(const std::string& name, uint16_t type, int speedRaw, uint32_t flags, uint8_t collideAmount,
                      bool monsterArrow = false, bool webbing = false) {
         ProjTypeInfo p;
@@ -4263,8 +4264,11 @@ public:
     unsigned long long wandStat(WandStat k) const { return wandStat_[static_cast<size_t>(k)]; }
     // ★ 11-20 C2 자연의 힘(31) — 모으기 시작 · 모으기 그림 지움 · 공 놓음 · 놓을 자리 막힘(시전자 자리로) · 달리기(8)로 끊김 · 공 종류 없음 ·
     //   공끼리 지움(상대를 지운 수) · 둘레 피해 부름 · 유닛에 닿음(피해) · 장애물에 닿음(안 옮김) · 벽 튕김 · 수명(4초)
+    //   ★ 11-22 감사 12 — 죽음의 공 조각: 만듦(반주문이 공을 지울 때 셋씩) · 종류 없음(공 하나에 한 번) · 둘레 피해 부름 · 유닛에 닿음(피해 뒤 지움) ·
+    //     장애물에 닿음(피해 없이 지움) · 벽 튕김 · 수명(2초)
     enum class FonStat : uint8_t { Start = 0, ChargeOff, Launch, LaunchBlocked, RunEnd, NoType,
-                                   BallCancel, BallNearby, BallHit, BallObstacle, BallWall, BallAge, Count };
+                                   BallCancel, BallNearby, BallHit, BallObstacle, BallWall, BallAge,
+                                   FragMade, FragNoType, FragNearby, FragHit, FragObstacle, FragWall, FragAge, Count };
     unsigned long long fonStat(FonStat k) const { return fonStat_[static_cast<size_t>(k)]; }
     // ★ 11-21 W6 언데드 쫓기(21) 갈래 — 시작 · 빛 조각 만듦 · 종류 없음 · 닿음 셋(양이 남아 죽이고 지나감 · 양을 다 쓰고 사라짐 · 양 0 이라 그냥 사라짐) ·
     //   누운 몸에 피해 0 · 사라짐 셋(주문 끊김 · 70 프레임 넘음 · 주문 끝의 지우기) · 벽에 막힌 틱
@@ -5134,6 +5138,9 @@ private:
     void FonChargeOff(DurSpell& d);                                        // ★ 11-20 C2 +76 그림 지우기
     void FonLaunch(DurSpell& d, Session* cs);                              // ★ 11-20 C2 죽음의 공 만들기(`GAME4_2.c:11232~11290`)
     bool DeathBallUpdate(size_t i, uint32_t frame);                        // ★ 11-20 C2 updateDeathBall_53D080 — false 면 지운다
+    void DeathBallFragments(const MissileObj& ball);                       // ★ 11-22 감사 12 deathBallCreateFragments_52BD30 — 조각 셋
+    void MakeDeathBallFragment(const MissileObj& ball, uint8_t dir);       //   그 하나(방향을 받아서)
+    bool DeathBallFragmentUpdate(size_t i, uint32_t frame);                //   updateDeathBallFragment_53D220 — false 면 지운다
     // ── 묶음 4-c1 밀기·당기기·땅흔들기 ──
     void PushUnitsAround(float cx, float cy, float outer, float inner, float power);                    // mapPushUnitsAround_52E040 + unitPushAroundFn_52E0E0
     int CastPushPull(const Session& caster, int lvl, bool pull);                                        // castPush_52C000 · castPull_52BFA0

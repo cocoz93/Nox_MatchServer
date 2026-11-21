@@ -302,6 +302,14 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                     srv.castSndStat(CS::PushPull), srv.castSndStat(CS::Meteor), srv.castSndStat(CS::Fly),
                     srv.castSndStat(CS::MonPush), srv.castSndStat(CS::MonMeteor));
         }
+        {
+            using FS = nox::Server::FonStat;      // ★ 11-22 감사 12 — 자연의 힘 공과 그 조각(반주문이 공을 지울 때 셋)
+            srv.Log("[죽음의 공] 공 놓음 %llu · 닿음 %llu · 벽 %llu · 공끼리 지움 %llu · 수명 %llu · 조각 만듦 %llu(종류 없음 %llu) · "
+                    "조각 둘레 %llu · 닿음 %llu · 장애물 %llu · 벽 %llu · 수명 %llu\n",
+                    srv.fonStat(FS::Launch), srv.fonStat(FS::BallHit), srv.fonStat(FS::BallWall), srv.fonStat(FS::BallCancel), srv.fonStat(FS::BallAge),
+                    srv.fonStat(FS::FragMade), srv.fonStat(FS::FragNoType), srv.fonStat(FS::FragNearby), srv.fonStat(FS::FragHit),
+                    srv.fonStat(FS::FragObstacle), srv.fonStat(FS::FragWall), srv.fonStat(FS::FragAge));
+        }
         // ★ 10-01 — 클라 대체 무기 알림 `e0`(비움 · 가방에 없음 · 맞음 · 직업·힘 안 맞아 `e0 0 01` 되돌림)
         srv.Log("[대체무기] 비움 %llu · 없음 %llu · 맞음 %llu · 되돌림 %llu\n", srv.secondaryWeaponStat(0),
                     srv.secondaryWeaponStat(1), srv.secondaryWeaponStat(2), srv.secondaryWeaponStat(3));

@@ -180,6 +180,8 @@ std::shared_ptr<const nox::Server::GameTables> BuildGameTables(const GameFiles& 
                                 "YellowStarShot",
                                 // ★ 11-20 트레일러 컨저러 C2 — 자연의 힘이 놓는 죽음의 공(SPEED 두 줄 200·150 — 뒤 값 · AIRBORNE+FLICKER · DeathBallCollide — 인자 없음)
                                 "DeathBall",
+                                // ★ 11-22 감사 12 — 반주문이 죽음의 공을 지울 때 뿌리는 조각(SPEED 250 · AIRBORNE+FLICKER · DeathBallFragmentCollide — 인자 없음)
+                                "DeathBallFragment",
                                 // ★ 11-21 트레일러 위저드 W6 — 언데드 쫓기 빛 조각(SPEED 200 · ALLOW_OVERLAP · LIGHT+CLIENT_PREDICT · UndeadKillerCollide — 인자 없음)
                                 "UndeadKiller",
                                 // ★ 11-21 트레일러 컨저러 C5 — 오우거 군주 표창(SPEED 400 · SHURIKEN · MonsterArrowCollide 15 20 — 양은 첫째 수 15)
