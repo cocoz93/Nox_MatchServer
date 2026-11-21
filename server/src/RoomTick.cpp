@@ -262,6 +262,13 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                     srv.kinStat(TK::Moved), srv.kinStat(TK::Blocked), srv.kinStat(TK::EndAge), srv.kinStat(TK::EndDead),
                     srv.kinStat(TK::GoneOwner));
         }
+        {   // ★ 11-22 픽시 떼 나는 AI 갈래 · 시험이 같은 칸을 센다(`TestPixieFly1122`)
+            using PS = nox::Server::PixieStat;
+            srv.Log("[픽시] 만듦 %llu · 대상 잡음 %llu / 떼 쪽 돌기 %llu · 주인 쪽 돌기 %llu / 안 보여 순간이동 %llu · 주인 따라 옮김 %llu / 벽 되튐 %llu · 적 맞힘 %llu · 되받아쳐 주인 바뀜 %llu · 수명 %llu\n",
+                    srv.pixieStat(PS::Made), srv.pixieStat(PS::Targeted), srv.pixieStat(PS::SwarmTurn), srv.pixieStat(PS::OwnerTurn),
+                    srv.pixieStat(PS::ReturnTele), srv.pixieStat(PS::OwnerMoved), srv.pixieStat(PS::WallBounce), srv.pixieStat(PS::Hit),
+                    srv.pixieStat(PS::Reflect), srv.pixieStat(PS::Expired));
+        }
         // ★ 10-01 — 클라 대체 무기 알림 `e0`(비움 · 가방에 없음 · 맞음 · 직업·힘 안 맞아 `e0 0 01` 되돌림)
         srv.Log("[대체무기] 비움 %llu · 없음 %llu · 맞음 %llu · 되돌림 %llu\n", srv.secondaryWeaponStat(0),
                     srv.secondaryWeaponStat(1), srv.secondaryWeaponStat(2), srv.secondaryWeaponStat(3));

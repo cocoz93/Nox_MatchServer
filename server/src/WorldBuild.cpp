@@ -185,7 +185,9 @@ std::shared_ptr<const nox::Server::GameTables> BuildGameTables(const GameFiles& 
                                 // ★ 11-21 트레일러 컨저러 C10 — 성게 돌(ProjectileCollide 1 · 갈래 3) · 기계 비행체 화살(MonsterArrowCollide 3 10 · 갈래 5)
                                 "ThrowingStone", "GolemArrow",
                                 // ★ 11-21 트레일러 컨저러 C9 — 침 뱉는 거미 침(AIRBORNE · ProjectileUpdate · SpiderSpitCollide — 인자 없음 · 갈래 12)
-                                "SpiderSpit" }) {
+                                "SpiderSpit",
+                                // ★ 11-22 픽시 떼 나는 AI — 픽시(SPEED 40 → 2.5 · AIRBORNE · PixieUpdate · PixieCollide 8)
+                                "Pixie" }) {
             const uint16_t w = tdb.WireByName(nm);
             const nox::ThingInfo* t2 = w ? tdb.ByWire(w) : nullptr;
             int amount = 0;

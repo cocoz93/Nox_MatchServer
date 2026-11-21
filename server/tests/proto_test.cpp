@@ -8145,8 +8145,7 @@ void TestArachnaphobia() {
 //   이미 제 픽시가 그만큼 있으면 아무것도 안 만든다. 자리 = 시전자 + (몸 10 + 4) × 무작위 방향,
 //   선 추적(5)이 막히면 그 마리는 거른다. 수명 = 무작위(30, 90)초.
 // `collidePixie_4EA080` — **적에게만** 닿음 인자(8)만큼 피해(종류 11 충격)를 주고 제가 사라진다.
-// ⚠ 날아다니는 AI(`updatePixie_53CD20` — 적 찾기·떼 짓기·주인 따라가기·되돌아오기)는 **아직 없다**.
-//   유닛 움직임 묶음(6·7)이다. 여기 시험은 **나오는 것·수를 채우는 것·수명**까지만 본다.
+// 날아다니는 AI(`updatePixie_53CD20`)는 ★ 11-22 `TestPixieFly1122` 가 본다 — 여기는 픽시 종류 빠르기를 안 넣어(0) **나오는 것·수를 채우는 것·수명**만 본다.
 void TestPixieSwarm() {
     const std::string a = "10.9.10.1:9011";
     auto mk = [&](nox::CSyncHost& srv) {
@@ -8262,7 +8261,217 @@ void TestPixieSwarm() {
         for (int t = 0; t < 2000; ++t) { ms += 34; srv.Tick(ms, out); }
         Check(srv->missiles() == 0, "90초가 지났는데 픽시가 남아 있다(수명이 빠졌나)");
     }
-    std::printf("  4-c4(5) — 픽시떼 수 채우기·세기별 수·시전자 둘레·수명 (날아다니는 AI 는 묶음 6·7)\n");
+    std::printf("  4-c4(5) — 픽시떼 수 채우기·세기별 수·시전자 둘레·수명 (날아다니는 AI 는 TestPixieFly1122)\n");
+}
+
+// ── ★ 11-22 트레일러 — 픽시 떼 나는 AI(`updatePixie_53CD20` · `object_update.go:695~769`) ─────────────
+//
+// 사람 판 「픽시 떼는 안 날아다니고 멈춰 있음」 — 빠르기(+544)가 0 이고 갱신이 수명만 봤다. 원본대로:
+//   · 만들 때 빠르기 = thing.bin SPEED 40 / 32 × 2 = 2.5 · 처음 대상 = 600 안 적(`GAME4_3.c:8343`)
+//   · 7틱마다 둘레 250 안 적을 다시 찾아 그쪽으로 32 돈다 · 없으면 같은 주인 픽시(200 안)마다 16 · 주인이 보이면(선 9) 25
+//   · 힘 = 방향 × 2.5 · 감쇠 0.9 · 주인이 3초(PixieReturnTimeout) 넘게 안 보이면 주인 자리로 순간이동
+//   · 적에 닿으면 피해 8 · 소리 96 · 사라짐 / 벽이면 되튀고 안 사라짐 / 주인이 옮겨지면(SetPos) 대상 없는 픽시는 따라 옮겨짐
+// 값은 gamedata.bin(`PixieReturnTimeout = 3` · `ARENA PixieCount = 2, 3, 4, 5, 6`)과 thing.bin(Pixie · SPEED 40 · AIRBORNE · PixieCollide 8) 실측.
+void TestPixieFly1122() {
+    const std::string a = "10.9.22.1:9221";
+    const std::string b = "10.9.22.2:9222";
+    using PS = nox::Server::PixieStat;
+    auto mk = [&](nox::CSyncHost& srv, nox::CharClass bCls = nox::CharClass::Wizard) {
+        nox::Gamedata g;
+        g.Parse("PixieCount = 2, 3, 4, 5, 6;\n" "PixieReturnTimeout = 3;\n" "SummonDuration = 60, 210, 375;\n");
+        srv->SetGamedata(g);
+        srv->SetNamedType("Pixie", 672);
+        srv->SetProjType("Pixie", 672, 40, /*AIRBORNE*/ 0x4000u, 8);
+        srv->SetSpellDef(58, 10, 0x1000000, { 1, 2 });
+        srv.DebugEnterGame(a, 830, false, nox::CharClass::Conjurer);
+        srv.DebugEnterGame(b, 831, false, bCls);                  // 맞는 쪽은 위저드 — 전사는 가만히 서면 방패를 올려 되받아친다
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+        srv->DebugMoveTo(Sid(srv, b), 5000, 5000);                // 기본은 멀리(대상 없음)
+    };
+    auto start = [&](nox::CSyncHost& srv, uint32_t& ms, std::vector<nox::OutPacket>& out) {
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+    };
+    auto run = [&](nox::CSyncHost& srv, uint32_t& ms, std::vector<nox::OutPacket>& out, int n) { for (int t = 0; t < n; ++t) { ms += 34; srv.Tick(ms, out); } };
+    char msg[240];
+
+    // ① 빠르기 2.5 로 나와 **날아다닌다** — 대상이 없으면 주인 둘레를 돈다(400 밖으로 안 나감) · 주인 쪽 돌기를 센다.
+    //   ⚠ 잴 것은 **지나간 길이**(틱마다 옮긴 거리의 합)다 — 틱마다 주인 쪽 25 · 떼 쪽 16 씩 꺾여 힘이 한쪽으로 안 쌓이니
+    //     주인 곁 40 안을 맴돈다(실측 — 30틱 길이 가장 짧은 것 119 · 가장 멂 36). 30틱 뒤 처음 자리와의 거리는 맴돌아 제자리에 가까워 못 쓴다.
+    //     길이 칸 80~200 — 감쇠(0.9)·힘(방향 × 2.5)이 틀리면 벗어나는지 돌연변이로 본다(감쇠 0.8 · 1.0)
+    {
+        nox::CSyncHost srv; mk(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        CastAndWait(srv, a, 58, true, ms, out);
+        const size_t n = srv->missiles();
+        float px[8] = {}, py[8] = {}, path[8] = {};
+        for (size_t i = 0; i < n && i < 8; ++i) { px[i] = srv->DebugMissileX(i); py[i] = srv->DebugMissileY(i); }
+        const float sp = srv->DebugMissileSpeed(0);
+        float far = 0.0f;
+        for (int t = 0; t < 30; ++t) {
+            ms += 34; srv.Tick(ms, out);
+            for (size_t i = 0; i < srv->missiles() && i < 8; ++i) {
+                const float x = srv->DebugMissileX(i), y = srv->DebugMissileY(i);
+                path[i] += std::hypot(x - px[i], y - py[i]);
+                px[i] = x; py[i] = y;
+                far = std::max(far, std::hypot(x - 1000.0f, y - 1000.0f));
+            }
+        }
+        float least = 1e9f;
+        for (size_t i = 0; i < n && i < 8; ++i) least = std::min(least, path[i]);
+        std::snprintf(msg, sizeof(msg), "픽시 ① — 수 %zu · 빠르기 %.2f(2.5) · 30틱 지나간 길이 가장 짧은 것 %.0f(80~200) · 주인에게서 가장 멂 %.0f(400 안) · 주인 쪽 돌기 %llu",
+                      n, sp, least, far, srv->pixieStat(PS::OwnerTurn));
+        Check(n == 4 && sp == 2.5f && least > 80.0f && least < 200.0f && far < 400.0f && srv->pixieStat(PS::OwnerTurn) > 0, msg);
+    }
+
+    // ② **쫓아가 맞힌다** — 200 쯤 떨어진 적 위저드 b: 처음 대상이 b · 날아가 피해 · 소리 96 · 맞힘 셈 · 맞은 픽시는 사라짐
+    {
+        nox::CSyncHost srv; mk(srv);
+        srv->DebugMoveTo(Sid(srv, b), 1200, 1000);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        const uint16_t bHp = srv->HealthOf(Sid(srv, b));
+        CastAndWait(srv, a, 58, true, ms, out);
+        const bool aimed = srv->missiles() > 0 && srv->DebugMissileTarget(0).sessionId == Sid(srv, b);
+        int hitTick = -1;
+        for (int t = 0; t < 40 && hitTick < 0; ++t) { ms += 34; srv.Tick(ms, out); if (srv->HealthOf(Sid(srv, b)) < bHp) hitTick = t; }
+        const auto& snd = srv->soundsDroppedIds();
+        const unsigned long long s96 = snd.count(96) ? snd.at(96) : 0;
+        std::snprintf(msg, sizeof(msg), "픽시 ② — 처음 대상 b %d · 맞은 틱 %d · b 체력 %u→%u · 맞힘 %llu · 소리 96 %llu · 남은 %zu",
+                      int(aimed), hitTick, unsigned(bHp), unsigned(srv->HealthOf(Sid(srv, b))), srv->pixieStat(PS::Hit), s96, srv->missiles());
+        Check(aimed && hitTick >= 3 && srv->pixieStat(PS::Hit) >= 1 && s96 == srv->pixieStat(PS::Hit) && srv->missiles() + srv->pixieStat(PS::Hit) == 4, msg);
+    }
+
+    // ③ 다시 찾는 둘레는 **250** — 주인 둘레를 도는 픽시에서 600 떨어진 적은 안 잡고, 주인 곁 60 의 적은 7틱 안팎에 잡는다
+    {
+        nox::CSyncHost srv; mk(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        CastAndWait(srv, a, 58, true, ms, out);
+        run(srv, ms, out, 10);
+        srv->DebugMoveTo(Sid(srv, b), 1600, 1000);
+        run(srv, ms, out, 30);
+        int aimedFar = 0;
+        for (size_t i = 0; i < srv->missiles(); ++i) if (!srv->DebugMissileTarget(i).none()) ++aimedFar;
+        const unsigned long long t0 = srv->pixieStat(PS::Targeted);
+        srv->DebugMoveTo(Sid(srv, b), 1060, 1000);
+        int firstTick = -1;
+        for (int t = 0; t < 15 && firstTick < 0; ++t) { ms += 34; srv.Tick(ms, out); if (srv->pixieStat(PS::Targeted) > t0) firstTick = t; }
+        std::snprintf(msg, sizeof(msg), "픽시 ③ — 600 에서 대상 잡은 픽시 %d(0) · 잡음 셈 %llu(0) · 60 에서 처음 잡은 틱 %d(0~8)", aimedFar, t0, firstTick);
+        Check(aimedFar == 0 && t0 == 0 && firstTick >= 0 && firstTick <= 8, msg);
+    }
+
+    // ④ **떼 짓기** — 대상 없을 때 200 안 같은 주인 픽시 쪽으로 돈다(넷이면 틱마다 여러 번)
+    {
+        nox::CSyncHost srv; mk(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        CastAndWait(srv, a, 58, true, ms, out);
+        run(srv, ms, out, 10);
+        std::snprintf(msg, sizeof(msg), "픽시 ④ — 떼 쪽 돌기 %llu(10틱 · 넷이면 많아야 120)", srv->pixieStat(PS::SwarmTurn));
+        Check(srv->pixieStat(PS::SwarmTurn) >= 30 && srv->pixieStat(PS::SwarmTurn) <= 120, msg);
+    }
+
+    // ⑤ 주인이 **3초 넘게 안 보이면** 주인 자리로 순간이동 — 세로 벽(x 1150~1173) 건너로 주인을 옮김(DebugMoveTo 는 SetPos 가 아니라 따라 옮기지 않는다)
+    {
+        nox::CSyncHost srv; mk(srv);
+        std::vector<std::pair<uint8_t, uint8_t>> wall;
+        for (uint8_t gy = 30; gy <= 57; ++gy) wall.push_back({ 50, gy });
+        srv->SetWalls(wall);
+        srv->SetWallDefFlags({ 1 });
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        CastAndWait(srv, a, 58, true, ms, out);
+        run(srv, ms, out, 5);
+        srv->DebugMoveTo(Sid(srv, a), 1400, 1000);
+        run(srv, ms, out, 60);
+        const unsigned long long early = srv->pixieStat(PS::ReturnTele);
+        run(srv, ms, out, 60);
+        int across = 0;
+        for (size_t i = 0; i < srv->missiles(); ++i) if (srv->DebugMissileX(i) > 1173.0f) ++across;
+        std::snprintf(msg, sizeof(msg), "픽시 ⑤ — 60틱 순간이동 %llu(0) · 120틱 %llu(4) · 벽 건너 %d / %zu", early, srv->pixieStat(PS::ReturnTele), across, srv->missiles());
+        Check(early == 0 && srv->pixieStat(PS::ReturnTele) >= 4 && across == static_cast<int>(srv->missiles()) && across == 4, msg);
+    }
+
+    // ⑥ 주인이 **옮겨지면**(SetPos — `TeleportTarget`) 대상 없는 픽시만 따라 옮겨진다 · 대조군 = 모두 대상이 있으면 하나도 안 옮겨짐
+    {
+        nox::CSyncHost srv; mk(srv);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        CastAndWait(srv, a, 58, true, ms, out);
+        run(srv, ms, out, 5);
+        srv->DebugTeleport(Sid(srv, a), 2000.0f, 2000.0f);
+        int at = 0;
+        for (size_t i = 0; i < srv->missiles(); ++i) if (srv->DebugMissileX(i) == 2000.0f && srv->DebugMissileY(i) == 2000.0f) ++at;
+        const unsigned long long moved = srv->pixieStat(PS::OwnerMoved);
+        nox::CSyncHost srv2; mk(srv2);
+        srv2->DebugMoveTo(Sid(srv2, b), 1150, 1000);
+        std::vector<nox::OutPacket> out2; uint32_t ms2 = 0; start(srv2, ms2, out2);
+        CastAndWait(srv2, a, 58, true, ms2, out2);
+        int aimed = 0;
+        for (size_t i = 0; i < srv2->missiles(); ++i) if (!srv2->DebugMissileTarget(i).none()) ++aimed;
+        srv2->DebugTeleport(Sid(srv2, a), 2000.0f, 2000.0f);
+        std::snprintf(msg, sizeof(msg), "픽시 ⑥ — 옮김 %llu · 새 자리 %d / %zu(4) · 대조군 대상 %d / %zu 일 때 옮김 %llu(0)",
+                      moved, at, srv->missiles(), aimed, srv2->missiles(), srv2->pixieStat(PS::OwnerMoved));
+        Check(moved == 4 && at == 4 && aimed == 4 && srv2->pixieStat(PS::OwnerMoved) == 0, msg);
+    }
+
+    // ⑦ **벽에 닿으면 되튀고 안 사라진다** — 주인(x 1020)과 15 떨어진 세로 벽(x 1035~1058) · 픽시는 주인 곁 20 안팎을 맴도니 닿는다 ·
+    //   100틱 동안 되튐을 세고 넷 그대로 · 벽 너머로 안 감
+    {
+        nox::CSyncHost srv; mk(srv);
+        srv->DebugMoveTo(Sid(srv, a), 1020, 1000);
+        std::vector<std::pair<uint8_t, uint8_t>> wall;
+        for (uint8_t gy = 30; gy <= 57; ++gy) wall.push_back({ 45, gy });
+        srv->SetWalls(wall);
+        srv->SetWallDefFlags({ 1 });
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        CastAndWait(srv, a, 58, true, ms, out);
+        const size_t n0 = srv->missiles();
+        run(srv, ms, out, 100);
+        int behind = 0;
+        for (size_t i = 0; i < srv->missiles(); ++i) if (srv->DebugMissileX(i) > 1058.0f) ++behind;
+        std::snprintf(msg, sizeof(msg), "픽시 ⑦ — 되튐 %llu · 수 %zu → %zu · 벽 너머 %d(0)", srv->pixieStat(PS::WallBounce), n0, srv->missiles(), behind);
+        Check(n0 == 4 && srv->pixieStat(PS::WallBounce) >= 1 && srv->missiles() == 4 && behind == 0, msg);
+    }
+
+    // ⑧ **몬스터가 부른 픽시**도 빠르기 2.5 · 처음 대상 = 그 몬스터의 적(곁의 위저드 a) · 날아가 a 를 깎는다
+    {
+        nox::CSyncHost srv; mk(srv);
+        srv->SetSpellDef(58, 0, 0x44040430u, { 1, 4 });
+        nox::Server::PhysBody body; body.shape = 2; body.r = 12.0f; body.cls = 0x2;
+        srv->SetTypeBody(1335, body);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        srv->DebugTeleport(Sid(srv, a), 1200.0f, 1000.0f);
+        srv->DebugSpawnPet(1335, 1000, 1000, Sid(srv, std::string()));
+        run(srv, ms, out, 1);
+        const uint16_t aHp = srv->HealthOf(Sid(srv, a));
+        const bool ok = srv->DebugPetCastNow(0, 58, nox::Target{ Sid(srv, a), -1 });
+        const size_t n = srv->missiles();
+        const float sp = n ? srv->DebugMissileSpeed(0) : 0.0f;
+        const bool aimed = n && srv->DebugMissileTarget(0).sessionId == Sid(srv, a);
+        int hitTick = -1;
+        for (int t = 0; t < 40 && hitTick < 0; ++t) { ms += 34; srv.Tick(ms, out); if (srv->HealthOf(Sid(srv, a)) < aHp) hitTick = t; }
+        std::snprintf(msg, sizeof(msg), "픽시 ⑧ 몬스터 — 받음 %d · 수 %zu · 빠르기 %.2f · 처음 대상 a %d · 맞은 틱 %d", int(ok), n, sp, int(aimed), hitTick);
+        Check(ok && n == 4 && sp == 2.5f && aimed && hitTick >= 3, msg);
+    }
+
+    // ⑨ **되받아치기(27)** — 시전자 쪽을 보고 방패를 건 b 에게 **앞쪽으로** 닿으면 안 지워지고 · 주인이 b 로 바뀐다(소리 122) →
+    //   b 의 픽시가 되어 b 의 적(시전자 a)을 쫓아 깎는다. 옆·뒤로 돌아 닿은 것은 원본대로 b 를 깎고 사라진다(첫 판 실측 — 넷 중 하나가 b 뒤를 돌아 위쪽에서 닿음).
+    //   ⚠ 첫 판은 공용 갈래가 적인가보다 27 을 먼저 봐 **제 것이 된 픽시가 b 에 닿을 때마다** 소리 122 를 냈다 — 소리 122 수 = 되받아침 수로 가른다
+    {
+        nox::CSyncHost srv; mk(srv);
+        srv->DebugMoveTo(Sid(srv, b), 1150, 1000);
+        std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out);
+        srv->DebugSetFacing(Sid(srv, b), 128);                               // −x — 시전자 쪽을 본다
+        srv->DebugApplyEnchant(Sid(srv, b), 27, 600, 1);
+        const uint16_t aHp = srv->HealthOf(Sid(srv, a)), bHp = srv->HealthOf(Sid(srv, b));
+        CastAndWait(srv, a, 58, true, ms, out);
+        for (int t = 0; t < 60 && srv->HealthOf(Sid(srv, a)) == aHp; ++t) { ms += 34; srv.Tick(ms, out); }
+        const auto& snd = srv->soundsDroppedIds();
+        const unsigned long long s122 = snd.count(122) ? snd.at(122) : 0;
+        std::snprintf(msg, sizeof(msg), "픽시 ⑨ 되받아치기 — 주인 바뀜 %llu(1~4) · 소리 122 %llu(같아야) · b %u→%u · a %u→%u(깎임) · 맞힘 %llu · 남은 %zu(남은+맞힘 = 4)",
+                      srv->pixieStat(PS::Reflect), s122, unsigned(bHp), unsigned(srv->HealthOf(Sid(srv, b))), unsigned(aHp), unsigned(srv->HealthOf(Sid(srv, a))),
+                      srv->pixieStat(PS::Hit), srv->missiles());
+        Check(srv->pixieStat(PS::Reflect) >= 1 && srv->pixieStat(PS::Reflect) <= 4 && s122 == srv->pixieStat(PS::Reflect) &&
+              srv->HealthOf(Sid(srv, a)) < aHp && srv->missiles() + srv->pixieStat(PS::Hit) == 4, msg);
+    }
+    std::printf("  11-22 픽시 떼 나는 AI — 빠르기·쫓아 맞힘(소리 96)·다시 찾는 둘레 250·떼 짓기·3초 안 보이면 순간이동·주인 따라 옮김·벽 되튐·몬스터 픽시·되받아치기\n");
 }
 
 // ── 11-20 트레일러 위저드 W2 — 마법 화살(SPELL_MAGIC_MISSILE 50) ─────────────
@@ -41769,6 +41978,7 @@ int main() {
     TestCleansingFlame();
     TestArachnaphobia();
     TestPixieSwarm();
+    TestPixieFly1122();
     TestMagicMissile();               // ★ 11-20 트레일러 위저드 W2
     TestManaBomb();                   // ★ 11-20 트레일러 위저드 W3
     TestEnergyBolt();

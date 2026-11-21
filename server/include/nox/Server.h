@@ -4268,6 +4268,10 @@ public:
     //   20초 · 임자 죽음 · 임자 세션 없음)
     enum class KinStat : uint8_t { Cast = 0, NoTarget, NotPlayer, NoHandType, Moved, Blocked, EndAge, EndDead, GoneOwner, Count };
     unsigned long long kinStat(KinStat k) const { return kinStat_[static_cast<size_t>(k)]; }
+    // ★ 11-22 픽시 떼 나는 AI(`updatePixie_53CD20`) — 만듦 · 대상 찾음(새로 잡힌 틱) · 떼 쪽 돌기 · 주인 쪽 돌기 · 주인 안 보여 순간이동 ·
+    //   주인이 옮겨져 따라감(`teleportAllPixies_4FD090`) · 벽 되튐 · 적 맞힘 · 수명 · 되받아치기(27)로 주인 바뀜
+    enum class PixieStat : uint8_t { Made = 0, Targeted, SwarmTurn, OwnerTurn, ReturnTele, OwnerMoved, WallBounce, Hit, Expired, Reflect, Count };
+    unsigned long long pixieStat(PixieStat k) const { return pixieStat_[static_cast<size_t>(k)]; }
     int64_t DebugPropLockBy(uint16_t netCode) const { for (const auto& p : props_) if (p.netCode == netCode) return p.lockBy; return kNoSession; }
     size_t DebugMagicWallCount() const { return magicWalls_.size(); }
     int DebugWallTileAt(int gx, int gy) const {
@@ -4880,6 +4884,10 @@ private:
         // ★ 8 = BoomCollide(마법 화살 `MagicMissile` · 11-20 W2) — 갱신 MagicMissileUpdate(3초 · 대상 쫓아 ±42 휘기) ·
         //   닿으면 직격 + 둘레 피해 + 밀기 뒤 사라지고, 벽이면 튕겨 반 빠르기로 계속 난다
         uint32_t expireFrame = 0;       // 0 이 아니면 이 프레임에 사라진다(픽시 — 30~90초)
+        // ★ 11-22 픽시 나는 AI — +156/+160(Pos39 · 만들 때 시전자 자리 — 주인이 없으면 이리로 돈다 · `GAME4_3.c:8346~8347`) ·
+        //   갱신 짐 [6](주인이 마지막으로 보인 프레임 — `PixieReturnTimeout` 넘게 안 보이면 주인에게 순간이동 · `:8349`)
+        float pxHomeX = 0, pxHomeY = 0;
+        uint32_t pxSeenFrame = 0;
         // ★ 11-20 트레일러 전사 2-a — 차크람(RoundChakramInMotion)은 던진 차크람을 **제 가방에** 넣고 난다(`inventoryPutImpl_4F3070(날아가는 것, 차크람, 1)` `GAME4_3.c:4408`).
         //   갱신 짐 28바이트(`object_update.go:94`) — +4 남은 튕김(4) · +8 쫓는 것(주인이거나 없음) · +12 마지막에 맞은 것 · +16/+20 주인 자리 ·
         //   +24 상태(2 = 날아감 · 0 = 돌아옴 · 1 = 떨어짐)
@@ -5073,6 +5081,10 @@ private:
     int CastLock(Session& s);                                              // ★ 11-21 W12 castLock_52CE90 — 가장 가까운 문 + 그 둘레 문을 60초 잠금
     static bool MapIndexPosValid(float x, float y);                        // ★ 11-21 W14 sub_517590 = `ValidIndexPos`(`server/map.go:229`)
     bool UndeadKillerUpdate(const MissileObj& m, uint32_t frame);          // ★ 11-21 W6 updateUndeadKiller_53E190 — 거짓이면 지운다
+    bool PixieUpdate(MissileObj& m, uint32_t frame);                       // ★ 11-22 updatePixie_53CD20 — 거짓이면 지운다(수명)
+    Target PixieFindTarget(const MissileObj& m) const;                     // ★ 11-22 PixieFindTarget(`server/spell_pixie.go:11`)
+    bool PixieOwnerPos(const MissileObj& m, float& x, float& y) const;     // ★ 11-22 픽시 주인(사람 · 부른 몬스터)의 자리 — 없으면 거짓
+    void TeleportPixiesTo(int64_t ownerSession, uint16_t ownerNet, float x, float y);   // ★ 11-22 teleportAllPixies_4FD090(SetPos 끝)
     bool UndeadKillerCollide(size_t i);                                    // ★ 11-21 W6 collideUndeadKiller_4EBD40 — 거짓이면 지운다
     int DurOvalShieldCreate(DurSpell& d);                                  // ★ 11-21 W7 sub_531490 — 버프 27 · 끝 프레임
     int DurOvalShieldTick(DurSpell& d);                                    // ★ 11-21 W7 sub_5314F0 — 달리기·죽음이면 끝
@@ -5912,6 +5924,7 @@ private:
     unsigned long long moonStat_[static_cast<size_t>(MoonStat::Count)] = {};               // ★ 11-21 W14 달빛(54) 갈래
     unsigned long long tagStat_[static_cast<size_t>(TagStat::Count)] = {};                 // ★ 11-21 W15 꼬리표(116) 갈래
     unsigned long long kinStat_[static_cast<size_t>(KinStat::Count)] = {};                 // ★ 11-21 W11 염동력(127) 갈래
+    unsigned long long pixieStat_[static_cast<size_t>(PixieStat::Count)] = {};             // ★ 11-22 픽시 떼 나는 AI 갈래
     unsigned long long lockStat_[static_cast<size_t>(LockStat::Count)] = {};               // ★ 11-21 W12 잠그기(44) 갈래
     unsigned long long charmStat_[static_cast<size_t>(CharmStat::Count)] = {};             // ★ 11-21 C6 매혹 갈래
     uint32_t durFrame_ = 0;   // ★ 11-20 C2 — `SpellCastByPlayer` 가 지금 도는 걸음의 프레임(한 번에 여러 틱이면 frame_ 보다 작다 — 끝 프레임 견주기는 이 값으로)

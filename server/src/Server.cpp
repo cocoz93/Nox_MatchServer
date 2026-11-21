@@ -9592,6 +9592,7 @@ void Server::TeleportTarget(const Target& t, float x, float y, bool forgetDrawab
         //     사람만 없었다). 부활은 이미 부르고 있었는데 순간이동 갈래가 빠져 있었다.
         //   ⇒ 블링크·표식 이동도 같은 결함이었다(주문 121~125 · 아래 호출자 셋)
         if (forgetDrawables) ForgetDrawables(o);
+        TeleportPixiesTo(o.sessionId, 0, x, y);              // ★ 11-22 `SetPos` 끝 teleportAllPixies_4FD090(`object.go:718`)
         return;
     }
     if (t.pet < 0 || static_cast<size_t>(t.pet) >= pets_.size()) return;
@@ -9599,6 +9600,7 @@ void Server::TeleportTarget(const Target& t, float x, float y, bool forgetDrawab
     pets_[static_cast<size_t>(t.pet)].y = y;
     pets_[static_cast<size_t>(t.pet)].prevX = x;   // ★ 09-29 B1 — `SetPos` 는 PrevPos 도 새 자리(`object.go:707`)
     pets_[static_cast<size_t>(t.pet)].prevY = y;
+    TeleportPixiesTo(kNoSession, pets_[static_cast<size_t>(t.pet)].netCode, x, y);   // ★ 11-22 몬스터가 거느린 픽시도
 }
 
 // spellBlink2_530310(`GAME4_3.c:600`) — 켤 때 **언제 터질지**만 정한다.
@@ -11734,6 +11736,7 @@ void Server::PlayerSetPos(Session& s, double x, double y) {
     s.prevX = x; s.prevY = y;
     s.setPosThisTick = true;                                 // 틱 끝 PrevPos 도 이 자리(부딪힘 틱 끝 줄)
     ForgetDrawables(s);
+    TeleportPixiesTo(s.sessionId, 0, static_cast<float>(x), static_cast<float>(y));   // ★ 11-22 `SetPos` 끝 teleportAllPixies_4FD090(`object.go:718`)
 }
 
 // ★ 09-23 nine-defects 2-b2 — `PlayerCollide`(`GAME3_3.c:3165`)의 **광전사 갈래**(`:3188~3253`).
@@ -17271,8 +17274,9 @@ int Server::CastArachnaphobia(Session& caster, const SpellArg& arg) {
 //   · 이미 제 픽시가 그만큼 있으면 **아무것도 안 만든다**(모자란 만큼만 채운다)
 //   · 자리 = 시전자 + (시전자 반지름 + 4) × 무작위 방향 · 선 추적(5)이 막히면 그 마리는 거른다
 //   · 속도 0 으로 나오고, 수명 = 지금 + 초당틱 × 무작위(30, 90)
-//   ⚠ **날아다니는 AI 는 아직 없다**(`updatePixie_53CD20` — 적 찾기·떼 짓기·주인 따라가기·되돌아오기).
-//     그건 유닛 움직임 묶음(6·7)이다. 여기서는 **나오는 것·수명·닿음 피해**까지가 산출물이다.
+//   ★ 11-22 트레일러 — 나는 AI(`PixieUpdate`)를 옮기며 만들 때 칸도 마저 채움(`GAME4_3.c:8339~8349`):
+//     빠르기(+544 SpeedCur) = thing.bin SPEED 40 / 32 × 2 = 2.5 · 처음 대상 = `spellFlySearchTarget(0, 픽시, 0x20, 600, 0, 시전자)` ·
+//     만든 자리(+156/+160 Pos39) = 시전자 자리 · 주인 본 프레임([6]) = 지금. 전에는 빠르기 0 · 대상 없음이라 제자리에 떠 있었다(사람 판 「안 날아다니고 멈춰 있음」)
 int Server::CastPixieSwarm(uint8_t spell, Session& caster, int lvl) {
     const uint16_t type = NamedType("Pixie");
     if (type == 0) return 1;
@@ -17296,7 +17300,9 @@ int Server::CastPixieSwarm(uint8_t spell, Session& caster, int lvl) {
         m.posY = m.newY = m.prevY = py;
         m.dir1 = m.dir2 = static_cast<uint8_t>(dir);
         m.createdFrame = m.frame136 = frame_;
-        m.speed = 0.0f;                                      // 속도 0 으로 나온다(움직임은 AI 몫 — 묶음 6·7)
+        // 속도(+80)는 0 으로 나오고(`:8341~8342`) 빠르기(+544)는 종류 값 — 힘은 다음 틱부터 `PixieUpdate` 가 준다
+        const ProjTypeInfo* pt = ProjType("Pixie");
+        m.speed = pt ? pt->speed : 0.0f;
         m.owner = caster.sessionId;
         m.ud0 = m.ud2 = caster.sessionId;
         m.spell = spell;
@@ -17304,7 +17310,11 @@ int Server::CastPixieSwarm(uint8_t spell, Session& caster, int lvl) {
         m.collideKind = 2;                                   // PixieCollide
         m.collideAmount = 8;                                 // thing.bin `COLLIDE = PixieCollide 8`
         m.expireFrame = frame_ + static_cast<uint32_t>(kServerTickRate) * (30u + NextRandom(61u));   // randomInt(30,90) 초
+        m.ud1 = SpellFlySearchTarget(false, 0, 0, px, py, caster.sessionId, kNoSession, 0x20, 600.0f, &caster, &m.buffs);   // `:8343`
+        m.pxHomeX = cx; m.pxHomeY = cy;                      // `:8346~8347` 시전자 자리
+        m.pxSeenFrame = frame_;                              // `:8349`
         missiles_.push_back(m); ++missilesMade_;
+        ++pixieStat_[static_cast<size_t>(PixieStat::Made)];
     }
     return 1;
 }
@@ -17399,7 +17409,7 @@ int Server::MonsterCastMeteor(Creature& k, float tx, float ty, int lvl) {
 
 // castPixies_540440(`GAME4_3.c:8299~8359`) 몬스터 판 — 그 몬스터가 거느린 픽시(`unitIsUnitTT_4E7C80(a3)` · `ownerNet`)를 `PixieCount[세기-1]` 까지 채운다 ·
 //   자리 = 몬스터 + (그 종류 몸 반지름(+176) + 4) × 무작위 방향 · 선 추적(5)이 막히면 그 마리는 거른다 · 속도 0 · 수명 30~90초
-//   ⚠ 사람 판과 같이 안 옮긴 것 — 날아다니는 AI(`updatePixie_53CD20`)와 만들 때 대상 찾기(`:8343`) — 픽시는 제자리에서 닿는 적만 때린다
+//   ★ 11-22 — 사람 판과 같이 나는 AI·만들 때 칸을 채움 · 처음 대상 = `spellFlySearchTarget(0, 픽시, 0x20, 600, 0, 그 몬스터)`(`SpellFlySearchTargetPet`)
 int Server::MonsterCastPixieSwarm(Creature& k, uint8_t spell, int lvl) {
     const uint16_t type = NamedType("Pixie");
     if (type == 0) return 1;
@@ -17434,9 +17444,150 @@ int Server::MonsterCastPixieSwarm(Creature& k, uint8_t spell, int lvl) {
         m.collideKind = 2;                                   // PixieCollide
         m.collideAmount = 8;                                 // thing.bin `COLLIDE = PixieCollide 8`
         m.expireFrame = frame_ + static_cast<uint32_t>(kServerTickRate) * (30u + NextRandom(61u));   // randomInt(30,90) 초
+        const ProjTypeInfo* pt = ProjType("Pixie");          // ★ 11-22 — 사람 판과 같음(위 머리 주석)
+        m.speed = pt ? pt->speed : 0.0f;
+        m.ud1 = SpellFlySearchTargetPet(k, px, py, &m.buffs, 600.0f);
+        m.pxHomeX = cx; m.pxHomeY = cy;
+        m.pxSeenFrame = frame_;
         missiles_.push_back(m); ++missilesMade_;
+        ++pixieStat_[static_cast<size_t>(PixieStat::Made)];
     }
     return 1;
+}
+
+// ★ 11-22 트레일러 — 픽시 주인(+508)의 자리. 몬스터가 부른 것이면 그 몬스터(`ownerNet` · 지워졌으면 `ownerPet` −1) · 아니면 그 사람(나갔으면 없음)
+bool Server::PixieOwnerPos(const MissileObj& m, float& x, float& y) const {
+    if (m.ownerNet != 0) {
+        if (m.ownerPet < 0 || static_cast<size_t>(m.ownerPet) >= pets_.size()) return false;
+        x = static_cast<float>(pets_[static_cast<size_t>(m.ownerPet)].x);
+        y = static_cast<float>(pets_[static_cast<size_t>(m.ownerPet)].y);
+        return true;
+    }
+    auto it = sessions_.find(m.owner);
+    if (it == sessions_.end() || !it->second.inGame) return false;
+    x = static_cast<float>(it->second.posX);
+    y = static_cast<float>(it->second.posY);
+    return true;
+}
+
+// ★ 11-22 트레일러 — `PixieFindTarget`(`server/spell_pixie.go:11~17`) = `EnemyAggroXxx(픽시, 둘레, 최대 float)`(`server/object_ai.go:225~263`):
+//   둘레 = 퀘스트면 640 · 아니면 250 · 둘레 안 유닛 가운데 적(픽시의 주인 사슬 — 닿음 갈래 `collidePixie` 와 같은 판정) · 안 죽음 ·
+//   픽시가 볼 수 있음(`CanInteract(픽시, it, 0)` — 픽시 버프는 비어 있다 · 시야 9) · 가장 가까운 것(악당 버프 10 이면 거리 ÷ 3) ·
+//   `someFlag` 는 늘 거짓이라 앞쪽 거르기는 안 탄다
+//   ⚠ 몬스터 생성기는 우리 서버 대상 목록에 없다 · 주인 없는 픽시(시전자가 나감)는 적이 없다(닿음 갈래와 같은 규칙)
+Target Server::PixieFindTarget(const MissileObj& m) const {
+    const bool quest = (questTotal_ > 0 || questStage_ > 0);
+    const double r = quest ? 640.0 : 250.0;
+    const Session* ownS = nullptr;
+    const Creature* ownK = nullptr;
+    if (m.ownerNet != 0) {
+        if (m.ownerPet >= 0 && static_cast<size_t>(m.ownerPet) < pets_.size()) ownK = &pets_[static_cast<size_t>(m.ownerPet)];
+    } else if (auto it = sessions_.find(m.owner); it != sessions_.end() && it->second.inGame) {
+        ownS = &it->second;
+    }
+    if (!ownS && !ownK) return Target{};
+    Target best;
+    double bestD = 3.4028234663852886e+38;                   // math.MaxFloat32
+    auto consider = [&](const Target& t, double tx, double ty, const Buffs* tb, double tvx, double tvy) {
+        const bool enemy = ownK ? CreatureEnemyTo(*ownK, t) : TargetIsEnemy(*ownS, t);
+        if (!enemy || TargetDeadOrGone(t)) return;
+        const double dx = tx - m.posX, dy = ty - m.posY;
+        const double dist = std::sqrt(dx * dx + dy * dy) + 0.001;
+        if (dist > r) return;                                // `EachObjInCircle` 반지름
+        if (!CanSeeBuffs(&m.buffs, tb, tvx, tvy, 0) ||
+            !MapTraceVision(static_cast<float>(tx), static_cast<float>(ty), m.posX, m.posY)) return;   // CanInteract(픽시, it, 0)
+        double d2 = dist;
+        if (tb && tb->Has(10)) d2 /= 3.0;                    // ENCHANT_VILLAIN
+        if (d2 < bestD) { bestD = d2; best = t; }
+    };
+    for (const auto& kv : sessions_) {
+        const Session& o = kv.second;
+        if (!o.inGame || o.observer) continue;
+        consider(Target{ o.sessionId, -1 }, o.posX, o.posY, &o.buffs, o.velX, o.velY);
+    }
+    for (size_t i = 0; i < pets_.size(); ++i) {
+        if (pets_[i].dead) continue;
+        consider(Target{ kNoSession, static_cast<int>(i) }, pets_[i].x, pets_[i].y, &pets_[i].buffs, 0.0, 0.0);
+    }
+    return best;
+}
+
+// ★ 11-22 트레일러 — 픽시 떼 나는 AI `nox_xxx_updatePixie_53CD20`(`object_update.go:695~769` · C 몸통은 legacy 에 없어 Go 만 대조)
+//   ① 수명(갱신 짐 [5]) 넘으면 지운다(`:704~707`)
+//   ② 대상([1])이 지워졌거나 죽었으면 놓는다 · 대상 고른 프레임(+136)에서 TickRate/4(7틱) 넘으면 다시 찾는다(`PixieFindTarget`) — 찾은 것이 주인이면 버린다 ·
+//      주인이 사람이고 관전 중이면 놓는다(원본 FlagNoUpdate — 우리 관전 깃발로 맞춘 이름 짐작)
+//   ③ 대상이 있으면 그쪽으로 32 돈다 — 없으면 둘레 200 안 **같은 주인의 다른 픽시마다** 16씩(떼 짓기) → 주인(없으면 만든 자리 Pos39)까지
+//      선 추적 9 가 통하면 그쪽으로 25 돈다. 돌기 = `PixieIdleAnimate`(`server/spell_pixie.go:19~34` — 방향(+126) 벡터와 목표 벡터의 외적 ≥ 0 이면 +, 아니면 −)
+//   ④ 감쇠(+112) 0.9 · 힘 = 방향(+126) × 빠르기(+544 — 2.5)
+//   ⑤ 프레임 & 8 == 0 인 틱에 주인이 있으면 — 주인이 보이면(시야) [6] = 지금 · 안 보인 지 `PixieReturnTimeout`(gamedata 3초 → 90틱) 넘으면
+//      주인 자리로 순간이동(`teleportPixie_4FD050`) 하고 [6] = 지금
+bool Server::PixieUpdate(MissileObj& m, uint32_t frame) {
+    if (m.expireFrame != 0 && frame > m.expireFrame) { ++pixieStat_[static_cast<size_t>(PixieStat::Expired)]; return false; }
+    if (!m.ud1.none() && TargetDeadOrGone(m.ud1)) m.ud1 = Target{};
+    float ox = 0.0f, oy = 0.0f;
+    const bool hasOwner = PixieOwnerPos(m, ox, oy);
+    if (frame - m.frame136 > static_cast<uint32_t>(kServerTickRate) / 4u) {
+        const Target was = m.ud1;
+        m.ud1 = PixieFindTarget(m);
+        if (m.ownerNet == 0 && m.ud1.sessionId != kNoSession && m.ud1.sessionId == m.owner) m.ud1 = Target{};
+        if (!m.ud1.none() && (m.ud1.sessionId != was.sessionId || m.ud1.pet != was.pet)) ++pixieStat_[static_cast<size_t>(PixieStat::Targeted)];
+        m.frame136 = frame;
+    }
+    if (m.ownerNet == 0) {
+        auto it = sessions_.find(m.owner);
+        if (it != sessions_.end() && it->second.inGame && it->second.observer) m.ud1 = Target{};
+    }
+    auto turn = [&](float vx, float vy, int ddir) {          // PixieIdleAnimate
+        const int d = m.dir2;
+        const double cross = DirVecX(d) * static_cast<double>(vy) - DirVecY(d) * static_cast<double>(vx);
+        m.dir2 = static_cast<uint8_t>(cross >= 0.0 ? d + ddir : d - ddir);   // 0~255 감기 = 8비트 넘침
+    };
+    if (!m.ud1.none()) {
+        float tx = 0.0f, ty = 0.0f;
+        if (m.ud1.sessionId != kNoSession) { tx = static_cast<float>(sessions_.at(m.ud1.sessionId).posX); ty = static_cast<float>(sessions_.at(m.ud1.sessionId).posY); }
+        else { tx = static_cast<float>(pets_[static_cast<size_t>(m.ud1.pet)].x); ty = static_cast<float>(pets_[static_cast<size_t>(m.ud1.pet)].y); }
+        turn(tx - m.posX, ty - m.posY, 32);
+    } else {
+        for (const auto& o : missiles_) {                    // EachMissileInCircle(자리, 200) — 같은 종류 · 같은 주인 · 나 말고
+            if (&o == &m || o.type != m.type || o.collideKind != 2) continue;
+            if (o.ownerNet != m.ownerNet || (m.ownerNet == 0 && o.owner != m.owner)) continue;
+            const float dx = o.posX - m.posX, dy = o.posY - m.posY;
+            if (dx * dx + dy * dy > 200.0f * 200.0f) continue;
+            turn(dx, dy, 16);
+            ++pixieStat_[static_cast<size_t>(PixieStat::SwarmTurn)];
+        }
+        const float hx = hasOwner ? ox : m.pxHomeX, hy = hasOwner ? oy : m.pxHomeY;
+        if (MapTraceRay(m.posX, m.posY, hx, hy, 0x9)) {
+            turn(hx - m.posX, hy - m.posY, 25);
+            ++pixieStat_[static_cast<size_t>(PixieStat::OwnerTurn)];
+        }
+    }
+    m.damping = 0.9f;                                        // Float28
+    m.forceX = DirVecX(m.dir2) * m.speed;
+    m.forceY = DirVecY(m.dir2) * m.speed;
+    if ((frame & 8u) == 0 && hasOwner) {
+        if (MapTraceVision(m.posX, m.posY, ox, oy)) m.pxSeenFrame = frame;
+        const uint32_t timeout = static_cast<uint32_t>(BalanceFloat("PixieReturnTimeout") * kServerTickRate);   // SecToFramesF
+        if (frame - m.pxSeenFrame > timeout) {
+            m.posX = m.newX = m.prevX = ox;                  // teleportPixie_4FD050 — 세 자리 모두 주인 자리
+            m.posY = m.newY = m.prevY = oy;
+            m.pxSeenFrame = frame;
+            ++pixieStat_[static_cast<size_t>(PixieStat::ReturnTele)];
+        }
+    }
+    return true;
+}
+
+// ★ 11-22 트레일러 — `teleportAllPixies_4FD090`(`object_update.go:778~791` · `SetPos` 끝 `object.go:718`) — 옮겨진 것이 거느린 픽시 가운데
+//   대상(갱신 짐 +4)이 없는 것을 새 자리로 데려온다. 사람이면 `ownerNet` 0 · 그 세션 · 몬스터면 그 번호
+void Server::TeleportPixiesTo(int64_t ownerSession, uint16_t ownerNet, float x, float y) {
+    for (auto& m : missiles_) {
+        if (m.collideKind != 2 || !m.ud1.none()) continue;
+        if (ownerNet != 0 ? (m.ownerNet != ownerNet) : (m.ownerNet != 0 || m.owner != ownerSession)) continue;
+        m.posX = m.newX = m.prevX = x;
+        m.posY = m.newY = m.prevY = y;
+        ++pixieStat_[static_cast<size_t>(PixieStat::OwnerMoved)];
+    }
 }
 
 // spellMissiles.Cast · CastCustom(`spell_missiles.go:26~91`) 몬스터 판 — 수·퍼짐·빠르기·자리는 사람 판(`CastMagicMissile` 머리 주석)과 같고 다른 것만:
@@ -18614,9 +18765,8 @@ void Server::UpdateMissiles(uint32_t frame) {
             //   ★ 아래 ①-b(주문 투사체)로 떨어지면 **15틱 만에 사라지고** 엉뚱한 상대를 찾아 휜다.
             //     여기서는 **그냥 날게** 둔다 — 거리·수명·시야 관문과 끌기는 다음 조각(7-g)이다
         } else if (m.collideKind == 2) {
-            // ①-c updatePixie_53CD20 — 여기서는 **수명만** 본다.
-            //   ⚠ 적 찾기·떼 짓기·주인 따라가기·되돌아오기는 유닛 움직임 묶음(6·7)이다.
-            if (m.expireFrame != 0 && frame > m.expireFrame) { DestroyMissile(i); continue; }
+            // ①-c updatePixie_53CD20 — ★ 11-22 수명 · 적 찾기 · 떼 짓기 · 주인 따라가기 · 되돌아오기(`PixieUpdate` 머리 주석)
+            if (!PixieUpdate(m, frame)) { DestroyMissile(i); continue; }
         } else if (m.collideKind == 7) {
             // ★ 11-20 트레일러 전사 2-b — 차크람 `UPDATE = ChakramInMotionUpdate`(`updateChakramInMotion_53DCC0`) — 수명 대신 주인 쫓기·5초
             if (!ChakramUpdate(m, frame)) { DestroyMissile(i); continue; }
@@ -18967,6 +19117,19 @@ void Server::UpdateMissiles(uint32_t frame) {
                     who.src = m.owner;
                     DamageToMap(th.gx, th.gy, static_cast<int>(BalanceFloat("DeathBallCollideDamage")), 2, who);
                     ++fonStat_[static_cast<size_t>(FonStat::BallWall)];
+                } else if (m.collideKind == 2) {
+                    // ★ 11-22 픽시 — `collidePixie_4EA080` a2 == 0 · a3 != 0 갈래(`GAME3_3.c:4376~4389`) — 법선으로 되튐(collideReflect_57B810) →
+                    //   방향(+126) = 새 속도의 방향(`math_509ED0`) → 새 자리(+64) += 속도 → **제 새 자리**(+64 ÷ 23)에 인자(8) · 종류 11 → 안 지운다
+                    if (wny * wnx <= 0.0f) std::swap(m.velX, m.velY);
+                    else { const float v3 = m.velX; m.velX = -m.velY; m.velY = -v3; }
+                    m.dir2 = DirFromVec(m.velX, m.velY);
+                    m.newX += m.velX; m.newY += m.velY;
+                    WallHitter who;
+                    who.present = true; who.x = m.posX; who.y = m.posY; who.material = MaterialOfWire(m.type);
+                    who.src = m.owner;
+                    DamageToMap(static_cast<int>(m.newX * 0.043478262f), static_cast<int>(m.newY * 0.043478262f),
+                                static_cast<int>(m.collideAmount), 11, who);
+                    ++pixieStat_[static_cast<size_t>(PixieStat::WallBounce)];
                 } else if (m.collideKind == 7) {
                     // ★ 11-20 트레일러 전사 2-c — 차크람은 제 닿음 함수가 되튐까지 한다(`collideChakram_4EAF00` a2 == 0 갈래 `GAME3_3.c:4989~5024`)
                     if (!ChakramCollideWall(m, wnx, wny, th.gx, th.gy)) { DestroyMissile(i); erased = true; continue; }
@@ -19006,7 +19169,10 @@ void Server::UpdateMissiles(uint32_t frame) {
                     // ★ 11-20 트레일러 전사 2-c — 아래 방패·대검·되받아치기 방패(27)는 원본에선 **피해 함수 안**(`GAME3_3.c:170~330`)이라
                     //   피해를 주기 전에 받는 차크람 주인 갈래(`collideChakram_4EAF00` `:4995~5008`)는 이것을 안 탄다 —
                     //   방패를 든 워리어(기본 나무 방패 · 가만 7틱이면 올림)가 돌아온 제 차크람을 되받아쳐 영영 못 받았다(⑫ 실측 f50)
-                    if (!handled && hk == HitPlayer && !(m.collideKind == 7 && hSessionId == m.owner) && !starFriend) {
+                    // ★ 11-22 픽시(2)는 이 갈래를 안 탄다 — `collidePixie_4EA080` 은 **적인가를 먼저** 보고(`GAME3_3.c:4340`) 사람일 때만 27 을 본다.
+                    //   여기를 타면 제 것이 된 픽시가 새 주인에게 닿을 때마다 「되받아침」(소리 122)이 났다(⑨ 첫 판 실측 — 넷이 되받아침 넷 + 헛 소리).
+                    //   방패·대검 막기는 픽시 갈래의 HurtTarget 이 한다(마법 화살과 같다)
+                    if (!handled && hk == HitPlayer && !(m.collideKind == 7 && hSessionId == m.owner) && !starFriend && m.collideKind != 2) {
                         Session& t = sessions_.at(hSessionId);
                         auto changeOwner = [&]() { MissileChangeOwner(m, t.sessionId, frame); };
                         const bool front = (TestTwoPointsAndDirection(static_cast<float>(t.posX), static_cast<float>(t.posY),
@@ -19083,7 +19249,22 @@ void Server::UpdateMissiles(uint32_t frame) {
                         const bool enemy = (m.ownerNet != 0 && m.ownerPet >= 0)
                                                ? CreatureEnemyTo(pets_[static_cast<size_t>(m.ownerPet)], tgt)
                                                : ((ownIt != sessions_.end()) && TargetIsEnemy(ownIt->second, tgt));
-                        if (enemy) {
+                        // ★ 11-22 `:4344~4345` — 주인이 구경꾼(NoUpdate 2)인 사람이면 아무것도 안 한다
+                        const bool ownerObserver = (m.ownerNet == 0 && ownIt != sessions_.end() && ownIt->second.inGame && ownIt->second.observer);
+                        // ★ 11-22 `:4353~4363` — 사람이면 되받아치기 방패(27) · 앞쪽(픽시 지금 자리 +56)일 때 주인·대상 맞바꿈 + 소리 122(임자 = 맞은 사람) · 안 지운다.
+                        //   ⚠ 그 앞의 반전(`checkInversionEffect_4FA4F0` 든 물건 마법부여)은 공용 갈래처럼 아직 없다
+                        bool reflected = false;
+                        if (enemy && !ownerObserver && hk == HitPlayer) {
+                            Session& t = sessions_.at(hSessionId);
+                            if (t.buffs.Has(27) &&
+                                (TestTwoPointsAndDirection(static_cast<float>(t.posX), static_cast<float>(t.posY), t.facingPrev, m.posX, m.posY) & 1)) {
+                                MissileChangeOwner(m, t.sessionId, frame);
+                                PlaySoundAt(122, static_cast<float>(t.posX), static_cast<float>(t.posY), 0, 0, t.sessionId, Target{ t.sessionId, -1 });
+                                ++pixieStat_[static_cast<size_t>(PixieStat::Reflect)];
+                                reflected = true;
+                            }
+                        }
+                        if (enemy && !ownerObserver && !reflected) {
                             // ★ 09-26 M1 — a3 = 픽시(클래스 MISSILE) · 전에는 때린 것 없이(nullptr) 넘겨 막기 판정을 아예 안 탔다
                             AttackSrc src;
                             src.x = m.posX; src.y = m.posY;
@@ -19091,6 +19272,8 @@ void Server::UpdateMissiles(uint32_t frame) {
                             src.rootIsMonster = MissileRootIsMonster(m);
                             src.missile = true;
                             HurtTarget(tgt, static_cast<int>(m.collideAmount), m.owner, 11, &src, HitterMissile(m));   // ★ 4-c3b2 a3 = 픽시(`GAME3_3.c:4349`)
+                            PlaySoundAt(96, m.posX, m.posY);                 // ★ 11-22 aud_501960(96, 픽시, 0, 0)(`:4350` · `:4368`)
+                            ++pixieStat_[static_cast<size_t>(PixieStat::Hit)];
                             DestroyMissile(i);
                             erased = true;
                         }
