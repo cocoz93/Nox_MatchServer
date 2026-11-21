@@ -30833,6 +30833,165 @@ void TestDrainObelisk1122() {
                 "빔 끝 = 기둥 번호 | 0x8000 · 자리 뜨면 기둥에서 끔 · 빨린 소리 짝 반 초마다 · 가득 차면 끝(분모 셈)\n");
 }
 
+// ── 11-22 시전 소리 — 밀기·당기기(`GAME4_2.c:9341~9342`·`:9353~9354`) · 운석(`:10263~10264`) · 사람 날림 주문(`GAME4.c:2956~2957`) ─────
+// 밀기·당기기·날림 = 시전자 자리(aud_501960) · 운석 = 커서(대상) 자리(audCreate_501A30) · 운석은 만들었을 때만(떠 있으면 거절 · 선 추적 막힘 = 소리 없음)
+// 듣는 이 — 소리 최대거리 100: b 는 시전자 곁(50), c 는 커서·대상 자리. 들은 수와 `castSndStat` 다섯 칸을 같이 센다
+void TestCastSound1122() {
+    const std::string a = "10.11.22.101:9801", b = "10.11.22.102:9802", c = "10.11.22.103:9803";
+    using CS = nox::Server::CastSndStat;
+    constexpr uint16_t kPush = 701, kPull = 702, kMeteor = 703, kConf = 704, kMagic = 1237, kMon = 1335;
+    char msg[520];
+    struct Opt { bool sound = true; bool magic = true; bool wall = false; };
+    auto mk = [&](nox::CSyncHost& srv, uint32_t& ms, std::vector<nox::OutPacket>& out, const Opt& o) {
+        nox::Gamedata g;
+        g.Parse("PushPowerCoeff = 1.0;\nPullPowerCoeff = 1.0;\nMeteorDamage = 45, 65, 85, 105, 125;\nMeteorSpeed = 8;\nSummonDuration = 60, 210, 375;\n");
+        srv->SetGamedata(g);
+        srv->SetSpellDef(66, 0, 0x92000410u, { 2, 3 }, o.sound ? kPush : 0);
+        srv->SetSpellDef(65, 0, 0x92000410u, { 2, 4 }, o.sound ? kPull : 0);
+        srv->SetSpellDef(52, 0, 0x44200038u, { 6, 6 }, o.sound ? kMeteor : 0);
+        srv->SetSpellDef(12, 10, 0x222000b5u, { 5, 3, 5 }, o.sound ? kConf : 0);   // 혼란(겨눔 0x4 — 날림 주문)
+        srv->SetNamedType("Meteor", 910);
+        srv->SetNamedType("MeteorExplode", 912);
+        if (o.magic) srv->SetMagicType(kMagic, 50, 10.0f, 0x4000);
+        {
+            std::vector<nox::Server::SoundDefIn> sd;
+            for (const uint16_t id : { kPush, kPull, kMeteor, kConf }) { nox::Server::SoundDefIn d; d.id = id; d.samples = 1; d.maxDist = 100; sd.push_back(d); }
+            srv->SetSoundDefs(sd);
+        }
+        if (o.wall) {                                                    // a(1000)와 커서(1100) 사이 칸(1035~1058 × 989~1012)
+            srv->SetWalls({ { 45, 43 } });
+            srv->SetWallDefFlags({ 1 });                                 // 운석 추적 73 의 0x40 은 시야 깃발(0x1) 있는 재질만 막는다(TestMeteor 와 같음)
+        }
+        srv.DebugEnterGame(a, 740, false, nox::CharClass::Wizard);
+        srv.DebugEnterGame(b, 741, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(c, 742, false, nox::CharClass::Warrior);
+        srv->DebugTeleport(Sid(srv, a), 1000.0f, 1000.0f);
+        srv->DebugTeleport(Sid(srv, b), 1000.0f, 1050.0f);
+        srv->DebugTeleport(Sid(srv, c), 1400.0f, 1000.0f);
+        srv->DebugAimAt(Sid(srv, a), 1400, 1000);
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+        srv.TakeOut(out); out.clear();
+    };
+    auto heard = [&](const std::vector<nox::OutPacket>& out, const std::string& who, uint16_t id) {
+        int n = 0;
+        for (const auto& x : FlattenTo(out, who))
+            if (x.size() == 4 && x[0] == static_cast<uint8_t>(nox::Op::AUDIO_EVENT) && (static_cast<uint16_t>(x[2] | (x[3] << 8)) & 0x3ff) == id) ++n;
+        return n;
+    };
+    auto run = [&](nox::CSyncHost& srv, uint32_t& ms, std::vector<nox::OutPacket>& out, int frames) {   // 정확히 프레임 수만큼
+        for (int k = 0; k < frames; ++k) {
+            const uint32_t f0 = srv->DebugFrame();
+            while (srv->DebugFrame() == f0) { ms += 33; srv.Tick(ms, out); }
+        }
+        srv.TakeOut(out);
+    };
+    // 다섯 칸 — 사람 밀기·당기기 / 사람 운석 / 사람 날림 / 몬스터 밀기 / 몬스터 운석
+    auto st = [&](nox::CSyncHost& srv, unsigned long long pp, unsigned long long me, unsigned long long fl, unsigned long long mp, unsigned long long mm) {
+        return srv->castSndStat(CS::PushPull) == pp && srv->castSndStat(CS::Meteor) == me && srv->castSndStat(CS::Fly) == fl &&
+               srv->castSndStat(CS::MonPush) == mp && srv->castSndStat(CS::MonMeteor) == mm;
+    };
+    auto stTxt = [&](nox::CSyncHost& srv) {
+        static char s[96];
+        std::snprintf(s, sizeof(s), "%llu/%llu/%llu/%llu/%llu", srv->castSndStat(CS::PushPull), srv->castSndStat(CS::Meteor), srv->castSndStat(CS::Fly),
+                      srv->castSndStat(CS::MonPush), srv->castSndStat(CS::MonMeteor));
+        return s;
+    };
+
+    // ① 사람 밀기(66) — 시전자 자리에서 한 번: b(시전자 곁) 들음 · c(커서 자리) 못 들음 · 당기기 소리 아님
+    // ② 사람 당기기(65) — 같은 자리 · 소리는 당기기 칸(65)
+    for (const bool pull : { false, true }) {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        mk(srv, ms, out, Opt{});
+        const bool ok = srv->DebugSpellAccept(Sid(srv, a), pull ? 65 : 66, 3);
+        run(srv, ms, out, 2);
+        const uint16_t want = pull ? kPull : kPush, other = pull ? kPush : kPull;
+        const int hb = heard(out, b, want), hc = heard(out, c, want), ho = heard(out, b, other);
+        std::snprintf(msg, sizeof(msg), "시전 소리 %s 사람 %s — 받음 %d · b(시전자 곁) 들음 %d(1) · c(커서 자리) %d(0) · 다른 쪽 소리 %d(0) · 셈 %s(1/0/0/0/0)",
+                      pull ? "②" : "①", pull ? "당기기" : "밀기", int(ok), hb, hc, ho, stTxt(srv));
+        Check(ok && hb == 1 && hc == 0 && ho == 0 && st(srv, 1, 0, 0, 0, 0), msg);
+    }
+    // ③ 사람 운석(52) — 커서 자리에서 한 번: c(커서 자리) 들음 · b(시전자 곁) 못 들음 · 떠 있는 동안 다시 → 거절 · 소리 그대로
+    {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        mk(srv, ms, out, Opt{});
+        const bool ok1 = srv->DebugSpellAcceptOn(Sid(srv, a), 52, 3, nox::Target{}, 1400.0f, 1000.0f);
+        run(srv, ms, out, 2);
+        const bool ok2 = srv->DebugSpellAcceptOn(Sid(srv, a), 52, 3, nox::Target{}, 1400.0f, 1000.0f);
+        run(srv, ms, out, 2);
+        const int hc = heard(out, c, kMeteor), hb = heard(out, b, kMeteor);
+        std::snprintf(msg, sizeof(msg), "시전 소리 ③ 사람 운석 — 받음 %d · 다시(떠 있음) %d(0) · c(커서 자리) 들음 %d(1) · b(시전자 곁) %d(0) · 셈 %s(0/1/0/0/0)",
+                      int(ok1), int(ok2), hc, hb, stTxt(srv));
+        Check(ok1 && !ok2 && hc == 1 && hb == 0 && st(srv, 0, 1, 0, 0, 0), msg);
+    }
+    // ③b 선 추적이 막히면 운석을 안 만들고 소리도 없다 — 대조는 ③(막힘 없음)
+    {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        mk(srv, ms, out, Opt{ true, true, true });
+        srv->DebugTeleport(Sid(srv, c), 1110.0f, 1000.0f);
+        run(srv, ms, out, 1); out.clear();
+        const bool ok = srv->DebugSpellAcceptOn(Sid(srv, a), 52, 3, nox::Target{}, 1100.0f, 1000.0f);
+        run(srv, ms, out, 2);
+        const int hc = heard(out, c, kMeteor);
+        std::snprintf(msg, sizeof(msg), "시전 소리 ③b 벽 너머 운석 — 받음 %d(0) · c(커서 곁) 들음 %d(0) · 운석 %zu · 셈 %s(0/0/0/0/0)", int(ok), hc, srv->PlacedCount(), stTxt(srv));
+        Check(!ok && hc == 0 && st(srv, 0, 0, 0, 0, 0), msg);
+    }
+    // ④ 몬스터 밀기(66) — 그 몬스터 자리에서 한 번 · ⑤ 몬스터 운석(52) — 대상(c) 자리에서 한 번 · 셈은 몬스터 칸
+    for (const uint8_t sp : { uint8_t(66), uint8_t(52) }) {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        mk(srv, ms, out, Opt{});
+        srv->SetMonsterAnim(kMon, 7, 8, 2, false);
+        nox::Server::PhysBody cb; cb.shape = 2; cb.r = 12.0f; cb.cls = 0x2;
+        srv->SetTypeBody(kMon, cb);
+        srv->DebugTeleport(Sid(srv, a), 3000.0f, 3000.0f);
+        srv->DebugTeleport(Sid(srv, b), 2000.0f, 2050.0f);
+        srv->DebugTeleport(Sid(srv, c), 2400.0f, 2000.0f);
+        srv->DebugSpawnPet(kMon, 2000.0f, 2000.0f, Sid(srv, std::string()));
+        run(srv, ms, out, 1);
+        srv->DebugSetPetCastNextAll(0, 0xFFFFFF00u);
+        out.clear();
+        const bool ok = sp == 66 ? srv->DebugPetCastNow(0, 66, nox::Target{ nox::kNoSession, 0 })
+                                 : srv->DebugPetCastNow(0, 52, nox::Target{ Sid(srv, c), -1 });
+        run(srv, ms, out, 2);
+        const uint16_t id = sp == 66 ? kPush : kMeteor;
+        const int hb = heard(out, b, id), hc = heard(out, c, id);
+        if (sp == 66) {
+            std::snprintf(msg, sizeof(msg), "시전 소리 ④ 몬스터 밀기 — 받음 %d · b(몬스터 곁) 들음 %d(1) · c(멀리) %d(0) · 셈 %s(0/0/0/1/0)", int(ok), hb, hc, stTxt(srv));
+            Check(ok && hb == 1 && hc == 0 && st(srv, 0, 0, 0, 1, 0), msg);
+        } else {
+            std::snprintf(msg, sizeof(msg), "시전 소리 ⑤ 몬스터 운석 — 받음 %d · c(대상) 들음 %d(1) · b(몬스터 곁) %d(0) · 셈 %s(0/0/0/0/1)", int(ok), hc, hb, stTxt(srv));
+            Check(ok && hc == 1 && hb == 0 && st(srv, 0, 0, 0, 0, 1), msg);
+        }
+    }
+    // ⑥ 사람 날림 주문(혼란 12) — Magic 을 만들 때 시전자 자리에서 한 번: b(시전자 곁) 들음 · c(커서 자리) 못 들음
+    // ⑥b Magic 종류가 없으면 안 만들고 소리도 없다 — 대조는 ⑥
+    for (const bool magic : { true, false }) {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        mk(srv, ms, out, Opt{ true, magic, false });
+        CastAndWait(srv, a, 12, false, ms, out);
+        const size_t made = srv->MissileCount();
+        run(srv, ms, out, 3);
+        const int hb = heard(out, b, kConf), hc = heard(out, c, kConf);
+        std::snprintf(msg, sizeof(msg), "시전 소리 %s 사람 날림(Magic %s) — 날던 것 %zu(%d) · b(시전자 곁) 들음 %d(%d) · c(커서 자리) %d(0) · 셈 %s(0/0/%d/0/0)",
+                      magic ? "⑥" : "⑥b", magic ? "있음" : "없음", made, magic ? 1 : 0, hb, magic ? 1 : 0, hc, stTxt(srv), magic ? 1 : 0);
+        Check(made == (magic ? 1u : 0u) && hb == (magic ? 1 : 0) && hc == 0 && st(srv, 0, 0, magic ? 1 : 0, 0, 0), msg);
+    }
+    // ⑦ 정의에 시전 소리가 없으면(0) 안 낸다 — 빈 소리로 버림 셈도 안 늘고 시전 소리 셈도 0
+    {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        mk(srv, ms, out, Opt{ false, true, false });
+        const auto& dropped = srv->soundsDroppedIds();
+        const unsigned long long d0 = dropped.count(0) ? dropped.at(0) : 0;
+        const bool ok = srv->DebugSpellAccept(Sid(srv, a), 66, 3);
+        run(srv, ms, out, 2);
+        const unsigned long long d1 = dropped.count(0) ? dropped.at(0) : 0;
+        std::snprintf(msg, sizeof(msg), "시전 소리 ⑦ 소리 없는 정의 — 받음 %d · 빈 소리 버림 %llu→%llu · 셈 %s(0/0/0/0/0)", int(ok), d0, d1, stTxt(srv));
+        Check(ok && d1 == d0 && st(srv, 0, 0, 0, 0, 0), msg);
+    }
+    std::printf("  11-22 — 시전 소리: 사람 밀기·당기기(시전자 자리 · 칸 65/66) · 사람 운석(커서 자리 · 거절·벽이면 없음) · 몬스터 밀기·운석 · "
+                "사람 날림 주문(Magic 만들 때만) · 정의에 소리 없으면 안 냄\n");
+}
+
 // ★ 11-20 트레일러 전사 2 — 수리검·차크람(던지기 `GAME4_3.c:4327~4419` · 날기 `updateChakramInMotion_53DCC0` · 맞기 `collideChakram_4EAF00`)
 void TestChakram1120() {
     using CE = nox::ChakramEv;
@@ -43381,6 +43540,7 @@ int main() {
     TestTeleportWake1122();           // ★ 11-22 순간이동 꼬리(옛 자리 1초 · 밟으면 목적지로)
     TestFumble1122();                 // ★ 11-22 실수(사람 떨굼 · 몬스터 밀기 · NPC · 폭탄병 · 공)
     TestDrainObelisk1122();           // ★ 11-22 마나 흡수(마나 기둥에서 빪 · 잔량 알림 · 빔 끝 · 빨린 소리)
+    TestCastSound1122();              // ★ 11-22 시전 소리(밀기·당기기 · 운석 · 날림 주문 — 사람·몬스터)
     TestConnectZeroTail();
     TestReconnectAfterClose();
     TestSessionIds();

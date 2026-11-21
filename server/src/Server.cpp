@@ -15909,7 +15909,7 @@ bool Server::MonsterCastSpellNow(Creature& k, uint8_t spell, const Target& targe
     //   a3(시전자) = a4(자리) = 그 몬스터 · a5 자리 = 쏘기 칸이 넘긴 대상 자리) · 함수 갈래라 세기를 5 로 자르고 0 이면 거짓(PermanentFizzle 소리는 10)
     //   · 투명 39 · 충격 71 = `castBuffSpell` 제 몸(겨눔 0x4 지만 대상이 자기라 위 거르기를 지난다) · 밀기 66 = 그 몬스터 자리에서 둘레 600 · 안쪽 10
     //   · 운석 52 · 픽시 떼 58 · 마법 화살 50 = 몬스터 시전자 판(주인 = 그 몬스터 — 사람 판은 시전자가 세션이다)
-    //   ⚠ 사람 판과 같이 안 옮긴 것 — 밀기·운석의 시전 소리(`spellGetAud44` · 10)
+    //   ⚠ 사람 판과 같이 안 옮긴 것 — 밀기·운석의 시전 소리(`spellGetAud44` · 10) — ✖ 11-22 두 판 다 `PlayCastSound` 로 낸다
     {
         const int lvl = MonsterSpellPower(k);                    // ★ 11-21 아레나 3 · 퀘스트면 몬스터 세기
         const int fl5 = lvl > 5 ? 5 : lvl;
@@ -15930,6 +15930,7 @@ bool Server::MonsterCastSpellNow(Creature& k, uint8_t spell, const Target& targe
             case 66:                                                  // castPush_52C000(`GAME4_2.c:9347~9356`) — a4 + 56(그 몬스터 자리)
                 PushUnitsAround(static_cast<float>(k.x), static_cast<float>(k.y), 600.0f, 10.0f,
                                 static_cast<float>(BalanceFloat("PushPowerCoeff") * fl5));
+                PlayCastSound(66, static_cast<float>(k.x), static_cast<float>(k.y), kNoSession, PetTarget(k), CastSndStat::MonPush);   // ★ 11-22 `:9353~9354` a3 = 그 몬스터
                 fnc = 1;
                 break;
             case 52: fnc = MonsterCastMeteor(k, x, y, fl5); break;   // castMeteor_52D9D0
@@ -16677,12 +16678,23 @@ void Server::PushUnitsAround(float cx, float cy, float outer, float inner, float
     }
 }
 
+// ★ 11-22 시전 소리 — 정답지는 효과 함수마다 `spellGetAud44(spell, 0)` 을 낸다. 낸 것이 유닛이면 `aud_501960(소리, 그 유닛)`(그 자리 · 임자),
+//   자리면 `audCreate_501A30(소리, 자리)`(임자 없음 — 몬스터가 들을 거리에도 안 남는다). 정의에 소리가 없으면(0) 안 낸다
+void Server::PlayCastSound(uint8_t spell, float x, float y, int64_t owner, const Target& src, CastSndStat k) {
+    if (spell >= 137 || !gt_->spellDefs[spell].valid || gt_->spellDefs[spell].castSound == 0) return;
+    PlaySoundAt(gt_->spellDefs[spell].castSound, x, y, 0, 0, owner, src);
+    ++castSndStat_[static_cast<size_t>(k)];
+}
+
 // castPull_52BFA0(`GAME4_2.c:9337`) · castPush_52C000(`:9350`) — 시전자 자리에서 둘레 600·안쪽 10 로 민다(당기기는 **음수**)
 int Server::CastPushPull(const Session& caster, int lvl, bool pull) {
     const double coeff = BalanceFloat(pull ? "PullPowerCoeff" : "PushPowerCoeff");
     const float power = static_cast<float>(pull ? -(coeff * lvl) : (coeff * lvl));
     PushUnitsAround(static_cast<float>(caster.posX), static_cast<float>(caster.posY), 600.0f, 10.0f, power);
-    return 1;                                                // 소리는 10
+    // ★ 11-22 `:9341~9342`·`:9353~9354` — 민 뒤 시전 소리를 시전자에게(aud_501960(spellGetAud44(65·66, 0), a3))
+    PlayCastSound(pull ? 65 : 66, static_cast<float>(caster.posX), static_cast<float>(caster.posY), caster.sessionId,
+                  Target{ caster.sessionId, -1 }, CastSndStat::PushPull);
+    return 1;                                                // 소리는 10 — ✖ 11-22 바로 위에서 낸다
 }
 
 // earthquakeSend_4D9110(`GAME3_2.c:4579`) — 가운데에서 **300 안**(거리² < 90000)에 있는 사람마다
@@ -17346,6 +17358,8 @@ int Server::CastMeteor(Session& caster, const SpellArg& arg, int lvl) {
         mo->zVel = -static_cast<float>(BalanceFloat("MeteorSpeed"));
         QueueDeltaZStart(mo->netCode, mo->z, mo->zVel, 0.0f);   // 09-20 ⑰
         mo->damage = static_cast<int>(BalanceFloatInd("MeteorDamage", lvl - 1));
+        // ★ 11-22 `GAME4_2.c:10263~10264` — 운석을 만들었을 때만 시전 소리를 **커서 자리**에(audCreate_501A30 — 자리 소리라 임자 없음)
+        PlayCastSound(52, arg.x, arg.y, kNoSession, Target{}, CastSndStat::Meteor);
     }
     return 1;
 }
@@ -17750,6 +17764,7 @@ int Server::MonsterCastMeteor(Creature& k, float tx, float ty, int lvl) {
         mo->zVel = -static_cast<float>(BalanceFloat("MeteorSpeed"));
         QueueDeltaZStart(mo->netCode, mo->z, mo->zVel, 0.0f);
         mo->damage = static_cast<int>(BalanceFloatInd("MeteorDamage", lvl - 1));
+        PlayCastSound(52, tx, ty, kNoSession, Target{}, CastSndStat::MonMeteor);   // ★ 11-22 `:10263~10264` — 사람 판과 같은 대상 자리 소리
     }
     return 1;
 }
@@ -18045,7 +18060,7 @@ Target Server::SpellFlySearchTargetPet(const Creature& k, float mslX, float mslY
 //     가장 가까운 것(`SpellFlySearchTargetPet` — 적 거르기는 공격 0x20 일 때만인데 이 넷은 실물 깃발이 모두 0x20)
 //   · 몸 반지름(+176)은 그 종류 몸 · 방향은 +124(`k.facing` — 시전 머리의 돌리기는 +126 만 바꾼다) · 세기 = `spellGetPower`(`MonsterSpellPower`)
 //   · 갱신 짐 [0] = [2] = 그 몬스터(`ownerNet` · `casterNet` 번호 — 우리 `ud0`·`ud2` 는 세션 자리라 C11-b 처럼 그 몬스터의 주인을 둔다)
-//   · 시전 소리(`spellGetAud44(spell, 0)` → `aud_501960(그것, 시전자)` `:2956~2957`)는 그 몬스터 자리 — ⚠ 사람 판은 아직 이 소리가 없다
+//   · 시전 소리(`spellGetAud44(spell, 0)` → `aud_501960(그것, 시전자)` `:2956~2957`)는 그 몬스터 자리 — ⚠ 사람 판은 아직 이 소리가 없다 — ✖ 11-22 `CreateSpellFly` 도 낸다
 bool Server::MonsterCreateSpellFly(Creature& k, Target target, uint8_t spell) {
     if (gt_->magicType.type == 0) return false;
     const float kx = static_cast<float>(k.x), ky = static_cast<float>(k.y);
@@ -18662,7 +18677,7 @@ bool Server::CreateSpellFly(Session& s, Target target, uint8_t spell) {
     m.level = SpellPower(s, spell);
     m.velX = DirVecX(dir) * m.speed + static_cast<float>(s.velX);
     m.velY = DirVecY(dir) * m.speed + static_cast<float>(s.velY);
-    // 시전자가 적외선(21)이면 날아가는 것에도(buffApplyTo — 유닛이 아니라 알림 없음) · 시전 소리는 10
+    // 시전자가 적외선(21)이면 날아가는 것에도(buffApplyTo — 유닛이 아니라 알림 없음) · 시전 소리는 10 — ✖ 11-22 아래 `PlayCastSound`
     if (s.buffs.Has(21)) {
         m.buffs.bits |= 1u << 21;
         m.buffs.dur[21] = s.buffs.dur[21];
@@ -18673,6 +18688,8 @@ bool Server::CreateSpellFly(Session& s, Target target, uint8_t spell) {
                 target.none() ? "없음" : ((target.sessionId != kNoSession) ? AddrText(target.sessionId) : "소환수"));
     std::fflush(stdout);
     missiles_.push_back(m); ++missilesMade_;
+    // ★ 11-22 `GAME4.c:2956~2957` — 날리는 것을 만들었으면 시전 소리를 시전자에게(aud_501960(spellGetAud44(spell, 0), 시전자)) · 몬스터 판은 `MonsterCreateSpellFly`
+    PlayCastSound(spell, px, py, s.sessionId, Target{ s.sessionId, -1 }, CastSndStat::Fly);
     return true;
 }
 

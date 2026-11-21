@@ -2542,6 +2542,10 @@ public:
     //   분모 — 흡수 틱(사람 시전자 · 글리프 아님 갈래를 지난 틱) · 그중 시전자 마나가 가득 차 끝난 틱(0 이 「안 걸림」인지 「가득 차 바로 끝남」인지 가른다)
     enum class DrainStat : uint8_t { ObeliskPick = 0, ObeliskMana, TeamRefused, SoundPair, Ran, FullStop, Count };
     unsigned long long drainStat(DrainStat k) const { return drainStat_[static_cast<size_t>(k)]; }
+    // ★ 11-22 시전 소리(`spellGetAud44(spell, 0)`) — 판 끝 로그 `[시전 소리]` · 시험 `TestCastSound1122` 가 같은 칸을 센다
+    //   사람 밀기·당기기(시전자) · 사람 운석(커서 자리) · 사람 날림 주문(시전자) · 몬스터 밀기(그 몬스터) · 몬스터 운석(대상 자리). 소리가 정의에 있어 낸 때만
+    enum class CastSndStat : uint8_t { PushPull = 0, Meteor, Fly, MonPush, MonMeteor, Count };
+    unsigned long long castSndStat(CastSndStat k) const { return castSndStat_[static_cast<size_t>(k)]; }
     // 부활 무적 안 걸기(`--no-spawn-invuln`) — 화면 확인을 막는 무적을 우회한다
     void SetNoSpawnInvuln(bool v) { noSpawnInvuln_ = v; }
     unsigned long long spawnInvulnApplied() const { return spawnInvulnApplied_; }
@@ -5185,6 +5189,7 @@ private:
     void SendTeleportFx(float ox, float oy, float nx, float ny);          // netSendPointFx 137 두 번
     void SendPointFx(uint8_t op, float x, float y);                       // ★ 11-22 netSendPointFx_522FF0 — `<op> <x u16> <y u16>` 한 번
     void PlaySoundOnTarget(uint16_t id, const Target& t);                 // ★ 11-22 aud_501960(id, 유닛, 0, 0) — 그 유닛 자리 · 사람이면 임자 = 그 사람
+    void PlayCastSound(uint8_t spell, float x, float y, int64_t owner, const Target& src, CastSndStat k);   // ★ 11-22 spellGetAud44(spell, 0) 을 그 자리에서 · 낸 때만 센다
     void MakeTeleportWake(const Target& t, float ox, float oy, float dx, float dy);   // ★ 11-22 spellTeleportCreateWake_530560 — 옮겨지는 유닛의 옛 자리에 꼬리(목적지를 든다)
     void TeleportWakeCollide(PlacedObj& o);                               // ★ 11-22 collideTeleportWake_4EAE30 — 꼬리에 겹친 사람·몬스터를 목적지로
     int DurBlinkCreate(DurSpell& d);                                      // spellBlink2_530310
@@ -6661,6 +6666,7 @@ private:
     unsigned long long wakeStat_[static_cast<size_t>(WakeStat::Count)] = {};   // ★ 11-22 순간이동 꼬리 — 칸 뜻은 `WakeStat`
     unsigned long long fumbleStat_[static_cast<size_t>(FumbleStat::Count)] = {};   // ★ 11-22 실수 — 칸 뜻은 `FumbleStat`
     unsigned long long drainStat_[static_cast<size_t>(DrainStat::Count)] = {};     // ★ 11-22 마나 흡수 — 칸 뜻은 `DrainStat`
+    unsigned long long castSndStat_[static_cast<size_t>(CastSndStat::Count)] = {}; // ★ 11-22 시전 소리 — 칸 뜻은 `CastSndStat`
     // ★ 부활 무적을 아예 안 거는 진단 스위치(`--no-spawn-invuln`).
     //   CLIENT_READY 되풀이(B-1b 미결) 때문에 무적이 안 풀려 화면 확인이 통째로 막힌다.
     //   그 원인과 **따로** 나머지를 진행하려는 우회로다. 기본 끔.

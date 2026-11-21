@@ -296,6 +296,12 @@ void PrintAbilityBreakdown(const nox::Server& srv) {
                     srv.drainStat(DS::Ran), srv.drainStat(DS::FullStop),
                     srv.drainStat(DS::ObeliskPick), srv.drainStat(DS::ObeliskMana), srv.drainStat(DS::TeamRefused), srv.drainStat(DS::SoundPair));
         }
+        {
+            using CS = nox::Server::CastSndStat;  // ★ 11-22 시전 소리(spellGetAud44(spell, 0))
+            srv.Log("[시전 소리] 밀기·당기기 %llu · 운석 %llu · 날림 주문 %llu · 몬스터 밀기 %llu · 몬스터 운석 %llu\n",
+                    srv.castSndStat(CS::PushPull), srv.castSndStat(CS::Meteor), srv.castSndStat(CS::Fly),
+                    srv.castSndStat(CS::MonPush), srv.castSndStat(CS::MonMeteor));
+        }
         // ★ 10-01 — 클라 대체 무기 알림 `e0`(비움 · 가방에 없음 · 맞음 · 직업·힘 안 맞아 `e0 0 01` 되돌림)
         srv.Log("[대체무기] 비움 %llu · 없음 %llu · 맞음 %llu · 되돌림 %llu\n", srv.secondaryWeaponStat(0),
                     srv.secondaryWeaponStat(1), srv.secondaryWeaponStat(2), srv.secondaryWeaponStat(3));
