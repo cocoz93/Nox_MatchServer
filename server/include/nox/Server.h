@@ -4305,7 +4305,10 @@ public:
     // ★ 11-21 W9 자리 바꾸기(115)·대상에게 순간이동(126) 갈래 — 켤 때 취소 · 켬 · 터질 때 사라짐·죽음 · 닻 · (115) 안 보임·화면 밖 · 바꿈 /
     //   (126) 금지 바닥 · 선 막힘 · 옮김. 세는 자리마다 하나(시험은 개수를 본다)
     enum class TeleStat : uint8_t { SwapCancel = 0, SwapStart, SwapGone, SwapAnchor, SwapNoSight, SwapOffScreen, SwapDone,
-                                    TttNoTele, TttBlocked, TttStart, TttGone, TttAnchor, TttDone, Count };
+                                    TttNoTele, TttBlocked, TttStart, TttGone, TttAnchor, TttDone,
+                                    // ★ 11-21 점멸(4) 자리 고르기 — 둘레 목표만큼(kBlinkRange) · 목표만큼 트인 데가 없어 가장 먼 곳 · 둘레에 없어 제자리 ·
+                                    //   원본 길목 · 원본 시작 지점 · 갈 데 없음
+                                    BlinkShort, BlinkPartial, BlinkNoSpot, BlinkWaypoint, BlinkStart, BlinkNowhere, Count };
     unsigned long long teleStat(TeleStat k) const { return teleStat_[static_cast<size_t>(k)]; }
     // ★ 11-21 W10 벽(132) 갈래 — 켬(시전자 없음 · 선 막힘 · 정의 없음 · 켬) / 칸(새 벽 · 있던 벽 합침 · 판 밖 · 마법·투명 벽 · 문·비밀·부서지는 벽 ·
     //   문 자리) / 알림(`3d` 더함 · `3e` 지움 · `3d` 되돌림) / 지움 · 부서짐. 세는 자리마다 하나(시험은 개수를 본다)
@@ -5233,6 +5236,7 @@ private:
     void TeleportWakeCollide(PlacedObj& o);                               // ★ 11-22 collideTeleportWake_4EAE30 — 꼬리에 겹친 사람·몬스터를 목적지로
     int DurBlinkCreate(DurSpell& d);                                      // spellBlink2_530310
     int DurBlinkTick(DurSpell& d);                                        // spellBlink1_530380
+    int BlinkNearSpot(float ox, float oy, float& tx, float& ty, int& tries);    // ★ 11-21 kBlinkRange — 둘레 빈 바닥 하나(0 못 찾음 · 1 목표만큼 · 2 모자라 가장 먼 곳)
     // teleportToMB_4E7190 — 그 자리로 옮긴다(물리 자리·옛 자리칸 둘 다).
     // ⚠ 사람을 옮기면 `forgetDrawables` 를 꼭 켤 것 — `ea FORGET_DRAWABLES` 가 나가야 **제 캐릭터가 그려진다**
     //   (09-20 실측 · 구현부 주석). 펫만 옮기는 자리는 꺼도 된다

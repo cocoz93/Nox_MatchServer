@@ -10005,17 +10005,36 @@ int Server::DurBlinkTick(DurSpell& d) {
         if (b->Has(14)) return 1;                            // 닻 — 소리 231(10)
     }
     float tx = 0, ty = 0;
-    if (!mt_->waypoints.empty()) {
+    float ox = 0, oy = 0;
+    TargetXY(d.target, ox, oy);
+    // ★ 11-21 사용자 「블링크 사거리 · 한 번 줄여 봐」 — kBlinkRange 가 0 이 아니면 맵 전체 길목 대신 시전자 둘레 빈 바닥(`BlinkNearSpot`)
+    if (kBlinkRange > 0) {
+        int tries = 0;
+        const int got = BlinkNearSpot(ox, oy, tx, ty, tries);
+        if (got == 0) {
+            PlaySoundAt(231, ox, oy, 0, 0, d.target.sessionId, d.target);   // 닻·대상에게 순간이동이 못 옮길 때와 같은 소리
+            ++teleStat_[static_cast<size_t>(TeleStat::BlinkNoSpot)];
+            Log("[점멸] %s (%.0f,%.0f) 둘레 %.0f 넘게 트인 빈 바닥 없음(시도 %d) — 제자리\n",
+                d.target.sessionId != kNoSession ? "사람" : "몬스터", ox, oy, kBlinkShortest, tries);
+            return 1;
+        }
+        ++teleStat_[static_cast<size_t>(got == 1 ? TeleStat::BlinkShort : TeleStat::BlinkPartial)];
+        Log("[점멸] %s (%.0f,%.0f) → (%.0f,%.0f) 거리 %.0f · %s\n", d.target.sessionId != kNoSession ? "사람" : "몬스터",
+            ox, oy, tx, ty, std::sqrt((tx - ox) * (tx - ox) + (ty - oy) * (ty - oy)),
+            got == 1 ? "목표만큼" : "목표만큼 트인 데 없어 가장 먼 곳");
+        (void)tries;
+    } else if (!mt_->waypoints.empty()) {
         const auto& w = mt_->waypoints[NextRandom(static_cast<uint32_t>(mt_->waypoints.size()))];
         tx = w.x; ty = w.y;
+        ++teleStat_[static_cast<size_t>(TeleStat::BlinkWaypoint)];
     } else if (!mt_->playerStarts.empty()) {                     // mapFindPlayerStart_4F7AB0
         const auto& ps = mt_->playerStarts[NextRandom(static_cast<uint32_t>(mt_->playerStarts.size()))];
         tx = ps.first; ty = ps.second;
+        ++teleStat_[static_cast<size_t>(TeleStat::BlinkStart)];
     } else {
+        ++teleStat_[static_cast<size_t>(TeleStat::BlinkNowhere)];
         return 1;                                            // 갈 데가 없다
     }
-    float ox = 0, oy = 0;
-    TargetXY(d.target, ox, oy);
     auto pointFx = [&](float px, float py) {              // netSendPointFx_522FF0
         const uint16_t ix = static_cast<uint16_t>(static_cast<int>(px)), iy = static_cast<uint16_t>(static_cast<int>(py));
         const uint8_t msg[5] = { static_cast<uint8_t>(Op::FX_TELEPORT),
@@ -10028,6 +10047,47 @@ int Server::DurBlinkTick(DurSpell& d) {
     TeleportTarget(d.target, tx, ty, /*forgetDrawables=*/true);
     pointFx(tx, ty);
     return 1;                                                // 한 번 옮기면 끝
+}
+
+// ★ 11-21 점멸 둘레 자리 — 무작위 방향으로 kBlinkTries 번. 방향마다 목표 거리를 kBlinkMinRange~kBlinkRange 에서 뽑아 그쪽으로 간다
+//   ① 판 끝(칸 1 ~ 255)에서 자른다
+//   ② 벽 선 추적(깃발 9 = 대상에게 순간이동과 같아 닫힌 문도 막는다)에 막히면 막힌 곳에서 멈춘다 — 벽 너머 다른 방으로는 안 간다
+//      자리 = 끝에서 몸 반지름 + 1 만큼 당긴 곳(벽에 박히지 않게)
+//   ③ 간 거리가 kBlinkShortest 보다 짧으면 버림 ④ 바닥이 있고 용암(6)이 아님 — 바닥을 실은 맵만(시험 서버는 바닥이 없다 ·
+//      거르는 식은 `SpawnStartZone` 과 같다) ⑤ 순간이동 금지 바닥이 아님(`TileNoTeleport` — 대상에게 순간이동과 같다)
+//   목표만큼(kBlinkMinRange 이상) 갔으면 곧바로 그 자리(1) · 모자라면 그중 가장 멀리 간 것을 남겨 두었다가 다 돌고 쓴다(2)
+//   — 방이 좁아 멀리 못 가도 갈 수 있는 만큼은 간다(사용자 11-21 「전사랑 거리 벌리려고 쓰는 순간이동」) · 하나도 없으면 0
+//   tries = 받은 시도 번째(1부터 · 2·0 이면 kBlinkTries)
+int Server::BlinkNearSpot(float ox, float oy, float& tx, float& ty, int& tries) {
+    constexpr float kTwoPi = 6.28318530718f;
+    const float r = static_cast<float>(kPlayerRadius) + 1.0f;
+    const uint32_t span = static_cast<uint32_t>(kBlinkRange - kBlinkMinRange) + 1;
+    const float lo = kGrid, hi = 255.0f * kGrid - 0.5f;
+    float bestLen = 0, bx = 0, by = 0;
+    for (tries = 1; tries <= kBlinkTries; ++tries) {
+        const float ang = static_cast<float>(NextRandom(256)) * (kTwoPi / 256.0f);
+        const float want = static_cast<float>(kBlinkMinRange) + static_cast<float>(NextRandom(span));
+        const float cs = std::cos(ang), sn = std::sin(ang);
+        float reach = want + r;                                                           // 끝 = 자리 + 몸 반지름
+        if (cs > 0.0001f) reach = std::min(reach, (hi - ox) / cs); else if (cs < -0.0001f) reach = std::min(reach, (lo - ox) / cs);   // ①
+        if (sn > 0.0001f) reach = std::min(reach, (hi - oy) / sn); else if (sn < -0.0001f) reach = std::min(reach, (lo - oy) / sn);
+        TraceHit hit; hit.x = ox; hit.y = oy;                                             // 막힌 점을 못 받으면 0 걸음(버림)
+        if (!MapTraceRay(ox, oy, ox + cs * reach, oy + sn * reach, 9, &hit))              // ②
+            reach = std::min(reach, std::sqrt((hit.x - ox) * (hit.x - ox) + (hit.y - oy) * (hit.y - oy)));
+        const float len = reach - r;
+        if (len < static_cast<float>(kBlinkShortest)) continue;                           // ③
+        const float px = ox + cs * len, py = oy + sn * len;
+        if (!mt_->floorGrid.Empty()) {                                                    // ④
+            const auto fh = mt_->floorGrid.TileAt(px, py, mt_->floorEdges);
+            if (!(fh.why == FloorGrid::Why::Side || fh.why == FloorGrid::Why::Edge) || fh.tile == 6) continue;
+        }
+        if (TileNoTeleport(px, py)) continue;                                             // ⑤
+        if (len >= static_cast<float>(kBlinkMinRange) - 0.5f) { tx = px; ty = py; return 1; }
+        if (len > bestLen) { bestLen = len; bx = px; by = py; }
+    }
+    tries = kBlinkTries;
+    if (bestLen > 0) { tx = bx; ty = by; return 2; }
+    return 0;
 }
 
 // ── 묶음 4-e(2) 표식·순간이동 ─────────────────────────────────────────

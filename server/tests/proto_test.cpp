@@ -9444,6 +9444,12 @@ void TestBlink() {
         srv.DebugEnterGame(a, 860, false, nox::CharClass::Wizard);
         srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
     };
+    // ★ 11-21 kBlinkRange — 0 이 아니면 길목·시작 지점 대신 (1000,1000) 둘레 고리로 간다(고리 규칙은 TestBlinkRange1121 이 전수로 본다)
+    const bool ranged = nox::kBlinkRange > 0;
+    auto ringOk = [&](nox::CSyncHost& srv) {
+        const double dd = std::hypot(srv->XOf(Sid(srv, a)) - 1000.0, srv->YOf(Sid(srv, a)) - 1000.0);
+        return dd >= nox::kBlinkMinRange - 2 && dd <= nox::kBlinkRange + 2;
+    };
 
     // ① 길목이 있으면 그중 한 곳으로 옮겨진다
     //
@@ -9459,8 +9465,12 @@ void TestBlink() {
         ms += 34; srv.Tick(ms, out);
         CastAndWait(srv, a, 4, /*onSelf=*/true, ms, out);
         ms += 34; srv.Tick(ms, out);                         // 다음 틱에 터진다
-        Check(srv->XOf(Sid(srv, a)) > 2900 && srv->XOf(Sid(srv, a)) < 3100, "길목으로 안 옮겨졌다(가로)");
-        Check(srv->YOf(Sid(srv, a)) > 2300 && srv->YOf(Sid(srv, a)) < 2500, "길목의 세로를 안 받았다 — x·y 가 뒤바뀌었나");
+        if (ranged) {
+            Check(ringOk(srv), "사거리 점멸이 둘레 고리로 안 갔다(먼 길목으로 갔나)");
+        } else {
+            Check(srv->XOf(Sid(srv, a)) > 2900 && srv->XOf(Sid(srv, a)) < 3100, "길목으로 안 옮겨졌다(가로)");
+            Check(srv->YOf(Sid(srv, a)) > 2300 && srv->YOf(Sid(srv, a)) < 2500, "길목의 세로를 안 받았다 — x·y 가 뒤바뀌었나");
+        }
         Check(srv->DurCount() == 0, "옮기고도 주문이 안 끝났다");
     }
 
@@ -9482,7 +9492,7 @@ void TestBlink() {
         out.clear();
         CastAndWait(srv, a, 4, /*onSelf=*/true, ms, out);
         ms += 34; srv.Tick(ms, out);
-        Check(srv->XOf(Sid(srv, a)) > 2900 && srv->XOf(Sid(srv, a)) < 3100, "길목으로 안 옮겨졌다(시험 전제)");
+        Check(ranged ? ringOk(srv) : (srv->XOf(Sid(srv, a)) > 2900 && srv->XOf(Sid(srv, a)) < 3100), "안 옮겨졌다(시험 전제)");
         const auto toA = FlattenTo(out, a);
         Check(FindMsg(toA, static_cast<uint8_t>(nox::Op::FORGET_DRAWABLES)) != nullptr,
               "옮겼는데 ea FORGET_DRAWABLES 가 안 갔다 — 클라에 제 캐릭터가 안 그려진다");
@@ -9499,8 +9509,12 @@ void TestBlink() {
         ms += 34; srv.Tick(ms, out);
         CastAndWait(srv, a, 4, true, ms, out);
         ms += 34; srv.Tick(ms, out);
-        Check(srv->XOf(Sid(srv, a)) > 2400 && srv->XOf(Sid(srv, a)) < 2600, "길목이 없는데 시작 지점으로 안 갔다(가로)");
-        Check(srv->YOf(Sid(srv, a)) > 2000 && srv->YOf(Sid(srv, a)) < 2200, "시작 지점의 세로를 안 받았다 — x·y 가 뒤바뀌었나");
+        if (ranged) {
+            Check(ringOk(srv), "사거리 점멸이 둘레 고리로 안 갔다(시작 지점으로 갔나)");
+        } else {
+            Check(srv->XOf(Sid(srv, a)) > 2400 && srv->XOf(Sid(srv, a)) < 2600, "길목이 없는데 시작 지점으로 안 갔다(가로)");
+            Check(srv->YOf(Sid(srv, a)) > 2000 && srv->YOf(Sid(srv, a)) < 2200, "시작 지점의 세로를 안 받았다 — x·y 가 뒤바뀌었나");
+        }
     }
 
     // ③ **닻(버프 14)** 이면 못 옮긴다
@@ -9529,7 +9543,7 @@ void TestBlink() {
         srv.Tick(ms, out);
         ms += 34; srv.Tick(ms, out);
         CastAndWait(srv, a, 4, true, ms, out);
-        Check(srv->XOf(Sid(srv, a)) > 2900 && srv->XOf(Sid(srv, a)) < 3100, "아레나인데 시전이 끝나는 틱에 안 옮겨졌다");
+        Check(ranged ? ringOk(srv) : (srv->XOf(Sid(srv, a)) > 2900 && srv->XOf(Sid(srv, a)) < 3100), "아레나인데 시전이 끝나는 틱에 안 옮겨졌다");
         // ⚠ 취소는 **깃발만** 세운다 — 실제로 지우는 것은 다음 틱이다(①이 그 자리를 본다)
     }
 
@@ -9550,6 +9564,152 @@ void TestBlink() {
         Check(fx == 2, "점멸 점 효과가 두 번 안 나갔다");
     }
     std::printf("  4-e(1) — 점멸 길목/시작지점·닻이면 못 감·한 박자 뒤·점 효과 두 번\n");
+}
+
+// ── 11-21 점멸 사거리(kBlinkRange) ─────────────────────────────────────
+//
+// 사용자 11-21 「블링크 사거리 · 한 번 줄여 봐」 — 맵 전체 길목 대신 시전자 둘레 kBlinkMinRange~kBlinkRange 빈 바닥(`BlinkNearSpot`).
+//   ① 트인 판 20번 — 매번 고리(kBlinkMinRange~kBlinkRange) 안 · 먼 길목(3000,2400)으로 안 감 · 닿은 자리가 여러 곳 · 갈래 BlinkShort 20 · 길목 0
+//   ② 오른쪽 세로 벽 줄(칸 x 46 · 맵 위아래 끝까지) — 20번 모두 벽 왼쪽(벽 너머로 안 감) · 그래도 20번 다 kBlinkShortest 넘게 옮겨짐
+//   ③ 사방 벽 상자(안쪽이 kBlinkShortest 보다 좁음) — 제자리 · 갈래 BlinkNoSpot 1 · 주문 끝
+//   ④ 판 구석(40,40) 20번 — 판(칸 1 ~ 255) 밖으로 안 나감 · 20번 다 옮겨짐
+//   ⑤ 온 바닥이 용암(6) — 제자리 · ⑥ 온 바닥이 순간이동 금지 번호 — 제자리 · ⑦ 온 바닥이 보통(3) — 옮겨짐(⑤⑥ 의 대조군)
+//   ⑧ 작은 방(안쪽 약 320 네모 · 목표 최소 kBlinkMinRange 만큼 트인 방향 없음) — 가장 멀리 간 곳으로 · kBlinkShortest~kBlinkMinRange · 방 안 · 갈래 BlinkPartial 1
+void TestBlinkRange1121() {
+    if (nox::kBlinkRange <= 0) { std::printf("  11-21 점멸 사거리 — kBlinkRange 0(원본 길목) · 건너뜀\n"); return; }
+    const std::string a = "10.9.15.2:9152";
+    using TS = nox::Server::TeleStat;
+    const double lo = nox::kBlinkMinRange, hi = nox::kBlinkRange;
+    auto mk = [&](nox::CSyncHost& srv, std::vector<nox::OutPacket>& out, uint32_t& ms) {
+        nox::Gamedata g;
+        g.Parse("TeleportDelay = 25, 20, 15, 10, 5;\n" "SummonDuration = 60, 210, 375;\n");
+        srv->SetGamedata(g);
+        srv->SetSpellDef(4, 0, 0x1000000, { 1, 2 });
+        srv.DebugEnterGame(a, 860, false, nox::CharClass::Wizard);
+        srv->SetWaypoints({ { 3000.0f, 2400.0f } });         // 원본(길목)이면 여기로 간다
+        srv.Tick(ms, out); ms += 34; srv.Tick(ms, out);
+    };
+    // 한 번 — (sx,sy) 에 세우고 점멸 · 닿은 자리
+    auto once = [&](nox::CSyncHost& srv, std::vector<nox::OutPacket>& out, uint32_t& ms, int sx, int sy, int& nx, int& ny) {
+        srv->DebugMoveTo(Sid(srv, a), sx, sy);
+        ms += 34; srv.Tick(ms, out);                          // 실수 자리를 맞춘다
+        CastAndWait(srv, a, 4, true, ms, out);
+        ms += 34; srv.Tick(ms, out);
+        nx = srv->XOf(Sid(srv, a)); ny = srv->YOf(Sid(srv, a));
+        out.clear();
+    };
+    auto floorAll = [&](nox::CSyncHost& srv, int tile) {
+        std::vector<nox::MapFile::FloorCell> cells;
+        for (int x = 0; x < 128; ++x)
+            for (int y = 0; y < 128; ++y) {
+                nox::MapFile::FloorCell c; c.x = static_cast<uint8_t>(x); c.y = static_cast<uint8_t>(y);
+                c.first.present = c.second.present = true;
+                c.first.image = c.second.image = static_cast<uint8_t>(tile);
+                cells.push_back(c);
+            }
+        nox::FloorGrid g; g.Build(cells);
+        srv->SetFloor(g, {}, std::vector<int32_t>(8, 0x80));
+    };
+
+    // ①
+    {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
+        int inRing = 0, far = 0; std::set<std::pair<int, int>> spots; double dmin = 1e9, dmax = 0;
+        for (int i = 0; i < 20; ++i) {
+            int nx = 0, ny = 0; once(srv, out, ms, 1000, 1000, nx, ny);
+            const double d = std::hypot(nx - 1000.0, ny - 1000.0);
+            dmin = std::min(dmin, d); dmax = std::max(dmax, d);
+            if (d >= lo - 2 && d <= hi + 2) ++inRing;
+            if (std::abs(nx - 3000) < 100 && std::abs(ny - 2400) < 100) ++far;
+            spots.insert({ nx, ny });
+        }
+        std::printf("  [점멸 사거리 ①] 고리 안 %d/20 · 먼 길목 %d · 자리 %zu곳 · 거리 %.0f~%.0f · 갈래 둘레 %llu 길목 %llu 제자리 %llu\n",
+                    inRing, far, spots.size(), dmin, dmax, srv->teleStat(TS::BlinkShort), srv->teleStat(TS::BlinkWaypoint), srv->teleStat(TS::BlinkNoSpot));
+        Check(inRing == 20, "① 점멸이 둘레 고리(최소~사거리) 밖으로 갔다");
+        Check(far == 0, "① 사거리가 있는데 먼 길목으로 갔다");
+        Check(spots.size() >= 10, "① 20번 중 닿은 자리가 10곳 미만 — 무작위가 아니다");
+        Check(srv->teleStat(TS::BlinkShort) == 20 && srv->teleStat(TS::BlinkWaypoint) == 0 && srv->teleStat(TS::BlinkNoSpot) == 0,
+              "① 갈래 수가 둘레 20 · 길목 0 · 제자리 0 이 아니다");
+    }
+    // ② 칸 x 46(1058~1081) · y 0~255(맵 위아래 끝까지 — 사거리가 길어 벽 끝을 돌아 넘어가지 못하게)에 X 자 벽
+    {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
+        std::vector<std::pair<uint8_t, uint8_t>> wall;
+        for (int y = 0; y <= 255; ++y) wall.push_back({ 46, static_cast<uint8_t>(y) });
+        srv->SetWalls(wall);
+        int behind = 0, moved = 0;
+        for (int i = 0; i < 20; ++i) {
+            int nx = 0, ny = 0; once(srv, out, ms, 1000, 1000, nx, ny);
+            if (nx >= 47 * 23) ++behind;
+            if (std::hypot(nx - 1000.0, ny - 1000.0) >= nox::kBlinkShortest - 2) ++moved;
+        }
+        std::printf("  [점멸 사거리 ②] 벽 너머 %d · 옮겨짐 %d/20\n", behind, moved);
+        Check(behind == 0, "② 점멸이 벽 너머로 갔다");
+        Check(moved == 20, "② 벽 한쪽이 트였는데 못 옮겨진 판이 있다");
+    }
+    // ③ 칸 41~46 네모 테두리 — 안쪽 966~1058 이라 (1000,1000)에서 어느 쪽이든 60 안에 벽
+    {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
+        std::vector<std::pair<uint8_t, uint8_t>> box;
+        for (int k = 41; k <= 46; ++k) {
+            box.push_back({ static_cast<uint8_t>(k), 41 }); box.push_back({ static_cast<uint8_t>(k), 46 });
+            box.push_back({ 41, static_cast<uint8_t>(k) }); box.push_back({ 46, static_cast<uint8_t>(k) });
+        }
+        srv->SetWalls(box);
+        int nx = 0, ny = 0; once(srv, out, ms, 1000, 1000, nx, ny);
+        std::printf("  [점멸 사거리 ③] 자리 (%d,%d) · 제자리 %llu · 둘레 %llu · 남은 지속 %zu\n", nx, ny,
+                    srv->teleStat(TS::BlinkNoSpot), srv->teleStat(TS::BlinkShort), srv->DurCount());
+        Check(nx == 1000 && ny == 1000, "③ 사방이 막혔는데 옮겨졌다");
+        Check(srv->teleStat(TS::BlinkNoSpot) == 1 && srv->teleStat(TS::BlinkShort) == 0, "③ 갈래가 제자리 1 · 둘레 0 이 아니다");
+        Check(srv->DurCount() == 0, "③ 못 옮기고도 주문이 안 끝났다");
+    }
+    // ④
+    {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
+        int outside = 0, moved = 0;
+        for (int i = 0; i < 20; ++i) {
+            int nx = 0, ny = 0; once(srv, out, ms, 40, 40, nx, ny);
+            if (nx < 23 || ny < 23) ++outside;
+            if (std::hypot(nx - 40.0, ny - 40.0) >= nox::kBlinkShortest - 2) ++moved;
+        }
+        std::printf("  [점멸 사거리 ④] 판 밖 %d · 옮겨짐 %d/20\n", outside, moved);
+        Check(outside == 0, "④ 점멸이 판 밖으로 나갔다");
+        Check(moved == 20, "④ 구석이라도 판 안쪽이 트였는데 못 옮겨진 판이 있다");
+    }
+    // ⑤ ⑥ ⑦
+    for (int k = 0; k < 3; ++k) {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
+        floorAll(srv, k == 0 ? 6 : 3);
+        if (k == 1) srv->SetNoTeleportFloors({ 3, -1, -1, -1, -1 });
+        int nx = 0, ny = 0; once(srv, out, ms, 1000, 1000, nx, ny);
+        const bool stayed = (nx == 1000 && ny == 1000);
+        static const char* kName[3] = { "⑤ 용암", "⑥ 순간이동 금지", "⑦ 보통 바닥" };
+        std::printf("  [점멸 사거리 %s] 자리 (%d,%d) · 제자리 %llu · 둘레 %llu\n", kName[k], nx, ny,
+                    srv->teleStat(TS::BlinkNoSpot), srv->teleStat(TS::BlinkShort));
+        if (k < 2) Check(stayed && srv->teleStat(TS::BlinkNoSpot) == 1, k == 0 ? "⑤ 온 바닥이 용암인데 옮겨졌다" : "⑥ 온 바닥이 순간이동 금지인데 옮겨졌다");
+        else       Check(!stayed && srv->teleStat(TS::BlinkShort) == 1, "⑦ 보통 바닥인데 못 옮겨졌다(⑤⑥ 대조군)");
+    }
+    // ⑧ 칸 41~56 네모 테두리 — 안쪽 966~1288 · 가운데 (1127,1127)에서 벽까지 곧게 가장 먼 곳이 대각선 약 230(< kBlinkMinRange)
+    {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mk(srv, out, ms);
+        std::vector<std::pair<uint8_t, uint8_t>> box;
+        for (int k = 41; k <= 56; ++k) {
+            box.push_back({ static_cast<uint8_t>(k), 41 }); box.push_back({ static_cast<uint8_t>(k), 56 });
+            box.push_back({ 41, static_cast<uint8_t>(k) }); box.push_back({ 56, static_cast<uint8_t>(k) });
+        }
+        srv->SetWalls(box);
+        int nx = 0, ny = 0; once(srv, out, ms, 1127, 1127, nx, ny);
+        const double d = std::hypot(nx - 1127.0, ny - 1127.0);
+        const bool inRoom = nx > 966 && nx < 1288 && ny > 966 && ny < 1288;
+        std::printf("  [점멸 사거리 ⑧] (1127,1127) → (%d,%d) 거리 %.0f · 방 안 %d · 가장 먼 곳 %llu · 목표만큼 %llu · 제자리 %llu\n", nx, ny, d, int(inRoom),
+                    srv->teleStat(TS::BlinkPartial), srv->teleStat(TS::BlinkShort), srv->teleStat(TS::BlinkNoSpot));
+        Check(d >= nox::kBlinkShortest - 2 && d < nox::kBlinkMinRange && inRoom, "⑧ 작은 방에서 갈 수 있는 만큼(최소 하한~목표 최소) 방 안으로 안 갔다");
+        Check(srv->teleStat(TS::BlinkPartial) == 1 && srv->teleStat(TS::BlinkShort) == 0 && srv->teleStat(TS::BlinkNoSpot) == 0,
+              "⑧ 갈래가 가장 먼 곳 1 · 목표만큼 0 · 제자리 0 이 아니다");
+        // 곧게 갈 수 있는 거리 = 가로세로 약 150 ~ 대각선 약 230 — 32 방향 중 가장 먼 것이면 190 을 넘는다(한 방향이 넘을 몫 약 18%)
+        Check(d >= 190.0, "⑧ 가장 멀리 간 곳이 아니라 처음 찾은 짧은 곳을 받은 듯하다");
+    }
+    std::printf("  11-21 점멸 사거리 — 둘레 고리 · 벽 너머 안 감 · 막히면 제자리 · 판 밖 안 감 · 용암·금지 바닥 안 감 · 좁으면 갈 수 있는 만큼\n");
 }
 
 // ── 묶음 4-e(2) — 표식·순간이동 ──────────────────────────────────────
@@ -24861,6 +25021,7 @@ void TestMonsterCastB7() {
     {
         nox::CSyncHost srv; uint32_t ms = 0; mk(srv, ms, 1020.0f, true);
         srv->SetPlayerStarts({ { 3000.0f, 3000.0f } });             // 점멸 갈 데(길목이 없으면 시작 지점 — `GAME4_3.c:654~656`)
+        double b0x = 0, b0y = 0; srv->DebugPetXY(0, b0x, b0y);      // ★ 11-21 점멸 전 자리(건 그 프레임에 터지므로 아래 고르는 틀 앞에서 잰다)
         for (int t = 0; t < 40 && srv->castStat(CS::BlinkNear) == 0; ++t) run(srv, ms, 1);
         const uint32_t ce = srv->DebugPetCastNextEscape(0);
         char msg[200]; std::snprintf(msg, sizeof(msg), "⑥ 20 앞 상대인데 점멸을 안 했다 — 가까워 점멸 %llu · 받음 %llu · 쉬는 때 +%u",
@@ -24871,8 +25032,16 @@ void TestMonsterCastB7() {
         //   (`spellBlink1_530380` — `a1[17] − 1 == gameFrame()`). 우리는 지속 주문을 몬스터 생각 앞에서 돌려 몬스터가 건 점멸이 영영 안 터졌다
         run(srv, ms, 2);
         double bx = 0, by = 0; srv->DebugPetXY(0, bx, by);
-        std::snprintf(msg, sizeof(msg), "⑥ 점멸이 실제로 옮기지 않았다 — 비홀더 자리 (%.0f,%.0f) · 기대 시작 지점 (3000,3000) 둘레 30", bx, by);
-        Check(std::abs(bx - 3000.0) < 30.0 && std::abs(by - 3000.0) < 30.0, msg);   // 옮긴 뒤 한 틱 더 걸을 수 있다(첫 판 2997,2997)
+        if (nox::kBlinkRange > 0) {
+            // ★ 11-21 kBlinkRange — 시작 지점 대신 비홀더 둘레 고리(옮긴 뒤 한 틱 더 걸을 수 있어 ±30)
+            const double bd = std::hypot(bx - b0x, by - b0y);
+            std::snprintf(msg, sizeof(msg), "⑥ 점멸이 실제로 옮기지 않았다 — 비홀더 (%.0f,%.0f) → (%.0f,%.0f) 거리 %.0f · 기대 %.0f~%.0f · 둘레 갈래 %llu",
+                          b0x, b0y, bx, by, bd, nox::kBlinkMinRange, nox::kBlinkRange, srv->teleStat(nox::Server::TeleStat::BlinkShort));
+            Check(bd >= nox::kBlinkMinRange - 30.0 && bd <= nox::kBlinkRange + 30.0 && srv->teleStat(nox::Server::TeleStat::BlinkShort) == 1, msg);
+        } else {
+            std::snprintf(msg, sizeof(msg), "⑥ 점멸이 실제로 옮기지 않았다 — 비홀더 자리 (%.0f,%.0f) · 기대 시작 지점 (3000,3000) 둘레 30", bx, by);
+            Check(std::abs(bx - 3000.0) < 30.0 && std::abs(by - 3000.0) < 30.0, msg);   // 옮긴 뒤 한 틱 더 걸을 수 있다(첫 판 2997,2997)
+        }
     }
     // ⑥' 도망 거리 절반 밖(50 — 65 안)이면 점멸 대신 거리 두기
     {
@@ -25433,6 +25602,7 @@ void TestDurTwoTick1120() {
     };
     auto blinked = [&](nox::CSyncHost& srv) {
         const auto x = srv->XOf(Sid(srv, a)), y = srv->YOf(Sid(srv, a));
+        if (nox::kBlinkRange > 0) return std::hypot(x - 1000.0, y - 1000.0) >= nox::kBlinkMinRange - 2;   // ★ 11-21 사거리 — (1000,1000) 둘레 고리
         return x > 2900 && x < 3100 && y > 2300 && y < 2500;
     };
     auto toMark = [&](uint8_t spell) {
@@ -44240,6 +44410,7 @@ int main() {
     TestBeamManaOnHit1121();          // ★ 11-21 사양 — 몬스터 맞히면 마나
     TestBeamStopPair1121();           // ★ 11-21 사용자 「죽고 나서 번개 이펙트 남음」 — 빔 켜기·끄기 짝
     TestChannelLifeMult1121();        // ★ 11-21 사양 — 생명 전환 5배
+    TestBlinkRange1121();             // ★ 11-21 사양 — 점멸 사거리
     TestMoonglow1121();
     TestTag1121();
     TestLock1121();
