@@ -27846,6 +27846,124 @@ void TestBeamManaOnHit1121() {
     }
 }
 
+// ★ 11-21 사용자 「죽고 나서 번개 이펙트가 남는 경우」 — 빔(`9e`) 켜기·끄기가 짝이 맞나.
+//   켠 (끄기 갈래 · 앞 번호 · 뒤 번호)마다 끈 것이 하나 있어야 한다 — 남으면 그 빔이 화면에 계속 걸려 있다
+//   ① 사람 24 → 곰 B · 앞 자리 몬스터 X 가 목록에서 빠짐(자리가 당겨진다) · 시전자가 맞아 끊김
+//   ② 사람 43 → 곰 B·C · X 빠짐 · 시전자가 맞아 끊김
+//   ③ 사람 24 → B · B 죽음(시체 남음) — 빔은 C 로 옮겨 간다(대상이 죽으면 다시 고름) · 끝에 시전자가 맞아 끊김
+//   ④ 사람 24 → B · 시전자 죽음
+//   ⑤ 사람 24 → B · B 죽고 같은 틱에 지울 표시(시체 없이 사라지는 몬스터) — B 빔을 끄고 C 로 · 끝에 시전자가 맞아 끊김
+//   세는 것 — 켬·끔 개수(①⑥ 하나씩 · ⑤ 둘씩) · `beamFix_`(빠지기 전에 끈 빔 · 먼저 취소한 몬스터 시전)
+//   ⑥ 리치 24 → 사람 a · 리치 죽음
+//   ⑦ 리치 43 → a·b · 리치 죽음
+//   ⑧ 사람 43 → B·C · B 죽고 같은 틱에 지울 표시 — 조각 둘(시전자→B · B→C)을 빠지기 전에 끈다 · 끝에 시전자가 맞아 끊김
+void TestBeamStopPair1121() {
+    const std::string a = "10.11.21.35:9545", b = "10.11.21.36:9546";
+    char msg[500];
+    auto stopOf = [](int t) { switch (t) { case 1: return 8; case 2: return 9; case 3: return 10; case 4: return 11; case 5: return 12; case 6: return 13; default: return -1; } };
+    struct Tally { int starts = 0, stops = 0, open = 0, orphan = 0; std::string left; };
+    auto tally = [&](const std::vector<nox::OutPacket>& out, const std::string& to) {
+        Tally r;
+        std::map<long long, int> open;
+        for (const auto& m : FlattenTo(out, to)) {
+            if (m.size() != 7 || m[0] != static_cast<uint8_t>(nox::Op::FX_DURATION_SPELL)) continue;
+            const int typ = m[1], n1 = m[3] | (m[4] << 8), n2 = m[5] | (m[6] << 8);
+            if (stopOf(typ) > 0) { ++r.starts; ++open[(static_cast<long long>(stopOf(typ)) << 32) | (n1 << 16) | n2]; }
+            else if (typ >= 8 && typ <= 13) {
+                ++r.stops;
+                int& v = open[(static_cast<long long>(typ) << 32) | (n1 << 16) | n2];
+                if (v > 0) --v; else ++r.orphan;
+            }
+        }
+        for (const auto& kv : open) if (kv.second > 0) {
+            r.open += kv.second;
+            r.left += " " + std::to_string(kv.first >> 32) + ":" + std::to_string((kv.first >> 16) & 0xFFFF) + "→" + std::to_string(kv.first & 0xFFFF);
+        }
+        return r;
+    };
+    // 사람 시전 판 — X(자리 0 · 멀리) · B(자리 1 · 앞 100) · C(자리 2 · B 옆 60)
+    auto mkP = [&](nox::CSyncHost& srv, uint32_t& ms, std::vector<nox::OutPacket>& out) {
+        nox::Gamedata g;
+        g.Parse("EnergyBoltDamage = 1.3, 1.6, 2.0, 2.3, 2.6;\nLightningDamage = 1.5;\nLightningRange = 240;\nLightningSearchTime = 30;\n"
+                "SummonDuration = 60, 210, 375;\n");
+        srv->SetGamedata(g);
+        srv->SetSpellDef(24, 0, 0x1000000, { 1, 2 });          // TestEnergyBolt 와 같음
+        RegSpell(srv, 43, 0);
+        srv.DebugEnterGame(a, 910, false, nox::CharClass::Wizard);
+        srv->DebugMoveTo(Sid(srv, a), 1000, 1000);
+        nox::Server::PhysBody body; body.shape = 2; body.r = 10.0f; body.cls = 0x2;
+        srv->SetTypeBody(1365, body);
+        srv->DebugSpawnPet(1365, 3000.0f, 3000.0f, Sid(srv, std::string()));
+        srv->DebugSpawnPet(1365, 1100.0f, 1000.0f, Sid(srv, std::string()));
+        srv->DebugSpawnPet(1365, 1100.0f, 1060.0f, Sid(srv, std::string()));
+        for (size_t i = 0; i < 3; ++i) srv->DebugSetPetHealth(i, 1000);
+        srv.Tick(ms, out);
+        ms += 34; srv.Tick(ms, out);
+    };
+    auto step = [](nox::CSyncHost& srv, uint32_t& ms, std::vector<nox::OutPacket>& out, int n) { for (int t = 0; t < n; ++t) { ms += 34; srv.Tick(ms, out); } };
+    for (int kase : { 1, 2, 3, 4, 5, 8 }) {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0; mkP(srv, ms, out);
+        const uint8_t sp = (kase == 2 || kase == 8) ? 43 : 24;
+        const uint16_t bn = srv->DebugPetNet(1);
+        CastAndWait(srv, a, sp, sp == 24, ms, out);
+        step(srv, ms, out, 3);
+        const bool on0 = srv->DebugDurActive(sp, Sid(srv, a));
+        switch (kase) {
+            case 1: case 2:
+                srv->DebugMarkPetRemove(0); step(srv, ms, out, 3);
+                srv->Damage(Sid(srv, a), 1); srv.TakeOut(out); step(srv, ms, out, 3);
+                break;
+            case 3: srv->DebugHurt(nox::kNoSession, 1, 99999, Sid(srv, a), 0); srv.TakeOut(out); step(srv, ms, out, 4);
+                    srv->Damage(Sid(srv, a), 1); srv.TakeOut(out); step(srv, ms, out, 3); break;
+            case 4: srv->Damage(Sid(srv, a), 9999); srv.TakeOut(out); step(srv, ms, out, 4); break;
+            case 5: case 8: srv->DebugHurt(nox::kNoSession, 1, 99999, Sid(srv, a), 0); srv->DebugMarkPetRemove(1); srv.TakeOut(out); step(srv, ms, out, 4);
+                    srv->Damage(Sid(srv, a), 1); srv.TakeOut(out); step(srv, ms, out, 3); break;
+        }
+        const Tally r = tally(out, a);
+        std::snprintf(msg, sizeof(msg), "빔 짝 %d(%u) — 켬 %d · 끔 %d · 남은 빔 %d(%s) · 짝 없는 끔 %d · 걸림 %d → %d · B 번호 %u · 빠지기 전 끔 %llu · 번호 당김 %llu",
+                      kase, unsigned(sp), r.starts, r.stops, r.open, r.left.c_str(), r.orphan, int(on0), int(srv->DebugDurActive(sp, Sid(srv, a))), unsigned(bn),
+                      srv->beamFix_[0], srv->beamFix_[1]);
+        std::printf("  (%s)\n", msg);
+        const bool countOk = kase == 1 ? (r.starts == 1 && srv->beamFix_[0] == 0 && srv->beamFix_[1] >= 1)
+                           : kase == 2 ? (srv->beamFix_[1] >= 1)
+                           : kase == 5 ? (r.starts == 2 && srv->beamFix_[0] == 1)
+                           : kase == 8 ? (srv->beamFix_[0] >= 1)
+                           : (srv->beamFix_[0] == 0);
+        Check(r.starts >= 1 && r.open == 0 && r.orphan == 0 && on0 && !srv->DebugDurActive(sp, Sid(srv, a)) && countOk, msg);
+    }
+    // 리치 판 — TestCasterFourSummon1121 ⑤ 와 같은 짜임(리치 1000,1000 · a 앞 100 · b 는 a 옆 60)
+    for (int kase = 6; kase <= 7; ++kase) {
+        nox::CSyncHost srv; std::vector<nox::OutPacket> out; uint32_t ms = 0;
+        nox::Gamedata g;
+        g.Parse("EnergyBoltDamage = 1.3, 1.6, 2.0, 2.3, 2.6;\nLightningDamage = 1.5;\nLightningRange = 240;\nLightningSearchTime = 30;\n");
+        srv->SetGamedata(g);
+        srv->SetSpellDef(43, 0, 0x42340033u, { 1, 2 });
+        srv->SetSpellDef(24, 0, 0x42340033u, { 3, 4 });
+        srv->SetMonsterAnim(1342, 7, 8, 2, false);
+        srv.DebugEnterGame(a, 911, false, nox::CharClass::Warrior);
+        srv.DebugEnterGame(b, 912, false, nox::CharClass::Warrior);
+        srv->DebugTeleport(Sid(srv, a), 1100.0f, 1000.0f);
+        srv->DebugTeleport(Sid(srv, b), 1100.0f, 1060.0f);
+        srv->DebugSpawnPet(1342, 1000, 1000, Sid(srv, std::string()));
+        srv.Tick(0, out);
+        srv->DebugSetFrame(1000);
+        const uint8_t sp = kase == 6 ? 24 : 43;
+        const uint16_t ln = srv->DebugPetNet(0);
+        const bool cast = srv->DebugPetCastNow(0, sp, nox::Target{ Sid(srv, a), -1 });
+        srv.TakeOut(out);
+        for (int t = 0; t < 3; ++t) { srv->DebugSetPetPos(0, 1000, 1000); ms += 34; srv.Tick(ms, out); }
+        const bool on0 = srv->DebugPetDurActive(sp, ln);
+        srv->DebugHurt(nox::kNoSession, 0, 99999, Sid(srv, a), 0); srv.TakeOut(out);
+        step(srv, ms, out, 4);
+        const Tally r = tally(out, a);
+        std::snprintf(msg, sizeof(msg), "빔 짝 %d(리치 %u) — 받음 %d · 켬 %d · 끔 %d · 남은 빔 %d(%s) · 짝 없는 끔 %d · 걸림 %d → %d · 리치 죽음 %d · 먼저 취소 %llu",
+                      kase, unsigned(sp), int(cast), r.starts, r.stops, r.open, r.left.c_str(), r.orphan, int(on0), int(srv->DebugPetDurActive(sp, ln)),
+                      int(srv->DebugPetDead(0)), srv->beamFix_[2]);
+        std::printf("  (%s)\n", msg);
+        Check(cast && r.starts >= 1 && r.open == 0 && r.orphan == 0 && on0 && !srv->DebugPetDurActive(sp, ln) && srv->beamFix_[2] == 1, msg);
+    }
+}
+
 void TestMagicWall1121() {
     const std::string a = "10.11.21.17:9527";   // 시전자(위저드)
     const std::string b = "10.11.21.18:9528";   // 늦게 온 사람
@@ -44117,6 +44235,7 @@ int main() {
     TestMagicWall1121();
     TestBeamThroughMagicWall1121();   // ★ 11-21 사양 — 사람 빔은 마법 벽 너머도
     TestBeamManaOnHit1121();          // ★ 11-21 사양 — 몬스터 맞히면 마나
+    TestBeamStopPair1121();           // ★ 11-21 사용자 「죽고 나서 번개 이펙트 남음」 — 빔 켜기·끄기 짝
     TestChannelLifeMult1121();        // ★ 11-21 사양 — 생명 전환 5배
     TestMoonglow1121();
     TestTag1121();

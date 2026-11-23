@@ -2172,6 +2172,7 @@ public:
     void DebugAddPetSpell(size_t i, uint8_t sp, uint32_t mask) { if (i < pets_.size()) pets_[i].spells.push_back({ sp, mask }); }
     int DebugAITargetPet(size_t i, int j) const { return (i < pets_.size() && j >= 0 && j < Creature::kAIStackMax) ? pets_[i].aiStack[j].targetPet : -1; }
     uint16_t DebugPetNet(size_t i) const { return i < pets_.size() ? pets_[i].netCode : 0; }
+    void DebugMarkPetRemove(size_t i) { if (i < pets_.size()) pets_[i].removeMe = true; }    // ★ 11-21 빔 남음 시험 — 다음 `FlushDeadPets` 가 지운다(자리가 당겨진다)
     uint16_t DebugPetType(size_t i) const { return i < pets_.size() ? pets_[i].type : 0; }   // ★ 11-20 C1
     int64_t DebugPetOwner(size_t i) const { return i < pets_.size() ? pets_[i].owner : kNoSession; }   // ★ 11-20 C1
     // 종류별 몬스터 아종 비트(thing.bin SUBCLASS — 0x200 IMMUNE_POISON · 0x400 IMMUNE_FIRE …) · 위험한 종류(1 불 FIRE · 2 독구름 · 3 DANGEROUS)
@@ -6539,6 +6540,10 @@ public:   // ★ 10-12 작업 7e-2 — 표 묶음과 같이 쓰기 입구는 바
     mutable bool beamSkipMagicWall_ = false;
     mutable unsigned long long beamWallPass_[2] = {};   // [0] 에너지 볼트 · [1] 번개 — 마법 벽을 빼서 새로 보인 검사 수(빼지 않았으면 가렸다)
     bool BeamCanInteract(const Session& caster, const Target& t, int which) const;
+    // ★ 11-21 사용자 「죽고 나서 번개 이펙트가 남는 경우」 — 빔 끄기(`9e`)가 빠지던 두 자리
+    //   [0] 몬스터가 목록에서 빠지기 전에 끈 빔 · [1] 지속 주문이 쥔 Target 가운데 자리 번호를 당기거나 비운 수 · [2] 몬스터 시전자가 죽어 먼저 취소한 지속 주문
+    unsigned long long beamFix_[3] = {};
+    void DurOnPetRemoved(size_t idx);
     // ★ 11-21 트레일러 작업 — 생명 전환(8) kChannelLifeMult 배(`DurChannelLife`) — 돈 틱 · 깎은 체력(= 틱 × 5 면 다 돈 것)
     unsigned long long channelLifeTick_ = 0, channelLifeHp_ = 0;
     float startZoneX_ = 0.0f, startZoneY_ = 0.0f;

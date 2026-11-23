@@ -1364,6 +1364,7 @@ void Server::ZombieBurnDelete(Creature& k) {
 void Server::RemovePet(size_t idx) {
     if (idx >= pets_.size()) return;
     const uint16_t netCode = pets_[idx].netCode;
+    DurOnPetRemoved(idx);                                    // ★ 11-21 — 지우기 **전에**(번호가 살아 있을 때) 지속 주문의 자리 번호를 맞춘다
     pets_.erase(pets_.begin() + static_cast<long>(idx));
     uint8_t msg[3];
     msg[0] = static_cast<uint8_t>(Op::DESTROY_OBJECT);
@@ -1373,6 +1374,40 @@ void Server::RemovePet(size_t idx) {
         if (kv.second.inGame) {
             Emit(kv.second, /*reliable=*/false, /*stream=*/0, msg, sizeof(msg));
         }
+    }
+}
+
+// ★ 11-21 사용자 「죽고 나서 번개 이펙트가 남는 경우」 — 몬스터가 `pets_` 에서 빠지기 직전에 부른다(`RemovePet`).
+//   왜: `Target.pet` 은 자리 번호라 앞 자리가 빠지면 뒤가 한 칸씩 당겨진다. 지속 주문이 옛 번호를 쥔 채면 빔 끄기(`9e`)가
+//     엉뚱한 번호(또는 번호 없음)로 나가 켜 둔 빔이 화면에 남고, 대상도 옆 몬스터로 바뀐다(시험 `TestBeamStopPair1121` ①②⑤ — 고치기 전 남은 빔 1·2·1).
+//     원본은 오브젝트 주소를 쥐어 이 일이 없다
+//   ① 빠지는 몬스터에 걸린 빔은 번호가 살아 있을 때 먼저 끈다 — 연쇄 번개(43)는 조각마다(앞·뒤 어느 쪽이든) · 마나 빨기(22)·에너지 볼트(24)·플라스마(59)는
+//      켠 빔 대상(+36) · 큰 치유(35)·매혹(9)은 대상(+48)으로 켠다(`NetStartRaySpell` 짝) — 끈 뒤 그 칸을 비워 취소(`DurCancel`)가 또 끄지 않게
+//   ② 나머지는 뒤 번호를 하나씩 당기고, 빠지는 몬스터를 쥔 칸은 비운다(대상이 없으면 각 주문이 다시 고르거나 끝난다)
+//   이미 취소된 것(+88 & 1)은 취소가 빔을 껐으니 ① 을 건너뛰고 ② 만 한다
+void Server::DurOnPetRemoved(size_t idx) {
+    const int gone = static_cast<int>(idx);
+    auto hits = [&](const Target& t) { return t.sessionId == kNoSession && t.pet == gone; };
+    auto shift = [&](Target& t) {
+        if (t.sessionId != kNoSession || t.pet < 0) return;
+        if (t.pet == gone) t = Target{};
+        else if (t.pet > gone) --t.pet;
+        else return;
+        ++beamFix_[1];
+    };
+    for (auto& d : durSpells_) {
+        if (!(d.flags88 & 1)) {
+            if (d.spell == 43) {
+                for (auto& sub : d.sub108)
+                    if (!sub.target.none() && (hits(sub.target) || hits(sub.fromUnit))) { NetStopRaySpell(sub, sub.target); sub.target = Target{}; ++beamFix_[0]; }
+            } else if (d.spell == 22 || d.spell == 24 || d.spell == 59) {
+                if (hits(d.field36)) { NetStopRaySpell(d, d.field36); d.field36 = Target{}; ++beamFix_[0]; }
+            } else if (d.spell == 35 || d.spell == 9 || d.spell == 7) {
+                if (hits(d.target) || hits(d.fromUnit)) { NetStopRaySpell(d, d.target); d.target = Target{}; ++beamFix_[0]; }
+            }
+        }
+        shift(d.target); shift(d.field36); shift(d.fromUnit);
+        for (auto& sub : d.sub108) { shift(sub.target); shift(sub.field36); shift(sub.fromUnit); }
     }
 }
 
@@ -19296,7 +19331,16 @@ void Server::SpellCastByPlayer(uint32_t frame) {
         if ((d.caster != kNoSession) && (!alive(d.caster) || sessions_.at(d.caster).respawnAtFrame != 0)) d.caster = kNoSession;   // DEAD|DESTROYED
         if ((d.obj12 != kNoSession) && !alive(d.obj12)) d.obj12 = kNoSession;                                                      // DESTROYED
         // ★ 09-29 B7 — 몬스터 시전자 — 없어졌거나 죽었으면 시전자 없음
-        if (d.casterPet != 0) { const int pi = PetIndexByNet(d.casterPet); if (pi < 0 || pets_[static_cast<size_t>(pi)].health == 0) d.casterPet = 0; }
+        if (d.casterPet != 0) {
+            const int pi = PetIndexByNet(d.casterPet);
+            if (pi < 0 || pets_[static_cast<size_t>(pi)].health == 0) {
+                // ★ 11-21 사용자 「죽고 나서 번개 이펙트가 남는 경우」 — 시전자 번호가 남아 있을 때 먼저 취소(빔 끄기)한다.
+                //   원본 순서(시전자를 비운 뒤 취소)대로면 `NetStopRaySpell` 이 「시전자 없음」으로 빠져(`spells.go:462~465`) 리치가 쏘던 빔이 남는다
+                //   (시험 `TestBeamStopPair1121` ⑥ — 고치기 전 끔 0 · 남은 빔 1). 원본 밖 — 원본 클라가 이 빔을 스스로 지우는지는 안 봤다
+                if ((d.caster == kNoSession) && !d.flag20) { DurCancel(d); d.casterPet = 0; ++beamFix_[2]; it = next; continue; }
+                d.casterPet = 0;
+            }
+        }
         if ((d.caster == kNoSession) && d.casterPet == 0 && !d.flag20) { DurCancel(d); it = next; continue; }
         if ((d.frame68 != d.frame60 && d.frame68 <= frame) || (d.fns.update && (this->*d.fns.update)(d) != 0))
             DurCancel(d);
