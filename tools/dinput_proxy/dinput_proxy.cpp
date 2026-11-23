@@ -40,6 +40,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
+#include <intrin.h>   // _ReturnAddress — 마법 세트 지키기에서 누가 불렀나 기록
 
 // ─────────────────────────────────────────────── 로그 (켜야 쓴다)
 
@@ -534,6 +535,186 @@ extern "C" HRESULT WINAPI DllUnregisterServer(void)
     return fn ? fn() : E_FAIL;
 }
 
+// ─────────────────────────────────────────────── 소환 창 넓히기 (촬영 판만 · NOX_SUMMON_WIDE=1)
+// ★ 11-22 트레일러 작업 — 사용자 「몬스터 현황판 같은 거를 여러 개로는 못 하나」(소환 한도 12 촬영 판 · 큰 소환수 셋을 한 화면에).
+//   정품 소환 창은 2×2 격자(38px 칸)라 큰 소환수(4칸) 하나가 창 전체 — 둘째부터는 자리를 못 찾아 첫 자리에 겹쳐 그려진다
+//   (opennox `GAME3_1.c` 크기 `sub_4C2EF0` · 자리 찾기 `sub_4C2FD0` — 이 실행 파일에선 코드 +0x960 · 메모리 −0x23E0 밀려 있다).
+//   → 격자를 2줄 × 6칸(12칸 = 한도 12)으로 넓힌다. 칸 번호 = 줄 + 2 × 열 이라 줄이 2인 한 셈법은 그대로, 바꿀 것은
+//     ① 격자 16바이트(0x714A90 · 바로 뒤에 개수 0x714AA0·상태 0x714AA4)를 이 DLL 의 48바이트로 옮김 ② 열 상한 2 → 6
+//     ③ 자리 후보 표(0x5B1C68 · 8바이트 × 4 = (열,줄) 0,0 0,1 1,0 1,1)를 12개로 ④ 창 두 개(바깥 87 · 격자 76)를 152 넓히고 왼쪽으로 152 옮김.
+//     ⑤ 목록(0x714A10 · 32바이트 × 4 — 번호·종류·씀·열·줄·크기·칸 번호·밝힘)을 이 DLL 의 12칸으로 옮김 — 처음엔 4칸으로 두었다가
+//       11-22 사용자 「3배였나 4배까지 늘려 달라고 하지 않았나」 · 「소환한 대로 창이 잘 떠 있는지」 — 클라 메모리를 읽어 보니
+//       말벌·트롤·곰·기계 골렘 넷만 있고 다섯째 임프가 빠져 있었다(목록이 차면 `sub_4C2F20` 이 0 을 돌려 안 넣는다).
+//       개수(0x714AA0)를 4 와 견주는 곳은 없다(opennox 에서 1321196 을 쓰는 곳 = 늘리기·줄이기·0 검사뿐).
+//   기계어는 GOG Game.exe(PE 시각 0x3978A3FE)를 capstone 으로 역어셈블해 골랐다 — 목록 주소가 박힌 dword 를 .text 전체에서 찾은 18곳.
+//   바꾸기 전에 31곳 모두 원래 바이트가 맞는지 보고, 하나라도 다르면 하나도 안 바꾼다.
+#define SUMMON_COLS     6
+#define SUMMON_EXTRA_W  (38 * (SUMMON_COLS - 2))   // 152 — 늘어난 열 넷
+#define SUMMON_ENTS     (2 * SUMMON_COLS)          // 12 — 목록 칸(원래 4) = 격자 칸 수 = 한도 12 를 작은 것으로 채운 수
+static volatile DWORD g_sumGrid[2 * SUMMON_COLS];
+static volatile DWORD g_sumEnt[8 * SUMMON_ENTS];   // 32바이트 × 12
+#define SUMMON_ENT_OLD  0x714A10u
+struct EntFix { DWORD va; BYTE plen; BYTE pre[2]; DWORD oldAddr; DWORD newOff; const char* what; };
+static const EntFix kEntFix[] = {   // 명령 앞머리(plen 바이트) 뒤에 목록 주소 dword 가 박힌 자리 — 앞머리 + 주소만 바꾼다
+    { 0x4C2909, 1, {0xB8},      0x714A18, 8,                     "창 만들 때 비우기 — 처음(씀 칸)" },
+    { 0x4C2913, 1, {0x3D},      0x714A98, 8 + 32 * SUMMON_ENTS,  "창 만들 때 비우기 — 끝" },
+    { 0x4C2A52, 1, {0xBB},      0x714A1C, 12,                    "그리기 — 처음(열 칸)" },
+    { 0x4C2C3F, 2, {0x81,0xFB}, 0x714A9C, 12 + 32 * SUMMON_ENTS, "그리기 — 끝" },
+    { 0x4C36C2, 1, {0xB9},      0x714A18, 8,                     "첫 칸 — 처음" },
+    { 0x4C36D0, 2, {0x81,0xF9}, 0x714A98, 8 + 32 * SUMMON_ENTS,  "첫 칸 — 끝" },
+    { 0x4C36DE, 1, {0x05},      0x714A10, 0,                     "첫 칸 — 돌려줄 자리" },
+    { 0x4C3702, 2, {0x81,0xC1}, 0x714A18, 8,                     "다음 칸 — 처음" },
+    { 0x4C3711, 2, {0x81,0xF9}, 0x714A98, 8 + 32 * SUMMON_ENTS,  "다음 칸 — 끝" },
+    { 0x4C371F, 1, {0x05},      0x714A10, 0,                     "다음 칸 — 돌려줄 자리" },
+    { 0x4C3883, 1, {0xB8},      0x714A18, 8,                     "빈 칸 찾기 — 처음" },
+    { 0x4C3891, 1, {0x3D},      0x714A98, 8 + 32 * SUMMON_ENTS,  "빈 칸 찾기 — 끝" },
+    { 0x4C38A8, 2, {0x8D,0x9A}, 0x714A10, 0,                     "빈 칸 찾기 — 지울 자리" },
+    { 0x4C38B4, 2, {0xC7,0x82}, 0x714A18, 8,                     "빈 칸 찾기 — 씀 표시" },
+    { 0x4C38C1, 2, {0x89,0xB2}, 0x714A28, 24,                    "빈 칸 찾기 — 칸 번호" },
+    { 0x4C3B37, 1, {0xB9},      0x714A10, 0,                     "번호로 찾기 — 처음" },
+    { 0x4C3B4B, 2, {0x81,0xF9}, 0x714A90, 32 * SUMMON_ENTS,      "번호로 찾기 — 끝" },
+    { 0x4C3B5A, 1, {0x05},      0x714A10, 0,                     "번호로 찾기 — 돌려줄 자리" },
+};
+static const int g_sumPos[2 * SUMMON_COLS][2] = {  // 원래 표와 같은 차례 — 번호 i = (열 i/2, 줄 i%2). 큰 것(4)은 0·4·8 = 열 0·2·4
+    {0, 0}, {0, 1}, {1, 0}, {1, 1}, {2, 0}, {2, 1}, {3, 0}, {3, 1}, {4, 0}, {4, 1}, {5, 0}, {5, 1} };
+typedef int(__cdecl* PFN_WinNew)(int parent, int flags, int x, int y, int w, int h, int fnc);
+#define GAME_WINDOW_NEW  0x489CF0u   // nox_window_new — 호출한 쪽이 스택을 치운다(0x4C2747 add esp, 0x48 = 창 둘 + 함수 걸기 하나)
+#define SUMMON_WIN_X     0x7149D0u   // dword_5d4594_1320988 — 창 가로 자리(만들 때 한 번 쓰고 · 그리기 함수가 매 프레임 이 값으로 옮김)
+static volatile LONG g_sumWinMade = 0;
+static int __cdecl HookSummonOuterNew(int parent, int flags, int x, int y, int w, int h, int fnc)
+{
+    x -= SUMMON_EXTRA_W; w += SUMMON_EXTRA_W;
+    *(volatile int*)SUMMON_WIN_X = x;   // 만들기 바로 앞(0x4C2707)에서 원래 값(화면 너비 − 95)을 써 둔 칸
+    Log("[소환 창 넓힘] 바깥 창 만듦 %ld번째 — 가로 자리 %d · 너비 %d", InterlockedIncrement(&g_sumWinMade), x, w);
+    return ((PFN_WinNew)GAME_WINDOW_NEW)(parent, flags, x, y, w, h, fnc);
+}
+static int __cdecl HookSummonGridNew(int parent, int flags, int x, int y, int w, int h, int fnc)
+{
+    w += SUMMON_EXTRA_W;
+    return ((PFN_WinNew)GAME_WINDOW_NEW)(parent, flags, x, y, w, h, fnc);
+}
+struct CodePatch { DWORD va; BYTE len; BYTE orig[7]; BYTE now[7]; const char* what; };
+static void PutDword(BYTE* p, DWORD v) { memcpy(p, &v, 4); }
+static void PatchSummonWindow()
+{
+    char v[8];
+    if (!GetEnvironmentVariableA("NOX_SUMMON_WIDE", v, sizeof v) || v[0] != '1') return;
+    const BYTE* base = (const BYTE*)GetModuleHandleA(NULL);
+    DWORD stamp = 0;
+    if (base == (const BYTE*)0x400000) {
+        const IMAGE_NT_HEADERS32* nt = (const IMAGE_NT_HEADERS32*)(base + ((const IMAGE_DOS_HEADER*)base)->e_lfanew);
+        stamp = nt->FileHeader.TimeDateStamp;
+    }
+    if (stamp != GAME_EXE_STAMP) { Log("[소환 창 넓힘] 실행 파일 시각 0x%08lX — 다른 판이라 안 바꿈", stamp); return; }
+    const DWORD grid = (DWORD)(uintptr_t)g_sumGrid, pos = (DWORD)(uintptr_t)g_sumPos;
+    CodePatch p[] = {
+        { 0x4C3550, 5, {0xBA,0x90,0x4A,0x71,0x00},           {0xBA},             "지우기 — 격자 처음" },
+        { 0x4C3557, 5, {0xB9,0x02,0x00,0x00,0x00},           {0xB9,SUMMON_COLS,0,0,0}, "지우기 — 열 수 2" },
+        { 0x4C356B, 6, {0x81,0xFA,0x98,0x4A,0x71,0x00},      {0x81,0xFA},        "지우기 — 줄 끝(격자 + 8)" },
+        { 0x4C2D80, 3, {0x83,0xFA,0x02},                     {0x83,0xFA,SUMMON_COLS}, "칸 얻기 — 열 < 2" },
+        { 0x4C2D94, 7, {0x8B,0x04,0x85,0x90,0x4A,0x71,0x00}, {0x8B,0x04,0x85},   "칸 얻기 — 격자" },
+        { 0x4C39ED, 7, {0x8D,0x0C,0x8D,0x90,0x4A,0x71,0x00}, {0x8D,0x0C,0x8D},   "놓기 — 격자" },
+        { 0x4C3A74, 7, {0x8D,0x0C,0x8D,0x90,0x4A,0x71,0x00}, {0x8D,0x0C,0x8D},   "비었나 — 격자" },
+        { 0x4C393C, 7, {0x8B,0x04,0xF5,0x68,0x1C,0x5B,0x00}, {0x8B,0x04,0xF5},   "자리 찾기 — 표 열" },
+        { 0x4C394A, 7, {0x8B,0x0C,0xF5,0x6C,0x1C,0x5B,0x00}, {0x8B,0x0C,0xF5},   "자리 찾기 — 표 줄" },
+        { 0x4C3967, 3, {0x83,0xFE,0x04},                     {0x83,0xFE,2 * SUMMON_COLS}, "자리 찾기 — 후보 < 4" },
+        { 0x4C3970, 3, {0x83,0xFE,0x04},                     {0x83,0xFE,2 * SUMMON_COLS}, "자리 찾기 — 찾았나 < 4" },
+        { 0x4C2712, 5, {0xE8,0xD9,0x75,0xFC,0xFF},           {0xE8},             "바깥 창 만들기" },
+        { 0x4C2742, 5, {0xE8,0xA9,0x75,0xFC,0xFF},           {0xE8},             "격자 창 만들기" },
+    };
+    PutDword(p[0].now + 1, grid);
+    PutDword(p[2].now + 2, grid + 8);
+    PutDword(p[4].now + 3, grid);
+    PutDword(p[5].now + 3, grid);
+    PutDword(p[6].now + 3, grid);
+    PutDword(p[7].now + 3, pos);
+    PutDword(p[8].now + 3, pos + 4);
+    PutDword(p[11].now + 1, (DWORD)(uintptr_t)HookSummonOuterNew - (p[11].va + 5));
+    PutDword(p[12].now + 1, (DWORD)(uintptr_t)HookSummonGridNew - (p[12].va + 5));
+    // 목록 18곳을 같은 꼴로 붙인다 — 원래 = 앞머리 + 옛 주소 · 새로 = 앞머리 + (DLL 목록 + 같은 칸 거리)
+    const int np = (int)(sizeof p / sizeof p[0]), ne = (int)(sizeof kEntFix / sizeof kEntFix[0]);
+    CodePatch all[sizeof p / sizeof p[0] + sizeof kEntFix / sizeof kEntFix[0]];
+    memcpy(all, p, sizeof p);
+    const DWORD ent = (DWORD)(uintptr_t)g_sumEnt;
+    for (int i = 0; i < ne; i++) {
+        const EntFix& f = kEntFix[i];
+        CodePatch& c = all[np + i];
+        memset(&c, 0, sizeof c);
+        c.va = f.va; c.len = (BYTE)(f.plen + 4); c.what = f.what;
+        memcpy(c.orig, f.pre, f.plen); PutDword(c.orig + f.plen, f.oldAddr);
+        memcpy(c.now, f.pre, f.plen);  PutDword(c.now + f.plen, ent + f.newOff);
+    }
+    const int n = np + ne;
+    for (int i = 0; i < n; i++)
+        if (memcmp((const void*)(uintptr_t)all[i].va, all[i].orig, all[i].len) != 0) {
+            Log("[소환 창 넓힘] 0x%08lX(%s) 원래 바이트가 다름 — 하나도 안 바꿈", all[i].va, all[i].what);
+            return;
+        }
+    int done = 0;
+    for (int i = 0; i < n; i++) {
+        DWORD old = 0;
+        if (!VirtualProtect((void*)(uintptr_t)all[i].va, all[i].len, PAGE_EXECUTE_READWRITE, &old)) {
+            Log("[소환 창 넓힘] 0x%08lX(%s) 쓰기 허락 실패 %lu — 여기서 멈춤(앞 %d곳은 바뀜)", all[i].va, all[i].what, GetLastError(), done);
+            return;
+        }
+        memcpy((void*)(uintptr_t)all[i].va, all[i].now, all[i].len);
+        VirtualProtect((void*)(uintptr_t)all[i].va, all[i].len, old, &old);
+        ++done;
+    }
+    FlushInstructionCache(GetCurrentProcess(), NULL, 0);
+    Log("[소환 창 넓힘] %d / %d곳 바꿈 — 격자 2×%d(%p) · 자리 표 %d개(%p) · 목록 %d칸(%p) · 창 +%dpx", done, n, SUMMON_COLS, (void*)g_sumGrid,
+        2 * SUMMON_COLS, (void*)g_sumPos, SUMMON_ENTS, (void*)g_sumEnt, SUMMON_EXTRA_W);
+}
+
+// ─────────────────────────────────────────────── 마법 세트 지키기 (촬영 판만 · NOX_KEEP_SPELLSET=1)
+// ★ 11-22 사용자 「내가 스킬 세팅해 놓은 건 왜 자꾸 돌아가는 거야」 → 「DLL로 막아줘」.
+//   정품 클라는 게임에 들어갈 때마다 캐릭터 파일을 다시 읽는데(opennox `game.go:600-602` → `nox_xxx_plrLoad_41A480`),
+//   읽기 전에 마법 세트 다섯 줄을 통째로 비운다(`GAME1_1.c:844` `sub_4602F0`). 캐릭터 파일 구역은 셋(머리·정보·`sub_41C780`)뿐이라
+//   세트는 되살아나지 않고, 서버가 주문을 다시 줄 때 빈 칸부터 기본 차례로 채워진다 — 서버를 고쳐서는 못 막는다.
+//   → 비우기 함수(이 실행 파일 0x45FE40 · opennox 0x4602F0 에서 −0x4B0) 첫머리를 우리 함수로 건너뛰게 해 세트를 그대로 둔다.
+//     부르는 곳 넷(캐릭터 파일 읽기 0x41A33B · 창 열기 0x4A3C72 · 꼬리로 건너뛰는 0x45FEE5 · 0x4A49FC)이 모두 막힌다.
+//     원래 함수가 맨 먼저 하던 펼친 세트 창 닫기(0x460200 `nox_xxx_quickBarClose_4606B0` — 창 쪽 값을 세트에 되돌려 적는다)만 대신 부른다.
+//   한계: 클라 메모리에만 있어 클라를 다시 켜면 비어 있다 · 다른 직업으로 들어가면 옛 직업 세트가 남는다(촬영 판은 한 직업).
+#define GAME_SPELLSET_CLEAR  0x45FE40u
+#define GAME_QUICKBAR_CLOSE  0x460200u
+static volatile LONG g_keepSpellHits = 0;
+static int __cdecl HookSpellSetClear()
+{
+    void* back = _ReturnAddress();
+    ((int(__cdecl*)())GAME_QUICKBAR_CLOSE)();
+    Log("[마법 세트 지킴] 비우기 막음 %ld번째 — 돌아갈 곳 %p", InterlockedIncrement(&g_keepSpellHits), back);
+    return 0;   // 돌려준 값 — 0x41A340 은 안 씀 · 0x4A3C77 은 eax 를 1 로 덮음(역어셈블) · 꼬리 둘은 opennox 에서 부르는 쪽이 안 씀
+}
+static void PatchKeepSpellSet()
+{
+    char v[8];
+    if (!GetEnvironmentVariableA("NOX_KEEP_SPELLSET", v, sizeof v) || v[0] != '1') return;
+    const BYTE* base = (const BYTE*)GetModuleHandleA(NULL);
+    DWORD stamp = 0;
+    if (base == (const BYTE*)0x400000) {
+        const IMAGE_NT_HEADERS32* nt = (const IMAGE_NT_HEADERS32*)(base + ((const IMAGE_DOS_HEADER*)base)->e_lfanew);
+        stamp = nt->FileHeader.TimeDateStamp;
+    }
+    if (stamp != GAME_EXE_STAMP) { Log("[마법 세트 지킴] 실행 파일 시각 0x%08lX — 다른 판이라 안 바꿈", stamp); return; }
+    // 원래 = push ebx · push ebp · push esi · push edi · call 0x460200 의 첫 바이트 — 건너뛰면 뒤 4바이트에는 닿지 않는다
+    static const BYTE orig[5] = { 0x53, 0x55, 0x56, 0x57, 0xE8 };
+    BYTE now[5] = { 0xE9 };
+    PutDword(now + 1, (DWORD)(uintptr_t)HookSpellSetClear - (GAME_SPELLSET_CLEAR + 5));
+    if (memcmp((const void*)(uintptr_t)GAME_SPELLSET_CLEAR, orig, sizeof orig) != 0) {
+        Log("[마법 세트 지킴] 0x%08lX 원래 바이트가 다름 — 안 바꿈", GAME_SPELLSET_CLEAR);
+        return;
+    }
+    DWORD old = 0;
+    if (!VirtualProtect((void*)(uintptr_t)GAME_SPELLSET_CLEAR, sizeof now, PAGE_EXECUTE_READWRITE, &old)) {
+        Log("[마법 세트 지킴] 쓰기 허락 실패 %lu", GetLastError());
+        return;
+    }
+    memcpy((void*)(uintptr_t)GAME_SPELLSET_CLEAR, now, sizeof now);
+    VirtualProtect((void*)(uintptr_t)GAME_SPELLSET_CLEAR, sizeof now, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), NULL, 0);
+    Log("[마법 세트 지킴] 0x%08lX 비우기를 건너뛰게 바꿈", GAME_SPELLSET_CLEAR);
+}
+
 // ─────────────────────────────────────────────── 들고 나기
 
 BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID)
@@ -552,6 +733,8 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID)
             Log("=== dinput 프록시(입력 가르기) 붙음 ===  exe=%s", exe);
             CloseHandle(CreateThread(NULL, 0, SummaryThread, NULL, 0, NULL));
         }
+        PatchSummonWindow();   // 촬영 판만(NOX_SUMMON_WIDE=1) — 창 만들기 전에 바꿔야 해서 붙는 즉시
+        PatchKeepSpellSet();   // 촬영 판만(NOX_KEEP_SPELLSET=1) — 게임에 다시 들어가도 마법 세트를 안 비운다
     }
     return TRUE;
 }
