@@ -9340,7 +9340,8 @@ void Server::DurFonEnd(DurSpell& d) {
 //   · 점 효과 160(FX_TURN_UNDEAD)을 그 자리에(`netSendPointFx_522FF0`)
 //   ⚠ 소리(TurnUndeadCast)는 주문 틀의 시전 소리 몫
 int Server::DurTurnUndeadCreate(DurSpell& d) {
-    d.killPoints = static_cast<int>(static_cast<float>(BalanceFloatInd("TurnUndeadKillPoints", d.level - 1)));
+    // ★ 11-21 사용자 「총량 4배」 — 원본 값(버림) × kTurnUndeadKillMult(1 이면 원본)
+    d.killPoints = static_cast<int>(static_cast<float>(BalanceFloatInd("TurnUndeadKillPoints", d.level - 1))) * kTurnUndeadKillMult;
     float x = d.posX, y = d.posY;
     if (!d.flag20) {
         auto c = sessions_.find(d.caster);

@@ -25550,8 +25550,11 @@ void TestLightningHold1121() {
 //   ④ 누운 좀비 — 피해 0 이 불탐을 켠다(전엔 꺼짐 — 두 방향) · 양은 안 줄어든다
 //   ⑤ 양 0 · 경계 — 세기 1(150) · A(100) 를 죽이고 남은 50 = B 체력(50)이면 「다 씀」 · 그 뒤 닿는 조각은 그냥 사라짐
 //   ⑥ 벽 — 앞 칸(47,43)에 막힌 조각은 제자리에 남는다
+//   ★ 11-21 사용자 「총량 4배」 — 양·언데드 체력을 M(kTurnUndeadKillMult) 배로 놓아 ③ ⑤ 경계(죽이고 지나감 · 다 씀)를 그대로 본다
 void TestTurnUndead1121() {
     using TS = nox::Server::TurnUndeadStat;
+    const int M = nox::kTurnUndeadKillMult;
+    auto H = [](int v) { return static_cast<uint16_t>(v); };
     const std::string a = "10.11.21.6:1126";
     char msg[400];
     constexpr uint16_t kUndead = 1330, kLiving = 1331;
@@ -25613,7 +25616,7 @@ void TestTurnUndead1121() {
                       srv->DebugTurnUndeadPoints(), fx, srv->DurCount(), srv->turnUndeadStat(TS::Start), srv->turnUndeadStat(TS::Killer));
         Check(ml.size() == 43 && dirOk == 43 && speedOk == 43 && kindOk == 43 && durOk == 43 &&
               std::fabs(ml[0].velX - 4.0f) < 0.001f && std::fabs(ml[0].velY) < 0.001f &&
-              srv->DebugTurnUndeadPoints() == 250 && fx == 1 && srv->DurCount() == 1 &&
+              srv->DebugTurnUndeadPoints() == 250 * M && fx == 1 && srv->DurCount() == 1 &&
               srv->turnUndeadStat(TS::Start) == 1 && srv->turnUndeadStat(TS::Killer) == 43 && srv->turnUndeadStat(TS::NoType) == 0, msg);
     }
     // ② 걸음 · 수명
@@ -25636,7 +25639,7 @@ void TestTurnUndead1121() {
     //   0번이 A(20 프레임)를 죽이고 B(45)에 150 을 다 쓴다(★ 11-21 사양 — 깎이는 건 150 × kPlayerVsMonsterDamageMult · 양은 150 그대로) · 252번(−5.6° — 수직 거리 19.6 < 몸 둘 20)이 50 프레임에 B 에 닿지만 양이 0 이라 그냥 사라진다
     {
         nox::CSyncHost srv; mk(srv);
-        const std::vector<Pin> pins = { { 1100, 1000, 100 }, { 1200, 1000, 200 }, { 1000, 1100, 50 } };
+        const std::vector<Pin> pins = { { 1100, 1000, H(100 * M) }, { 1200, 1000, H(200 * M) }, { 1000, 1100, 50 } };
         spawn(srv, kUndead, pins[0]); spawn(srv, kUndead, pins[1]); spawn(srv, kLiving, pins[2]);
         std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out, pins);
         const int ha0 = srv->HealthOf(Sid(srv, a));
@@ -25646,7 +25649,7 @@ void TestTurnUndead1121() {
                       unsigned(srv->DebugPetHealth(0)), int(srv->DebugPetDead(0)), unsigned(srv->DebugPetHealth(1)), unsigned(srv->DebugPetHealth(2)),
                       srv->DebugTurnUndeadPoints(), srv->turnUndeadStat(TS::HitKill), srv->turnUndeadStat(TS::HitSpent), srv->turnUndeadStat(TS::HitEmpty),
                       srv->turnUndeadStat(TS::HitCorpse), srv->missiles(), ha0, int(srv->HealthOf(Sid(srv, a))));
-        Check(srv->DebugPetHealth(0) == 0 && srv->DebugPetDead(0) && srv->DebugPetHealth(1) == std::max(0, 200 - 150 * nox::kPlayerVsMonsterDamageMult) && srv->DebugPetHealth(2) == 50 &&
+        Check(srv->DebugPetHealth(0) == 0 && srv->DebugPetDead(0) && srv->DebugPetHealth(1) == std::max(0, 200 * M - 150 * M * nox::kPlayerVsMonsterDamageMult) && srv->DebugPetHealth(2) == 50 &&
               srv->DebugTurnUndeadPoints() == 0 && srv->turnUndeadStat(TS::HitKill) == 1 && srv->turnUndeadStat(TS::HitSpent) == 1 &&
               srv->turnUndeadStat(TS::HitEmpty) == 1 && srv->turnUndeadStat(TS::HitCorpse) >= 1 && srv->missiles() == 41 &&
               srv->HealthOf(Sid(srv, a)) == ha0, msg);
@@ -25667,13 +25670,13 @@ void TestTurnUndead1121() {
                       int(dead0), int(burned0), int(srv->DebugPetBurned(0)), srv->turnUndeadStat(TS::HitCorpse), ch0,
                       srv->zombieEv(nox::ZombieEv::CorpseHit), srv->DebugTurnUndeadPoints());
         Check(dead0 && !burned0 && srv->DebugPetBurned(0) && srv->turnUndeadStat(TS::HitCorpse) >= 1 &&
-              srv->zombieEv(nox::ZombieEv::CorpseHit) > ch0 && srv->DebugTurnUndeadPoints() == 250, msg);
+              srv->zombieEv(nox::ZombieEv::CorpseHit) > ch0 && srv->DebugTurnUndeadPoints() == 250 * M, msg);
     }
     // ⑤ 양 0 · 경계 — 세기 1(150) · A(1100,1000 · 100) · B(1000,1100 · 50) — 같은 프레임(20)에 0번(→A · 남은 50)·16번(→B)이 닿는다 ·
     //   남은 양 = 체력(50)이면 「다 씀」 갈래(`v8 <= v5` — 조각이 사라진다) · 그 뒤 시체에 닿는 조각은 양 0 이라 그냥 사라진다
     {
         nox::CSyncHost srv; mk(srv);
-        const std::vector<Pin> pins = { { 1100, 1000, 100 }, { 1000, 1100, 50 } };
+        const std::vector<Pin> pins = { { 1100, 1000, H(100 * M) }, { 1000, 1100, H(50 * M) } };
         spawn(srv, kUndead, pins[0]); spawn(srv, kUndead, pins[1]);
         std::vector<nox::OutPacket> out; uint32_t ms = 0; start(srv, ms, out, pins);
         srv->DebugSpellAccept(Sid(srv, a), 21, 1); srv.TakeOut(out);
